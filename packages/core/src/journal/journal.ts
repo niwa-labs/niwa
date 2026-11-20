@@ -40,8 +40,8 @@ import type {
 /**
  * The version of the journal's own tables.
  *
- * Version 2 added the link table; version 3 the index on the stream. The statements that create the tables are idempotent, so a
- * journal of an older version is brought forward by running them again.
+ * It grows when the tables change. The statements that create the tables are idempotent, so a
+ * journal of a lower version is brought forward by running them again.
  */
 const SCHEMA_VERSION = 3;
 

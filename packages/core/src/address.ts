@@ -5,7 +5,7 @@
  * addressed, and the payload says which one. A bare string cannot say which kind it meant, so it
  * is refused here rather than guessed at somewhere later.
  *
- * There are no rooms and no chats with many agents: one agent writes to another by address.
+ * There is no shared channel: one agent writes to another by address.
  */
 
 import { z } from "zod";

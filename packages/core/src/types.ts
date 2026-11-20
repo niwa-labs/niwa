@@ -190,8 +190,8 @@ export interface Description {
 /**
  * One live frame: something an interface needs at once and nobody needs later.
  *
- * A live frame is never a source of truth and nothing may depend on having received one
- *. The complete message is committed as a record when it is
+ * A live frame is never a source of truth and nothing may depend on having received one.
+ * The complete message is committed as a record when it is
  * complete; a frame that nobody received is simply lost.
  *
  * The shape of the payload belongs to whoever owns the channel; the frame itself carries the
