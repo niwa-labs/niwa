@@ -7,7 +7,6 @@
   },
   "dependencies": {
     "@niwa-labs/client": "workspace:*",
-    "@niwa-labs/core": "workspace:*",
-    "@niwa-labs/host": "workspace:*"
+    "@niwa-labs/core": "workspace:*"
   }
 }

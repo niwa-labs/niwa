@@ -9,6 +9,7 @@
   "dependencies": {
     "@niwa-labs/core": "workspace:*",
     "@niwa-labs/git": "workspace:*",
+    "@niwa-labs/harness": "workspace:*",
     "@niwa-labs/messages": "workspace:*",
     "@niwa-labs/plugin": "workspace:*",
     "@niwa-labs/requests": "workspace:*",

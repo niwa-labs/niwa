@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@niwa-labs/core": "workspace:*",
+    "@niwa-labs/messages": "workspace:*",
     "@niwa-labs/plugin": "workspace:*"
   }
 }

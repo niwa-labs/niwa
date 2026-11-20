@@ -6,8 +6,18 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@niwa-labs/client": "workspace:*",
+    "@niwa-labs/core": "workspace:*",
+    "@niwa-labs/git": "workspace:*",
     "@niwa-labs/harness": "workspace:*",
+    "@niwa-labs/history": "workspace:*",
     "@niwa-labs/host": "workspace:*",
+    "@niwa-labs/messages": "workspace:*",
+    "@niwa-labs/requests": "workspace:*",
+    "@niwa-labs/sandbox": "workspace:*",
+    "@niwa-labs/sessions": "workspace:*",
+    "@niwa-labs/tasks": "workspace:*",
+    "@niwa-labs/timer": "workspace:*",
     "@niwa-labs/workflow": "workspace:*"
   }
 }

@@ -12,6 +12,7 @@
     "@niwa-labs/messages": "workspace:*",
     "@niwa-labs/plugin": "workspace:*",
     "@niwa-labs/requests": "workspace:*",
+    "@niwa-labs/script": "workspace:*",
     "@niwa-labs/sessions": "workspace:*",
     "@niwa-labs/tasks": "workspace:*"
   }

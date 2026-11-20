@@ -7,6 +7,9 @@
   },
   "dependencies": {
     "@niwa-labs/client": "workspace:*",
-    "@niwa-labs/core": "workspace:*"
+    "@niwa-labs/core": "workspace:*",
+    "@niwa-labs/messages": "workspace:*",
+    "@niwa-labs/plugin": "workspace:*",
+    "@niwa-labs/requests": "workspace:*"
   }
 }

@@ -6,6 +6,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@niwa-labs/harness": "workspace:*"
+    "@niwa-labs/core": "workspace:*",
+    "@niwa-labs/harness": "workspace:*",
+    "@niwa-labs/sandbox": "workspace:*"
   }
 }
