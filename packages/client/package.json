@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@niwa-labs/core": "workspace:*"
+    "@niwa-labs/core": "workspace:*",
+    "zod": "^4.6.7"
   }
 }

@@ -44,6 +44,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
+        "zod": "^4.6.7",
       },
     },
     "packages/cockpit": {
