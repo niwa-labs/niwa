@@ -1,0 +1,415 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "niwa-workspace",
+      "devDependencies": {
+        "@types/bun": "^1.4.4",
+        "typescript": "~5.9.3",
+      },
+    },
+    "packages/acp": {
+      "name": "@niwa-labs/acp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/harness": "workspace:*",
+      },
+    },
+    "packages/agent": {
+      "name": "@niwa-labs/agent",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/history": "workspace:*",
+        "@niwa-labs/messages": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+        "@niwa-labs/requests": "workspace:*",
+        "@niwa-labs/sessions": "workspace:*",
+        "@niwa-labs/tasks": "workspace:*",
+      },
+    },
+    "packages/cli": {
+      "name": "@niwa-labs/cli",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/client": "workspace:*",
+        "@niwa-labs/core": "workspace:*",
+      },
+    },
+    "packages/client": {
+      "name": "@niwa-labs/client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+      },
+    },
+    "packages/cockpit": {
+      "name": "@niwa-labs/cockpit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/client": "workspace:*",
+        "@niwa-labs/cockpit-sdk": "workspace:*",
+        "@niwa-labs/ui-kit": "workspace:*",
+      },
+    },
+    "packages/cockpit-sdk": {
+      "name": "@niwa-labs/cockpit-sdk",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/client": "workspace:*",
+        "@niwa-labs/ui-kit": "workspace:*",
+      },
+    },
+    "packages/core": {
+      "name": "@niwa-labs/core",
+      "version": "0.0.0",
+    },
+    "packages/digest": {
+      "name": "@niwa-labs/digest",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/harness": "workspace:*",
+      },
+    },
+    "packages/flow": {
+      "name": "@niwa-labs/flow",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/script": "workspace:*",
+      },
+    },
+    "packages/flow-code": {
+      "name": "@niwa-labs/flow-code",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/flow": "workspace:*",
+        "@niwa-labs/git": "workspace:*",
+        "@niwa-labs/proc": "workspace:*",
+      },
+    },
+    "packages/flow-eval": {
+      "name": "@niwa-labs/flow-eval",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/flow": "workspace:*",
+      },
+    },
+    "packages/git": {
+      "name": "@niwa-labs/git",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+      },
+    },
+    "packages/harness": {
+      "name": "@niwa-labs/harness",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+      },
+    },
+    "packages/harness-claude": {
+      "name": "@niwa-labs/harness-claude",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/acp": "workspace:*",
+        "@niwa-labs/harness": "workspace:*",
+      },
+    },
+    "packages/harness-codex": {
+      "name": "@niwa-labs/harness-codex",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/harness": "workspace:*",
+      },
+    },
+    "packages/harness-mcode": {
+      "name": "@niwa-labs/harness-mcode",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/acp": "workspace:*",
+        "@niwa-labs/harness": "workspace:*",
+      },
+    },
+    "packages/harness-pi": {
+      "name": "@niwa-labs/harness-pi",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/harness": "workspace:*",
+      },
+    },
+    "packages/harness-zcode": {
+      "name": "@niwa-labs/harness-zcode",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/harness": "workspace:*",
+      },
+    },
+    "packages/history": {
+      "name": "@niwa-labs/history",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/digest": "workspace:*",
+        "@niwa-labs/harness": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+      },
+    },
+    "packages/host": {
+      "name": "@niwa-labs/host",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/client": "workspace:*",
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+      },
+    },
+    "packages/mcp": {
+      "name": "@niwa-labs/mcp",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/client": "workspace:*",
+        "@niwa-labs/core": "workspace:*",
+      },
+    },
+    "packages/messages": {
+      "name": "@niwa-labs/messages",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+        "@niwa-labs/sessions": "workspace:*",
+      },
+    },
+    "packages/niwa": {
+      "name": "niwa",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/acp": "workspace:*",
+        "@niwa-labs/agent": "workspace:*",
+        "@niwa-labs/cli": "workspace:*",
+        "@niwa-labs/client": "workspace:*",
+        "@niwa-labs/cockpit": "workspace:*",
+        "@niwa-labs/cockpit-sdk": "workspace:*",
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/digest": "workspace:*",
+        "@niwa-labs/flow": "workspace:*",
+        "@niwa-labs/flow-code": "workspace:*",
+        "@niwa-labs/flow-eval": "workspace:*",
+        "@niwa-labs/git": "workspace:*",
+        "@niwa-labs/harness": "workspace:*",
+        "@niwa-labs/harness-claude": "workspace:*",
+        "@niwa-labs/harness-codex": "workspace:*",
+        "@niwa-labs/harness-mcode": "workspace:*",
+        "@niwa-labs/harness-pi": "workspace:*",
+        "@niwa-labs/harness-zcode": "workspace:*",
+        "@niwa-labs/history": "workspace:*",
+        "@niwa-labs/host": "workspace:*",
+        "@niwa-labs/mcp": "workspace:*",
+        "@niwa-labs/messages": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+        "@niwa-labs/proc": "workspace:*",
+        "@niwa-labs/requests": "workspace:*",
+        "@niwa-labs/sandbox": "workspace:*",
+        "@niwa-labs/script": "workspace:*",
+        "@niwa-labs/sessions": "workspace:*",
+        "@niwa-labs/tasks": "workspace:*",
+        "@niwa-labs/telegram": "workspace:*",
+        "@niwa-labs/timer": "workspace:*",
+        "@niwa-labs/ui-kit": "workspace:*",
+        "@niwa-labs/web": "workspace:*",
+        "@niwa-labs/workflow": "workspace:*",
+      },
+    },
+    "packages/plugin": {
+      "name": "@niwa-labs/plugin",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+      },
+    },
+    "packages/proc": {
+      "name": "@niwa-labs/proc",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+      },
+    },
+    "packages/requests": {
+      "name": "@niwa-labs/requests",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+      },
+    },
+    "packages/sandbox": {
+      "name": "@niwa-labs/sandbox",
+      "version": "0.0.0",
+    },
+    "packages/script": {
+      "name": "@niwa-labs/script",
+      "version": "0.0.0",
+    },
+    "packages/sessions": {
+      "name": "@niwa-labs/sessions",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/git": "workspace:*",
+        "@niwa-labs/harness": "workspace:*",
+        "@niwa-labs/history": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+        "@niwa-labs/requests": "workspace:*",
+        "@niwa-labs/sandbox": "workspace:*",
+      },
+    },
+    "packages/tasks": {
+      "name": "@niwa-labs/tasks",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+      },
+    },
+    "packages/telegram": {
+      "name": "@niwa-labs/telegram",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/client": "workspace:*",
+        "@niwa-labs/core": "workspace:*",
+      },
+    },
+    "packages/testing": {
+      "name": "@niwa-labs/testing",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/harness": "workspace:*",
+        "@niwa-labs/host": "workspace:*",
+        "@niwa-labs/workflow": "workspace:*",
+      },
+    },
+    "packages/timer": {
+      "name": "@niwa-labs/timer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+      },
+    },
+    "packages/ui-kit": {
+      "name": "@niwa-labs/ui-kit",
+      "version": "0.0.0",
+    },
+    "packages/web": {
+      "name": "@niwa-labs/web",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/client": "workspace:*",
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/host": "workspace:*",
+      },
+    },
+    "packages/workflow": {
+      "name": "@niwa-labs/workflow",
+      "version": "0.0.0",
+      "dependencies": {
+        "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/git": "workspace:*",
+        "@niwa-labs/messages": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
+        "@niwa-labs/requests": "workspace:*",
+        "@niwa-labs/sandbox": "workspace:*",
+        "@niwa-labs/script": "workspace:*",
+        "@niwa-labs/sessions": "workspace:*",
+        "@niwa-labs/timer": "workspace:*",
+      },
+    },
+  },
+  "packages": {
+    "@niwa-labs/acp": ["@niwa-labs/acp@workspace:packages/acp"],
+
+    "@niwa-labs/agent": ["@niwa-labs/agent@workspace:packages/agent"],
+
+    "@niwa-labs/cli": ["@niwa-labs/cli@workspace:packages/cli"],
+
+    "@niwa-labs/client": ["@niwa-labs/client@workspace:packages/client"],
+
+    "@niwa-labs/cockpit": ["@niwa-labs/cockpit@workspace:packages/cockpit"],
+
+    "@niwa-labs/cockpit-sdk": ["@niwa-labs/cockpit-sdk@workspace:packages/cockpit-sdk"],
+
+    "@niwa-labs/core": ["@niwa-labs/core@workspace:packages/core"],
+
+    "@niwa-labs/digest": ["@niwa-labs/digest@workspace:packages/digest"],
+
+    "@niwa-labs/flow": ["@niwa-labs/flow@workspace:packages/flow"],
+
+    "@niwa-labs/flow-code": ["@niwa-labs/flow-code@workspace:packages/flow-code"],
+
+    "@niwa-labs/flow-eval": ["@niwa-labs/flow-eval@workspace:packages/flow-eval"],
+
+    "@niwa-labs/git": ["@niwa-labs/git@workspace:packages/git"],
+
+    "@niwa-labs/harness": ["@niwa-labs/harness@workspace:packages/harness"],
+
+    "@niwa-labs/harness-claude": ["@niwa-labs/harness-claude@workspace:packages/harness-claude"],
+
+    "@niwa-labs/harness-codex": ["@niwa-labs/harness-codex@workspace:packages/harness-codex"],
+
+    "@niwa-labs/harness-mcode": ["@niwa-labs/harness-mcode@workspace:packages/harness-mcode"],
+
+    "@niwa-labs/harness-pi": ["@niwa-labs/harness-pi@workspace:packages/harness-pi"],
+
+    "@niwa-labs/harness-zcode": ["@niwa-labs/harness-zcode@workspace:packages/harness-zcode"],
+
+    "@niwa-labs/history": ["@niwa-labs/history@workspace:packages/history"],
+
+    "@niwa-labs/host": ["@niwa-labs/host@workspace:packages/host"],
+
+    "@niwa-labs/mcp": ["@niwa-labs/mcp@workspace:packages/mcp"],
+
+    "@niwa-labs/messages": ["@niwa-labs/messages@workspace:packages/messages"],
+
+    "@niwa-labs/plugin": ["@niwa-labs/plugin@workspace:packages/plugin"],
+
+    "@niwa-labs/proc": ["@niwa-labs/proc@workspace:packages/proc"],
+
+    "@niwa-labs/requests": ["@niwa-labs/requests@workspace:packages/requests"],
+
+    "@niwa-labs/sandbox": ["@niwa-labs/sandbox@workspace:packages/sandbox"],
+
+    "@niwa-labs/script": ["@niwa-labs/script@workspace:packages/script"],
+
+    "@niwa-labs/sessions": ["@niwa-labs/sessions@workspace:packages/sessions"],
+
+    "@niwa-labs/tasks": ["@niwa-labs/tasks@workspace:packages/tasks"],
+
+    "@niwa-labs/telegram": ["@niwa-labs/telegram@workspace:packages/telegram"],
+
+    "@niwa-labs/testing": ["@niwa-labs/testing@workspace:packages/testing"],
+
+    "@niwa-labs/timer": ["@niwa-labs/timer@workspace:packages/timer"],
+
+    "@niwa-labs/ui-kit": ["@niwa-labs/ui-kit@workspace:packages/ui-kit"],
+
+    "@niwa-labs/web": ["@niwa-labs/web@workspace:packages/web"],
+
+    "@niwa-labs/workflow": ["@niwa-labs/workflow@workspace:packages/workflow"],
+
+    "@types/bun": ["@types/bun@1.4.5", "", { "dependencies": { "bun-types": "1.4.5" } }, "sha512-DpgwNI9z0L1S0gtb45QLCWgwCUcMLnsHYMJHQvpNj7erGiCGBvpggltAIeARrtobNMKMuy0UP7i56tKKgwFs/Q=="],
+
+    "@types/node": ["@types/node@26.6.6", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog=="],
+
+    "bun-types": ["bun-types@1.4.5", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-ECHn+9dhL3wv0G6u0+7dQvrnaimXiRDxxerYBmhTaLyJEEuvTPWk2Fye3XIf5Y++JIIiHKfQw4Z7V5D8KuiXbg=="],
+
+    "niwa": ["niwa@workspace:packages/niwa"],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici-types": ["undici-types@8.9.0", "", {}, "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg=="],
+  }
+}

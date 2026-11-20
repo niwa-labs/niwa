@@ -1,0 +1,12 @@
+{
+  "name": "@niwa-labs/harness-claude",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/acp": "workspace:*",
+    "@niwa-labs/harness": "workspace:*"
+  }
+}

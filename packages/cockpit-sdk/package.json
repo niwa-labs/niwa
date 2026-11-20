@@ -1,0 +1,12 @@
+{
+  "name": "@niwa-labs/cockpit-sdk",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/client": "workspace:*",
+    "@niwa-labs/ui-kit": "workspace:*"
+  }
+}

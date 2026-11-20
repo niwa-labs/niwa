@@ -1,0 +1,13 @@
+{
+  "name": "@niwa-labs/flow-code",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/flow": "workspace:*",
+    "@niwa-labs/git": "workspace:*",
+    "@niwa-labs/proc": "workspace:*"
+  }
+}

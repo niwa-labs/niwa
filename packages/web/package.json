@@ -1,0 +1,13 @@
+{
+  "name": "@niwa-labs/web",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/client": "workspace:*",
+    "@niwa-labs/core": "workspace:*",
+    "@niwa-labs/host": "workspace:*"
+  }
+}

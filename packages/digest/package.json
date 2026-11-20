@@ -1,0 +1,11 @@
+{
+  "name": "@niwa-labs/digest",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/harness": "workspace:*"
+  }
+}

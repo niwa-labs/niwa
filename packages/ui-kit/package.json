@@ -1,0 +1,8 @@
+{
+  "name": "@niwa-labs/ui-kit",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

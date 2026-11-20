@@ -1,0 +1,13 @@
+{
+  "name": "@niwa-labs/testing",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/harness": "workspace:*",
+    "@niwa-labs/host": "workspace:*",
+    "@niwa-labs/workflow": "workspace:*"
+  }
+}

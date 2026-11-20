@@ -1,0 +1,20 @@
+{
+  "name": "@niwa-labs/workflow",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./records": "./src/records.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/core": "workspace:*",
+    "@niwa-labs/git": "workspace:*",
+    "@niwa-labs/messages": "workspace:*",
+    "@niwa-labs/plugin": "workspace:*",
+    "@niwa-labs/requests": "workspace:*",
+    "@niwa-labs/sandbox": "workspace:*",
+    "@niwa-labs/script": "workspace:*",
+    "@niwa-labs/sessions": "workspace:*",
+    "@niwa-labs/timer": "workspace:*"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "@niwa-labs/history",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./records": "./src/records.ts",
+    "./flow": "./src/flow.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/core": "workspace:*",
+    "@niwa-labs/digest": "workspace:*",
+    "@niwa-labs/harness": "workspace:*",
+    "@niwa-labs/plugin": "workspace:*"
+  }
+}

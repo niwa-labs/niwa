@@ -1,0 +1,14 @@
+{
+  "name": "@niwa-labs/proc",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./records": "./src/records.ts",
+    "./flow": "./src/flow.ts"
+  },
+  "dependencies": {
+    "@niwa-labs/core": "workspace:*",
+    "@niwa-labs/plugin": "workspace:*"
+  }
+}
