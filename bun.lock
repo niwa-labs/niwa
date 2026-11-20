@@ -312,6 +312,7 @@
         "@niwa-labs/history": "workspace:*",
         "@niwa-labs/host": "workspace:*",
         "@niwa-labs/messages": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
         "@niwa-labs/requests": "workspace:*",
         "@niwa-labs/sandbox": "workspace:*",
         "@niwa-labs/sessions": "workspace:*",
