@@ -19,6 +19,7 @@
     "@niwa-labs/sessions": "workspace:*",
     "@niwa-labs/tasks": "workspace:*",
     "@niwa-labs/timer": "workspace:*",
-    "@niwa-labs/workflow": "workspace:*"
+    "@niwa-labs/workflow": "workspace:*",
+    "zod": "^4.6.7"
   }
 }

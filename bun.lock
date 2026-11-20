@@ -183,6 +183,10 @@
         "@niwa-labs/client": "workspace:*",
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
+        "zod": "^4.6.7",
+      },
+      "devDependencies": {
+        "@niwa-labs/testing": "workspace:*",
       },
     },
     "packages/mcp": {
@@ -336,6 +340,7 @@
         "@niwa-labs/tasks": "workspace:*",
         "@niwa-labs/timer": "workspace:*",
         "@niwa-labs/workflow": "workspace:*",
+        "zod": "^4.6.7",
       },
     },
     "packages/timer": {
