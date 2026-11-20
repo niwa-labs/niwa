@@ -277,6 +277,10 @@
     "packages/script": {
       "name": "@niwa-labs/script",
       "version": "0.0.0",
+      "dependencies": {
+        "typescript": "~5.9.3",
+        "zod": "^4.6.7",
+      },
     },
     "packages/sessions": {
       "name": "@niwa-labs/sessions",
