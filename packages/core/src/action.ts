@@ -103,14 +103,6 @@ export interface ActionSpec<I, O, In = I> {
    * It turns unknown into completed or failed, and it never reattaches to live work.
    */
   check?(operationId: OperationId, ctx: CheckContext): Promise<CheckResult<O>>;
-  /**
-   * What the action would answer, without anything reaching the outside.
-   *
-   * A shadow run asks it for the calls it has no recorded answer for, so the branch is simulated
-   * instead of not evaluated. The simulator is optional: an action that has none is simply not
-   * evaluated when the shadow run meets it.
-   */
-  simulate?(input: I): Promise<O> | O;
 }
 
 /**
@@ -210,7 +202,6 @@ export function action<I, O, In = I>(
   }
 
   const check = spec.check;
-  const simulate = spec.simulate;
   const targetOf = spec.target;
   return {
     kind: "action",
@@ -230,11 +221,6 @@ export function action<I, O, In = I>(
             operationId: OperationId,
             ctx: CheckContext,
           ): Promise<CheckResult<O>> => check(operationId, ctx),
-        }),
-    ...(simulate === undefined
-      ? {}
-      : {
-          simulate: async (input: I): Promise<O> => simulate(input),
         }),
   };
 }

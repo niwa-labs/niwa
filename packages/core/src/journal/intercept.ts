@@ -193,7 +193,7 @@ export interface DecideOptions<I, In = I> {
   readonly reason?: string;
   /**
    * Put a question to the owner. Given for the call a client makes at the door; without it a rule
-   * that asks is a denial: a step inside an invocation and a shadow run never wait for the owner.
+   * that asks is a denial: a step inside an invocation never waits for the owner.
    */
   readonly ask?: Ask;
 }

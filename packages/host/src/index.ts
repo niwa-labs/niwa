@@ -5,7 +5,6 @@ export * from "./state.ts";
 export * from "./access-control.ts";
 export * from "./access-actions.ts";
 export * from "./doors.ts";
-export * from "./shadow.ts";
 export * from "./plugin-install.ts";
 export * from "./describe.ts";
 export * from "./host-types.ts";

@@ -146,22 +146,6 @@ test("a restart onto changed code pauses unfinished work; only the explicit move
   }
 }, 60_000);
 
-test("a proposal shadowed before it is installed carries the version it is installed with", async () => {
-  const home = await tempHome();
-  const niwa = createNiwa({ home: home.path });
-  try {
-    const installed = pluginWith(handlerOne);
-    niwa.use(installed);
-    await niwa.serve();
-    const proposal = pluginWith(handlerOneAgain);
-    await niwa.shadow(proposal);
-    expect(String(proposal.version)).toBe(String(installed.version));
-  } finally {
-    await niwa.close();
-    await home.cleanup();
-  }
-});
-
 const Spare = record("pv.spare", z.object({}));
 const spareHandler = () => {};
 

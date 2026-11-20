@@ -72,7 +72,7 @@ test("declared values: a declared action is described with its schemas, an undec
     expect(described?.recovery).toBe("do-not-repeat");
 
     // Nothing is listed twice, nothing is missing and nothing is invented: the description is the
-    // registered actions (the host's own resolve, move, shadow, install, observation and access actions are among them).
+    // registered actions (the host's own resolve, move, install, observation and access actions are among them).
     expect(description.actions.map((action) => String(action.name)).sort()).toEqual([
       "access.explain",
       "access.grant.change",
@@ -91,7 +91,6 @@ test("declared values: a declared action is described with its schemas, an undec
       "niwa.invocation.move",
       "niwa.invocation.resolve",
       "niwa.records.read",
-      "niwa.shadow",
       "niwa.trace",
       "plugin.install",
     ]);

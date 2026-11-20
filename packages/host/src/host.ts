@@ -148,9 +148,8 @@ import { installationOf, pluginInstallAction, removeCopyIfStale, removeStaleCopi
 import { handlerSource, pluginVersion, pluginName, sealVersion } from "@niwa-labs/plugin";
 import { StateStore } from "./state.ts";
 import type { HostMessage } from "@niwa-labs/client";
-import { SHADOW_ACTION, ShadowStepSchema, shadowRun } from "./shadow.ts";
 import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle } from "@niwa-labs/plugin";
-import type { Host, HostOptions, ShadowOptions, ShadowReport } from "./host-types.ts";
+import type { Host, HostOptions } from "./host-types.ts";
 
 type AnyType = RecordType<any>;
 type AnyAction = Action<any, any>;
@@ -482,14 +481,6 @@ const ResolveInput = z
   })
   .refine((input) => (input.invocation === undefined) !== (input.run === undefined), "give the invocation (id, or a unique start or end of it), or the run whose paused invocation it is");
 
-/** What a shadow run is asked for: which plugin, which version, and over which part of the journal. */
-const ShadowInput = z.object({
-  plugin: z.string(),
-  version: z.string().optional(),
-  from: z.number().optional(),
-  to: z.number().optional(),
-});
-
 /** The longest the host waits for one service to release what it owns. */
 const STOP_TIMEOUT_MS = 5_000;
 
@@ -569,7 +560,6 @@ class Niwa implements Host {
   private readonly stopping: Array<Promise<void>> = [];
   private readonly resolver = this.resolveAction();
   private readonly mover = this.moveAction();
-  private readonly shadowRunner = this.shadowAction();
   private readonly installer = pluginInstallAction({
     install: (plugin) => this.use(plugin),
     record: async (caller, data) => {
@@ -886,154 +876,6 @@ class Niwa implements Host {
   }
 
   /**
-   * Run a plugin's handlers over the records that were already written, and report what they would
-   * have done differently.
-   *
-   * Nothing is written to the journal and no action is called: the run reads what was recorded and
-   * compares it with what the code of the handlers would do now.
-   *
-   * The code that runs is the code of the plugin value: its handlers are collected without
-   * installing it, so a proposal can be shadowed before it is ever installed. A value that
-   * declares no handlers (the shadow action names a version, it does not carry code) is run as the
-   * code that is installed or pinned under that version; a version that was never installed is
-   * refused then.
-   */
-  async shadow(plugin: Plugin, opts: ShadowOptions = {}): Promise<ShadowReport> {
-    const journal = this.requireJournal();
-    const installed = this.plugins.get(plugin.name);
-    if (installed === undefined) {
-      throw new Error(`plugin "${plugin.name}" is not installed`);
-    }
-    const handlers = this.collectHandlers(plugin);
-    if (handlers.size === 0) {
-      for (const entry of installed.handlers) {
-        const id = handlerIdOf(`${plugin.name}/${entry.name}`);
-        const pinned = this.pinned.get(pinKey(id, plugin.version));
-        if (pinned !== undefined) handlers.set(id, { type: pinned.type, handler: pinned.handler });
-        else if (plugin.version === installed.version) handlers.set(id, { type: entry.type, handler: entry.handler });
-      }
-    }
-    if (handlers.size === 0 && installed.handlers.length > 0) {
-      throw new Error(`version ${plugin.version} of plugin "${plugin.name}" was never installed`);
-    }
-    // The state is read as it was at the start position; the shadow's writes stay in memory.
-    return this.states.shadow(opts.from ?? seq(0), () => shadowRun({ journal, handlers, interceptsOf: (name) => this.intercepts.get(name) ?? NO_INTERCEPTS, resolveAction: (name) => this.resolveActionByName(name) }, opts));
-  }
-
-  /**
-   * The handlers a plugin value declares, without installing it: nothing is registered, no
-   * service starts and nothing is written to the journal.
-   */
-  private collectHandlers(plugin: Plugin): Map<HandlerId, { type: AnyType; handler: Handler<any> }> {
-    const handlers = new Map<HandlerId, { type: AnyType; handler: Handler<any> }>();
-    const sources: string[] = [];
-    plugin.setup({
-      declare: () => {},
-      offer: () => {},
-      offers: () => [],
-      service: () => {},
-      action: () => {},
-      catalog: () => {},
-      adjust: () => {},
-      guard: () => {},
-      live: () => {},
-      on: (type: AnyType, optsOrHandler: { id?: string } | Handler<any>, maybeHandler?: Handler<any>) => {
-        const [options, handler] =
-          typeof optsOrHandler === "function" ? [{ id: undefined }, optsOrHandler] : [optsOrHandler, maybeHandler];
-        if (handler === undefined) throw new TypeError(`a handler of "${type.name}" is missing`);
-        const name = options.id ?? type.handlerId ?? type.name;
-        const id = handlerIdOf(`${plugin.name}/${name}`);
-        if (handlers.has(id)) {
-          throw new Error(`plugin "${plugin.name}" declares two handlers with the id "${id}": a handler id must name one handler`);
-        }
-        handlers.set(id, { type, handler });
-        sources.push(handlerSource(name, handler));
-      },
-      journal: () => this.journal,
-      summarize: () => {},
-      recordType: (name) => this.declaredBefore(name),
-      untilCommit: (ms) => this.untilCommit(ms),
-      socket: () => socketPath(realpathSync(this.home)),
-      home: () => realpathSync(this.home),
-      emit: async () => {
-        throw new Error(`a shadow run writes nothing: "${plugin.name}" cannot emit while it is collected`);
-      },
-      state: <T>(name: string, schema: z.ZodType<T>, initial: T): StateHandle<T> =>
-        this.states.define(plugin.name, name, schema, initial),
-      issueToken: () => {
-        throw new Error(`a shadow run makes no tokens: "${plugin.name}" cannot while it is collected`);
-      },
-      narrow: () => {
-        throw new Error(`a shadow run makes no grants: "${plugin.name}" cannot while it is collected`);
-      },
-      rights: (caller) => this.access.rightsOf(caller),
-      authorize: async (caller, verb, name) => {
-        // A shadow run writes nothing and never waits for the owner: the grant answers, a rule that
-        // asks is a denial, and no decision is recorded.
-        const answer = permit(this.access.standing(caller), verb, name);
-        if (!answer.allowed) throw new DeniedError(answer.reason);
-      },
-      profile: () => undefined,
-      asker: () => undefined,
-      setProfile: () => {
-        throw new Error(`a shadow run sets no profile: "${plugin.name}" cannot while it is collected`);
-      },
-    });
-    // The handlers are known now: the version a proposal carries is the one it is installed with.
-    sealVersion(plugin, sources);
-    return handlers;
-  }
-
-  /**
-   * The action the host registers for itself: run a plugin in shadow over recorded records.
-   *
-   * The report comes back as the output of the call, so a client can ask for it the way it asks
-   * for anything else.
-   */
-  private shadowAction(): AnyAction {
-    return action(SHADOW_ACTION, {
-      description:
-        "Run a plugin's handlers over the records that were already written, and report what they would have done differently.",
-      input: z.object({
-        plugin: z.string(),
-        version: z.string().optional(),
-        from: z.number().optional(),
-        to: z.number().optional(),
-      }),
-      output: z.object({
-        matched: z.array(ShadowStepSchema),
-        differed: z.array(ShadowStepSchema),
-        notEvaluated: z.array(ShadowStepSchema),
-      }),
-      // A shadow run reads the recorded records and writes nothing: it may be made again.
-      recovery: "repeat",
-      run: async (input: z.infer<typeof ShadowInput>) => {
-        const journal = this.requireJournal();
-        const name = pluginName(input.plugin);
-        const installed = this.plugins.get(name);
-        if (installed === undefined) throw new Error(`plugin "${input.plugin}" is not installed`);
-        const version = pluginVersion(input.version ?? installed.version);
-        // The plugin of that version: the same setup, the version that is asked for.
-        const plugin: Plugin = {
-          kind: "plugin",
-          name,
-          version,
-          setup: () => {},
-        };
-        const report = await this.shadow(plugin, {
-          ...(input.from === undefined ? {} : { from: seq(input.from) }),
-          ...(input.to === undefined ? {} : { to: seq(input.to) }),
-        });
-        return {
-          matched: report.matched,
-          differed: report.differed,
-          notEvaluated: report.notEvaluated,
-        };
-      },
-    });
-  }
-
-  /**
    * The action the host registers for itself: read the records of the journal.
    *
    * The read is one-shot: it answers with the records that are committed now and ends. It reads
@@ -1276,7 +1118,6 @@ class Niwa implements Host {
     this.actions.set(this.resolver.name, this.resolver);
     this.actions.set(this.mover.name, this.mover);
     // And one more: the way anyone asks what a plugin would do differently over recorded records.
-    this.actions.set(this.shadowRunner.name, this.shadowRunner);
     // And the install of a plugin from a file: its target is the plugin, so a grant can limit it.
     this.actions.set(this.installer.name, this.installer);
     // And the observation ones: reading what happened is an action, so the surfaces generate

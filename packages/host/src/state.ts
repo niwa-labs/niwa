@@ -12,16 +12,12 @@
  * - Only the plugin that declared a key writes it: the handle is its only way in, and it refuses
  *   to run inside a handler of another plugin.
  * - The current value is a projection folded from the journal when the host serves.
- * - A shadow run sees the state as of a position and writes to a private copy: the journal
- *   and the projection are not touched.
  */
-
-import { AsyncLocalStorage } from "node:async_hooks";
 
 import { z } from "zod";
 
 import { ValidationError, currentInvocation, CORE_TYPES, newRecordId, recordId, streamId } from "@niwa-labs/core";
-import type { InvocationScope, Caller, Journal, NewRecord, PluginName, RecordId, Seq, StoredRecord } from "@niwa-labs/core";
+import type { InvocationScope, Caller, Journal, NewRecord, PluginName, RecordId, StoredRecord } from "@niwa-labs/core";
 import type { StateHandle } from "@niwa-labs/plugin";
 
 /** How the store writes: the records are committed and published. */
@@ -69,14 +65,6 @@ function actorOf(scope: InvocationScope | undefined): Caller {
   return { kind: "handler", handler: scope.handler, invocation: scope.invocation };
 }
 
-/** The private copy of the state a shadow run reads and writes: only the code inside the run sees it. */
-const SHADOW = new AsyncLocalStorage<Map<string, unknown>>();
-
-/** The value a shadow copy holds for a key, as a copy of its own. */
-function held(copy: Map<string, unknown>, key: string, entry: Entry): unknown {
-  return structuredClone(copy.has(key) ? copy.get(key) : entry.initial);
-}
-
 /** The state of the plugins of one host. */
 export class StateStore {
   private journal: Journal | undefined;
@@ -91,21 +79,6 @@ export class StateStore {
     this.append = deps.append;
     this.values.clear();
     for (const record of deps.journal.find({ type: CORE_TYPES.stateChanged })) this.fold(record);
-  }
-
-  /**
-   * Run `fn` against a private copy of the state as it was at `position`. Whatever `fn` changes
-   * stays in the copy; the journal and the projection of the host are not touched.
-   */
-  shadow<T>(position: Seq, fn: () => Promise<T>): Promise<T> {
-    const copy = new Map<string, unknown>();
-    for (const record of this.journal?.find({ type: CORE_TYPES.stateChanged }) ?? []) {
-      const data = StateData.safeParse(record.data);
-      if (record.seq <= position && data.success) {
-        copy.set(stateKey(data.data.plugin, data.data.name), data.data.value);
-      }
-    }
-    return SHADOW.run(copy, fn);
   }
 
   private fold(record: StoredRecord): void {
@@ -135,8 +108,6 @@ export class StateStore {
   private read<T>(plugin: PluginName, name: string): T {
     const key = stateKey(plugin, name);
     const entry = this.entryOf(key);
-    const copy = SHADOW.getStore();
-    if (copy !== undefined) return held(copy, key, entry) as T;
     const scope = this.scopeFor(plugin);
     if (scope === undefined) return this.current(key, entry) as T;
 
@@ -158,15 +129,6 @@ export class StateStore {
   private change<T>(plugin: PluginName, name: string, op: "set" | "update", next: (current: T) => T): T {
     const key = stateKey(plugin, name);
     const entry = this.entryOf(key);
-    const copy = SHADOW.getStore();
-    if (copy !== undefined) {
-      const parsed = entry.schema.safeParse(next(held(copy, key, entry) as T));
-      if (!parsed.success) {
-        throw new ValidationError(`the value of the state "${key}" is not valid`, parsed.error.issues);
-      }
-      copy.set(key, parsed.data);
-      return structuredClone(parsed.data) as T;
-    }
     const scope = this.scopeFor(plugin);
     const id = this.writeId(scope);
     const recorded = this.recorded(id, plugin, name);
@@ -187,12 +149,6 @@ export class StateStore {
   private take<T>(plugin: PluginName, name: string): T {
     const key = stateKey(plugin, name);
     const entry = this.entryOf(key);
-    const copy = SHADOW.getStore();
-    if (copy !== undefined) {
-      const taken = held(copy, key, entry);
-      copy.set(key, entry.initial);
-      return taken as T;
-    }
     const scope = this.scopeFor(plugin);
     const current = this.current(key, entry);
 

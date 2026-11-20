@@ -327,14 +327,6 @@ export interface Action<I, O, In = I> extends ActionRef<I, O, In> {
    * live work: the answer says whether the effect happened, not whether it is still running.
    */
   check?(operationId: OperationId, ctx: CheckContext): Promise<CheckResult<O>>;
-  /**
-   * What the action would answer, without anything reaching the outside.
-   *
-   * A shadow run asks it for the calls it has no recorded answer for: the branch is then
-   * simulated instead of not evaluated. The simulator never has an
-   * effect: it answers from what the code knows, not by calling anything.
-   */
-  simulate?(input: I): Promise<O> | O;
 }
 
 /**
