@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@niwa-labs/core": "workspace:*",
-    "@niwa-labs/sandbox": "workspace:*"
+    "@niwa-labs/sandbox": "workspace:*",
+    "zod": "^4.6.7"
   }
 }
