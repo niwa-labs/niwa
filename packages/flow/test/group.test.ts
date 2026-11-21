@@ -217,6 +217,8 @@ test("seat keys number a seat met again with a name no other seat has", () => {
   expect(seatKeys(["judge-2", "judge", "judge"], "a seat")).toEqual(["judge-2", "judge", "judge-3"]);
   expect(seatKeys(["a", "a", "a"], "a seat")).toEqual(["a", "a-2", "a-3"]);
 });
+
+
 test("map throws a refusal of the grant as soon as it is committed, not when the branches before it ended", async () => {
   const flow = await host();
   const ended = await flow.run(`
@@ -271,6 +273,25 @@ test("a swarm worker that opens a named scope can run again after a failed attem
   expect(resultOf(ended)).toEqual({ results: { one: 7 }, gaps: [], dropped: [] });
 }, 30_000);
 
+test("a stream that cannot be opened gives every read the error of its opening", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { stream } from "@niwa-labs/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const first = stream("dup", { x: async () => 1 });
+      const second = stream("dup", { x: async () => 2 });
+      const errors: string[] = [];
+      for (const read of [() => second.next(), () => second.rest(), () => second.pending()]) {
+        await read().catch((error) => errors.push((error as Error).message));
+      }
+      return { errors, first: await first.next() };
+    });`);
+  const out = resultOf(ended) as { errors: string[]; first: unknown };
+  expect(out.errors).toHaveLength(3);
+  for (const message of out.errors) expect(message).toContain("opened twice");
+  expect(out.first).toEqual({ key: "x", result: { ok: true, value: 1 } });
+}, 30_000);
+
 test("every way to read a stream throws a refusal of the grant", async () => {
   const flow = await host();
   const ended = await flow.run(`
@@ -293,4 +314,18 @@ test("every way to read a stream throws a refusal of the grant", async () => {
       return { next, rest, ready, each };
     });`);
   expect(resultOf(ended)).toEqual({ next: "Denied", rest: "Denied", ready: "Denied", each: "Denied" });
+}, 30_000);
+
+test("a branch keyed __proto__ keeps its outcome in parallel, in the rest of a stream and when ranked", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { parallel, rankAll, stream } from "@niwa-labs/flow";
+    const own = (table: object) => Object.keys(table);
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const done = await parallel<string, any>({ ["__proto__"]: async () => ({ n: 1 }), plain: async () => 2 });
+      const rest = await stream("rest", { ["__proto__"]: async () => { throw new Error("no"); }, plain: async () => 2 }).rest();
+      const ranked = await rankAll(stream("rank", { ["__proto__"]: async () => 5, plain: async () => 2 }), async () => "__proto__");
+      return { done: own(done), n: Object.getOwnPropertyDescriptor(done, "__proto__")?.value, rest: own(rest), failed: Object.getOwnPropertyDescriptor(rest, "__proto__")?.value?.ok, ranked: ranked.value };
+    });`);
+  expect(resultOf(ended)).toEqual({ done: ["__proto__", "plain"], n: { n: 1 }, rest: ["__proto__", "plain"], failed: false, ranked: 5 });
 }, 30_000);

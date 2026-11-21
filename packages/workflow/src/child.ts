@@ -560,7 +560,10 @@ interface Group {
 
 /** A stream: a group whose branches are listened to one outcome at a time, closed when it is disposed. */
 interface StreamHandle {
+  /** Close it, and throw the error of its opening when it had one. */
   close(): Promise<void>;
+  /** Close it as the end of its branch or of the script does: an error of its opening that a read gave already is not thrown again. */
+  release(): Promise<void>;
 }
 
 /** The error a scope with `onDeadline: "fail"` throws when it runs out of time. */
@@ -668,7 +671,7 @@ function inGroup<T>(group: Group, path: string, member: Member | undefined, body
 
 /** Close the streams a branch left open: nothing started in a branch outlives it. */
 async function closeStreams(streams: Set<StreamHandle>): Promise<void> {
-  for (const stream of [...streams]) await stream.close();
+  for (const stream of [...streams]) await stream.release();
 }
 
 /** What a thrown value says as an outcome: a cancel when the branch was cancelled or a step of it was. */
@@ -809,13 +812,14 @@ function scopeApi(group: Group) {
       return out;
     },
     rest: async (): Promise<Record<string, Settled>> => {
-      const all: Record<string, Settled> = {};
+      // A key is any text a branch may have, `__proto__` among them: the outcomes are kept in a map and then made properties.
+      const all = new Map<string, Settled>();
       for (const member of [...group.members.values()]) {
-        all[member.key] = await member.done;
+        all.set(member.key, await member.done);
         if (group.pausedBy !== undefined) throw group.pausedBy;
         if (member.order !== undefined) group.given.add(member.order);
       }
-      return all;
+      return Object.fromEntries(all);
     },
     pending: (): Promise<string[]> =>
       snapshot(group, [...group.members.values()].filter((member) => member.result === undefined).map((member) => member.key)),
@@ -975,15 +979,15 @@ globals.parallel = async (branches: Array<() => unknown> | Record<string, () => 
   const { path, segments } = numberedPath();
   const results = (await runGroup(path, segments, { ...(opts.concurrency === undefined ? {} : { concurrency: opts.concurrency }) }, async (s) => {
     const members = entries.map(([key, fn]) => [key, startMember(groupOf(s), key, fn)] as const);
-    const out: Record<string, unknown> = {};
+    const out = new Map<string, unknown>();
     for (let got = await s.next(); got !== null; got = await s.next()) {
       if (!got.result.ok) {
         const failedMember = members.find(([key]) => key === got?.key)?.[1];
         throw failedMember?.error ?? Object.assign(new Error(got.result.error.message), { name: got.result.error.name });
       }
-      out[got.key] = got.result.value;
+      out.set(got.key, got.result.value);
     }
-    return out;
+    return Object.fromEntries(out);
   })) as Record<string, unknown>;
   return Array.isArray(branches) ? entries.map(([key]) => results[key]) : results;
 };
@@ -1008,31 +1012,58 @@ globals.stream = (name: string, branches: Record<string, () => unknown>, opts: {
     close = resolve;
   });
   let ready: (s: ScopeApi) => void = () => undefined;
-  const begun = new Promise<ScopeApi>((resolve) => {
+  let refuse: (error: unknown) => void = () => undefined;
+  const begun = new Promise<ScopeApi>((resolve, reject) => {
     ready = resolve;
+    refuse = reject;
   });
+  // A stream that could not be opened gives every read the error of its opening, and a read that has is the one that saw it.
+  let opening = true;
+  let openFailed = false;
+  let seen = false;
+  begun.catch(() => undefined);
+  const opened = async (): Promise<ScopeApi> => {
+    try {
+      return await begun;
+    } catch (error) {
+      seen = true;
+      throw error;
+    }
+  };
   const done = runGroup(path, segments, { onExit: "cancel", ...(opts.concurrency === undefined ? {} : { concurrency: opts.concurrency }) }, async (s) => {
     for (const [key, fn] of Object.entries(branches)) s.start(key, fn);
+    opening = false;
     ready(s);
     await closed;
   });
-  done.catch(() => undefined);
+  done.catch((error: unknown) => {
+    if (!opening) return;
+    openFailed = true;
+    refuse(error);
+  });
   const streams = owner?.streams ?? rootStreams;
-  const handle = {
-    next: async () => (await begun).next(),
-    ready: async () => (await begun).ready(),
-    rest: async () => (await begun).rest(),
-    pending: async () => (await begun).pending(),
-    cancel: async (keys?: string[]) => (await begun).cancel("cancelled by the script", keys),
-    close: async (): Promise<void> => {
-      streams.delete(handle);
-      close();
+  const finish = async (explicit: boolean): Promise<void> => {
+    streams.delete(handle);
+    close();
+    try {
       await done;
-    },
+    } catch (error) {
+      // Leaving the branch the stream was opened in, or the script, does not say again what a read said already.
+      if (explicit || !openFailed || !seen) throw error;
+    }
+  };
+  const handle = {
+    next: async () => (await opened()).next(),
+    ready: async () => (await opened()).ready(),
+    rest: async () => (await opened()).rest(),
+    pending: async () => (await opened()).pending(),
+    cancel: async (keys?: string[]) => (await opened()).cancel("cancelled by the script", keys),
+    close: (): Promise<void> => finish(true),
+    release: (): Promise<void> => finish(false),
     async *[Symbol.asyncIterator]() {
       for (let got = await handle.next(); got !== null; got = await handle.next()) yield got;
     },
-    [Symbol.asyncDispose]: (): Promise<void> => handle.close(),
+    [Symbol.asyncDispose]: (): Promise<void> => finish(false),
   };
   streams.add(handle);
   return handle;
