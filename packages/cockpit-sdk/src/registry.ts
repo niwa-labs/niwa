@@ -326,16 +326,17 @@ function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: re
 }
 
 /**
- * Assemble the drafts, in load order, over the slots the cockpit owns. A module that does not
- * fit is left out whole and reported, and assembly starts again without it.
+ * Assemble the drafts, in load order, over the slots the cockpit owns. A module that does not fit is
+ * left out whole and reported, and assembly starts again without it.
  *
  * Each round leaves out one module: the first in load order whose misfit is certain — caused by
  * nothing, by the cockpit, by itself, or by a module that fits. A module that only clashes with
  * a module that is itself about to go, or needs a slot of one, waits: it may fit once that one
  * is gone. When every misfit waits on another, the first in load order goes.
  *
- * A module left out early may have lost only to modules that were left out after it, so at the
- * end each one is offered again, in load order, and kept when everything still fits.
+ * A module left out early may have lost only to modules that were left out after it, so the
+ * ones left out are offered again, in load order, and kept when everything still fits; a module
+ * that comes back may be what another one needed, so they are offered again until none comes back.
  */
 export function assembleRegistry(
   base: ReadonlyArray<{ name: string; kind: SlotKind }>,
@@ -368,15 +369,29 @@ function readmit(
   let inside = new Set(kept);
   let current = registry;
   let left = faults;
-  for (const draft of drafts) {
-    if (inside.has(draft)) continue;
-    const trial = drafts.filter((d) => inside.has(d) || d === draft);
-    const built = build(base, trial);
-    if (built.misfits.length > 0) continue;
-    inside = new Set(trial);
-    current = built.registry;
-    left = left.filter((f) => f.plugin !== draft.plugin);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const draft of drafts) {
+      if (inside.has(draft)) continue;
+      const trial = drafts.filter((d) => inside.has(d) || d === draft);
+      const built = build(base, trial);
+      if (built.misfits.length > 0) continue;
+      inside = new Set(trial);
+      current = built.registry;
+      left = left.filter((f) => f.plugin !== draft.plugin);
+      changed = true;
+    }
   }
+  // A module may have been left out for a slot nobody declared because its owner was out at the
+  // time; the owner is back, so that is no longer what is wrong. Say what is: the module comes
+  // last, so the modules that stayed keep what they hold.
+  left = left.map((fault) => {
+    if (fault.place === undefined || current.slotKind(fault.place) === undefined) return fault;
+    const draft = drafts.find((d) => d.plugin === fault.plugin && !inside.has(d));
+    if (draft === undefined) return fault;
+    const now = build(base, [...drafts.filter((d) => inside.has(d)), draft]).misfits.find((m) => m.fault.plugin === fault.plugin);
+    return now?.fault ?? fault;
+  });
   return { registry: current, faults: left };
 }
 

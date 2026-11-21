@@ -217,6 +217,42 @@ describe("slots", () => {
     expect(faults.map((f) => f.plugin).sort()).toEqual(["a", "h"]);
   });
 
+  test("a module that comes back may be what another one needed, whatever the order they are offered in", async () => {
+    const page = (ctx: PluginContext, path: string) => ctx.pages.add({ path, title: path, component: Part });
+    const { faults, registry } = await load(
+      // Fills a slot of `z`, which is left out when `e` is first judged and let back in after it.
+      source("e", (ctx) => ctx.slots.register("z.s" as "rin.panel", { key: "k", component: Part })),
+      source("a", (ctx) => {
+        page(ctx, "/p");
+        page(ctx, "/q");
+        ctx.slots.register("b.s" as "rin.panel", { key: "k", component: Part });
+      }),
+      source("b", (ctx) => {
+        ctx.slots.declare("b.s" as "rin.panel", "list");
+        page(ctx, "/q");
+      }),
+      source("m", (ctx) => {
+        page(ctx, "/p");
+        page(ctx, "/h");
+      }),
+      source("h", (ctx) => {
+        page(ctx, "/h");
+        page(ctx, "/z");
+      }),
+      source("z", (ctx) => {
+        ctx.slots.declare("z.s" as "rin.panel", "list");
+        page(ctx, "/z");
+      }),
+    );
+    expect(registry.plugins).toEqual(["e", "b", "m", "z"]);
+    expect(faults.map((f) => f.plugin).sort()).toEqual(["a", "h"]);
+    // The reasons are the ones against the modules that stayed.
+    expect(faults.map((f) => [f.plugin, f.message]).sort()).toEqual([
+      ["a", "the path /p is already taken by m"],
+      ["h", "the path /h is already taken by m"],
+    ]);
+  });
+
   test("dropping a module that owns a slot drops what others put into it", async () => {
     const { faults, registry } = await load(
       source("pages", (ctx) => ctx.pages.add({ path: "/rin", title: "Taken", component: Part })),
