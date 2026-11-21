@@ -148,3 +148,22 @@ test("a server that ended stops looking at its tools", async () => {
   await settle(200);
   expect(host.described).toBe(after);
 });
+
+test("a session that looks again looks less often while its tools stay as they are, and at once more often after a change", async () => {
+  const host = new FakeHost();
+  host.readMode = "denied";
+  host.actions = [declared("a.one")];
+  const { names, changed } = await started(host, { refreshMs: 20 });
+  await names();
+  await settle(500);
+  // A look every 20 ms would be 25 looks; the spacing doubles up to ten times the interval.
+  expect(host.described).toBeLessThan(12);
+
+  host.actions = [declared("a.one"), declared("a.two")];
+  await until(() => changed() === 1, "the notification");
+  await names();
+  // After the change the spacing is back to the interval.
+  const after = host.described;
+  await settle(130);
+  expect(host.described - after).toBeGreaterThanOrEqual(2);
+});

@@ -70,7 +70,7 @@ export interface McpServerOptions {
   readonly token?: Token;
   /** How the core client of a session is opened; by default, by connecting to the host of the home. */
   readonly connect?: Connector;
-  /** How often a session that may not read the journal looks at its tools again, in milliseconds. */
+  /** How often a session that may not read the journal looks at its tools again, in milliseconds; less often while they do not change. */
   readonly refreshMs?: number;
 }
 
@@ -143,7 +143,8 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
   // `notifications/tools/list_changed` only when the fingerprint of the tools is not the last one.
   //
   // Following the journal is a read, so it needs the grant to read it. A session that does not have it
-  // looks at its tools again every `refreshMs` instead: it is told later, but it is told.
+  // looks at its tools again every `refreshMs`, less often while they stay as they are: it is told later,
+  // but it is told.
   let watching: AsyncIterator<unknown> | undefined;
   let closed = false;
   const refreshMs = opts.refreshMs ?? REFRESH_MS;
@@ -178,9 +179,15 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
 
   const poll = async (api: Binding["api"]): Promise<void> => {
     await refresh(api);
+    // Every look at the tools is a call of the session, and the host records the calls of a session: a
+    // session whose tools do not change looks less and less often, and again at the full rate after a change.
+    let wait = refreshMs;
     while (!closed) {
-      await pause(refreshMs, stopped.signal);
-      if (!closed) await refresh(api).catch(() => undefined);
+      await pause(wait, stopped.signal);
+      if (closed) break;
+      const before = lastShown;
+      await refresh(api).catch(() => undefined);
+      wait = lastShown === before ? Math.min(wait * 2, refreshMs * IDLE_LOOKS) : refreshMs;
     }
   };
 
@@ -259,6 +266,9 @@ const TOOL_RECORDS = [...QUESTION_RECORDS, ...TASK_RECORDS, ...CATALOG_RECORDS];
 
 /** How often a session that may not read the journal looks at its tools again, in milliseconds. */
 const REFRESH_MS = 3_000;
+
+/** The most a session whose tools do not change spaces its looks: this many times `REFRESH_MS`. */
+const IDLE_LOOKS = 10;
 
 /** Wait this long, or until the signal says to stop waiting. */
 function pause(ms: number, signal: AbortSignal): Promise<void> {
