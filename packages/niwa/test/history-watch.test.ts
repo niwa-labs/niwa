@@ -230,3 +230,16 @@ test("watch calls made at once for one session start one watch", async () => {
   await until(host.read, "session.progress");
   expect((await host.read()).filter((record) => record.type === "history.session.seen")).toHaveLength(1);
 });
+
+test("a sign that only suggests an end does not end a session niwa runs, whose own end is still written", async () => {
+  const control = new EndingControl();
+  const host = await hosted((reading) => [sessions({ harnesses: [{ instance: controlled, control }] }), history({ harnesses: [{ instance: controlled, reading }], timing: { pollMs: 10, pauseMs: 60_000, endMs: 120_000 } })], [checklist(1, 1, 2)]);
+  await host.call("session.start", { harness: "h", prompt: "go" });
+  await until(host.read, "session.progress");
+  expect(await host.call("history.signal", { session: ID, signal: "new-binding" })).toEqual({ ended: false });
+  expect(await host.call("history.signal", { session: ID, signal: "process-gone" })).toEqual({ ended: false });
+  expect(ended(await host.read())).toEqual([]);
+
+  control.end();
+  expect(ended(await until(host.read, "history.session.ended"))).toEqual([{ session: ID, certainty: "exact", why: "session-ended" }]);
+});

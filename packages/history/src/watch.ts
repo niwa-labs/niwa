@@ -63,11 +63,12 @@ export interface WatchOptions {
   /** The progress an earlier watch said last: the same again is not said. */
   readonly progress?: Progress;
   /**
-   * Whether a long quiet is taken for the end. Default: true. A session niwa runs is not over when it
-   * is quiet: it waits for its next turn, and niwa knows when it ends.
+   * Whether a sign that only suggests an end is taken for it: a long quiet, or the exit of the process
+   * (`alive`). Default: true. A session niwa runs is not over when it is quiet or its process is
+   * gone: it waits for its next turn, and niwa knows when it ends.
    */
   readonly guessEnd?: boolean;
-  /** Whether the process the session runs in still lives, when it is known: its exit is taken for the end. */
+  /** Whether the process the session runs in still lives, when it is known: its exit is taken for the end, unless `guessEnd` is false. */
   readonly alive?: () => boolean;
 }
 
@@ -110,7 +111,7 @@ export async function* watchSession(reading: SessionReading, id: SessionId, opti
     }
     if (options.signal.aborted) return;
     const now = clock.now();
-    if (options.alive !== undefined && !grew && !options.alive()) {
+    if (options.guessEnd !== false && options.alive !== undefined && !grew && !options.alive()) {
       yield { kind: "ended", certainty: "guessed", why: "process-gone" };
       return;
     }

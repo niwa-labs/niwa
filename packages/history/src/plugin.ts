@@ -273,6 +273,8 @@ export function history(options: HistoryOptions): Plugin {
         world: "niwa",
         run: async (input, ctx) => {
           if (standingNow().get(keyOf(input.session))?.watching !== true) return { ended: false };
+          // A session niwa runs ends when niwa says so: a sign that only suggests an end does not end it.
+          if (GUESSED_SIGNALS.includes(input.signal) && ownedBy(api.journal?.(), input.session)) return { ended: false };
           stop(input.session);
           await ctx.emit(HistorySessionEnded, { session: input.session, certainty: certaintyOf(input.signal), why: input.signal });
           return { ended: true };

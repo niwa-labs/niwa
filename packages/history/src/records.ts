@@ -238,7 +238,7 @@ export const historyWatch = actionRef("history.watch", {
 
 export const historySignal = actionRef("history.signal", {
   description:
-    "Tells the watch of a session a sign of its end: `end-hook` (the harness said so) ends it exactly, `process-gone` and `new-binding` as a guess. A session nobody watches is left as it is.",
+    "Tells the watch of a session a sign of its end: `end-hook` (the harness said so) ends it exactly, `process-gone` and `new-binding` as a guess. A session nobody watches is left as it is, and so is a session niwa started: only its own end ends it.",
   input: z.object({ session: SessionIdSchema, signal: z.enum(["end-hook", "process-gone", "new-binding"]) }),
   output: z.object({ ended: z.boolean() }),
 });

@@ -137,3 +137,16 @@ test("a read that finishes after the watch was stopped says nothing", async () =
   await watching;
   expect(events).toEqual([]);
 });
+
+test("a watch that must not guess an end keeps going when the process of its session is gone", async () => {
+  const records: SessionRecord[] = [said(1)];
+  const controller = new AbortController();
+  const events: WatchEvent[] = [];
+  const clock = steppedClock((now) => {
+    if (now === 100) controller.abort();
+  });
+  for await (const event of watchSession(growing(records), ID, { signal: controller.signal, clock, guessEnd: false, alive: () => false, timing: { pollMs: 10, pauseMs: 30, endMs: 60 } })) {
+    events.push(event);
+  }
+  expect(events.some((event) => event.kind === "ended")).toBe(false);
+});
