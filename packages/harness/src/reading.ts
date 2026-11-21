@@ -84,17 +84,65 @@ export function unavailableCoverage(reason: string): Coverage {
   return { status: "unavailable", reason };
 }
 
+/**
+ * Who put a piece of text into a message that its sender did not write:
+ *
+ * - `harness`: the harness's own preamble, reminder or environment;
+ * - `command`: a slash command and what it ran;
+ * - `hook`: what a hook added;
+ * - `niwa`: what niwa added.
+ */
+export const InsertionOriginSchema = z.enum(["harness", "command", "hook", "niwa"]);
+export type InsertionOrigin = z.output<typeof InsertionOriginSchema>;
+
+/** A stretch of a message's text that was inserted, not written: from `from` up to, not including, `to`, in UTF-16 units of the text. */
+export const InsertedRangeSchema = z
+  .object({
+    from: z.number().int().nonnegative(),
+    to: z.number().int().positive(),
+    origin: InsertionOriginSchema,
+  })
+  .refine((range) => range.to > range.from, "an inserted range is not empty");
+export type InsertedRange = z.output<typeof InsertedRangeSchema>;
+
+/**
+ * An image in a message or in the result of a tool. The image itself is not kept: only that it was
+ * there, where, and its media type when the harness says it. `at` is where it stood in the content
+ * the record keeps: for a user message, a UTF-16 offset in `text`; for a tool result, the index
+ * among the blocks of `output` when that is a list of blocks (the image block itself is not in the
+ * list, so `at` is where it would go back), else an offset in `output` as text.
+ */
+export const ImageMarkSchema = z.object({
+  at: z.number().int().nonnegative(),
+  mime: z.string().min(1).optional(),
+});
+export type ImageMark = z.output<typeof ImageMarkSchema>;
+
 /** What every record carries: where it is, when it happened, and whether it is whole. */
 const recordBase = {
   locator: LocatorSchema,
   at: z.number().int().nonnegative().optional(),
   /** A half-written tail of a running session: marked, and the reader does not move past it. */
   incomplete: z.boolean().default(false),
+  /**
+   * Set on the first record of a read that started over: the locator it was given belonged to
+   * another source (another file, another revision) and could not be followed, so what comes is
+   * the session from its beginning and not what followed the locator.
+   */
+  reanchored: z.literal(true).optional(),
 };
 
 export const UserRecordSchema = z.object({
   kind: z.literal("user"),
   text: z.string(),
+  /**
+   * The stretches of `text` somebody other than the person put there. Absent when the reader cannot
+   * tell what is inserted; present, even empty, it is the whole truth: everything outside the ranges
+   * is what the person said.
+   */
+  inserted: z.array(InsertedRangeSchema).optional(),
+  /** The images the message held, where they stood. */
+  images: z.array(ImageMarkSchema).optional(),
   ...recordBase,
 });
 
@@ -123,6 +171,11 @@ export const ToolCallRecordSchema = z.object({
   category: ToolCategorySchema,
   /** The path, command, pattern, address or task the call is about, when the kind can tell. */
   target: z.string().optional(),
+  /**
+   * Every path an edit call names, when the kind can tell them all (one patch may change several
+   * files); `target` is the first of them. Absent when the call names at most `target`.
+   */
+  paths: z.array(z.string().min(1)).min(1).optional(),
   input: JsonValueSchema.optional(),
   ...recordBase,
 });
@@ -133,6 +186,8 @@ export const ToolResultRecordSchema = z.object({
   name: z.string().optional(),
   output: JsonValueSchema.optional(),
   ok: z.boolean().optional(),
+  /** The images the result held, taken out of `output`, where they stood. */
+  images: z.array(ImageMarkSchema).optional(),
   ...recordBase,
 });
 

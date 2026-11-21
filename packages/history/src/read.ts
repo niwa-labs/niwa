@@ -149,46 +149,12 @@ async function readRecordWindow(
 /**
  * One record of a session, as the actions report it.
  *
- * Every kind carries its own fields. The raw data of an unfamiliar record is not published here:
- * the harness's own record whole is asked for on demand, through the reading side.
+ * It is the record as the reading side gave it, with every field it carries, so a field the common
+ * model gains reaches the reader without a change here; only the raw data of an unfamiliar record is
+ * not published: the harness's own record whole is asked for on demand, through the reading side.
  */
 function recordOf(record: SessionRecord): z.output<typeof SessionRecordSchema> {
-  const base = { locator: record.locator, at: record.at, incomplete: record.incomplete };
-  switch (record.kind) {
-    case "user":
-      return { kind: "user", text: record.text, ...base };
-    case "assistant":
-      return { kind: "assistant", text: record.text, model: record.model, ...base };
-    case "thinking":
-      return { kind: "thinking", text: record.text, redacted: record.redacted, ...base };
-    case "tool-call":
-      return {
-        kind: "tool-call",
-        callId: record.callId,
-        name: record.name,
-        category: record.category,
-        target: record.target,
-        input: record.input,
-        ...base,
-      };
-    case "tool-result":
-      return {
-        kind: "tool-result",
-        callId: record.callId,
-        name: record.name,
-        output: record.output,
-        ok: record.ok,
-        ...base,
-      };
-    case "checklist":
-      return { kind: "checklist", callId: record.callId, items: record.items, ...base };
-    case "permission":
-      return { kind: "permission", callId: record.callId, tool: record.tool, outcome: record.outcome, ...base };
-    case "compaction":
-      return { kind: "compaction", summary: record.summary, ...base };
-    case "nested":
-      return { kind: "nested", child: record.child, ...base };
-    case "unknown":
-      return { kind: "unknown", ...base };
-  }
+  if (record.kind !== "unknown") return record;
+  const { raw: _raw, ...published } = record;
+  return published;
 }

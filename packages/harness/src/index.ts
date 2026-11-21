@@ -243,6 +243,9 @@ export {
   ChecklistRecordSchema,
   CompactionRecordSchema,
   EMPTY,
+  ImageMarkSchema,
+  InsertedRangeSchema,
+  InsertionOriginSchema,
   LocatorSchema,
   NOT_SCANNED,
   NativeSessionIdSchema,
@@ -266,6 +269,9 @@ export {
 } from "./reading.ts";
 export type {
   Coverage,
+  ImageMark,
+  InsertedRange,
+  InsertionOrigin,
   Locator,
   NativeSessionId,
   SessionFilter,
