@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { z } from "zod";
 
 import {
+  effectOfCall,
   action,
   actionName,
   realClock,
@@ -1804,7 +1805,12 @@ class Niwa implements Host {
     const checked = found?.input.safeParse(how?.input);
     const input = checked?.success === true ? checked.data : how?.input;
     const target = found?.target === undefined || checked?.success !== true ? undefined : found.target(checked.data);
-    let answer = permit(standing, verb, name, target, found?.effect);
+    // The class of this call when its input is known; else the most the action can be.
+    const classed = found === undefined ? undefined : checked?.success === true ? await effectOfCall(found, checked.data) : { effect: found.effect };
+    let answer: Permit =
+      classed !== undefined && "refused" in classed
+        ? { allowed: false, reason: classed.refused }
+        : permit(standing, verb, name, target, classed?.effect);
     if (!answer.allowed && answer.asks === true && how?.read === true) {
       answer = { ...answer, reason: `"${name}" asks the owner, and a read is not asked: it is denied` };
     } else if (verb === "call") {

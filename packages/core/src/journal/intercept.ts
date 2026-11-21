@@ -2,14 +2,15 @@
  * Intercepts: what runs before an action.
  *
  * `decide` is the one point every call passes through. The order is the contract:
- * validate the requested input, run the adjusts, validate the result, match the caller's grant,
- * ask the guards about that final input. The caller records the decision, then the intent, and
+ * validate the requested input, run the adjusts, validate the result, class the call by that
+ * final input, match the caller's grant, ask the guards about that final input. The caller records the decision, then the intent, and
  * only then runs the action.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { Standing } from "../access.ts";
+import { effectOfCall } from "../action.ts";
 import { NOT_ANSWERED, REFUSED_BY_OWNER } from "../denied.ts";
 import { OWNER_GRANT_ID, isCallTarget, match, ruleText } from "../grant.ts";
 import type {
@@ -153,6 +154,8 @@ export type Decision<I> =
       readonly kind: "allowed";
       readonly requested: I;
       readonly final: I;
+      /** The class of the call, as the action classes its final input. */
+      readonly effect: Effect;
       /** What the grant said, when one decided the call. */
       readonly access?: Permit;
     }
@@ -162,6 +165,8 @@ export type Decision<I> =
       readonly requested: I;
       readonly final: I;
       readonly reason: string;
+      /** The class of the call, when it was classed before it was refused. */
+      readonly effect?: Effect;
       /** What the grant said, when the grant is what refused it. */
       readonly access?: Extract<Permit, { allowed: false }>;
     }
@@ -282,10 +287,18 @@ async function decideIn<I, In = I>(opts: DecideOptions<I, In>): Promise<Decision
     };
   }
 
+  // 3b. The class of the call, from the input it is made with: what the grant matches below and what
+  // the call is recorded as. A call that cannot be classed does not run.
+  const classed = await effectOfCall(opts.action, checked.data);
+  if ("refused" in classed) {
+    return { kind: "denied", requested: requested.data, final: checked.data, reason: classed.refused };
+  }
+  const { effect } = classed;
+
   // 4. The grant's match: what is not listed is forbidden. It comes before the guards, and a guard
   // cannot lift it: guards only add refusals.
   const target = opts.action.target?.(checked.data);
-  let access = opts.standing === undefined ? undefined : permit(opts.standing, "call", opts.action.name, target, opts.action.effect);
+  let access = opts.standing === undefined ? undefined : permit(opts.standing, "call", opts.action.name, target, effect);
   // 4b. A rule that asks: the owner answers, now, about this call. The answer lets it through to
   // the guards, which may still refuse it.
   if (access !== undefined) {
@@ -299,16 +312,16 @@ async function decideIn<I, In = I>(opts: DecideOptions<I, In>): Promise<Decision
     });
   }
   if (access !== undefined && !access.allowed) {
-    return { kind: "denied", requested: requested.data, final: checked.data, reason: access.reason, access };
+    return { kind: "denied", requested: requested.data, final: checked.data, reason: access.reason, effect, access };
   }
   // 4c. A call held to its grant as it was requested, and moved by an adjust: the target it is
   // moved to must be allowed too.
   if (opts.held !== undefined && opts.intercepts.adjusts.length > 0 && target !== opts.action.target?.(requested.data)) {
-    const moved = permit(opts.held, "call", opts.action.name, target, opts.action.effect);
+    const moved = permit(opts.held, "call", opts.action.name, target, effect);
     if (!moved.allowed) {
       const where = target === undefined ? "no target" : `"${target}"`;
       const reason = moved.asks === true ? `an adjust moved the call to ${where}, which asks the owner, and a moved call is not asked: it is denied` : moved.reason;
-      return { kind: "denied", requested: requested.data, final: checked.data, reason, access: { ...moved, reason } };
+      return { kind: "denied", requested: requested.data, final: checked.data, reason, effect, access: { ...moved, reason } };
     }
   }
 
@@ -321,6 +334,7 @@ async function decideIn<I, In = I>(opts: DecideOptions<I, In>): Promise<Decision
         requested: requested.data,
         final: checked.data,
         reason: answer.reason,
+        effect,
         ...(access === undefined
           ? {}
           : {
@@ -339,6 +353,7 @@ async function decideIn<I, In = I>(opts: DecideOptions<I, In>): Promise<Decision
     kind: "allowed",
     requested: requested.data,
     final: checked.data,
+    effect,
     ...(access === undefined ? {} : { access }),
   };
 }

@@ -107,6 +107,17 @@ export interface ActionSpec<I, O, In = I> {
    * action says which it is.
    */
   effect: Effect;
+  /**
+   * The class of one call, when it depends on the input: CI on an ordinary branch is a write, on a
+   * protected branch or a tag it cannot be taken back. `effect` is then the most a call can be, and
+   * what is described before any call is made.
+   *
+   * It is asked with the input the call is made with, after the adjusts and before the grant
+   * decides; the class it answers is the one the grant matches and the one recorded with the call.
+   * It may ask the other side (whether a branch is protected): it may answer a promise. A class
+   * above `effect`, or a classifier that throws, refuses the call: nothing ran.
+   */
+  classify?(input: I): Effect | Promise<Effect>;
   /** Where the effect lands: "niwa", "local" or "external". Absent, the action does not say. */
   world?: World;
   /**
@@ -243,6 +254,11 @@ export function action<I, O, In = I>(
     throw new TypeError(`action "${key}": an irreversible action is destructive`);
   }
 
+  const classify = spec.classify;
+  if (classify !== undefined && typeof classify !== "function") {
+    throw new TypeError(`action "${key}": classify must be a function, got ${describe(classify)}`);
+  }
+
   const check = spec.check;
   const targetOf = spec.target;
   return {
@@ -257,6 +273,7 @@ export function action<I, O, In = I>(
     ...(spec.idempotent === undefined ? {} : { idempotent: spec.idempotent }),
     ...(spec.destructive === undefined ? {} : { destructive: spec.destructive }),
     ...(targetOf === undefined ? {} : { target: targetOf }),
+    ...(classify === undefined ? {} : { classify }),
     // The wrapper is what makes the promise total: a synchronous body and a synchronous throw
     // both come out as a promise.
     run: async (input: I, ctx: ActionContext): Promise<O> => body(input, ctx),
@@ -269,6 +286,31 @@ export function action<I, O, In = I>(
           ): Promise<CheckResult<O>> => check(operationId, ctx),
         }),
   };
+}
+
+/** What one call of an action is classed as, or why it cannot be classed. */
+export type CallEffect = { readonly effect: Effect } | { readonly refused: string };
+
+/**
+ * The class of one call: what the action's `classify` says of this input, held to the class the
+ * action declares, which is the most a call of it can be. An action that does not classify its
+ * calls gives every call the class it declares.
+ */
+export async function effectOfCall<I>(action: Pick<Action<I, unknown, any>, "name" | "effect" | "classify">, input: I): Promise<CallEffect> {
+  if (action.classify === undefined) return { effect: action.effect };
+  let effect: unknown;
+  try {
+    effect = await action.classify(input);
+  } catch (error) {
+    return { refused: `the class of this call of "${action.name}" could not be told: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (!EFFECTS.includes(effect as Effect)) {
+    return { refused: `"${action.name}" classed a call as ${describe(effect)}, which is not one of ${EFFECTS.join(", ")}` };
+  }
+  if (EFFECTS.indexOf(effect as Effect) > EFFECTS.indexOf(action.effect)) {
+    return { refused: `"${action.name}" classed a call as "${String(effect)}", and it declares at most "${action.effect}"` };
+  }
+  return { effect: effect as Effect };
 }
 
 /**

@@ -5,6 +5,8 @@
 //   2. a rule that names the action grants it, within its target
 //   3. the owner calls it under its own `*`
 //   4. a child asked for by name, under a parent that holds the action by a mask, is refused at birth
+//   5. an action whose class depends on its input is granted by a mask for a call that classes as a
+//      write, and not for one that classes as irreversible: at the door and inside a run
 
 import { afterEach, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
@@ -17,7 +19,7 @@ import type { Host } from "@niwa-labs/host";
 import { connectAsOwner, tempHome } from "@niwa-labs/testing";
 import { workflow } from "@niwa-labs/workflow";
 
-import { COMMENT, MERGE, forge } from "./fixtures/forge-plugin.ts";
+import { CI, COMMENT, MERGE, forge } from "./fixtures/forge-plugin.ts";
 
 const homes: Array<{ cleanup(): Promise<void> }> = [];
 const hosts: Host[] = [];
@@ -76,3 +78,31 @@ test("a parent that holds an irreversible action only by a mask cannot give it t
   const named = await as("named-parent", ["forge.pr.merge", "workflow.start"]);
   expect(await named.call(START, { file })).toMatchObject({ run: expect.stringMatching(/^run-/) });
 }, 30_000);
+
+test("a mask grants a call that classes as a write, and not one of the same action that classes as irreversible", async () => {
+  const { home, as } = await served();
+  const masked = await as("ci", ["forge.*", "workflow.*"]);
+  expect(await masked.call(CI, { repo: "acme/billing", ref: "feature/x" })).toEqual({ ok: true });
+  await expect(masked.call(CI, { repo: "acme/billing", ref: "main" })).rejects.toThrow('"forge.ci.run" is irreversible');
+  const named = await as("ci-named", ["forge.ci.run"]);
+  expect(await named.call(CI, { repo: "acme/billing", ref: "main" })).toEqual({ ok: true });
+
+  const file = join(home, "ci.js");
+  await writeFile(
+    file,
+    [
+      'export default workflow({ uses: ["forge.*"], input: z.object({ ref: z.string() }), output: z.json() }, async ({ ref }) => {',
+      '  try { return await call("forge.ci.run", { repo: "acme/billing", ref }); } catch (error) { return String(error.message); }',
+      "});",
+    ].join("\n"),
+  );
+  const owner = await connectAsOwner(home);
+  clients.push(owner);
+  const ran = async (ref: string): Promise<unknown> => {
+    const { run } = (await owner.call(START, { file, args: { ref } })) as { run: string };
+    const waited = (await owner.call(actionName("workflow.wait"), { run, timeoutMs: 20_000 })) as { outcome: { result?: unknown } };
+    return waited.outcome.result;
+  };
+  expect(await ran("feature/x")).toEqual({ ok: true });
+  expect(String(await ran("main"))).toContain("is irreversible");
+}, 60_000);

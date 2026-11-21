@@ -362,8 +362,10 @@ export type ActionTarget<I, O, In = I> = ActionRef<I, O, In> | ActionName;
 export interface Action<I, O, In = I> extends ActionRef<I, O, In> {
   kind: "action";
   recovery: Recovery;
-  /** What a call changes. */
+  /** What a call changes: with `classify`, the most a call can change. */
   effect: Effect;
+  /** The class of one call, from the input it is made with; absent when every call has `effect`. */
+  classify?(input: I): Effect | Promise<Effect>;
   /** Where its effect lands; absent when the action does not say. */
   world?: World;
   /** Two separate calls with the same input do what one does; absent when the action does not say. */
@@ -652,7 +654,7 @@ export const CORE = {
   invocationState: "niwa.invocation.state",       // { invocation, state, reason?, choices?, key? }
   invocationResolved: "niwa.invocation.resolved", // { invocation, key, choice }
   invocationMoved: "niwa.invocation.moved",       // { invocation, from, to }
-  stepDecision: "niwa.step.decision",             // { invocation, key, attempt, requested, final, denied, reason? }
+  stepDecision: "niwa.step.decision",             // { invocation, key, attempt, requested, final, denied, reason?, effect? }
   stepIntent: "niwa.step.intent",                 // { invocation, key, action, input, operationId, recovery?, effect? }
   stepOutcome: "niwa.step.outcome",               // { invocation, key, outcome }
   stepCancelled: "niwa.step.cancelled",           // { invocation, prefixes, except?, reason }

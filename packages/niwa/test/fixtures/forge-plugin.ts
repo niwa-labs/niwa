@@ -36,6 +36,17 @@ export const forge = plugin("forge", (api) => {
     target: (input) => `git.example.com/${input.repo}/pr/${String(input.pr)}`,
     run: () => ({ ok: true }),
   }));
+  // CI on a ref: on an ordinary branch it can be run again; on the protected branch or a tag it publishes.
+  api.action(action("forge.ci.run", {
+    description: "Runs CI on a ref.",
+    input: z.object({ repo: z.string(), ref: z.string() }),
+    output: Done,
+    recovery: "do-not-repeat",
+    effect: "irreversible",
+    world: "external",
+    classify: (input) => (input.ref === "main" || input.ref.startsWith("refs/tags/") ? "irreversible" : "write"),
+    run: () => ({ ok: true }),
+  }));
   api.action(action("forge.comment.create", {
     description: "Comments on a pull request.",
     input: Pr,
@@ -51,3 +62,4 @@ export const forge = plugin("forge", (api) => {
 export const MERGE = actionName("forge.pr.merge");
 export const COMMENT = actionName("forge.comment.create");
 export const OPEN = actionName("forge.pr.open");
+export const CI = actionName("forge.ci.run");

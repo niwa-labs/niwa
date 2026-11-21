@@ -357,3 +357,24 @@ test("a step whose value is larger than a record should hold keeps it as an arti
   expect(got).toEqual([{ text }, { text: "short" }, { text }, { text: "short" }]);
   b.close();
 });
+
+test("a step records the class its call was decided under, not the most the action can be", async () => {
+  const b = await bench();
+  const ci = action("forge.ci.run", {
+    description: "Runs CI on a ref.",
+    input: z.object({ ref: z.string() }),
+    output: z.object({ ok: z.boolean() }),
+    recovery: "do-not-repeat",
+    effect: "irreversible",
+    classify: ({ ref }) => (ref === "main" ? "irreversible" : "write"),
+    run: () => ({ ok: true }),
+  });
+  await b.run(async (_data, step) => {
+    await step(ci, { ref: "feature/x" }, { key: "branch" });
+    await step(ci, { ref: "main" }, { key: "main" });
+  });
+  const byKey = (type: string) => Object.fromEntries(b.records(type).map((row) => [(row.data as { key: string }).key, (row.data as { effect?: string }).effect]));
+  expect(byKey(CORE_TYPES.stepDecision)).toEqual({ branch: "write", main: "irreversible" });
+  expect(byKey(CORE_TYPES.stepIntent)).toEqual({ branch: "write", main: "irreversible" });
+  b.close();
+});

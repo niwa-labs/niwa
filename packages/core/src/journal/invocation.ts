@@ -744,14 +744,16 @@ async function runStepOnce<I, O, In = I>(
       const outcome: Outcome<O> = { status: "denied", reason: decided.reason };
       commitAll(ctx, [
         decisionRecord(ctx, key, decided, attempt),
-        intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery, action.effect),
+        intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery, decided.effect ?? action.effect),
         outcomeRecord(ctx, key, outcome, attempt),
       ]);
       return { key, outcome };
     }
+    // The intent carries the class the call was decided under: what this call is, not the most the
+    // action can be.
     commitAll(ctx, [
       decisionRecord(ctx, key, decided, attempt),
-      intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery, action.effect),
+      intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery, decided.effect),
     ]);
     return callAction(ctx, as, key, action, decided.final, operation, attempt);
   }
@@ -810,7 +812,8 @@ async function runStepOnce<I, O, In = I>(
   const changed =
     stands === undefined ||
     stands.denied !== (decided.kind === "denied") ||
-    stableJson(stands.final) !== stableJson(decided.final);
+    stableJson(stands.final) !== stableJson(decided.final) ||
+    stands.effect !== decided.effect;
   if (decided.kind === "denied") {
     // The denial ends the step: what was decided and the denial are one write.
     const outcome: Outcome<O> = { status: "denied", reason: decided.reason };
@@ -1343,6 +1346,7 @@ function decisionRecord<I>(
     final: decision.final,
     denied: decision.kind === "denied",
     ...(decision.kind === "denied" ? { reason: decision.reason } : {}),
+    ...(decision.kind !== "invalid" && decision.effect !== undefined ? { effect: decision.effect } : {}),
   });
 }
 
@@ -1369,9 +1373,9 @@ function latestDecision(ctx: RunContext, key: StepKey, attempt: number): StoredR
 }
 
 /** What a recorded decision says. */
-function readDecision(row: StoredRecord): { requested: unknown; final: unknown; denied: boolean } {
-  const holder = row.data as { requested?: unknown; final?: unknown; denied?: unknown };
-  return { requested: holder.requested, final: holder.final, denied: holder.denied === true };
+function readDecision(row: StoredRecord): { requested: unknown; final: unknown; denied: boolean; effect?: unknown } {
+  const holder = row.data as { requested?: unknown; final?: unknown; denied?: unknown; effect?: unknown };
+  return { requested: holder.requested, final: holder.final, denied: holder.denied === true, effect: holder.effect };
 }
 
 /** What an invalid input is called, when the caller asked for it or an adjust produced it. */
