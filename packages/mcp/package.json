@@ -6,7 +6,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@niwa-labs/client": "workspace:*",
-    "@niwa-labs/core": "workspace:*"
+    "@niwa-labs/core": "workspace:*",
+    "zod": "^4.6.7"
   }
 }
