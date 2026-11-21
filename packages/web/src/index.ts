@@ -10,16 +10,21 @@
  * request is refused with 401 and reaches nothing.
  * It listens on the loopback only and refuses a request that names another host or origin.
  *
+ * What a page may call is not a list kept here: a call goes to the host as it is, and the grant of the connection decides
+ * it. A call the grant refuses is answered 403.
+ *
  * The routes:
  *
  * - `GET /login?secret=` — the one-time link the server prints: it sets the cookie;
  * - `GET /` — the cockpit;
- * - `GET /api/info` — the available cockpit actions, journal field names, the harnesses with an agent action
- *   and the input schema of `session.start`;
+ * - `GET /api/viewer` — who is looking: the principal and the actions its grant lets it call;
+ * - `GET /api/info` — the actions the viewer may call, the position of the journal, journal field names, the harnesses
+ *   with an agent action and the input schema of `session.start`;
  * - `GET /api/history?after=` — up to 128 records after a journal position;
- * - `GET /api/events?after=` — journal records over SSE, resuming from `Last-Event-ID` when present;
+ * - `GET /api/events?after=` — journal records over SSE from a position (the journal's end is `seq` of `/api/info`),
+ *   resuming from `Last-Event-ID` when present;
  * - `GET /api/source?seq=` — the verified script of a workflow start, for the owner;
- * - `POST /api/call` — call an allowed action with `{action, input}`;
+ * - `POST /api/call` — call an action with `{action, input}`;
  *
  * The feed and trace routes:
  *
@@ -34,11 +39,12 @@
 import { z } from "zod";
 
 import { actionName, RESOLVE_ACTION, recordId, seq } from "@niwa-labs/core";
-import { readOwnerToken, connect } from "@niwa-labs/client";
+import { readOwnerToken, connect, HostError, RECORDS_READ_ACTION } from "@niwa-labs/client";
 import type { ActionName, Description, SpeaksFor } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
 
 import { followFeed, readFeed } from "./feed.ts";
+import { viewerOf } from "./viewer.ts";
 import { LOGIN_PATH, WebLogin } from "./login.ts";
 import { runSource } from "./source.ts";
 import { chainOf } from "./trace.ts";
@@ -68,9 +74,9 @@ export interface WebOptions {
    */
   readonly speaksFor?: SpeaksFor;
   /**
-   * The actions only the owner's page may call, beyond the ones every page may call. The web surface
-   * knows none by name: the composition that serves it (the umbrella) says which pages it carries.
-   * Without `speaksFor: "owner"` they are neither listed nor called.
+   * Actions with a check of their own: an input the schema alone does not refuse, an answer that is shaped before it is
+   * read. The web surface knows none by name: the composition that serves it (the umbrella) says which pages it carries.
+   * Whether a page may call them is the grant's matter, as for every action.
    */
   readonly ownerActions?: readonly OwnerAction[];
   /** The pages the surface serves. The web surface draws none itself: the composition that serves it brings them. */
@@ -99,11 +105,10 @@ export interface OwnerAction {
   readonly shape?: (answer: unknown) => Promise<unknown>;
 }
 
-/** What the page may call: the generic actions, and the owner's actions a composition added. */
+/** How a page calls: the checks some actions carry, and the shape of the body. The grant decides the rest. */
 interface Calls {
-  readonly owner: ReadonlyMap<string, OwnerAction>;
+  readonly hooks: ReadonlyMap<string, OwnerAction>;
   readonly body: z.ZodType<{ action: string; input: Record<string, unknown> }>;
-  readonly names: ReadonlySet<string>;
 }
 
 /** A running web surface. */
@@ -172,6 +177,7 @@ const METHODS: Readonly<Record<string, string>> = {
   "/": "GET",
   "/events": "GET",
   "/api/info": "GET",
+  "/api/viewer": "GET",
   "/api/source": "GET",
   "/api/history": "GET",
   "/api/events": "GET",
@@ -220,7 +226,9 @@ async function route(
     case "/":
       return html(pages.feed());
     case "/api/info":
-      return cockpitInfo(api, calls, speaksForOwner);
+      return cockpitInfo(api);
+    case "/api/viewer":
+      return json(200, await viewerOf(api, WEB_CLIENT_ID));
     case "/api/source": {
       if (!speaksForOwner) return text(403, "The source is available to the owner only");
       const at = position(url.searchParams.get("seq") ?? "");
@@ -231,33 +239,23 @@ async function route(
     case "/api/call":
       return post(request, calls.body, async ({ action, input }) => {
         try {
-          const ownerAction = calls.owner.get(action);
-          if (ownerAction !== undefined) {
-            if (!speaksForOwner) return text(403, "The action is available to the owner only");
-            const ref = ownerAction.ref;
+          const hooked = calls.hooks.get(action);
+          if (hooked !== undefined) {
+            const ref = hooked.ref;
             const schema = ref.input;
             if (!(schema instanceof z.ZodObject)) return text(502, "invalid cockpit action schema");
             const parsed = schema.strict().safeParse(input);
             if (!parsed.success) return text(400, "invalid cockpit action input");
-            const refusal = ownerAction.refuse?.(input);
+            const refusal = hooked.refuse?.(input);
             if (refusal !== undefined) return text(400, refusal);
             const called = await api.call(ref.name, parsed.data);
-            const result = ref.output.safeParse(ownerAction.shape === undefined ? called : await ownerAction.shape(called));
+            const result = ref.output.safeParse(hooked.shape === undefined ? called : await hooked.shape(called));
             return result.success ? json(200, result.data) : text(502, "invalid cockpit action response");
-          }
-          if (action === "session.list") {
-            if (input.managedOnly !== true) return text(400, "session.list requires managedOnly: true");
-            if (!hasInputField(await api.describe(), action, "managedOnly")) {
-              return text(409, "the host does not support listing managed sessions");
-            }
-          }
-          if (action === "session.read" && Object.hasOwn(input, "window")) {
-            if (!hasInputField(await api.describe(), action, "window")) {
-              return text(409, "the host does not support windowed session reads");
-            }
           }
           return json(200, await api.call(actionName(action), input));
         } catch (error) {
+          // The grant of this connection decided the call: say so, so a page can tell a refusal from a failure.
+          if (error instanceof HostError && error.denied !== undefined) return text(403, errorText(error));
           return text(409, errorText(error));
         }
       });
@@ -359,53 +357,51 @@ function events(api: NiwaApi, streams: Set<() => void>): Response {
   return new Response(body, { headers: { "content-type": SSE_TYPE, ...SECURITY_HEADERS } });
 }
 
-/** The actions every page may call: not the owner's alone. */
-const GENERIC_ACTIONS = [
-  "message.get",
-  "message.list",
-  "message.send",
-  "request.answer",
-  "request.cancel",
-  RESOLVE_ACTION,
-  "workflow.cancel",
-  "workflow.resume",
-  "workflow.inspect",
-  "session.list",
-  "session.read",
-  "session.interrupt",
-  "session.resume",
-  "session.send",
-  "session.start",
-  "task.create",
-  "timer.list",
-  "niwa.host.status",
-  "niwa.host.stop",
-] as const;
-
-/** What a page may call, given the owner's actions the composition carries. */
-function callsOf(ownerActions: readonly OwnerAction[]): Calls {
-  const owner = new Map(ownerActions.map((entry) => [String(entry.ref.name), entry] as const));
-  const all: [string, ...string[]] = [...GENERIC_ACTIONS, ...owner.keys()];
+/** What a page may call: whatever the grant of the connection lets through, with the checks the composition added. */
+function callsOf(hooks: readonly OwnerAction[]): Calls {
   return {
-    owner,
-    names: new Set(all),
-    body: z.object({ action: z.enum(all), input: z.record(z.string(), z.unknown()) }),
+    hooks: new Map(hooks.map((entry) => [String(entry.ref.name), entry] as const)),
+    body: z.object({
+      action: z.string().min(1).refine(isActionName, "that is not an action name"),
+      input: z.record(z.string(), z.unknown()),
+    }),
   };
 }
 
-/** The host may load a subset of the plugins this page supports. */
-async function cockpitInfo(api: NiwaApi, calls: Calls, speaksForOwner: boolean): Promise<Response> {
+function isActionName(name: string): boolean {
+  try {
+    actionName(name);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What the page needs to know of the host: the actions the viewer may call, the position of the journal's end (where a feed
+ * that wants the latest records starts), and the facts of the host the pages read. The host may load a subset of the
+ * plugins this page supports.
+ */
+async function cockpitInfo(api: NiwaApi): Promise<Response> {
   const description = await api.describe();
-  const actions = description.actions
-    .map(({ name }) => name)
-    .filter((name) => calls.names.has(name) && (speaksForOwner || !calls.owner.has(name)));
-  const sessionWindow = hasInputField(description, "session.read", "window");
-  const managedSessions = hasInputField(description, "session.list", "managedOnly");
+  const { actions } = await viewerOf(api, WEB_CLIENT_ID);
   const recordFields = Object.fromEntries(
     description.types.map(({ name, schema }) => [name, schemaFields(schema.properties)]),
   );
   const sessionStart = description.actions.find(({ name }) => name === "session.start")?.input;
-  return json(200, { actions, sessionWindow, managedSessions, recordFields, harnesses: agentHarnesses(description), sessionStart });
+  return json(200, { actions, seq: await journalEnd(api), recordFields, harnesses: agentHarnesses(description), sessionStart });
+}
+
+/** The position of the last record the connection may read: 0 when it may read none. */
+async function journalEnd(api: NiwaApi): Promise<number> {
+  try {
+    const read = await api.call(RECORDS_READ_ACTION, { tail: 1 });
+    const next = (read as { next?: unknown }).next;
+    return typeof next === "number" ? next : 0;
+  } catch (error) {
+    if (error instanceof HostError && error.denied !== undefined) return 0;
+    throw error;
+  }
 }
 
 const AGENT_ACTION_PREFIX = "session.start.";
@@ -417,11 +413,6 @@ function agentHarnesses(description: Description): string[] {
     .filter((name) => name.startsWith(AGENT_ACTION_PREFIX))
     .map((name) => name.slice(AGENT_ACTION_PREFIX.length))
     .sort();
-}
-
-function hasInputField(description: Description, action: string, field: string): boolean {
-  const entry = description.actions.find(({ name }) => name === action);
-  return schemaFields(entry?.input.properties).includes(field);
 }
 
 function schemaFields(properties: unknown): string[] {
