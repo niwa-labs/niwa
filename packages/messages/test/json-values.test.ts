@@ -20,7 +20,7 @@ test("a message carries JSON data and refuses data that is not JSON", () => {
 });
 
 test("the input of a tool call and the output of its result are JSON", () => {
-  const call = { kind: "tool-call", callId: "c1", name: "Read", ...BASE };
+  const call = { kind: "tool-call", callId: "c1", name: "Read", category: "read", ...BASE };
   expect(ToolCallRecordSchema.safeParse({ ...call, input: { path: "a" } }).success).toBe(true);
   expect(ToolCallRecordSchema.safeParse({ ...call }).success).toBe(true);
   expect(ToolCallRecordSchema.safeParse({ ...call, input: () => 1 }).success).toBe(false);

@@ -7,8 +7,10 @@ import { z } from "zod";
 
 import {
   AssistantRecordSchema,
+  ChecklistRecordSchema,
   CompactionRecordSchema,
   NestedRecordSchema,
+  PermissionRecordSchema,
   ThinkingRecordSchema,
   ToolCallRecordSchema,
   ToolResultRecordSchema,
@@ -68,6 +70,8 @@ export const SessionRecordSchema = z.discriminatedUnion("kind", [
   ThinkingRecordSchema,
   ToolCallRecordSchema,
   ToolResultRecordSchema,
+  ChecklistRecordSchema,
+  PermissionRecordSchema,
   CompactionRecordSchema,
   NestedRecordSchema,
   // The raw data of an unfamiliar record is kept by the reading side, not published here.

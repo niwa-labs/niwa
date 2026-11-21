@@ -26,6 +26,7 @@ import type {
   SessionInfo,
   SessionReading,
   SessionRecord,
+  ToolShape,
 } from "@niwa-labs/harness";
 import {
   EMPTY,
@@ -46,6 +47,7 @@ import {
   readBlocks,
 } from "./format.ts";
 import type { Block, ParseState } from "./format.ts";
+import { claudeToolShape } from "./tools.ts";
 import {
   agentIdOfFile,
   agentIdOfMetaFile,
@@ -569,8 +571,9 @@ function blockRecords(
     }
     // A server tool (the advisor, a web search, …) runs on the API's side; its call is a call all the same.
     case "server_tool_use":
-    case "mcp_tool_use":
       return [callRecord(block.id, block.name, block.input, base, state)];
+    case "mcp_tool_use":
+      return [callRecord(block.id, block.name, block.input, base, state, { category: "mcp" })];
     case "tool_result":
     case "mcp_tool_result":
       return [resultRecord(block.tool_use_id, block.content, block.is_error !== true, base, state)];
@@ -605,9 +608,16 @@ function blockRecords(
 }
 
 /** A call of a tool; its name is remembered for its answer, which does not carry it. */
-function callRecord(callId: string, name: string, input: unknown, base: RecordBase, state: ParseState): Unlocated {
+function callRecord(
+  callId: string,
+  name: string,
+  input: unknown,
+  base: RecordBase,
+  state: ParseState,
+  shape: ToolShape = claudeToolShape(name, input),
+): Unlocated {
   state.toolNames.set(callId, name);
-  return { kind: "tool-call", callId, name, input: optionalJsonOf(input), ...base };
+  return { kind: "tool-call", callId, name, ...shape, input: optionalJsonOf(input), ...base };
 }
 
 /** The answer of a tool, named by the call it answers. */

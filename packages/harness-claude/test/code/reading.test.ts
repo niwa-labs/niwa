@@ -133,6 +133,30 @@ test("maps the common kinds: the message, the answer, the call and its answer", 
   expect(records[3]).toMatchObject({ callId: "call_1", name: "Bash", ok: true });
 });
 
+test("a call is named by its category and its target, whatever Claude Code calls the tool", async () => {
+  writeFileSync(
+    logPath(),
+    user("go") +
+      assistant([
+        { type: "tool_use", id: "c1", name: "Bash", input: { command: "bun   test" } },
+        { type: "tool_use", id: "c2", name: "Edit", input: { file_path: "/work/a.ts", old_string: "x", new_string: "y" } },
+        { type: "tool_use", id: "c3", name: "Grep", input: { pattern: "TODO" } },
+        { type: "tool_use", id: "c4", name: "mcp__niwa__session_send", input: {} },
+        { type: "mcp_tool_use", id: "c5", name: "create_issue", server_name: "github", input: {} },
+        { type: "tool_use", id: "c6", name: "Frobnicate", input: { command: "x" } },
+      ]),
+  );
+  const calls = (await all(reading().read(ID))).flatMap((r) => (r.kind === "tool-call" ? [r] : []));
+  expect(calls.map((c) => [c.category, c.target])).toEqual([
+    ["shell", "bun test"],
+    ["edit", "/work/a.ts"],
+    ["search", "TODO"],
+    ["mcp", undefined],
+    ["mcp", undefined],
+    ["other", undefined],
+  ]);
+});
+
 /** What each block type of an answer becomes: every type has its deliberate record. */
 const BLOCK_KINDS: { readonly [K in BlockType]: SessionRecord["kind"] } = {
   text: "assistant",

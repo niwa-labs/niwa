@@ -43,6 +43,7 @@ import { isHumanMessage, isRunning, millisOf, modelOf, readMessage, readPart, re
 import type { MessageData } from "./format.ts";
 import { configuredModeOf } from "./config.ts";
 import { dbPathOf } from "./paths.ts";
+import { zcodeToolShape } from "./tools.ts";
 
 export interface ZcodeReadingOptions {
   /** The id of the installation this side serves. */
@@ -216,6 +217,7 @@ function recordsOf(
         kind: "tool-call",
         callId: part.callID,
         name: part.tool,
+        ...zcodeToolShape(part.tool, part.state.input),
         input: optionalJsonOf(part.state.input),
         at: started,
         incomplete: running || isRunning(part),

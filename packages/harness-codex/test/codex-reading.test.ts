@@ -186,6 +186,27 @@ test("a tool call and its result are paired; the result names the tool", async (
   expect(records[1]).toMatchObject({ callId: "call_1", name: "shell", output: "a.txt" });
 });
 
+test("a call is named by its category and its target; a patch is about the first file it names", async () => {
+  const patch = "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-x\n+y\n*** Add File: src/b.ts\n+z\n*** End Patch";
+  rollout(
+    NATIVE,
+    meta(NATIVE) +
+      record(1, "response_item", { type: "function_call", call_id: "c1", name: "exec_command", arguments: JSON.stringify({ cmd: "bun test" }) }) +
+      record(2, "response_item", { type: "custom_tool_call", call_id: "c2", name: "apply_patch", input: patch }) +
+      record(3, "response_item", { type: "function_call", call_id: "c3", name: "update_plan", arguments: JSON.stringify({ plan: [] }) }) +
+      record(4, "response_item", { type: "function_call", call_id: "c4", name: "mcp__niwa__session_send", arguments: "{}" }) +
+      record(5, "response_item", { type: "function_call", call_id: "c5", name: "frobnicate", arguments: "{}" }),
+  );
+  const calls = (await all(reading().read(ID))).flatMap((r) => (r.kind === "tool-call" ? [r] : []));
+  expect(calls.map((c) => [c.category, c.target])).toEqual([
+    ["shell", "bun test"],
+    ["edit", "src/a.ts"],
+    ["plan", undefined],
+    ["mcp", undefined],
+    ["other", undefined],
+  ]);
+});
+
 test("a subagent that was spawned is a nested record; a compaction is its own kind", async () => {
   rollout(
     NATIVE,

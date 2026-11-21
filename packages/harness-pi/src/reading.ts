@@ -52,6 +52,7 @@ import {
 } from "@niwa-labs/harness";
 import { FileEntrySchema, SessionHeaderSchema } from "./protocol/index.ts";
 import type { AssistantBlock, InputBlock, KnownMessage, SessionHeader } from "./protocol/index.ts";
+import { piToolShape } from "./tools.ts";
 import type {
   Coverage,
   HarnessId,
@@ -604,6 +605,7 @@ function recordsOfLine(drafts: Draft[], incomplete: boolean): Unlocated[] {
           kind: "tool-call",
           callId: draft.callId,
           name: draft.name,
+          ...piToolShape(draft.name, draft.input),
           ...(draft.input === undefined ? {} : { input: jsonOf(draft.input) }),
           ...atField(draft.at),
           ...base,

@@ -145,6 +145,29 @@ test("maps a running session: text, tool call, tool result, nested child", async
   expect(nested).toMatchObject({ child: { native: "mvs_child9" } });
 });
 
+test("a call is named by its category and its target, in MiniMax Code's tool names", async () => {
+  const path = journalOf("mvs_run1");
+  writeFileSync(
+    path,
+    line({
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "c1", name: "bash", arguments: { command: "make" } },
+        { type: "toolCall", id: "c2", name: "read", arguments: { path: "src/a.ts" } },
+        { type: "toolCall", id: "c3", name: "todowrite", arguments: { todos: [] } },
+        { type: "toolCall", id: "c4", name: "task", arguments: { description: "Check docs", prompt: "…" } },
+      ],
+    }),
+  );
+  const calls = (await all(reading().read(ID))).flatMap((r) => (r.kind === "tool-call" ? [r] : []));
+  expect(calls.map((c) => [c.category, c.target])).toEqual([
+    ["shell", "make"],
+    ["read", "src/a.ts"],
+    ["plan", undefined],
+    ["subagent", "Check docs"],
+  ]);
+});
+
 test("compaction is its own kind; an unfamiliar role is unknown with raw kept", async () => {
   const path = journalOf("mvs_run1");
   writeFileSync(

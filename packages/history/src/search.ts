@@ -68,6 +68,10 @@ export function recordText(record: SessionRecord): string | undefined {
       return record.summary;
     case "tool-call":
       return `${record.name} ${asText(record.input)}`;
+    case "checklist":
+      return record.items.map((item) => item.text).join("\n");
+    case "permission":
+      return record.tool;
     case "tool-result":
       return `${record.name ?? ""} ${asText(record.output)}`;
     case "nested":

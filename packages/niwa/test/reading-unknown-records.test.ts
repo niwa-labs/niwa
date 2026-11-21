@@ -27,7 +27,7 @@ import { ZcodeReading } from "@niwa-labs/harness-zcode";
 import { live } from "@niwa-labs/testing";
 
 /** The kinds of record the reading sides speak about; anything else comes back as "unknown". */
-const KNOWN_KINDS = ["user", "assistant", "tool-call", "tool-result", "compaction", "nested"];
+const KNOWN_KINDS = ["user", "assistant", "tool-call", "tool-result", "checklist", "permission", "compaction", "nested"];
 
 /** How many of the oldest sessions of a kind the check reads before it gives up on finding one. */
 const CANDIDATES = 25;

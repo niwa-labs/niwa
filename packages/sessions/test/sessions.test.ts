@@ -399,6 +399,8 @@ test("read returns the content of the records, each kind with its own fields", a
       kind: "tool-call",
       callId: "c1",
       name: "read",
+      category: "read",
+      target: "plan.md",
       input: { path: "plan.md" },
       locator: "l3",
       incomplete: false,
@@ -425,7 +427,7 @@ test("read returns the content of the records, each kind with its own fields", a
   expect(result.records).toEqual([
     { kind: "user", text: "what is the plan?", locator: "l1", at: 10, incomplete: false },
     { kind: "assistant", text: "we ship it on friday", model: "m", locator: "l2", at: 20, incomplete: false },
-    { kind: "tool-call", callId: "c1", name: "read", input: { path: "plan.md" }, locator: "l3", incomplete: false },
+    { kind: "tool-call", callId: "c1", name: "read", category: "read", target: "plan.md", input: { path: "plan.md" }, locator: "l3", incomplete: false },
     { kind: "tool-result", callId: "c1", name: "read", output: "the plan", ok: true, locator: "l4", incomplete: false },
     { kind: "compaction", summary: "the plan is friday", locator: "l5", incomplete: false },
     { kind: "nested", child: { harness: "a", native: "child-1" }, locator: "l6", incomplete: false },
@@ -566,7 +568,7 @@ test("search finds the records that hold every word, with their index and a snip
   const records: SessionRecord[] = [
     UserRecordSchema.parse({ kind: "user", text: "what is the plan?", locator: "l1", incomplete: false }),
     AssistantRecordSchema.parse({ kind: "assistant", text: "We ship the PLAN on Friday", locator: "l2", incomplete: false }),
-    ToolCallRecordSchema.parse({ kind: "tool-call", callId: "c1", name: "read", input: { path: "plan.md" }, locator: "l3", incomplete: false }),
+    ToolCallRecordSchema.parse({ kind: "tool-call", callId: "c1", name: "read", category: "read", input: { path: "plan.md" }, locator: "l3", incomplete: false }),
     UnknownRecordSchema.parse({ kind: "unknown", raw: { plan: "friday" }, locator: "l4", incomplete: false }),
     CompactionRecordSchema.parse({ kind: "compaction", summary: "the plan is friday", locator: "l5", incomplete: false }),
   ];

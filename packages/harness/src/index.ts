@@ -177,13 +177,35 @@ export {
 export type { KindOptions, OptionsBlock } from "./options.ts";
 
 export {
+  ChecklistItemSchema,
+  ChecklistSchema,
+  ChecklistStateSchema,
+  ToolCategorySchema,
+  checklistProgress,
+  shapeOf,
+  targetOf,
+} from "./tools.ts";
+export type {
+  Checklist,
+  ChecklistItem,
+  ChecklistProgress,
+  ChecklistState,
+  ToolCategory,
+  ToolEntry,
+  ToolShape,
+  ToolTable,
+} from "./tools.ts";
+
+export {
   AssistantRecordSchema,
+  ChecklistRecordSchema,
   CompactionRecordSchema,
   EMPTY,
   LocatorSchema,
   NOT_SCANNED,
   NativeSessionIdSchema,
   NestedRecordSchema,
+  PermissionRecordSchema,
   SessionIdSchema,
   SessionRecordSchema,
   ThinkingRecordSchema,

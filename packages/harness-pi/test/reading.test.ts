@@ -352,6 +352,30 @@ test("a call without an id or a name is kept whole", async () => {
   expect(records[0]?.kind).toBe("unknown");
 });
 
+test("a call is named by its category and its target; a tool an extension adds is other", async () => {
+  const call = (id: string, name: string, args: object) => ({ type: "toolCall", id, name, arguments: args });
+  writeFileSync(
+    sessionFile("tools"),
+    header("tools") +
+      `${JSON.stringify({
+        type: "message",
+        id: "a1",
+        parentId: null,
+        timestamp: "2026-10-27T09:15:02.000Z",
+        message: {
+          role: "assistant",
+          content: [call("c1", "bash", { command: "ls -la" }), call("c2", "write", { path: "a.md", content: "x" }), call("c3", "mcp__x__y", {})],
+        },
+      })}\n`,
+  );
+  const calls = (await all(reading().read(idOf("tools")))).flatMap((r) => (r.kind === "tool-call" ? [r] : []));
+  expect(calls.map((c) => [c.category, c.target])).toEqual([
+    ["shell", "ls -la"],
+    ["edit", "a.md"],
+    ["other", undefined],
+  ]);
+});
+
 test("the words of the owner are not rewritten", async () => {
   const text = "<system-reminder>this is what the owner typed</system-reminder>";
   writeFileSync(sessionFile("verbatim"), header("verbatim") + user(text));

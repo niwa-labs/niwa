@@ -73,6 +73,7 @@ import {
   subdirsOf,
 } from "./paths.ts";
 import { runtimeStatePathOf, sessionTitles } from "./titles.ts";
+import { mcodeToolShape } from "./tools.ts";
 
 export interface McodeReadingOptions {
   /** The id of the installation this side serves. */
@@ -943,6 +944,7 @@ function assistantRecords(message: McodeMessage, base: RecordBase, raw: unknown)
         kind: "tool-call",
         callId: block.id,
         name: block.name,
+        ...mcodeToolShape(block.name, block.arguments),
         ...(block.arguments === undefined ? {} : { input: jsonOf(block.arguments) }),
         ...base,
       });

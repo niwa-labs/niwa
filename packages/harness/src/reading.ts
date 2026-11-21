@@ -10,6 +10,7 @@ import { JsonValueSchema } from "@niwa-labs/core";
 import type { Timestamp } from "@niwa-labs/core";
 
 import { HarnessIdSchema } from "./instance.ts";
+import { ChecklistItemSchema, ToolCategorySchema } from "./tools.ts";
 
 /** The id the harness gave a session. Niwa issues no session ids of its own. */
 export const NativeSessionIdSchema = z.string().min(1).brand<"NativeSessionId">();
@@ -116,7 +117,12 @@ export const ToolCallRecordSchema = z.object({
   kind: z.literal("tool-call"),
   /** The harness's id of the call, so its result can be paired with it. */
   callId: z.string().min(1),
+  /** The harness's own name of the tool. */
   name: z.string().min(1),
+  /** What the call does, in the words every harness shares. */
+  category: ToolCategorySchema,
+  /** The path, command, pattern, address or task the call is about, when the kind can tell. */
+  target: z.string().optional(),
   input: JsonValueSchema.optional(),
   ...recordBase,
 });
@@ -134,6 +140,30 @@ export const ToolResultRecordSchema = z.object({
 export const CompactionRecordSchema = z.object({
   kind: z.literal("compaction"),
   summary: z.string(),
+  ...recordBase,
+});
+
+/**
+ * The agent's checklist of its work, whole, as an update left it. `callId` names the tool call
+ * that made the update, when a call did.
+ */
+export const ChecklistRecordSchema = z.object({
+  kind: z.literal("checklist"),
+  callId: z.string().min(1).optional(),
+  items: z.array(ChecklistItemSchema),
+  ...recordBase,
+});
+
+/**
+ * A tool call that asked for permission, as the harness recorded it, and what became of it:
+ * `allowed`, `denied`, or `unanswered` when the transcript holds no answer.
+ */
+export const PermissionRecordSchema = z.object({
+  kind: z.literal("permission"),
+  callId: z.string().min(1).optional(),
+  /** The harness's own name of the tool. */
+  tool: z.string().min(1).optional(),
+  outcome: z.enum(["allowed", "denied", "unanswered"]),
   ...recordBase,
 });
 
@@ -164,6 +194,8 @@ export const SessionRecordSchema = z.discriminatedUnion("kind", [
   ThinkingRecordSchema,
   ToolCallRecordSchema,
   ToolResultRecordSchema,
+  ChecklistRecordSchema,
+  PermissionRecordSchema,
   CompactionRecordSchema,
   NestedRecordSchema,
   UnknownRecordSchema,

@@ -110,6 +110,23 @@ test("maps text, tool calls and results; the harness's own messages, thoughts an
   expect(records[5]).toMatchObject({ kind: "tool-result", output: "no such file", ok: false });
 });
 
+test("a call is named by its category and its target, in ZCode's tool names", async () => {
+  const part = (callID: string, tool: string, input: object) => ({ type: "tool", callID, tool, state: { status: "completed", input, output: "", time: { start: 1, end: 2 } } });
+  writeSession(db, "sess_t", [
+    {
+      id: "m1",
+      data: { role: "assistant", time: { created: 2000, completed: 2100 } },
+      parts: [part("c1", "Bash", { command: "ls" }), part("c2", "Write", { file_path: "/w/a.ts", content: "" }), part("c3", "mcp__niwa__session_send", {})],
+    },
+  ]);
+  const calls = (await all(reading().read(id("sess_t")))).flatMap((r) => (r.kind === "tool-call" ? [r] : []));
+  expect(calls.map((c) => [c.category, c.target])).toEqual([
+    ["shell", "ls"],
+    ["edit", "/w/a.ts"],
+    ["mcp", undefined],
+  ]);
+});
+
 test("only the tail of a running session is incomplete; an older unfinished message is whole", async () => {
   writeSession(db, "sess_a", [
     user("m1", "go"),

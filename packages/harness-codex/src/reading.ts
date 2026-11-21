@@ -72,6 +72,7 @@ import {
 } from "./format.ts";
 import type { NativeRecord } from "./format.ts";
 import { baseOfArtifact, isCompressedName, nativeIdOfFileName } from "./paths.ts";
+import { codexToolShape } from "./tools.ts";
 
 export interface CodexReadingOptions {
   /** The id of the installation this side serves. */
@@ -813,11 +814,13 @@ export class CodexReading implements SessionReading {
       if (typeof callId !== "string" || callId.length === 0) return [unknownRecord(raw, base)];
       if (typeof name === "string" && name.length > 0) state.toolNames.set(callId, name);
       const input = kind === "custom_tool_call" ? payload["input"] : argumentsOf(payload["arguments"]);
+      const tool = typeof name === "string" && name.length > 0 ? name : "unknown";
       return [
         {
           kind: "tool-call",
           callId,
-          name: typeof name === "string" && name.length > 0 ? name : "unknown",
+          name: tool,
+          ...codexToolShape(tool, input),
           ...(input === undefined ? {} : { input: jsonOf(input) }),
           ...base,
         },

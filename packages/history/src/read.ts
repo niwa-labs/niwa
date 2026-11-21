@@ -129,7 +129,15 @@ function recordOf(record: SessionRecord): z.output<typeof SessionRecordSchema> {
     case "thinking":
       return { kind: "thinking", text: record.text, redacted: record.redacted, ...base };
     case "tool-call":
-      return { kind: "tool-call", callId: record.callId, name: record.name, input: record.input, ...base };
+      return {
+        kind: "tool-call",
+        callId: record.callId,
+        name: record.name,
+        category: record.category,
+        target: record.target,
+        input: record.input,
+        ...base,
+      };
     case "tool-result":
       return {
         kind: "tool-result",
@@ -139,6 +147,10 @@ function recordOf(record: SessionRecord): z.output<typeof SessionRecordSchema> {
         ok: record.ok,
         ...base,
       };
+    case "checklist":
+      return { kind: "checklist", callId: record.callId, items: record.items, ...base };
+    case "permission":
+      return { kind: "permission", callId: record.callId, tool: record.tool, outcome: record.outcome, ...base };
     case "compaction":
       return { kind: "compaction", summary: record.summary, ...base };
     case "nested":

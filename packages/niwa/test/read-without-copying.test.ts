@@ -79,7 +79,7 @@ const ReadOutput = z.looseObject({
 const StartedData = z.looseObject({ session: z.string() });
 
 /** The kinds of a record the reading side speaks about; the rest is "unknown". */
-const KNOWN_KINDS = ["user", "assistant", "tool-call", "tool-result", "compaction", "nested"];
+const KNOWN_KINDS = ["user", "assistant", "tool-call", "tool-result", "checklist", "permission", "compaction", "nested"];
 
 /** A harness of this machine, with the reading side that serves it. */
 interface Kind {
