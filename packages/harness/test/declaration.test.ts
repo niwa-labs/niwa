@@ -3,6 +3,10 @@ import { expect, test } from "bun:test";
 import {
   ADMITTED,
   CapabilityExceeded,
+  HarnessInstanceRegistry,
+  HarnessKindRegistry,
+  NO_CONTROL,
+  NO_READING,
   NO_INSERT,
   UNSUPPORTED,
   VERIFIED,
@@ -126,4 +130,30 @@ test("the control conformance suite fails an installation that claims more than 
   // A side that cannot start ends the suite early; the declaration is checked before that.
   const report = await controlConformance("probe", { instance: { ...wider, sides: { ...wider.sides, control: { ...wider.sides.control!, start: false } } }, control, declared: DECLARED })();
   expect(report.results.find((r) => r.name.startsWith("capabilities:"))).toMatchObject({ passed: false, detail: "control.structuredOutput" });
+});
+
+test("a tool mode or a launch choice alone is a control side the kind must have code for", () => {
+  const onlyNested = { ...DECLARED, reading: NO_READING, control: { ...NO_CONTROL, tools: { niwaOnly: ADMITTED, allow: UNSUPPORTED } } };
+  expect(sidesOf(onlyNested).control).toBeDefined();
+  expect(() => defineHarnessKind({ name: "probe", capabilities: onlyNested })).toThrow(/control/);
+  const onlyModel = { ...DECLARED, reading: NO_READING, control: { ...NO_CONTROL, launch: { model: VERIFIED, effort: [], modes: [] } } };
+  expect(() => defineHarnessKind({ name: "probe", capabilities: onlyModel })).toThrow(/control/);
+  const onlyModes = { ...DECLARED, reading: NO_READING, control: { ...NO_CONTROL, launch: { model: UNSUPPORTED, effort: ["low"], modes: ["auto" as const] } } };
+  expect(() => defineHarnessKind({ name: "probe", capabilities: onlyModes })).toThrow(/control/);
+  // With the code for the side, the same declaration registers.
+  expect(() => defineHarnessKind({ name: "probe", control, capabilities: onlyNested })).not.toThrow();
+});
+
+test("the registry of instances checks an installation against its registered kind", () => {
+  const kinds = new HarnessKindRegistry();
+  kinds.register(kind());
+  const registry = new HarnessInstanceRegistry(kinds);
+  const base = sidesOf(DECLARED);
+  expect(() => registry.register(instance({ ...base, control: { ...base.control!, interrupt: true } }))).toThrow(CapabilityExceeded);
+  expect(registry.ids()).toEqual([]);
+  expect(() => registry.register({ ...instance(base), kind: harnessKind("other") })).toThrow(/not registered/);
+  registry.register(instance(base));
+  expect(registry.ids()).toEqual(["probe-1"]);
+  // Without the kinds, the registry only keeps ids unique.
+  expect(() => new HarnessInstanceRegistry().register(instance({ ...base, control: { ...base.control!, interrupt: true } }))).not.toThrow();
 });

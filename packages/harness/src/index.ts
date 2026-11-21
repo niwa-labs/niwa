@@ -107,15 +107,23 @@ export class HarnessKindRegistry {
   }
 }
 
-/** The registry of instances. An id is taken once. */
+/**
+ * The registry of instances. An id is taken once.
+ *
+ * Given the registry of kinds, it also refuses an installation whose kind is not registered, or
+ * that claims what its kind cannot serve (`admitInstance`), before anything can ask it for that.
+ */
 export class HarnessInstanceRegistry {
   private readonly instances = new Map<HarnessId, Harness>();
+
+  constructor(private readonly kinds?: HarnessKindRegistry) {}
 
   /** Returns the unregister. */
   register(instance: Harness): () => void {
     if (this.instances.has(instance.id)) {
       throw new Error(`harness instance "${instance.id}" is already registered`);
     }
+    if (this.kinds !== undefined) admitInstance(instance, this.kinds.resolve(instance.kind));
     this.instances.set(instance.id, instance);
     return () => {
       if (this.instances.get(instance.id) === instance) this.instances.delete(instance.id);

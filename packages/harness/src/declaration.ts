@@ -105,8 +105,17 @@ function on(support: Support): boolean {
   return support.supported;
 }
 
+/**
+ * Does a side declare anything: a supported ability, at any depth? The nested launch and tools
+ * blocks count (a model choice, a tool mode, an effort level, a working mode), so a side that
+ * serves only those is a side, not an absent one.
+ */
 function anyOn(side: Readonly<Record<string, unknown>>): boolean {
-  return Object.values(side).some((value) => SupportSchema.safeParse(value).data?.supported === true);
+  return Object.values(side).some((value) => {
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object" && value !== null && !("supported" in value)) return anyOn(value as Record<string, unknown>);
+    return SupportSchema.safeParse(value).data?.supported === true;
+  });
 }
 
 /**
