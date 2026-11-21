@@ -9,7 +9,7 @@
 
 import type { Locator, SessionRecord } from "@niwa-labs/harness";
 
-import { ARGS_CHARS, RESULT_CHARS, compress } from "./compress.ts";
+import { ARGS_CHARS, RESULT_CHARS, compress, editedPaths } from "./compress.ts";
 import type { DigestMode, DigestView } from "./entries.ts";
 import type { FileIndex } from "./files.ts";
 
@@ -18,6 +18,9 @@ const CHARS_PER_TOKEN = 4;
 
 /** What an entry costs beside its text: its kind, its status, its source. */
 const ENTRY_CHARS = 60;
+
+/** What the marker of an image costs. */
+const MARKER_CHARS = 16;
 
 /** What a brief grows by when a call of a category is counted for the first time, or the first failure is. */
 const COUNTER_CHARS = 16;
@@ -52,6 +55,8 @@ export interface DigestWindow {
   readonly files: FileIndex;
   /** How many records left nothing in the view. */
   readonly omitted: number;
+  /** Whether the reading started over on another source: what it holds is the session from its beginning. */
+  readonly restarted: boolean;
 }
 
 function textLength(value: unknown): number {
@@ -65,13 +70,16 @@ export function charsOf(record: SessionRecord, mode: DigestMode, resultChars: nu
   switch (record.kind) {
     case "user":
     case "assistant":
-      return ENTRY_CHARS + record.text.length;
+      return ENTRY_CHARS + record.text.length + (record.kind === "user" ? MARKER_CHARS * (record.images?.length ?? 0) : 0);
     case "thinking":
       return mode === "brief" ? 0 : ENTRY_CHARS + record.text.length;
-    case "tool-call":
-      return mode === "brief" ? 0 : ENTRY_CHARS + (record.target?.length ?? 0) + Math.min(textLength(record.input), ARGS_CHARS);
+    case "tool-call": {
+      if (mode === "brief") return 0;
+      const named = record.paths === undefined ? (record.target?.length ?? 0) : record.paths.reduce((sum, path) => sum + path.length + 2, 0);
+      return ENTRY_CHARS + named + Math.min(textLength(record.input), ARGS_CHARS);
+    }
     case "tool-result":
-      return mode === "brief" ? 0 : ENTRY_CHARS + Math.min(textLength(record.output), resultChars);
+      return mode === "brief" ? 0 : ENTRY_CHARS + Math.min(textLength(record.output) + MARKER_CHARS * (record.images?.length ?? 0), resultChars);
     case "compaction":
       return mode === "brief" ? 0 : ENTRY_CHARS + Math.min(record.summary.length, resultChars);
     case "checklist":
@@ -105,9 +113,12 @@ class BriefLedger {
           categories.add(record.category);
           chars += COUNTER_CHARS;
         }
-        if (record.category === "edit" && record.target !== undefined && !this.#paths.has(record.target) && !paths.has(record.target)) {
-          paths.add(record.target);
-          chars += record.target.length + 4;
+        if (record.category === "edit") {
+          for (const path of editedPaths(record)) {
+            if (this.#paths.has(path) || paths.has(path)) continue;
+            paths.add(path);
+            chars += path.length + 4;
+          }
         }
       } else if (record.kind === "tool-result" && record.ok === false && !this.#failed && !failed) {
         failed = true;
@@ -202,5 +213,5 @@ export async function readWindow(records: AsyncIterable<SessionRecord>, options:
     resultChars,
     more: !exhausted,
   });
-  return { view: compressed.view, next: exhausted ? null : upto, upto, files: compressed.files, omitted: compressed.omitted };
+  return { view: compressed.view, next: exhausted ? null : upto, upto, files: compressed.files, omitted: compressed.omitted, restarted: compressed.restarted };
 }

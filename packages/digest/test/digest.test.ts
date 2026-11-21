@@ -266,3 +266,83 @@ test("a window that ends inside a turn gives its last message as one the turn ma
   expect(closed.answered.map((said) => said.text)).toEqual(["done"]);
   expect(closed.tentative).toBeUndefined();
 });
+
+
+test("a message whose reader marked what was inserted loses exactly those ranges and keeps every other character", () => {
+  const text = "<system-reminder>be brief</system-reminder>\n\nFix <user-card>the</user-card> parser";
+  const marked: SessionRecord = { kind: "user", text, inserted: [{ from: 0, to: 45, origin: "harness" }], ...base(1) };
+  expect(entriesOf(compress([marked], "digest").view)[0]).toMatchObject({ kind: "user", text: "Fix <user-card>the</user-card> parser" });
+  // A reader that marked nothing says the whole text was written by the person, even a tag of a harness.
+  const typed: SessionRecord = { kind: "user", text: "explain <system-reminder>x</system-reminder> to me", inserted: [], ...base(2) };
+  expect(entriesOf(compress([typed], "digest").view)[0]).toMatchObject({ text: "explain <system-reminder>x</system-reminder> to me" });
+  // A reader that does not say leaves the tags of the known harnesses to be cut.
+  expect(entriesOf(compress([user(3, "<system-reminder>x</system-reminder>hello")], "digest").view)[0]).toMatchObject({ text: "hello" });
+});
+
+test("a message that is all insertion leaves nothing, in a digest and in a brief", () => {
+  const all: SessionRecord = { kind: "user", text: "preamble", inserted: [{ from: 0, to: 8, origin: "harness" }], ...base(1) };
+  expect(compress([all], "digest")).toMatchObject({ view: { entries: [] }, omitted: 1 });
+  expect(briefOf(compress([all], "brief").view)?.asked).toEqual([]);
+});
+
+test("an image is a marker where it stood, also in a message with no words and in text that had an insertion cut", () => {
+  const only: SessionRecord = { kind: "user", text: "", images: [{ at: 0, mime: "image/png" }], ...base(1) };
+  const entry = entriesOf(compress([only], "digest").view)[0];
+  expect(entry).toMatchObject({ kind: "user", text: "[image image/png]", source: { locator: at(1) } });
+  expect(briefOf(compress([only], "brief").view)?.asked).toMatchObject([{ text: "[image image/png]" }]);
+
+  const mixed: SessionRecord = {
+    kind: "user",
+    text: "see <agent-context>c</agent-context>this and that",
+    inserted: [{ from: 4, to: 36, origin: "harness" }],
+    images: [{ at: 4 }, { at: 44 }],
+    ...base(2),
+  };
+  expect(entriesOf(compress([mixed], "digest").view)[0]).toMatchObject({ text: "see [image]this and[image] that" });
+});
+
+test("an image in a tool result is a marker among its blocks, and the result is told without its payload", () => {
+  const call1: SessionRecord = { kind: "tool-call", callId: "c1", name: "read", category: "read", target: "/a.png", ...base(1) };
+  const list: SessionRecord = { kind: "tool-result", callId: "c1", output: [{ type: "text", text: "a" }, { type: "text", text: "b" }], images: [{ at: 1 }], ...base(2) };
+  const [tool] = entriesOf(compress([call1, list], "digest").view);
+  expect(tool).toMatchObject({ kind: "tool", result: '[{"type":"text","text":"a"},"[image]",{"type":"text","text":"b"}]' });
+  const alone: SessionRecord = { kind: "tool-result", callId: "c1", images: [{ at: 0, mime: "image/jpeg" }], ...base(2) };
+  expect(entriesOf(compress([call1, alone], "digest").view)[0]).toMatchObject({ result: "[image image/jpeg]" });
+  const text: SessionRecord = { kind: "tool-result", callId: "c1", output: "ab", images: [{ at: 1 }], ...base(2) };
+  expect(entriesOf(compress([call1, text], "digest").view)[0]).toMatchObject({ result: "a[image]b" });
+});
+
+test("a call that names several files is all of them in the digest and in the brief, and counts them in the window", async () => {
+  const patch: SessionRecord = { kind: "tool-call", callId: "p1", name: "apply_patch", category: "edit", target: "/r/a.ts", paths: ["/r/a.ts", "/r/b.ts"], ...base(1) };
+  const done: SessionRecord = { kind: "tool-result", callId: "p1", output: "ok", ok: true, ...base(2) };
+  const { view, files } = compress([patch, done], "digest");
+  expect(entriesOf(view)[0]).toMatchObject({ target: "[F1] /r/a.ts, [F2] /r/b.ts" });
+  expect(files.files.map((file) => [file.path, file.changed])).toEqual([["/r/a.ts", true], ["/r/b.ts", true]]);
+  expect(briefOf(compress([patch, done], "brief").view)?.changed).toEqual(["/r/a.ts", "/r/b.ts"]);
+  // A refused patch changed neither.
+  expect(briefOf(compress([patch, { ...done, ok: false } as SessionRecord], "brief").view)?.changed).toEqual([]);
+  const window = await readWindow(
+    (async function* () {
+      yield patch;
+      yield done;
+    })(),
+    { mode: "brief", budget: 1_000 },
+  );
+  expect(briefOf(window.view)?.changed).toEqual(["/r/a.ts", "/r/b.ts"]);
+});
+
+test("a window says its reading started over when the first record says so, and a record that goes on does not", async () => {
+  const first: SessionRecord = { kind: "assistant", text: "from the top", reanchored: true, ...base(1) };
+  const read = async (records: SessionRecord[], mode: "digest" | "brief" | "full") =>
+    await readWindow(
+      (async function* () {
+        yield* records;
+      })(),
+      { mode, budget: 1_000 },
+    );
+  for (const mode of ["digest", "brief", "full"] as const) {
+    expect((await read([first, assistant(2, "more")], mode)).restarted).toBe(true);
+    expect((await read([assistant(2, "more")], mode)).restarted).toBe(false);
+  }
+  expect(compress([first], "digest").restarted).toBe(true);
+});

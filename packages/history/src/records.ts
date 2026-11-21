@@ -105,6 +105,11 @@ export const DigestReadSchema = z.object({
   files: FileIndexSchema,
   /** How many records left nothing in the window. */
   omitted: z.number().int().nonnegative(),
+  /**
+   * True when the read started over: the position it was given belonged to another source, so the
+   * window is the session from its beginning, and what was gathered from the windows before no longer holds.
+   */
+  restarted: z.boolean(),
 });
 
 /** A watch of a session began: the session, its harness, the directory it works in when the harness says, and its process when known. */

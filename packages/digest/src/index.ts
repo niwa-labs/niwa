@@ -1,7 +1,7 @@
 // The compressor of session readings: full, digest and brief, over the common model of
 // `@niwa-labs/harness`, with the file index and the windows a reading is made in. No model is called.
 
-export { ARGS_CHARS, RESULT_CHARS, compress, sourceOf, withoutInsertions } from "./compress.ts";
+export { ARGS_CHARS, RESULT_CHARS, compress, editedPaths, imageMarker, saidOf, sourceOf, withoutInsertions } from "./compress.ts";
 export type { CompressOptions, Compressed } from "./compress.ts";
 export {
   BriefSchema,

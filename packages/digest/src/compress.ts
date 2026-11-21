@@ -7,7 +7,7 @@
 import { createHash } from "node:crypto";
 
 import { checklistProgress } from "@niwa-labs/harness";
-import type { SessionRecord, ToolCategory } from "@niwa-labs/harness";
+import type { ImageMark, InsertedRange, SessionRecord, ToolCategory } from "@niwa-labs/harness";
 
 import type { Brief, CallStatus, DigestEntry, DigestMode, DigestView, Source } from "./entries.ts";
 import { FileIndexer } from "./files.ts";
@@ -39,6 +39,11 @@ export interface Compressed {
   readonly files: FileIndex;
   /** How many records left nothing in the view: a harness's own insertion, a record niwa does not know. */
   readonly omitted: number;
+  /**
+   * Whether the reading started over: it was asked to go on from a locator of another source, and
+   * what it holds is the session from its beginning. What was gathered before it no longer holds.
+   */
+  readonly restarted: boolean;
 }
 
 /** A value as JSON with its keys sorted and its undefined members left out: the same value always reads the same. */
@@ -97,10 +102,96 @@ export function withoutInsertions(text: string): string {
   return said === text ? text : said.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/** What stands in a digest in place of an image. */
+export function imageMarker(mark: ImageMark): string {
+  return mark.mime === undefined ? "[image]" : `[image ${mark.mime}]`;
+}
+
+/** The stretches of `text` that sit in a tag of `INSERTION_TAGS`. */
+function taggedRanges(text: string): Array<{ from: number; to: number }> {
+  return [...text.matchAll(INSERTION)].map((match) => ({ from: match.index, to: match.index + match[0].length }));
+}
+
+/** `text` with the ranges `cuts` left out and a marker for each image where its offset says; the rest is kept as it is. */
+function weave(text: string, cuts: ReadonlyArray<{ from: number; to: number }>, images: readonly ImageMark[]): string {
+  const merged: Array<{ from: number; to: number }> = [];
+  for (const cut of [...cuts].sort((a, b) => a.from - b.from)) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && cut.from <= last.to) last.to = Math.max(last.to, cut.to);
+    else merged.push({ ...cut });
+  }
+  /** The text from `from` up to `to` that no cut covers. */
+  const kept = (from: number, to: number): string => {
+    let out = "";
+    let cursor = from;
+    for (const cut of merged) {
+      if (cut.to <= cursor) continue;
+      if (cut.from >= to) break;
+      if (cut.from > cursor) out += text.slice(cursor, cut.from);
+      cursor = Math.max(cursor, cut.to);
+    }
+    return cursor < to ? out + text.slice(cursor, to) : out;
+  };
+  let out = "";
+  let position = 0;
+  for (const mark of [...images].sort((a, b) => a.at - b.at)) {
+    const at = Math.min(Math.max(mark.at, position), text.length);
+    out += kept(position, at) + imageMarker(mark);
+    position = at;
+  }
+  return out + kept(position, text.length);
+}
+
+/**
+ * What a person said in a message, as a digest tells it: what the reader marked as inserted is cut
+ * out, an image is a marker where it stood, and every other character is kept as it was written.
+ * A message the reader did not mark (`inserted` absent) is cut by the tags of the harnesses niwa
+ * knows; one it marked, even with nothing marked, is never cut by a tag, so a person's own
+ * `<system-reminder>` stays.
+ *
+ * `undefined` when nothing but whitespace is left and no image stood in the message.
+ */
+export function saidOf(record: {
+  readonly text: string;
+  readonly inserted?: readonly InsertedRange[] | undefined;
+  readonly images?: readonly ImageMark[] | undefined;
+}): string | undefined {
+  const images = record.images ?? [];
+  if (record.inserted === undefined && images.length === 0) {
+    const said = withoutInsertions(record.text);
+    return said.length === 0 ? undefined : said;
+  }
+  const cuts = record.inserted ?? taggedRanges(record.text);
+  const said = weave(record.text, cuts, images);
+  return images.length === 0 && said.trim().length === 0 ? undefined : said;
+}
+
 /** The text of a value a tool gave or was given: a string as it is, anything else as JSON. */
 function textOf(value: unknown): string {
   if (value === undefined) return "";
   return typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+}
+
+/**
+ * The output of a tool with a marker where each image stood: at its index among the blocks of a
+ * list, at its offset in a text, at the end of anything else.
+ */
+function withImages(output: unknown, images: readonly ImageMark[] | undefined): unknown {
+  if (images === undefined || images.length === 0) return output;
+  const marks = [...images].sort((a, b) => a.at - b.at);
+  if (Array.isArray(output)) {
+    const blocks: unknown[] = [...output];
+    marks.forEach((mark, placed) => blocks.splice(Math.min(mark.at + placed, blocks.length), 0, imageMarker(mark)));
+    return blocks;
+  }
+  if (typeof output === "string") return weave(output, [], marks);
+  const markers = marks.map(imageMarker).join(" ");
+  return output === undefined ? markers : `${textOf(output)} ${markers}`;
+}
+
+/** The paths an edit call changes: all it names, else its target. */
+export function editedPaths(record: { readonly target?: string | undefined; readonly paths?: readonly string[] | undefined }): readonly string[] {
+  return record.paths ?? (record.target === undefined ? [] : [record.target]);
 }
 
 function statusOf(ok: boolean | undefined): CallStatus {
@@ -110,16 +201,17 @@ function statusOf(ok: boolean | undefined): CallStatus {
 /** Compress records read in the harness's order. */
 export function compress(records: readonly SessionRecord[], mode: DigestMode, options: CompressOptions = {}): Compressed {
   const files = new FileIndexer(options.files);
+  const restarted = records.some((record) => record.reanchored === true);
   switch (mode) {
     case "full":
-      return { view: { mode, records: [...records] }, files: files.index(), omitted: 0 };
+      return { view: { mode, records: [...records] }, files: files.index(), omitted: 0, restarted };
     case "digest": {
       const { entries, omitted } = digestOf(records, files, options.resultChars ?? RESULT_CHARS);
-      return { view: { mode, entries }, files: files.index(), omitted };
+      return { view: { mode, entries }, files: files.index(), omitted, restarted };
     }
     case "brief": {
       const { brief, omitted } = briefOf(records, options.more ?? false);
-      return { view: { mode, brief }, files: files.index(), omitted };
+      return { view: { mode, brief }, files: files.index(), omitted, restarted };
     }
   }
 }
@@ -133,8 +225,8 @@ function digestOf(records: readonly SessionRecord[], files: FileIndexer, resultC
     const source = sourceOf(record);
     switch (record.kind) {
       case "user": {
-        const text = withoutInsertions(record.text);
-        if (text.length === 0) omitted += 1;
+        const text = saidOf(record);
+        if (text === undefined) omitted += 1;
         else entries.push({ kind: "user", text, source });
         break;
       }
@@ -146,7 +238,14 @@ function digestOf(records: readonly SessionRecord[], files: FileIndexer, resultC
         break;
       case "tool-call": {
         const changed = record.category === "edit";
-        const target = record.target === undefined ? undefined : namedTarget(record.category, record.target, changed, files);
+        const paths = editedPaths(record);
+        // A call that names several files names each of them, written once and referred to after.
+        const target =
+          changed && paths.length > 1
+            ? paths.map((path) => namedTarget(record.category, path, changed, files)).join(", ")
+            : record.target === undefined
+              ? undefined
+              : namedTarget(record.category, record.target, changed, files);
         const args = record.input === undefined ? undefined : cutEnd(files.refer(textOf(record.input)), ARGS_CHARS);
         const entry: Extract<DigestEntry, { kind: "tool" }> = {
           kind: "tool",
@@ -163,7 +262,7 @@ function digestOf(records: readonly SessionRecord[], files: FileIndexer, resultC
         break;
       }
       case "tool-result": {
-        const output = textOf(record.output);
+        const output = textOf(withImages(record.output, record.images));
         const result = output.length === 0 ? undefined : cutMiddle(files.refer(output), { keep: resultChars, source: record.locator });
         const call = open.get(record.callId);
         if (call !== undefined) {
@@ -219,8 +318,8 @@ function briefOf(records: readonly SessionRecord[], more: boolean): { brief: Bri
   for (const record of records) {
     switch (record.kind) {
       case "user": {
-        const text = withoutInsertions(record.text);
-        if (text.length === 0) {
+        const text = saidOf(record);
+        if (text === undefined) {
           omitted += 1;
           break;
         }
@@ -236,7 +335,7 @@ function briefOf(records: readonly SessionRecord[], more: boolean): { brief: Bri
         break;
       case "tool-call":
         calls[record.category] = (calls[record.category] ?? 0) + 1;
-        if (record.category === "edit" && record.target !== undefined) edits.push({ callId: record.callId, path: record.target });
+        if (record.category === "edit") for (const path of editedPaths(record)) edits.push({ callId: record.callId, path });
         last = "working";
         break;
       case "tool-result":

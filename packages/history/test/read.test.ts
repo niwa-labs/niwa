@@ -5,6 +5,7 @@ import { LocatorSchema, harnessId, sessionId } from "@niwa-labs/harness";
 import type { Harness, SessionReading, SessionRecord } from "@niwa-labs/harness";
 
 import { readTranscript } from "../src/index.ts";
+import { DigestReadSchema } from "../src/records.ts";
 
 const H = harnessId("h");
 const ID = sessionId(H, "s1");
@@ -22,7 +23,7 @@ const records: SessionRecord[] = [
   {
     kind: "user",
     text: "see <system-reminder>r</system-reminder> this",
-    inserted: [{ from: 4, to: 39, origin: "harness" }],
+    inserted: [{ from: 4, to: 40, origin: "harness" }],
     images: [{ at: 4, mime: "image/png" }],
     reanchored: true,
     locator: at(1),
@@ -49,4 +50,13 @@ test("a read gives every field of a record, so its digest source is the record's
   const answer = await readTranscript({ instance, reading }, ID, {});
   expect(answer.records).toEqual(records);
   expect(answer.records.map((record) => sourceOf(record as SessionRecord).digest)).toEqual(records.map((record) => sourceOf(record).digest));
+});
+
+test("a digest read says it started over when the reading side did, and carries the marks of a message into the digest", async () => {
+  const answer = await readTranscript({ instance, reading }, ID, { mode: "digest" });
+  expect(answer.digest?.restarted).toBe(true);
+  expect(DigestReadSchema.parse(answer.digest)).toEqual(answer.digest);
+  expect(answer.digest?.view).toMatchObject({ entries: [{ kind: "user", text: "see [image image/png] this" }, { kind: "tool", target: "[F1] a.ts, [F2] b.ts" }] });
+  const later = await readTranscript({ instance, reading }, ID, { mode: "digest", from: "L1" });
+  expect(later.digest?.restarted).toBe(false);
 });
