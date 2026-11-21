@@ -315,16 +315,37 @@ export const SLEEP_NEEDS: readonly RecordType<any>[] = [
   { ...TimerSlept, provider: "timers" },
 ];
 
-/** What the plugin remembers about each timer: when it is due, and whether it is done. */
+/**
+ * What the plugin remembers about one timer: when it is due, and whether it is done.
+ *
+ * `schedule` is the schedule the due was computed for: a timer that is declared again with
+ * another schedule under the same id does not inherit the due of the old one.
+ */
 interface ScheduleEntry {
+  readonly id: string;
   /** The next moment the timer is due, in milliseconds since the epoch. */
   readonly due: number;
   /** True when the timer has fired and will not fire again. */
   readonly done: boolean;
+  /** The schedule the due belongs to, as `scheduleKey` writes it. */
+  readonly schedule: string;
 }
 
-/** The schedule of every timer of the plugin, by the id of the timer. */
-type Schedule = Record<string, ScheduleEntry>;
+/**
+ * The schedule of every timer of the plugin: a list, not an object keyed by the id, because every
+ * valid id is a name an object treats specially (`constructor`, `__proto__`).
+ */
+type Schedule = ScheduleEntry[];
+
+/** The remembered schedule by the id of the timer. */
+function savedBy(memory: StateHandle<Schedule>): Map<string, ScheduleEntry> {
+  return new Map(memory.get().map((entry) => [entry.id, entry]));
+}
+
+/** The schedule of a definition as text, to tell whether a remembered due still belongs to it. */
+function scheduleKey(def: TimerDef): string {
+  return stableJson(scheduleOf(def));
+}
 
 /** One timer, as the scheduler keeps it. */
 interface Scheduled {
@@ -380,14 +401,10 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
       known = all;
       return all;
     };
-    const memory = api.state<Schedule>("schedule", ScheduleSchema, {});
+    const memory = api.state<Schedule>("schedule", ScheduleSchema, []);
     /** The ids of the firings the journal holds, so a firing asked for again gets the id it has. */
-    const firingIds = new IdIndex("firing", () =>
-      (api.journal?.()?.since(seq(0), [TimerFired.name]) ?? []).map((row) => {
-        const data = row.data as TimerFiredData;
-        return { id: String(row.id), seed: firingSeed(data.timer, data.due) };
-      }),
-    );
+    const ledger = new FiringLedger(() => api.journal?.());
+    const firingIds = new IdIndex("firing", () => ledger.issued());
     /**
      * The sleeps that are asked for while the host serves, by the key of the sleeping place.
      *
@@ -398,12 +415,13 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
     api.service((ctx) => {
       const journal = api.journal?.();
       let stopped = false;
+      const saved = savedBy(memory);
       const running: Scheduled[] = scheduleOfHost().map((entry) => {
-        const saved = memory.get()[entry.id];
+        const kept = saved.get(entry.id);
         const state =
-          saved === undefined
+          kept === undefined || kept.schedule !== scheduleKey(entry.def)
             ? { due: firstDue(entry, ctx.now()), done: false }
-            : settle(entry, saved, journal, firingIds);
+            : settle(entry, kept, journal, firingIds);
         return { ...entry, due: timestamp(state.due), done: state.done };
       });
       // The sleeps that are over, by the key of the sleeping place, and the wakes that are
@@ -610,8 +628,8 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
     api.summarize(() => ({ sleeps: pendingSleeps().length }));
     /** A timer as its owner sees it: what it is, when it is next due, the last firing of it. */
     const entityOf = (entry: Scheduled): TimerEntity => {
-      const saved = memory.get()[entry.id];
-      const last = lastFiringOf(api.journal?.(), entry.id);
+      const saved = savedBy(memory).get(entry.id);
+      const last = ledger.latestOf(entry.id);
       return {
         name: entry.id,
         description: entry.description,
@@ -733,16 +751,6 @@ function scheduleText(def: TimerDef): string {
   return `at ${new Date(def.at).toISOString()}`;
 }
 
-/** The id of the latest firing of a timer: the one with the greatest due. */
-function lastFiringOf(journal: JournalReader | undefined, timer: TimerId): string | undefined {
-  let latest: { id: string; due: number } | undefined;
-  for (const row of journal?.since(seq(0), [TimerFired.name]) ?? []) {
-    const data = row.data as TimerFiredData;
-    if (data.timer === timer && (latest === undefined || data.due > latest.due)) latest = { id: String(row.id), due: data.due };
-  }
-  return latest?.id;
-}
-
 /** The definition of a timer, whether it came as a definition or as a trigger. */
 function defOf(def: TimerOffer): TimerDef {
   return "timer" in def ? def.def : def;
@@ -794,9 +802,8 @@ function parseTimeOfDay(time: string): string {
 }
 
 /** The schema of what the plugin remembers about its timers. */
-const ScheduleSchema: z.ZodType<Schedule> = z.record(
-  z.string(),
-  z.object({ due: z.number(), done: z.boolean() }),
+const ScheduleSchema: z.ZodType<Schedule> = z.array(
+  z.object({ id: z.string(), due: z.number(), done: z.boolean(), schedule: z.string() }),
 );
 
 /** The first moment a timer is due, when the plugin does not know one yet. */
@@ -821,7 +828,7 @@ function settle(
   saved: ScheduleEntry,
   journal: JournalReader | undefined,
   ids: IdIndex<"firing">,
-): ScheduleEntry {
+): Pick<ScheduleEntry, "due" | "done"> {
   let { due, done } = { due: saved.due, done: saved.done };
   while (!done) {
     const firing = journal?.get(recordId(firingId(ids, entry.id, timestamp(due))));
@@ -865,20 +872,65 @@ function nextTimeOfDay(time: string, from: Timestamp): Timestamp {
   return timestamp(day.getTime());
 }
 
+/** What the plugin remembers about its timers. */
+function remember(memory: StateHandle<Schedule>, running: readonly Scheduled[]): void {
+  memory.update((current) => {
+    const next = new Map(current.map((entry) => [entry.id, entry]));
+    for (const entry of running) {
+      next.set(entry.id, { id: entry.id, due: entry.due, done: entry.done, schedule: scheduleKey(entry.def) });
+    }
+    return [...next.values()];
+  });
+}
+
 /** A stored record that cannot be what it says it is: it is left out, and the log says so. */
 function skipped(what: string, key: unknown): void {
   console.error(`niwa: ${what} with the sleep key ${JSON.stringify(key)} is skipped: a sleep key is a non-empty string without whitespace`);
 }
 
-/** What the plugin remembers about its timers. */
-function remember(memory: StateHandle<Schedule>, running: readonly Scheduled[]): void {
-  memory.update((current) => {
-    const next = { ...current };
-    for (const entry of running) {
-      next[entry.id] = { due: entry.due, done: entry.done };
+/**
+ * The firings the journal holds, read once and then followed: the ids they were issued, and the
+ * latest firing of each timer.
+ *
+ * Each question reads only the firings written since the last one, so a firing costs what it is,
+ * not the history behind it.
+ */
+class FiringLedger {
+  private cursor = seq(0);
+  private readonly entries: Array<{ id: string; seed: string }> = [];
+  private readonly latest = new Map<string, { id: string; due: number }>();
+
+  constructor(private readonly journal: () => JournalReader | undefined) {}
+
+  /** The ids issued to the firings, with the seeds they came from, in the order of the journal. */
+  issued(): readonly { id: string; seed: string }[] {
+    this.catchUp();
+    return this.entries;
+  }
+
+  /** The id of the latest firing of a timer: the one with the greatest due. */
+  latestOf(timer: string): string | undefined {
+    this.catchUp();
+    return this.latest.get(timer)?.id;
+  }
+
+  private catchUp(): void {
+    const journal = this.journal();
+    if (journal === undefined) return;
+    if (journal.last() < this.cursor) {
+      this.cursor = seq(0);
+      this.entries.length = 0;
+      this.latest.clear();
     }
-    return next;
-  });
+    for (const row of journal.since(this.cursor, [TimerFired.name])) {
+      const data = row.data as TimerFiredData;
+      const id = String(row.id);
+      this.entries.push({ id, seed: firingSeed(data.timer, data.due) });
+      const last = this.latest.get(data.timer);
+      if (last === undefined || data.due > last.due) this.latest.set(data.timer, { id, due: data.due });
+      this.cursor = row.seq;
+    }
+  }
 }
 
 /**
