@@ -507,7 +507,7 @@ async function readValue(
     if (outcome.status === "completed") return outcome.value;
   }
   if (intent === undefined) {
-    writeIntent(ctx, key, action, undefined, operationId(ctx.invocation, key), 0);
+    commitAll(ctx, [intentRecord(ctx, key, action, undefined, operationId(ctx.invocation, key), 0)]);
   }
   settle(ctx, key, { status: "completed", value }, 0);
   return value;
@@ -630,16 +630,31 @@ async function runStepOnce<I, O, In = I>(
     const decided = await decideCall(ctx, caller, action, input, key, attempt, opts?.reason);
     if (decided.kind === "invalid") {
       // The intent is written even when the call never happened, so the journal shows what was
-      // called.
-      writeIntent(ctx, key, action.name, held, operation, attempt);
+      // called. It is written together with the outcome: an intent alone reads as a call that
+      // was cut off.
       const error = describeIssues(invalidMessage(action.name, decided.which), decided.issues);
-      return settle<O>(ctx, key, { status: "failed", error, effectPossible: false }, attempt);
+      const outcome: Outcome<O> = { status: "failed", error, effectPossible: false };
+      commitAll(ctx, [
+        intentRecord(ctx, key, action.name, held, operation, attempt ),
+        outcomeRecord(ctx, key, outcome, attempt),
+      ]);
+      return { key, outcome };
     }
-    writeDecision(ctx, key, decided, attempt);
-    writeIntent(ctx, key, action.name, decided.final, operation, attempt);
     if (decided.kind === "denied") {
-      return settle<O>(ctx, key, { status: "denied", reason: decided.reason }, attempt);
+      // The call never happened, so nothing of it may look cut off: the decision, the intent and
+      // the denial are one write.
+      const outcome: Outcome<O> = { status: "denied", reason: decided.reason };
+      commitAll(ctx, [
+        decisionRecord(ctx, key, decided, attempt),
+        intentRecord(ctx, key, action.name, decided.final, operation, attempt ),
+        outcomeRecord(ctx, key, outcome, attempt),
+      ]);
+      return { key, outcome };
     }
+    commitAll(ctx, [
+      decisionRecord(ctx, key, decided, attempt),
+      intentRecord(ctx, key, action.name, decided.final, operation, attempt ),
+    ]);
     return callAction(ctx, as, key, action, decided.final, operation, attempt);
   }
 
@@ -684,16 +699,20 @@ async function runStepOnce<I, O, In = I>(
     const error = describeIssues(invalidMessage(action.name, decided.which), decided.issues);
     return settle<O>(ctx, key, { status: "failed", error, effectPossible: false }, attempt);
   }
-  if (
+  const changed =
     stands === undefined ||
     stands.denied !== (decided.kind === "denied") ||
-    stableJson(stands.final) !== stableJson(decided.final)
-  ) {
-    writeDecision(ctx, key, decided, attempt);
-  }
+    stableJson(stands.final) !== stableJson(decided.final);
   if (decided.kind === "denied") {
-    return settle<O>(ctx, key, { status: "denied", reason: decided.reason }, attempt);
+    // The denial ends the step: what was decided and the denial are one write.
+    const outcome: Outcome<O> = { status: "denied", reason: decided.reason };
+    commitAll(ctx, [
+      ...(changed ? [decisionRecord(ctx, key, decided, attempt)] : []),
+      outcomeRecord(ctx, key, outcome, attempt),
+    ]);
+    return { key, outcome };
   }
+  if (changed) commitAll(ctx, [decisionRecord(ctx, key, decided, attempt)]);
 
   // "repeat" and "repeat-with-key" call again with the same operation id: the other side dedupes
   // by it, or the action is safe to call twice.
@@ -1046,7 +1065,7 @@ async function awaitRecord<T>(
   }
 
   if (intent === undefined) {
-    intent = writeIntent(ctx, key, WAIT_ACTION, waited, operation, 0);
+    intent = first(commitAll(ctx, [intentRecord(ctx, key, WAIT_ACTION, waited, operation, 0)]));
   }
 
   for (const candidate of ctx.deps.journal.find({ type: type.name, after: since ?? intent.seq })) {
@@ -1102,7 +1121,7 @@ async function awaitAnyRecord<Types extends readonly RecordType<any>[]>(
   }
 
   if (intent === undefined) {
-    intent = writeIntent(ctx, key, WAIT_ACTION, waited, operation, 0);
+    intent = first(commitAll(ctx, [intentRecord(ctx, key, WAIT_ACTION, waited, operation, 0)]));
   }
 
   // The answer is looked for after `since`, or after the intent when there is no `since`. The
@@ -1150,74 +1169,64 @@ function nextKey(ctx: RunContext, opts?: StepOptions): StepKey {
   return stepKey(String(ctx.ordinal));
 }
 
-/** Write the intent of a step: which action, with what input, under which operation id. */
-function writeIntent(
+/** The intent of a step: which action, with what input, under which operation id. */
+function intentRecord(
   ctx: RunContext,
   key: StepKey,
   action: ActionName,
   input: unknown,
   operation: OperationId,
   attempt: number,
-): StoredRecord {
-  return commit(
-    ctx,
-    attemptRecordId(ctx.invocation, key, attempt, "intent"),
-    CORE_TYPES.stepIntent,
-    {
-      invocation: ctx.invocation,
-      key,
-      action,
-      input,
-      operationId: operation,
-    },
-  );
+): NewRecord {
+  return recordOf(ctx, attemptRecordId(ctx.invocation, key, attempt, "intent"), CORE_TYPES.stepIntent, {
+    invocation: ctx.invocation,
+    key,
+    action,
+    input,
+    operationId: operation,
+  });
 }
 
-/** Write the outcome of a step: what came of it, for good. */
+/** The outcome of a step: what came of it, for good. */
+function outcomeRecord<O>(ctx: RunContext, key: StepKey, outcome: Outcome<O>, attempt: number): NewRecord {
+  return recordOf(ctx, attemptRecordId(ctx.invocation, key, attempt, "outcome"), CORE_TYPES.stepOutcome, {
+    invocation: ctx.invocation,
+    key,
+    outcome,
+  });
+}
+
+/** Write the outcome of a step. */
 function settle<O>(
   ctx: RunContext,
   key: StepKey,
   outcome: Outcome<O>,
   attempt: number,
 ): StepResult<O> {
-  commit(
-    ctx,
-    attemptRecordId(ctx.invocation, key, attempt, "outcome"),
-    CORE_TYPES.stepOutcome,
-    {
-      invocation: ctx.invocation,
-      key,
-      outcome,
-    },
-  );
+  commitAll(ctx, [outcomeRecord(ctx, key, outcome, attempt)]);
   return { key, outcome };
 }
 
-/** Write what the intercepts decided: the requested and the final input, and a denial's reason. */
-function writeDecision<I>(
+/** What the intercepts decided: the requested and the final input, and a denial's reason. */
+function decisionRecord<I>(
   ctx: RunContext,
   key: StepKey,
   decision: Decision<I>,
   attempt: number,
-): void {
+): NewRecord {
   // A call made again after a cut-off is decided again: its decision gets the next free id.
   const first = attemptRecordId(ctx.invocation, key, attempt, "decision");
   let id = first;
   for (let n = 2; ctx.deps.journal.get(id) !== undefined; n++) id = recordId(`${first}#${n}`);
-  commit(
-    ctx,
-    id,
-    CORE_TYPES.stepDecision,
-    {
-      invocation: ctx.invocation,
-      key,
-      attempt,
-      requested: decision.requested,
-      final: decision.final,
-      denied: decision.kind === "denied",
-      ...(decision.kind === "denied" ? { reason: decision.reason } : {}),
-    },
-  );
+  return recordOf(ctx, id, CORE_TYPES.stepDecision, {
+    invocation: ctx.invocation,
+    key,
+    attempt,
+    requested: decision.requested,
+    final: decision.final,
+    denied: decision.kind === "denied",
+    ...(decision.kind === "denied" ? { reason: decision.reason } : {}),
+  });
 }
 
 /** The last decision recorded for this attempt: a call made again after a cut-off has a later one. */
@@ -1319,10 +1328,9 @@ function latestState(journal: Journal, invocation: InvocationId): InvocationStat
   return (last.data as { state: InvocationState }).state;
 }
 
-/** Commit one record, and let the host's refusal through as what it is. */
-function commit(ctx: RunContext, id: RecordId, type: RecordTypeName, data: unknown): StoredRecord {
-  if (type !== CORE_TYPES.invocationState) startRunning(ctx);
-  const rec: NewRecord = {
+/** A record of this invocation, placed under the record that woke it. */
+function recordOf(ctx: RunContext, id: RecordId, type: RecordTypeName, data: unknown): NewRecord {
+  return {
     id,
     stream: ctx.stream,
     type,
@@ -1332,11 +1340,21 @@ function commit(ctx: RunContext, id: RecordId, type: RecordTypeName, data: unkno
     cause: ctx.cause,
     root: ctx.root,
   };
+}
+
+/** Commit records in one write, and let the host's refusal through as what it is. */
+function commitAll(ctx: RunContext, recs: NewRecord[]): StoredRecord[] {
+  if (recs.some((rec) => rec.type !== CORE_TYPES.invocationState)) startRunning(ctx);
   try {
-    return first(ctx.deps.append([rec]));
+    return ctx.deps.append(recs);
   } catch (error) {
     return appendFailed(ctx, error);
   }
+}
+
+/** Commit one record, and let the host's refusal through as what it is. */
+function commit(ctx: RunContext, id: RecordId, type: RecordTypeName, data: unknown): StoredRecord {
+  return first(commitAll(ctx, [recordOf(ctx, id, type, data)]));
 }
 
 /** The one record a single-record commit returns. */

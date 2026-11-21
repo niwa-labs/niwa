@@ -135,3 +135,30 @@ test("another call under a key that is being run is judged by what the first one
   b.close();
 });
 
+
+test("a denied step is written whole or not at all, so a restart never finds it cut off", async () => {
+  const seen: unknown[] = [];
+  for (let writes = 0; writes <= 3; writes++) {
+    const b = await bench({ intercepts: { adjusts: [], guards: [() => deny("not now")] } });
+    const { made, calls } = counted("step.send", "do-not-repeat", Any, () => ({ n: 1 }));
+    // The run is cut off after `writes` writes of step records, then the host starts again.
+    let written = 0;
+    b.cutOffWhen((recs) => {
+      if (!recs.some((rec) => rec.type.startsWith("niwa.step."))) return false;
+      written += 1;
+      return written > writes;
+    });
+    const handler: Handle = async (_data, step) => {
+      await step(made, {});
+    };
+    await b.run(handler);
+    b.cutOffWhen(undefined);
+    await b.run(handler);
+    const outcome = b.records(CORE_TYPES.stepOutcome).map((rec) => (rec.data as { outcome: { status: string } }).outcome.status);
+    seen.push({ writes, calls: calls.count, outcome, reason: b.lastState()?.reason });
+    b.close();
+  }
+  const denied = { calls: 0, outcome: ["denied"], reason: "step 1: denied" };
+  expect(seen).toEqual([0, 1, 2, 3].map((writes) => ({ writes, ...denied })));
+});
+
