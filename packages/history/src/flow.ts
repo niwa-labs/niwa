@@ -38,7 +38,7 @@ export type ReadSessionInput = z.input<typeof historyRead.input>;
 
 /** One window of a read. */
 export interface SessionWindow {
-  /** How the window was kept, as asked: `digest` when the read named no mode. */
+  /** How the window was kept, as asked: `digest` when the read named no mode, `full` for a read of the records before a locator. */
   readonly mode: "full" | "digest" | "brief";
   /** The entries of a digest, in the order of the session; empty for the other modes. */
   readonly entries: DigestEntry[];
@@ -54,6 +54,8 @@ export interface SessionWindow {
   readonly files: FileIndex;
   /** How many records left nothing in the window. */
   readonly omitted: number;
+  /** True when a read of the records before a locator found more before them; false for every other read. */
+  readonly hasEarlier: boolean;
   /** True when the read started over: the position given belonged to another source, and what was gathered before no longer holds. */
   readonly restarted: boolean;
 }
@@ -64,7 +66,8 @@ export interface SessionWindow {
  * is not "nothing is there".
  */
 export async function readSession(label: string, input: ReadSessionInput): Promise<SessionWindow> {
-  const mode = input.mode ?? "digest";
+  // Records before a locator are read whole: a digest is the default of a read forward only.
+  const mode = input.mode ?? (input.window === undefined ? "digest" : "full");
   const answer = (await call("history.read", { ...input, mode }, { label })) as z.output<typeof ReadAnswerSchema>;
   const { coverage } = answer;
   if (coverage.status === "failed" || coverage.status === "unavailable") {
@@ -80,6 +83,7 @@ export async function readSession(label: string, input: ReadSessionInput): Promi
       upto: answer.records.length === 0 ? null : answer.records[answer.records.length - 1]!.locator,
       files: { files: [] },
       omitted: 0,
+      hasEarlier: answer.page?.hasEarlier ?? false,
       restarted: answer.records.some((record) => record.reanchored === true),
     };
   }
@@ -93,6 +97,7 @@ export async function readSession(label: string, input: ReadSessionInput): Promi
     upto: digest.upto,
     files: digest.files as FileIndex,
     omitted: digest.omitted,
+    hasEarlier: false,
     restarted: digest.restarted,
   };
 }

@@ -97,3 +97,15 @@ test("a read that started over says so, and one that could not be made throws in
   script({ instance: { ...instance, sides: {} } as Harness });
   await expect(readSession("missing", { session: ID, mode: "full" })).rejects.toThrow();
 });
+
+test("a window of the records before a locator is read whole, and says whether there are earlier ones", async () => {
+  script({ instance, reading: readingOf(records) });
+  const last = await readSession("tail", { session: ID, window: { limit: 2 } });
+  expect(calls).toMatchObject([{ name: "history.read", input: { mode: "full", window: { limit: 2 } } }]);
+  expect(last.records.map((record) => record.locator)).toEqual([at(3), at(4)]);
+  expect(last.hasEarlier).toBe(true);
+  const first = await readSession("head", { session: ID, window: { limit: 2, before: at(3) } });
+  expect(first.records.map((record) => record.locator)).toEqual([at(1), at(2)]);
+  expect(first.hasEarlier).toBe(false);
+  expect((await readSession("forward", { session: ID, mode: "full" })).hasEarlier).toBe(false);
+});
