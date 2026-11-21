@@ -216,6 +216,82 @@ test("telegram: the owner's message is one record, a foreign chat is only noted"
   }
 }, 30_000);
 
+test("telegram: only the owner's private chat is the owner, a group of the same id is not", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    host.use(telegram(options(fake.base)));
+    await host.serve();
+
+    // A group with the configured id, a private chat written to by somebody else, and a message
+    // that names no sender: none of them is the owner.
+    const inGroup = messageUpdate(110, OWNER, "from a group") as { message: { chat: { type: string } } };
+    inGroup.message.chat.type = "supergroup";
+    const bySomebodyElse = messageUpdate(111, OWNER, "from a stranger") as { message: { from: { id: number } } };
+    bySomebodyElse.message.from.id = FOREIGN;
+    const anonymous = messageUpdate(112, OWNER, "from nobody") as { message: { from?: unknown } };
+    delete anonymous.message.from;
+    for (const update of [inGroup, bySomebodyElse, anonymous]) fake.push(update);
+    fake.push(messageUpdate(113, OWNER, "from the owner"));
+    await eventually(() => fake.offsets.includes(114), 5_000, "the offset should pass the updates");
+
+    const records = await recordsOf(home.path);
+    expect(records.filter((record) => record.type === Received.name).map((record) => (record.data as { text: string }).text)).toEqual([
+      "from the owner",
+    ]);
+    expect(records.filter((record) => record.type === Ignored.name)).toHaveLength(3);
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: a button pressed by somebody else in the owner's chat is not the owner's answer", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    const surface = telegram(options(fake.base));
+    host.use(requests({ bind: surface.bind() }));
+    host.use(asker());
+    host.use(surface);
+    await host.serve();
+
+    const client = await connectAsOwner(home.path);
+    await client.emit(Start, { to: { kind: "owner" } });
+    await eventually(() => fake.sent.length === 1, 5_000, "the request should be posted");
+    const data = fake.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]?.callback_data ?? "";
+
+    const press = callbackUpdate(520, 1, data) as { callback_query: { from: { id: number }; message: { chat: { type: string } } } };
+    press.callback_query.from.id = FOREIGN;
+    fake.push(press);
+    const inGroup = callbackUpdate(521, 1, data) as { callback_query: { message: { chat: { type: string } } } };
+    inGroup.callback_query.message.chat.type = "group";
+    fake.push(inGroup);
+    await eventually(() => fake.offsets.includes(522), 5_000, "the presses should be handled");
+
+    const records = await recordsOf(home.path);
+    expect(records.filter((record) => record.type === Ignored.name)).toHaveLength(2);
+    expect(records.filter((record) => record.type === RequestAnswered.name)).toHaveLength(0);
+    await client.close();
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: a surface for the owner is refused when its chat is not a private one", () => {
+  const options = { token: "test-token", owner: chatId(-1001234567890), speaksFor: "owner" } as const;
+  expect(() => telegram(options)).toThrow("private chat");
+  expect(() => telegram({ ...options, owner: chatId(0) })).toThrow("private chat");
+  expect(() => telegram({ ...options, owner: chatId(1.5) })).toThrow("private chat");
+});
+
 test("telegram: after a restart the offset comes from the journal", async () => {
   const home = await tempHome();
   const fake = fakeTelegram();

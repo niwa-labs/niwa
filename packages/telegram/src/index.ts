@@ -49,6 +49,7 @@ import {
   type InlineKeyboard,
   type MessageId,
   type Update,
+  type UserId,
   type UpdateId,
 } from "./bot.ts";
 
@@ -157,7 +158,7 @@ const OFFSET_TYPES = [Received, Ignored, Answered];
 export interface TelegramOptions {
   /** The token of the bot: what Telegram gave it. */
   readonly token: string;
-  /** The chat of the owner. Only this chat is read. */
+  /** The private chat of the owner: its id is the owner's user id, and it is positive. Only this chat is read. */
   readonly owner: ChatId;
   /**
    * Speak for the owner: a press of a button in the owner's chat answers a request addressed to
@@ -304,8 +305,8 @@ export class TelegramService {
     const message = update.message;
     if (message === undefined) return;
 
-    // Who is speaking is the chat of the update, never anything the text says.
-    if (message.chat.id !== this.owner) {
+    // Who is speaking is the chat and the sender of the update, never anything the text says.
+    if (!this.isOwner(message.chat, message.from)) {
       await this.write(
         Ignored,
         { update: update.update_id, chat: message.chat.id, message: message.message_id },
@@ -328,6 +329,17 @@ export class TelegramService {
     );
   }
 
+  /**
+   * Whether the update comes from the owner: the owner's private chat, and the owner in it.
+   *
+   * A private chat has the id of the one who writes in it, so both must say the owner. A group
+   * that happens to be configured, or a message forwarded into one, is not the owner: the people
+   * in a group are not the owner, whatever the chat id.
+   */
+  private isOwner(chat: { readonly id: ChatId; readonly type: string }, from: { readonly id: UserId } | undefined): boolean {
+    return chat.type === "private" && chat.id === this.owner && from !== undefined && (from.id as number) === (this.owner as number);
+  }
+
   /** A button was pressed: it is the owner's answer to the request the message shows. */
   private async handleCallback(
     update: UpdateId,
@@ -335,9 +347,9 @@ export class TelegramService {
   ): Promise<void> {
     const message = query.message;
     if (message === undefined) return;
-    // The chat of the message decides who pressed: a press in another chat is noted, never obeyed.
-    // (A message id is only unique within its chat, so it is not looked up before this check.)
-    if (message.chat.id !== this.owner) {
+    // The chat of the message and the one who pressed decide: a press of another is noted, never
+    // obeyed. (A message id is only unique within its chat, so it is not looked up before this check.)
+    if (!this.isOwner(message.chat, query.from)) {
       await this.write(
         Ignored,
         { update, chat: message.chat.id, message: message.message_id },
@@ -443,6 +455,11 @@ export interface TelegramPlugin extends Plugin {
 
 /** The plugin of the Telegram surface. The service polls while the host serves. */
 export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): TelegramPlugin {
+  // Only a private chat is the owner's, and its id is a positive number: the id of a group is
+  // negative, and a surface told to speak for the owner in one would speak for everyone in it.
+  if (!Number.isSafeInteger(opts.owner) || opts.owner <= 0) {
+    throw new Error(`the owner of the telegram surface must be a private chat, whose id is positive: got ${String(opts.owner)}`);
+  }
   const service = new TelegramService(opts, hooks);
   const send = telegramSend({ bot: service.client, owner: opts.owner });
 

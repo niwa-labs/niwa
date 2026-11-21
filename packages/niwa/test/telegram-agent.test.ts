@@ -5,7 +5,7 @@
 import { expect, test } from "bun:test";
 
 import { chatId, telegram } from "@niwa-labs/telegram";
-import type { Bot, ChatId, MessageId, Update, UpdateId } from "@niwa-labs/telegram";
+import type { Bot, ChatId, MessageId, Update, UpdateId, UserId } from "@niwa-labs/telegram";
 import { connectAsOwner, createNiwa, eventually, tempHome } from "@niwa-labs/testing";
 
 import { HarnessInstanceRegistry, agentTell, defaultComposition } from "../src/index.ts";
@@ -36,7 +36,7 @@ function fakeBot(): { bot: Bot; push(update: Update): void; sent: string[] } {
 function messageUpdate(id: number, chat: ChatId, text: string): Update {
   return {
     update_id: id as UpdateId,
-    message: { message_id: (id * 10) as MessageId, chat: { id: chat, type: "private" }, date: 1_700_000_000, text },
+    message: { message_id: (id * 10) as MessageId, chat: { id: chat, type: "private" }, date: 1_700_000_000, text, from: { id: chat as number as UserId } },
   };
 }
 
