@@ -12,16 +12,15 @@ import { z } from "zod";
 import { WAIT_NAME } from "./bridge.ts";
 import { RunRequested, RunStarted } from "./records.ts";
 
-const Intent = z.object({ action: z.string(), key: z.string(), input: z.unknown().optional() });
+const Intent = z.object({ action: z.string(), key: z.string(), operationId: z.string(), input: z.unknown().optional() });
 
-const AGENT = "session.start";
+const START = "session.start";
 
 /** The text after `label:`, or the key as it is. */
 const labelOf = (key: string): string => key.replace(/^label:/, "");
 
 /**
- * What the run waits for: `sleep <label> until HH:MM:SS`, `ask <request>`, `agent <harness> session
- * <session> turn N`, `wait <type>`, or the action it calls. Nothing when it is not waiting for anything.
+ * What the run waits for: `sleep <label> until HH:MM:SS`, `ask <request>`, `session <harness> <session> turn N`, `wait <type>`, or the action it calls. Nothing when it is not waiting for anything.
  */
 export function waitingFor(journal: JournalReader, run: string, requests: readonly string[]): string | undefined {
   const asked = requests[0];
@@ -35,15 +34,19 @@ export function waitingFor(journal: JournalReader, run: string, requests: readon
     .find({ type: CORE_TYPES.stepIntent, field: "invocation", equals: invocation })
     .find((row) => !ended.some((outcome) => outcome.seq > row.seq && (outcome.data as { key?: unknown }).key === (row.data as { key?: unknown }).key));
   if (intent === undefined) return undefined;
-  const { action, key, input } = Intent.parse(intent.data);
-  const given = (input ?? {}) as { type?: unknown; types?: unknown; verb?: unknown; name?: unknown };
-  if (action === AGENT || action.startsWith(`${AGENT}.`)) {
-    const harness = action.slice(AGENT.length + 1);
-    const session = journal.find({ type: SessionStarted.name }).filter((row) => row.root === requested.root).at(-1);
-    if (session === undefined) return `agent ${harness} starting`;
-    const started = SessionStarted.schema.parse(session.data);
+  const { action, key, operationId, input } = Intent.parse(intent.data);
+  const given = (input ?? {}) as { type?: unknown; types?: unknown; verb?: unknown; name?: unknown; session?: unknown };
+  if (action === START || action.startsWith(`${START}.`) || action === "session.ask") {
+    const row = action === "session.ask" && typeof given.session === "string"
+      ? journal.find({ type: SessionStarted.name, field: "id", equals: given.session }).at(-1)
+      : journal.find({ type: SessionStarted.name }).findLast((row) =>
+          row.actor.kind === "handler" && row.actor.invocation === invocation &&
+          (row.id.startsWith(`${operationId}/emit/`) || row.id.startsWith(`${operationId}.step-`)));
+    if (row === undefined) return action === "session.ask" ? "session turn" : `starting session ${action.slice(START.length + 1)}`.trim();
+    const started = SessionStarted.schema.parse(row.data);
     const turn = journal.find({ type: SessionTurnStarted.name, field: "session", equals: started.session }).at(-1);
-    return `agent ${harness} session ${started.id}${turn === undefined ? "" : ` turn ${String(SessionTurnStarted.schema.parse(turn.data).turn)}`}`;
+    const harness = started.session.slice(0, started.session.indexOf(" "));
+    return `session ${harness} ${started.id}${turn === undefined ? "" : ` turn ${String(SessionTurnStarted.schema.parse(turn.data).turn)}`}`;
   }
   if (action === WAIT_ACTION || action === WAIT_NAME) {
     if (given.type === "timer.slept") {

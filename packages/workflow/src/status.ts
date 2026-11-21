@@ -92,7 +92,7 @@ export const RunStatus = z.object({
   currentPhases: z.array(z.string()).optional(),
   /** The phases the script declares, in order, each done, current or ahead. Absent when it declares none. */
   phases: z.array(PhaseProgress).optional(),
-  /** What a run that is going waits for: `sleep nap until 14:30:00`, `ask …label:ship`, `agent claude-haiku session … turn 1`, `wait <type>`. */
+  /** What a run that is going waits for: `sleep nap until 14:30:00`, `ask …label:ship`, `session claude-haiku … turn 1`, `wait <type>`. */
   waiting: z.string().optional(),
 });
 export type RunStatus = z.infer<typeof RunStatus>;

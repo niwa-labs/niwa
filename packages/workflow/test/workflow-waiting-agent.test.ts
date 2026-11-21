@@ -1,4 +1,4 @@
-// A run that waits for an agent says which: `agent <harness> session <session> turn N`.
+// A run that waits for an agent says which: `session <harness> <session> turn N`.
 // The agent action here is a stub that records the start of a session and a turn, then holds.
 
 import { afterEach, expect, test } from "bun:test";
@@ -51,7 +51,7 @@ test("a run waiting for an agent shows its harness, session and turn", async () 
   hosts.push(host);
   await mkdir(home.path, { recursive: true });
   const file = join(home.path, "agent.js");
-  await writeFile(file, 'export default workflow({ output: z.json() }, async () => { return await agent("hello", { harness: "fake" }); });');
+  await writeFile(file, 'export default workflow({ output: z.json() }, async () => { return await ask({ harness: "fake" }, "hello"); });');
   await host.call(actionName("workflow.start"), { file });
   const started = Date.now();
   let line = "";
@@ -59,6 +59,6 @@ test("a run waiting for an agent shows its harness, session and turn", async () 
     line = ((await host.call(actionName("workflow.runs"), {})) as { runs: string[] }).runs[0] ?? "";
     await Bun.sleep(100);
   }
-  expect(line).toContain("running  agent fake session s-0a1b2c turn 1");
+  expect(line).toContain("running  session fake s-0a1b2c turn 1");
   gate(home.path, "agent-held").open();
 }, 30_000);

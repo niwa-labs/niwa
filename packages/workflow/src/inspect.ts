@@ -45,6 +45,7 @@ export const WorkflowInspection = z.object({
     startedAt: ReceivedAt.optional(),
     finishedAt: ReceivedAt.optional(),
   }),
+  sessions: z.array(z.object({ id: NiwaSessionIdSchema, ref: z.string(), parentSession: z.string().optional(), startedAt: ReceivedAt })),
   /** The phases the script declares, in order, each done, current or ahead, with the steps that named it. Empty when it declares none. */
   phases: z.array(PhaseProgress.extend({ steps: z.array(WorkflowStep) })),
   /** The steps that named no phase. */
@@ -62,7 +63,11 @@ const Intent = z.object({
 const Outcome = z.object({ outcome: z.object({ status: z.enum(["completed", "failed", "denied", "unknown", "cancelled"]) }) });
 const Resolution = z.object({ key: z.string(), choice: z.enum(["retry", "skip", "cancel"]), attempt: z.number().int() });
 const State = z.object({ state: z.string(), reason: z.string().optional(), key: z.string().optional() });
-const Prompt = z.object({ prompt: z.string() });
+const Prompt = z.object({
+  prompt: z.union([z.string(), z.object({ sections: z.array(z.object({ text: z.string() })) }).transform(({ sections }) => sections.map(({ text }) => text).join("\n\n"))]),
+});
+const OwnedSession = SessionStarted.schema.and(z.object({ parentSession: z.string().optional() }));
+const SessionTarget = z.object({ session: NiwaSessionIdSchema });
 const Question = z.object({ input: z.object({ title: z.string() }) });
 const AskEnd = z.object({ outcome: z.object({ status: z.literal("completed"), value: z.object({ ended: z.enum(["cancelled", "expired"]) }) }) });
 
@@ -126,6 +131,10 @@ export function inspectRun(journal: JournalReader, run: RunId): WorkflowInspecti
     origin: { file, label, workflow, version, installation, directory, requestedAt: at(requested), startedAt: started && at(started), finishedAt: ended && at(ended) },
     phases,
     steps,
+    sessions: forRun(SessionStarted.name).map((row) => {
+      const session = OwnedSession.parse(row.data);
+      return { id: session.id, ref: session.session, parentSession: session.parentSession, startedAt: at(row) };
+    }),
   };
 }
 
@@ -191,7 +200,7 @@ function invocationSteps(
         : cancelledDuringCall ? "cancelled"
         : settled === "denied" ? "failed"
         : settled ?? (pauseKey === key || nestedPause ? "paused" : state?.state === "done" ? "unknown" : "running"),
-      session: sessionOf(journal, invocation, row, operationId),
+      session: action === "session.ask" || action === "session.end" ? SessionTarget.safeParse(input).data?.session : sessionOf(journal, invocation, row, operationId),
       ...(recovery !== undefined && recovery !== "repeat" ? { effect: true } : {}),
     };
     steps.push({ row, step });
