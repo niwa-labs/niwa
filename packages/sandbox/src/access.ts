@@ -219,13 +219,15 @@ export function sandbox(options: SandboxOptions = {}): SandboxHost {
       installations.set(owner, profile);
     },
     plan(input) {
-      return planBox(input, { profiles, installations, closed: extraClosed });
+      return planBox(input, { profiles, catalog: new Set(Object.keys(catalog)), installations, closed: extraClosed });
     },
   };
 }
 
 interface Registry {
   readonly profiles: ReadonlyMap<string, BoxProfile>;
+  /** The names of the catalog's profiles, whose read side the toolchains take. */
+  readonly catalog: ReadonlySet<string>;
   readonly installations: ReadonlyMap<string, BoxProfile>;
   readonly closed: readonly string[];
 }
@@ -303,12 +305,13 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     ...[...known].filter(([name]) => !taken.has(name)).map(([name, profile]): [string, BoxProfile] => [`profile:${name}`, profile]),
     ...[...registry.installations].filter(([owner]) => owner !== input.owner).map(([owner, profile]): [string, BoxProfile] => [`harness:${owner}`, profile]),
   ];
-  // The toolchains take what every profile a box may ask for reads (its program, its configuration),
-  // never what it writes: a tool runs, its caches and its sign-in stay its own.
+  // The toolchains take what each profile of the catalog reads (its program, its configuration), never
+  // what it writes: a tool runs, its caches and its credentials stay its own. A host's own profiles
+  // are not theirs to open: what one reads may be a token.
   const withToolchains = request.items.some(({ item }) => item === "toolchains");
   for (const [from, profile] of others) {
     const of = profileOf(from, profile);
-    const read = withToolchains && from.startsWith("profile:") ? [] : of.read;
+    const read = withToolchains && from.startsWith("profile:") && registry.catalog.has(from.slice("profile:".length)) ? [] : of.read;
     for (const path of [...read, ...of.write]) {
       if (of.programs.includes(path)) continue;
       if (takenPaths.some((mine) => covers(mine, path))) continue;
@@ -359,6 +362,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
       if (fromCall) needs(defaultNames.has("project"), "box.use@project");
     } else if (item === "toolchains") {
       for (const [name, profile] of known) {
+        if (!registry.catalog.has(name)) continue;
         const of = profileOf(`profile:${name}`, profile);
         for (const path of of.read) if (!of.write.some((written) => covers(written, path))) paths.push({ path, mode: "read", from: "toolchains" });
       }

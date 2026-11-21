@@ -298,15 +298,18 @@ test("a box that writes its directory gets what git keeps of it outside: a workt
   expect(inner.paths).toContainEqual({ path: join(main, ".git"), mode: "write", from: "repository" });
 });
 
-test("the toolchains read what every profile a box may ask for reads, and nothing it writes", () => {
+test("the toolchains read what each profile of the catalog reads, and nothing it writes, nor anything of a host's profile", () => {
+  const home = realpathSync(homedir());
   const plan = host().plan({ cwd: at("work"), defaults: { allow: ["toolchains"] }, owner: "pi", network: false });
-  expect(plan.paths).toContainEqual({ path: at("tool.conf"), mode: "read", from: "toolchains" });
-  expect(closes(plan, at("tool.conf"))).toBe(false);
-  expect(closes(plan, at("tool-cache"))).toBe(true);
-  // npm writes its configuration, which may hold a token: it stays npm's.
-  expect(closes(plan, join(realpathSync(homedir()), ".npmrc"))).toBe(true);
-  // An installation's places are no tool's: the toolchains open none of them.
+  expect(plan.paths).toContainEqual({ path: join(home, ".gitconfig"), mode: "read", from: "toolchains" });
+  expect(closes(plan, join(home, ".gitconfig"))).toBe(false);
+  // What a tool writes stays its own: npm's configuration and git's stored credentials may hold tokens.
+  expect(closes(plan, join(home, ".npmrc"))).toBe(true);
+  expect(closes(plan, join(home, ".git-credentials"))).toBe(true);
+  expect(closes(plan, join(home, ".config", "git", "credentials"))).toBe(true);
+  // A host's own profile is not the toolchains' to open, nor is an installation's.
+  expect(closes(plan, at("tool.conf"))).toBe(true);
   expect(closes(plan, at("codex"))).toBe(true);
   const bare = host().plan({ cwd: at("work"), defaults: { allow: [] }, owner: "pi", network: false });
-  expect(closes(bare, at("tool.conf"))).toBe(true);
+  expect(closes(bare, join(home, ".gitconfig"))).toBe(true);
 });

@@ -12,10 +12,17 @@ import type { BoxProfile } from "./profile.ts";
 
 export type { BoxProfile, ProfileContext, ProfilePaths } from "./profile.ts";
 
-/** git: the program and the user's configuration. */
-export const git: BoxProfile = ({ home, env, bin }) => ({
-  read: [...bin("git"), `${home}/.gitconfig`, `${env["XDG_CONFIG_HOME"] ?? `${home}/.config`}/git`],
-});
+/**
+ * git: the program and the user's configuration, its ignores and attributes. The credentials git's
+ * store keeps are written by it, so they stay git's: a box that does not take git does not read them.
+ */
+export const git: BoxProfile = ({ home, env, bin }) => {
+  const config = `${env["XDG_CONFIG_HOME"] ?? `${home}/.config`}/git`;
+  return {
+    read: [...bin("git"), `${home}/.gitconfig`, `${config}/config`, `${config}/ignore`, `${config}/attributes`],
+    write: [`${home}/.git-credentials`, `${config}/credentials`],
+  };
+};
 
 /** node: the runtime. */
 export const node: BoxProfile = ({ bin }) => ({ read: bin("node") });
