@@ -24,6 +24,7 @@ import type { ResolvedQuery } from "../record-query.ts";
 import { realClock } from "../clock.ts";
 import type { Clock } from "../clock.ts";
 import { recordId, recordTypeName, seq as seqOf, stableJson, streamId, timestamp } from "../record.ts";
+import { RECORD_DATA_LIMIT, RecordTooLarge } from "../stores.ts";
 import type {
   AppendEntry,
   Caller,
@@ -521,12 +522,16 @@ class SqliteJournal implements Journal {
   }
 
   private insert(rec: NewRecord, at: number): StoredRecord {
+    const data = stableJson(rec.data);
+    // A record holds what niwa did and decided; anything larger is an artifact the record points at.
+    const size = Buffer.byteLength(data);
+    if (size > RECORD_DATA_LIMIT) throw new RecordTooLarge(rec.type, size);
     const row = this.db
       .query<RecordRow, SQLQueryBindings[]>(
         "INSERT INTO records (id, stream, type, schema, data, actor, cause, root, at) " +
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
       )
-      .get(rec.id, rec.stream, rec.type, rec.schema, stableJson(rec.data), stableJson(rec.actor), rec.cause, rec.root, at);
+      .get(rec.id, rec.stream, rec.type, rec.schema, data, stableJson(rec.actor), rec.cause, rec.root, at);
     if (row === null) throw new Error("the journal wrote no record");
     return decode(row);
   }

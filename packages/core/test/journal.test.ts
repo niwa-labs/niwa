@@ -12,6 +12,8 @@ import {
   IntegrityError,
   LostOwnership,
   WriterBusy,
+  RECORD_DATA_LIMIT,
+  RecordTooLarge,
   recordId,
   recordTypeName,
   seq,
@@ -137,4 +139,15 @@ test("a journal of the previous schema gets the stream index and reads by stream
   const names = check.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'index'").all();
   check.close();
   expect(names.map((n) => n.name)).toContain("records_stream");
+});
+
+test("a record whose data is larger than a record may be is refused, and nothing of its batch is written", async () => {
+  const home = await tempHome();
+  const journal = openJournal(home.path);
+  const big = "x".repeat(RECORD_DATA_LIMIT);
+  expect(() => journal.appendMany([rec("a"), rec("b", null, { big })])).toThrow(RecordTooLarge);
+  expect(journal.get(recordId("a"))).toBeUndefined();
+  // Just under the limit is a record like any other.
+  expect(journal.append(rec("c", null, { big: big.slice(0, RECORD_DATA_LIMIT - 20) })).seq).toBe(seq(1));
+  journal.close();
 });
