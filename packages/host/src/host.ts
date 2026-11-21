@@ -994,6 +994,21 @@ class Niwa implements Host {
         type: entry.type,
       });
     }
+    // A plugin that read a point when it was installed keeps what it read: a replacement of the plugin that
+    // offered there that offers something else is refused, because the reader would go on with the old.
+    const replaced = this.plugins.get(plugin.name);
+    if (replaced !== undefined) {
+      for (const [name, other] of this.plugins) {
+        if (name === plugin.name) continue;
+        for (const point of other.readInSetup) {
+          if (offeredAt(replaced, point) !== offeredAt(installed, point)) {
+            throw new TypeError(
+              `plugin "${plugin.name}" changes what it offers at "${point}", which "${name}" read when it was installed: unload "${name}" first and install it again after this one`,
+            );
+          }
+        }
+      }
+    }
     // The owner of a record type is one plugin: two would each be refused the other's writes, and a
     // name under another plugin's family would have two schemas.
     for (const [name, other] of this.plugins) {
@@ -3055,6 +3070,26 @@ function combinedFilter(where: string, source: Trigger<any>, added: unknown): Re
     }
   }
   return { ...own, ...extra };
+}
+
+/** A value of an offer as text that is the same for the same code: a record type by its name and version, a function by its source. */
+function offerText(value: unknown): string {
+  const plain = (one: unknown): unknown => {
+    if (typeof one === "function") return `fn:${one.toString()}`;
+    if (Array.isArray(one)) return one.map(plain);
+    if (typeof one === "object" && one !== null) {
+      const typed = one as { kind?: unknown; name?: unknown; version?: unknown };
+      if (typed.kind === "record" && typeof typed.name === "string") return `record:${typed.name}@${String(typed.version)}`;
+      return Object.fromEntries(Object.entries(one).map(([key, inner]) => [key, plain(inner)]));
+    }
+    return one;
+  };
+  return stableJson(plain(value));
+}
+
+/** What a plugin offers at a point, in order, as one text: two versions that offer the same are the same here. */
+function offeredAt(installed: Installed, point: string): string {
+  return offerText(installed.offers.filter((one) => one.key.name === point).map((one) => one.value));
 }
 
 /** Does a value behave as a promise? */
