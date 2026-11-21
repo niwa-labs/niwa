@@ -16,8 +16,11 @@
  * The routes:
  *
  * - `GET /login?secret=` — the one-time link the server prints: it sets the cookie;
- * - `GET /` — the cockpit;
+ * - `GET /` — the cockpit app, when the surface is given one, else the page of the composition;
+ * - `GET /assets/…`, `GET /modules/<id>/<hash>/…` — the app's files, and the client modules of the plugins, built for the
+ *   browser from the source the host lists; every other address of the app is the app's page, which routes it;
  * - `GET /api/viewer` — who is looking: the principal and the actions its grant lets it call;
+ * - `GET /api/catalogue` — the client modules the host lists, with the addresses they are served at;
  * - `GET /api/info` — the actions the viewer may call, the position of the journal, journal field names, the harnesses
  *   with an agent action and the input schema of `session.start`;
  * - `GET /api/history?after=` — up to 128 records after a journal position;
@@ -43,6 +46,8 @@ import { readOwnerToken, connect, HostError, RECORDS_READ_ACTION } from "@niwa-l
 import type { ActionName, Description, SpeaksFor } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
 
+import { ASSETS_PREFIX, assetFile, catalogueOf, MODULES_PREFIX, ModuleBuilds, pageOf, typeOf } from "./app.ts";
+import type { WebApp } from "./app.ts";
 import { followFeed, readFeed } from "./feed.ts";
 import { viewerOf } from "./viewer.ts";
 import { LOGIN_PATH, WebLogin } from "./login.ts";
@@ -51,6 +56,7 @@ import { chainOf } from "./trace.ts";
 import type { Chain } from "./trace.ts";
 
 export { feedOf } from "./feed.ts";
+export type { WebApp } from "./app.ts";
 export type { Chain, ChainRecord } from "./trace.ts";
 
 /**
@@ -81,6 +87,11 @@ export interface WebOptions {
   readonly ownerActions?: readonly OwnerAction[];
   /** The pages the surface serves. The web surface draws none itself: the composition that serves it brings them. */
   readonly pages: WebPages;
+  /**
+   * The cockpit app: its built files and the modules its client modules share. With it `/` is the app and the addresses of
+   * the app are its page; without it the surface serves only the pages above and the API.
+   */
+  readonly app?: WebApp;
 }
 
 /** The two pages of the web surface: the feed at `/` and the trace of one record. */
@@ -111,6 +122,18 @@ interface Calls {
   readonly body: z.ZodType<{ action: string; input: Record<string, unknown> }>;
 }
 
+/** What a route needs beyond the request: the host, the login, the open streams and what the surface serves. */
+interface Context {
+  readonly api: NiwaApi;
+  readonly login: WebLogin;
+  readonly streams: Set<() => void>;
+  readonly calls: Calls;
+  readonly pages: WebPages;
+  readonly app: WebApp | undefined;
+  readonly builds: ModuleBuilds;
+  readonly speaksForOwner: boolean;
+}
+
 /** A running web surface. */
 export interface WebServer {
   readonly port: number;
@@ -128,9 +151,17 @@ export async function serveWeb(options: WebOptions): Promise<WebServer> {
     throw new Error(`the host of ${options.home} has not made the owner's token, so the web surface cannot speak for the owner`);
   }
   const api = await connect({ home: options.home, id: WEB_CLIENT_ID, ...(token === undefined ? {} : { token }) });
-  const login = new WebLogin();
-  const calls = callsOf(options.ownerActions ?? []);
-  const streams = new Set<() => void>();
+  const context: Context = {
+    api,
+    login: new WebLogin(),
+    streams: new Set<() => void>(),
+    calls: callsOf(options.ownerActions ?? []),
+    pages: options.pages,
+    app: options.app,
+    builds: new ModuleBuilds(),
+    speaksForOwner: options.speaksFor === "owner",
+  };
+  const { login, streams } = context;
   let server: ReturnType<typeof Bun.serve>;
   try {
     server = Bun.serve({
@@ -138,7 +169,7 @@ export async function serveWeb(options: WebOptions): Promise<WebServer> {
       port: options.port ?? 0,
       async fetch(request, listener) {
         try {
-          const response = await route(api, login, streams, calls, options.pages, request, options.speaksFor === "owner");
+          const response = await route(context, request);
           if (response.headers.get("content-type") === SSE_TYPE) listener.timeout(request, 0);
           return response;
         } catch (error) {
@@ -178,6 +209,7 @@ const METHODS: Readonly<Record<string, string>> = {
   "/events": "GET",
   "/api/info": "GET",
   "/api/viewer": "GET",
+  "/api/catalogue": "GET",
   "/api/source": "GET",
   "/api/history": "GET",
   "/api/events": "GET",
@@ -188,15 +220,8 @@ const METHODS: Readonly<Record<string, string>> = {
 };
 
 /** The route of one request. */
-async function route(
-  api: NiwaApi,
-  login: WebLogin,
-  streams: Set<() => void>,
-  calls: Calls,
-  pages: WebPages,
-  request: Request,
-  speaksForOwner: boolean,
-): Promise<Response> {
+async function route(context: Context, request: Request): Promise<Response> {
+  const { api, login, streams, calls, pages, app, speaksForOwner } = context;
   const url = new URL(request.url);
   const path = url.pathname;
   if (!LOCAL_HOSTS.has(url.hostname)) return text(403, "this host name is not served");
@@ -208,13 +233,13 @@ async function route(
 
   const tracePrefix = ["/trace/", "/trace-data/"].find((prefix) => path.startsWith(prefix));
   const allowed = tracePrefix === undefined ? METHODS[path] : "GET";
-  if (allowed === undefined) return text(404, "there is no such page");
-  if (request.method !== allowed) {
-    return new Response("the method is not allowed here", {
-      status: 405,
-      headers: { allow: allowed, "content-type": "text/plain; charset=utf-8", ...SECURITY_HEADERS },
-    });
+  if (allowed === undefined) {
+    if (app === undefined || path.startsWith("/api/")) return text(404, "there is no such page");
+    // An address of the app: its files, the client modules, or a page the app routes itself.
+    if (request.method !== "GET") return methodNotAllowed("GET");
+    return appResponse(context, app, path);
   }
+  if (request.method !== allowed) return methodNotAllowed(allowed);
 
   if (tracePrefix !== undefined) return trace(api, pages, path.slice(tracePrefix.length), tracePrefix === "/trace/");
   switch (path) {
@@ -224,11 +249,13 @@ async function route(
       return new Response(null, { status: 302, headers: { location: "/", "set-cookie": cookie, ...SECURITY_HEADERS } });
     }
     case "/":
-      return html(pages.feed());
-    case "/api/info":
-      return cockpitInfo(api);
+      return app === undefined ? html(pages.feed()) : appPage(app);
     case "/api/viewer":
       return json(200, await viewerOf(api, WEB_CLIENT_ID));
+    case "/api/catalogue":
+      return json(200, await catalogueOf(api));
+    case "/api/info":
+      return cockpitInfo(api);
     case "/api/source": {
       if (!speaksForOwner) return text(403, "The source is available to the owner only");
       const at = position(url.searchParams.get("seq") ?? "");
@@ -529,20 +556,87 @@ async function readBody(request: Request): Promise<string | undefined> {
   }
 }
 
-/** Headers for every response: no storage, no sniffing, no framing, only this origin's requests. */
-const SECURITY_HEADERS = {
+const BASE_HEADERS = {
   "cache-control": "no-store",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
+} as const;
+
+/**
+ * The policy of the app and of everything else the surface answers: scripts only from this origin (the app's own and the
+ * client modules, as modules), inline styles because components set style attributes, requests only to this origin.
+ */
+function appPolicy(inlineScript?: string): string {
+  const scripts = inlineScript === undefined ? "'self'" : `'self' ${inlineScript}`;
+  return `default-src 'none'; script-src ${scripts}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+}
+
+/** Headers for every response: no storage, no sniffing, no framing, only this origin's requests. */
+const SECURITY_HEADERS = { ...BASE_HEADERS, "content-security-policy": appPolicy() } as const;
+
+/** The pages a composition brings carry their own inline script: they are the one thing that may. */
+const PAGE_HEADERS = {
+  ...BASE_HEADERS,
   "content-security-policy":
     "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'",
 } as const;
 
 function html(body: string): Response {
   return new Response(body, {
-    headers: { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS },
+    headers: { "content-type": "text/html; charset=utf-8", ...PAGE_HEADERS },
   });
+}
+
+function methodNotAllowed(allowed: string): Response {
+  return new Response("the method is not allowed here", {
+    status: 405,
+    headers: { allow: allowed, "content-type": "text/plain; charset=utf-8", ...SECURITY_HEADERS },
+  });
+}
+
+/** The page of the app, with the import map the client modules share and the policy that lets that one script run. */
+async function appPage(app: WebApp): Promise<Response> {
+  const page = await pageOf(app);
+  return new Response(page.html, {
+    headers: { "content-type": "text/html; charset=utf-8", ...BASE_HEADERS, "content-security-policy": appPolicy(page.hash) },
+  });
+}
+
+/** A file that never changes under its name: the name carries the hash of what it holds. */
+const IMMUTABLE = "public, max-age=31536000, immutable";
+
+/** `/modules/<id>/<hash>/index.js` and `/modules/<id>/<hash>/style-<n>-<hash>.css`. */
+const MODULE_PATH = /^\/modules\/([^/]+)\/([0-9a-f]{64})\/(index\.js|style-(\d+)-([0-9a-f]{12})\.css)$/;
+
+/** What the app serves at an address that is none of the API's: its files, the client modules, or the app's own page. */
+async function appResponse(context: Context, app: WebApp, path: string): Promise<Response> {
+  if (path.startsWith(ASSETS_PREFIX)) {
+    const file = await assetFile(app, path);
+    if (file === undefined) return text(404, "there is no such file");
+    return new Response(Bun.file(file), {
+      headers: { "content-type": typeOf(file), ...SECURITY_HEADERS, "cache-control": IMMUTABLE },
+    });
+  }
+  if (path.startsWith(MODULES_PREFIX)) {
+    const found = MODULE_PATH.exec(path);
+    if (found === null) return text(404, "there is no such module");
+    const [, id = "", hash = "", file = "", index, sheet] = found;
+    if (file === "index.js") {
+      const code = await context.builds.code(context.api, app, id, hash);
+      if (code === undefined) return text(404, "the host lists no such module");
+      if (typeof code !== "string") return text(500, `the module could not be built: ${code.problem}`);
+      return new Response(code, {
+        headers: { "content-type": typeOf("module.js"), ...SECURITY_HEADERS, "cache-control": IMMUTABLE },
+      });
+    }
+    const css = await context.builds.style(context.api, id, hash, Number(index), sheet ?? "");
+    if (css === undefined) return text(404, "the host lists no such stylesheet");
+    return new Response(css, { headers: { "content-type": typeOf("style.css"), ...SECURITY_HEADERS, "cache-control": IMMUTABLE } });
+  }
+  // An address with an extension names a file that is not there; any other is a page of the app.
+  if (/\.[A-Za-z0-9]+$/.test(path)) return text(404, "there is no such file");
+  return appPage(app);
 }
 
 function json(status: number, body: unknown): Response {

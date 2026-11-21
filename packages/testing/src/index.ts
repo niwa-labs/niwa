@@ -23,7 +23,7 @@ import { socketPath } from "@niwa-labs/client";
 export { createNiwa } from "@niwa-labs/host";
 export { connect } from "@niwa-labs/client";
 export { live, loginWeb, opt, pick, webFetch } from "./helpers.ts";
-export { plugin } from "./cli.ts";
+export { COCKPIT_MODULE, plugin } from "./cli.ts";
 export {
   STATE_TYPE,
   connectAsOwner,
