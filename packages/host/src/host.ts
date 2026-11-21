@@ -56,6 +56,7 @@ import {
   readFiltered,
   targetName,
   matchesQuery,
+  stableJson,
   overlaps,
   resolveQuery,
   selectsType,
@@ -172,6 +173,7 @@ import { StateStore } from "./state.ts";
 import { artifactStore, secretStore } from "./stores.ts";
 import type { HostMessage, LiveSubscription } from "@niwa-labs/client";
 import { isTrigger } from "@niwa-labs/plugin";
+import type { Trigger } from "@niwa-labs/plugin";
 import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionStart } from "@niwa-labs/plugin";
 import type { Host, HostOptions } from "./host-types.ts";
 
@@ -909,7 +911,9 @@ class Niwa implements Host {
             `plugin "${plugin.name}" declares two handlers with the id "${name}": a handler id must name one handler`,
           );
         }
-        const filter = isTrigger(source) ? { ...source.filter, ...options.filter } : options.filter;
+        const filter = isTrigger(source)
+          ? combinedFilter(`plugin "${plugin.name}", handler "${name}"`, source, options.filter)
+          : options.filter;
         const subscribing = subscribingOf(`plugin "${plugin.name}", handler "${name}"`, { ...options, filter });
         // What a trigger needs offered for its records to be written at all, the subscribing plugin offers.
         if (isTrigger(source) && source.offer !== undefined) offer(source.offer.key, source.offer.value);
@@ -3033,6 +3037,24 @@ function refuse(connection: Connection, id: number, error: unknown): void {
 /** The host: create it with a home directory. */
 export function createNiwa(opts: HostOptions): Host {
   return new Niwa(opts);
+}
+
+/**
+ * The filter of a handler of a trigger: what the trigger holds and what the handler adds, both at once. A
+ * path that the two give different values would wake the handler on no record, or on the ones the trigger
+ * does not stand for, so it is refused.
+ */
+function combinedFilter(where: string, source: Trigger<any>, added: unknown): Readonly<Record<string, unknown>> {
+  const own = source.filter as Readonly<Record<string, unknown>>;
+  const extra = (added ?? {}) as Readonly<Record<string, unknown>>;
+  for (const path of Object.keys(extra)) {
+    if (Object.hasOwn(own, path) && stableJson(own[path]) !== stableJson(extra[path])) {
+      throw new TypeError(
+        `${where}: the filter has ${path} = ${stableJson(extra[path])}, but the trigger "${source.name}" holds ${path} = ${stableJson(own[path])}`,
+      );
+    }
+  }
+  return { ...own, ...extra };
 }
 
 /** Does a value behave as a promise? */
