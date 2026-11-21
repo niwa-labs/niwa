@@ -96,7 +96,7 @@ const fallback = (frameId: string, requestId: string, question: string, choices:
  * request where the script says so, and then ends the turn. A `session/cancel` ends the turn as
  * cancelled at once. It logs the params of `initialize` and every reply it gets.
  */
-async function fakeAgent(script: readonly Step[]): Promise<string> {
+async function fakeAgent(script: readonly Step[], lineage: MinimaxLineage = "fork"): Promise<string> {
   const path = join(dir, "mcode");
   await writeFile(
     path,
@@ -105,6 +105,8 @@ import { appendFileSync } from "node:fs";
 const log = (name, value) => appendFileSync(${JSON.stringify(dir)} + "/" + name, JSON.stringify(value) + "\\n");
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
 const script = ${JSON.stringify(script)};
+// The fork serves the turn status and the history; the published build does not.
+const methods = ${JSON.stringify(lineage === "fork" ? ["mcode/session/steer", "mcode/session/turn_status", "session/history"] : ["mcode/session/steer"])};
 const replies = new Map();
 const waiters = new Map();
 let cancelWake;
@@ -138,7 +140,7 @@ for await (const chunk of process.stdin) {
     buffer = buffer.slice(at + 1);
     if (frame.method === "initialize") {
       log("initialize.log", frame.params);
-      out({ jsonrpc: "2.0", id: frame.id, result: { protocolVersion: 1 } });
+      out({ jsonrpc: "2.0", id: frame.id, result: { protocolVersion: 1, _meta: { "minimax-code/extensions": { version: 1, methods, notifications: [] } } } });
     } else if (frame.method === "session/new") {
       out({ jsonrpc: "2.0", id: frame.id, result: { sessionId: "fake-1" } });
     } else if (frame.method === "session/prompt") {
@@ -190,7 +192,7 @@ async function stack(
   script: readonly Step[],
   lineage: MinimaxLineage = "fork",
 ): Promise<{ niwa: Host; records: StoredRecord[] }> {
-  const side = mcodeControl({ harness: HARNESS, lineage, binary: await fakeAgent(script), mode: "ask" });
+  const side = mcodeControl({ harness: HARNESS, lineage, binary: await fakeAgent(script, lineage), mode: "ask" });
   control = side;
   const home = await tempHome();
   const niwa = createNiwa({ home: home.path });
@@ -403,7 +405,7 @@ test("the questionnaire form is declared only when the session has a place for i
 
   await control?.dispose();
   await rm(join(dir, "initialize.log"));
-  const bare = mcodeControl({ harness: HARNESS, binary: join(dir, "mcode"), mode: "ask" });
+  const bare = mcodeControl({ harness: HARNESS, lineage: "fork", binary: join(dir, "mcode"), mode: "ask" });
   control = bare;
   await bare.start({ prompt: promptFromText(""), cwd: dir });
   expect((await logOf<{ clientCapabilities: Record<string, unknown> }>("initialize.log"))[0]?.clientCapabilities.elicitation).toBeUndefined();
@@ -467,7 +469,7 @@ test("the end of the turn cancels what the agent left open", async () => {
 // -- a handler of the control side itself ---------------------------------------------------------
 
 async function startedWith(handler: ReverseHandler, script: readonly Step[]): Promise<void> {
-  control = mcodeControl({ harness: HARNESS, binary: await fakeAgent(script), mode: "ask" });
+  control = mcodeControl({ harness: HARNESS, binary: await fakeAgent(script, "upstream"), mode: "ask" });
   await control.start({ prompt: promptFromText("go"), cwd: dir, reverse: handler });
 }
 

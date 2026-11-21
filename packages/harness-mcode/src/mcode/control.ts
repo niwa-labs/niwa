@@ -237,6 +237,21 @@ function servesMethod(reply: Record<string, unknown>, method: McodeMethod | type
   return meta.success && meta.data[EXTENSIONS_META].methods.includes(method);
 }
 
+/**
+ * The lineage an initialize reply gives away. The fork serves two requests the published build
+ * does not (`turn_status` and `session/history`); a reply that advertises the extensions without
+ * them is the published build's. A reply with no extension advertisement says nothing.
+ */
+export function lineageOfReply(reply: Record<string, unknown>): MinimaxLineage | undefined {
+  const meta = McodeInitializeMeta.safeParse(reply["_meta"]);
+  if (!meta.success) return undefined;
+  const methods = meta.data[EXTENSIONS_META].methods;
+  return FORK_ONLY_METHODS.some((method) => methods.includes(method)) ? "fork" : "upstream";
+}
+
+/** The requests only the fork serves. */
+const FORK_ONLY_METHODS: readonly string[] = [TURN_STATUS, "session/history"];
+
 /** Whether an initialize reply advertises the steer request. */
 export function servesSteer(reply: Record<string, unknown>): boolean {
   return servesMethod(reply, "mcode/session/steer");
@@ -1189,6 +1204,15 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       },
       "the initialize handshake",
     );
+    // The binary on the path is whichever `mcode` comes first, and both lineages are called that: the
+    // dialect niwa speaks is the one this side was set up for, so a binary of the other is refused.
+    const answered = lineageOfReply(initialized);
+    if (lineage === "fork" ? answered !== "fork" : answered === "fork") {
+      throw unavailable(
+        existing === undefined ? "start" : "resume",
+        `${binary} answered as ${answered === "fork" ? "the fork" : answered === undefined ? "a build that names no lineage" : "the published build"}, and this side speaks to ${lineage === "fork" ? "the fork" : "the published build"}`,
+      );
+    }
     session.steerable = servesSteer(initialized);
     session.statusable = servesMethod(initialized, TURN_STATUS);
     if (session.statusable) {

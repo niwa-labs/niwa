@@ -535,7 +535,7 @@ for (const [name, make, sides] of [
   ["ncode", ncode, ncodeSides],
 ] as const) {
   test(`the control side of the ${name} kind implements what is declared`, async () => {
-    const fake = await fakeAgent(FAKE_MCODE);
+    const fake = await fakeAgent(FAKE_MCODE, { "@METHODS@": JSON.stringify(name === "ncode" ? ["mcode/session/turn_status", "session/history"] : ["mcode/session/steer"]) });
     const kind = make({
       harness: HARNESS,
       home: fake.dir,
@@ -571,7 +571,7 @@ for (const [name, make, sides] of [
   });
 
   test(`the control side of the ${name} kind passes the conformance suite`, async () => {
-    const fake = await fakeAgent(FAKE_MCODE);
+    const fake = await fakeAgent(FAKE_MCODE, { "@METHODS@": JSON.stringify(name === "ncode" ? ["mcode/session/turn_status", "session/history"] : ["mcode/session/steer"]) });
     const kind = make({
       harness: HARNESS,
       home: fake.dir,
@@ -755,12 +755,14 @@ interface Fake {
 }
 
 /** A fake harness CLI, ready to be started. */
-async function fakeAgent(script: string): Promise<Fake> {
+async function fakeAgent(script: string, replaced: Readonly<Record<string, string>> = {}): Promise<Fake> {
   const dir = await tempDir("kinds-fake");
   const log = join(dir, "frames.log");
   const stop = join(dir, "stop");
   const path = join(dir, "fake-harness");
-  await writeFile(path, script.replaceAll("@LOG@", log).replaceAll("@STOP@", stop));
+  let written = script.replaceAll("@LOG@", log).replaceAll("@STOP@", stop);
+  for (const [from, to] of Object.entries(replaced)) written = written.replaceAll(from, to);
+  await writeFile(path, written);
   await chmod(path, 0o755);
   return { dir, path, log, stop };
 }
@@ -1029,7 +1031,8 @@ for await (const chunk of process.stdin) {
     buffer = buffer.slice(at + 1);
     appendFileSync(log, JSON.stringify(frame) + "\\n");
     if (frame.method === "initialize") {
-      out({ id: frame.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [] } });
+      // The fork serves the turn status and the history; the published build does not.
+      out({ id: frame.id, result: { protocolVersion: 1, agentCapabilities: {}, authMethods: [], _meta: { "minimax-code/extensions": { version: 1, methods: @METHODS@, notifications: [] } } } });
     } else if (frame.method === "session/new") {
       out({ id: frame.id, result: { sessionId: "fake-session", configOptions: [
         { id: "model", options: [{ value: "m:minimax:MiniMax-M3.1-Flash:u", name: "M3.1-Flash" }] },

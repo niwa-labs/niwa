@@ -260,10 +260,13 @@ for await (const chunk of Bun.stdin.stream()) {
     at = buffer.indexOf("\\n");
     if (message.method === "initialize") {
       // A fork of mcode lists the steer request; the file "steer" makes the fake one. The file
-      // "status" makes it serve the turn status.
+      // "fork" makes the fake the owner's fork, which serves the turn status and the history; the
+      // file "status" alone makes it serve the turn status.
+      const forked = existsSync(${JSON.stringify(join(dir, "fork"))});
       const methods = [
         ...(existsSync(${JSON.stringify(join(dir, "steer"))}) ? ["mcode/session/steer"] : []),
-        ...(existsSync(${JSON.stringify(join(dir, "status"))}) ? ["mcode/session/turn_status"] : []),
+        ...(forked || existsSync(${JSON.stringify(join(dir, "status"))}) ? ["mcode/session/turn_status"] : []),
+        ...(forked ? ["session/history"] : []),
       ];
       const meta = methods.length > 0 ? { "minimax-code/extensions": { version: 1, methods, notifications: [] } } : undefined;
       send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: 1, _meta: meta } });
@@ -397,6 +400,9 @@ async function fakeControl(options?: {
   dir = await tempDir("mcode-fake");
   if (options?.steer === true) await writeFile(join(dir, "steer"), "");
   for (const file of options?.files ?? []) await writeFile(join(dir, file), "");
+  // A turn status is the fork's: an agent that serves it is the fork, and this side is set up for it.
+  const lineage = options?.lineage ?? (options?.files?.includes("status") === true ? "fork" : undefined);
+  if (lineage === "fork") await writeFile(join(dir, "fork"), "");
   const binary = join(dir, "mcode");
   await writeFile(binary, FAKE_AGENT);
   await chmod(binary, 0o755);
@@ -404,7 +410,7 @@ async function fakeControl(options?: {
     mode: "full",
     harness: harnessId("mcode-fake"),
     binary,
-    ...(options?.lineage === undefined ? {} : { lineage: options.lineage }),
+    ...(lineage === undefined ? {} : { lineage }),
     ...(options?.permissions === undefined ? {} : { permissions: options.permissions }),
     ...(options?.callTimeoutMs === undefined ? {} : { callTimeoutMs: options.callTimeoutMs }),
     ...(options?.cancelGraceMs === undefined ? {} : { cancelGraceMs: options.cancelGraceMs }),
@@ -906,6 +912,7 @@ async function fakeKind(
   const binary = join(dir, "mcode");
   await writeFile(binary, FAKE_AGENT);
   await chmod(binary, 0o755);
+  if (make === ncode) await writeFile(join(dir, "fork"), "");
   const kind = make({ home: join(dir, "home"), ...options, control: { mode: "full", ...options.control, binary } });
   control = kind.control as McodeSessionControl;
   await control.start({ prompt: promptFromText(""), cwd: dir });
@@ -938,6 +945,7 @@ test("without a profile the fork (a home with a durable history) is started with
   const binary = join(dir, "mcode");
   await writeFile(binary, FAKE_AGENT);
   await chmod(binary, 0o755);
+  await writeFile(join(dir, "fork"), "");
   const kind = ncode({ home: forkHome, control: { mode: "full", binary } });
   control = kind.control as McodeSessionControl;
   await control.start({ prompt: promptFromText(""), cwd: dir });
@@ -1077,6 +1085,7 @@ for (const lineage of ["upstream", "fork"] as const) {
     const binary = join(dir, "mcode");
     await writeFile(binary, FAKE_AGENT);
     await chmod(binary, 0o755);
+    if (lineage === "fork") await writeFile(join(dir, "fork"), "");
     control = mcodeControl({ harness: harnessId("mcode-fake"), binary, lineage });
     expect((await control.start({ prompt: promptFromText(""), cwd: dir })).mode).toBe("auto");
     await control.dispose();
@@ -1401,13 +1410,13 @@ function recordingBox(): { restore: () => void; records: BoxRecord[] } {
   };
 }
 
-for (const [label, make, expected] of [
-  ["its home", (binary: string, home: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary, home }), (home: string) => home],
-  ["the home of its profile", (binary: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary, lineage: "fork", profile: "work" }), () => homeOfProfile("work")],
-  ["the default home", (binary: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary }), () => homeOfProfile(undefined)],
+for (const [label, make, expected, forked] of [
+  ["its home", (binary: string, home: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary, home }), (home: string) => home, false],
+  ["the home of its profile", (binary: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary, lineage: "fork", profile: "work" }), () => homeOfProfile("work"), true],
+  ["the default home", (binary: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary }), () => homeOfProfile(undefined), false],
 ] as const) {
   test(`a boxed session may write to the directory the installation keeps its sessions in: ${label}`, async () => {
-    const fake = await fakeControl();
+    const fake = await fakeControl(forked ? { lineage: "fork" } : {});
     await fake.dispose();
     const home = join(dir, "install-home");
     const box = recordingBox();
@@ -1493,4 +1502,22 @@ test("a session whose turn the agent holds past its cancel takes no new work unt
   for (let i = 0; i < 100 && (await control.state(id)) !== "idle"; i += 1) await Bun.sleep(50);
   expect(await control.state(id)).toBe("idle");
   expect((await control.send(id, "again")).status).toBe("started");
+});
+
+test("a binary of the other lineage is refused in the handshake, before a session is opened", async () => {
+  // The published build asked as the fork: it does not serve the fork's requests.
+  control = await fakeControl({ lineage: "upstream", steer: true });
+  const forkSide = mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary: join(dir, "mcode"), lineage: "fork" });
+  await expect(forkSide.start({ prompt: promptFromText(""), cwd: dir })).rejects.toMatchObject({ code: "Unavailable" });
+  await expect(forkSide.start({ prompt: promptFromText(""), cwd: dir })).rejects.toThrow(/published build/);
+  await forkSide.dispose();
+  expect(existsSync(join(dir, "sessions.log"))).toBe(false);
+
+  // The fork asked as the published build.
+  await writeFile(join(dir, "fork"), "");
+  const upstreamSide = mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary: join(dir, "mcode"), lineage: "upstream" });
+  await expect(upstreamSide.start({ prompt: promptFromText(""), cwd: dir })).rejects.toThrow(/the fork/);
+  await expect(upstreamSide.resume(sessionId(harnessId("mcode-fake"), "mvs_x"), { cwd: dir })).rejects.toMatchObject({ code: "Unavailable" });
+  await upstreamSide.dispose();
+  expect(existsSync(join(dir, "sessions.log"))).toBe(false);
 });

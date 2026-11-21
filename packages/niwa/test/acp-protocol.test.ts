@@ -341,7 +341,21 @@ test("Claude Code: the options of a start stand over the instance's, and a resum
 
 async function minimaxSide(lineage: MinimaxLineage, replayed: readonly unknown[]) {
   const captured = await frames("mcode-0.7.1-upstream");
-  const initialize = captured.find((frame) => frame["id"] === 1)?.["result"];
+  const upstream = captured.find((frame) => frame["id"] === 1)?.["result"] as { _meta?: Record<string, { methods: string[] }> };
+  // The capture is of the published build. The fork also serves the turn status and the history, and
+  // the handshake tells the two apart by them.
+  const initialize =
+    lineage === "upstream"
+      ? upstream
+      : {
+          ...upstream,
+          _meta: {
+            "minimax-code/extensions": {
+              ...upstream._meta?.["minimax-code/extensions"],
+              methods: [...(upstream._meta?.["minimax-code/extensions"]?.methods ?? []), "mcode/session/turn_status", "session/history"],
+            },
+          },
+        };
   return mcodeControl({
     mode: "full",
     harness: harnessId("replay"),
