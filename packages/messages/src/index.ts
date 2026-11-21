@@ -28,8 +28,7 @@ import { NotSent, UnknownId, action, actionName } from "@niwa-labs/core";
 import type { Action, ActionContext, ActionName, Address, Caller, IdIndex } from "@niwa-labs/core";
 import { bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, MessagesOptions, Plugin } from "@niwa-labs/plugin";
-import { SESSION_SEND } from "@niwa-labs/sessions/records";
-import type { SessionSendInput, SessionSendOutput } from "@niwa-labs/sessions/records";
+import { sessionSend } from "@niwa-labs/sessions/records";
 
 import { messageGetRef, messageListRef, messageReceiveRef, messageSendRef } from "./actions.ts";
 import { Message, MessageInput } from "./envelope.ts";
@@ -216,9 +215,12 @@ export function messages(opts?: MessagesOptions): Plugin {
     for (const source of [MessageToSession, MessageReceivedForSession]) {
       api.on(source, { concurrency: Number.POSITIVE_INFINITY }, async (message, step) => {
         if (message.to.kind !== "session") return;
-        const sent = await step<SessionSendInput, SessionSendOutput>(SESSION_SEND, {
-          session: `${message.to.harness} ${message.to.id}`,
+        // The operation is the message: a delivery that was cut off is answered from what the sessions
+        // module recorded of it, and is never made twice.
+        const sent = await step(sessionSend, {
+          session: { harness: message.to.harness, native: message.to.id },
           message: render(message),
+          operation: message.id,
         });
         await step.emit(MessageDelivered, { message, receipt: sent.receipt });
       });

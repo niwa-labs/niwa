@@ -49,6 +49,8 @@ const TEXT = "Move the parsing into its own module.";
 class FakeControl implements SessionControl {
   /** The texts that were sent into the session, in order. */
   readonly sent: string[] = [];
+  /** The sessions the texts were sent to, in order. */
+  readonly sentTo: SessionId[] = [];
   /** How many times a send was begun, blocked or not. */
   entered = 0;
   /** Whether a send blocks instead of answering. */
@@ -60,9 +62,10 @@ class FakeControl implements SessionControl {
 
   async resume(): Promise<void> {}
 
-  async send(_id: SessionId, message: string): Promise<DeliveryReceipt> {
+  async send(id: SessionId, message: string): Promise<DeliveryReceipt> {
     this.entered += 1;
     this.sent.push(message);
+    this.sentTo.push(id);
     if (this.block) await new Promise<void>(() => {});
     return { status: "started", turn: 1 };
   }
@@ -228,6 +231,40 @@ test("a host that is closed while the send is in flight does not send the messag
       5_000,
       "the replay of the cut-off call should pause the invocation",
     );
+    expect(control.entered).toBe(1);
+    expect(control.sent.length).toBe(1);
+  } finally {
+    await second.close();
+    await home.cleanup();
+  }
+});
+
+test("a delivery that was cut off is not made again when its paused step is retried", async () => {
+  const home = await tempHome();
+  const control = new FakeControl();
+  control.block = true;
+  const first = await serve(control, home.path);
+
+  try {
+    await first.call(messageSend(), toSession());
+    await eventually(() => control.entered === 1, 5_000, "the send should be begun");
+  } finally {
+    await first.close();
+  }
+
+  // The replay pauses the cut-off step; the owner decides to try it again.
+  const second = await serve(control, home.path);
+  try {
+    const paused = async (): Promise<StoredRecord[]> =>
+      (await recordsOf(second, CORE_TYPES.invocationState)).filter((record) => (record.data as { state?: string }).state === "paused");
+    await eventually(async () => (await paused()).length === 1, 5_000, "the replay should pause the invocation");
+    const invocation = (((await paused())[0]?.data ?? {}) as { invocation?: string }).invocation ?? "";
+    control.block = false;
+    await second.call("niwa.invocation.resolve" as never, { invocation, choice: "retry" } as never);
+
+    // The sessions module knows the send by the message, so it says the outcome is not known
+    // instead of sending the text into the session a second time.
+    await eventually(async () => (await paused()).length === 2, 5_000, "the retry should pause again");
     expect(control.entered).toBe(1);
     expect(control.sent.length).toBe(1);
   } finally {
