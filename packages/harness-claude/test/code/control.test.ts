@@ -491,7 +491,9 @@ test("a tool allowance is passed to Claude Code as the built-in tools switched o
   expect(off).not.toContain("Read");
   expect(off).not.toContain("Grep");
   // The allow-list itself reaches Claude Code through niwa's adapter entry.
-  expect((requests[0]?.["_meta"] as { niwa?: unknown }).niwa).toEqual({ tools: ["Read", "Grep"] });
+  expect((requests[0]?.["_meta"] as { niwa?: unknown }).niwa).toEqual({ tools: ["Read", "Grep"], servers: [] });
+  // Only the servers niwa names are loaded, not the ones of the owner's settings.
+  expect((requests[0]?.["_meta"] as { claudeCode: { options: { strictMcpConfig?: unknown } } }).claudeCode.options.strictMcpConfig).toBe(true);
   expect((requests[0]?.["_meta"] as { disableBuiltInTools?: unknown }).disableBuiltInTools).toBeUndefined();
   await expect(control.resume(id, { tools: { allow: ["Read"] } })).rejects.toMatchObject({ code: "Unsupported" });
 });
@@ -506,7 +508,7 @@ test("a session of niwa's tools only is given none of Claude Code's tools, nor t
 
   const requests = await sessionRequestsOf();
   const meta = requests[0]?.["_meta"] as { niwa?: unknown; disableBuiltInTools?: unknown; claudeCode: { options: { disallowedTools: string[] } } };
-  expect(meta.niwa).toEqual({ tools: [] });
+  expect(meta.niwa).toEqual({ tools: [], servers: [] });
   expect(meta.disableBuiltInTools).toBe(true);
   expect(meta.claudeCode.options.disallowedTools).toContain("Bash");
   expect(meta.claudeCode.options.disallowedTools).toContain("Read");

@@ -17,12 +17,23 @@
  *   gives every session Claude Code's whole preset: an allow-list, and with none named only the
  *   tools of the MCP servers the session was given.
  *
+ * - denies, before it runs, a call of a tool a restricted session is not held to: a built-in tool
+ *   its allow-list leaves out, and a tool of an MCP server the session was not given (`tool-guard.ts`).
+ *
  * The tools are changed by lines of the adapter's source, replaced as the adapter loads
  * (`adapter-patch.ts`). The adapter is pinned to one version, and a version that does not have a
  * line fails to start: a session must never run with a tool on by accident, or off silently.
  */
 
+import { BUILTIN_TOOL_NAMES } from "@anthropic-ai/claude-agent-sdk";
+
 import { patchAdapter } from "./adapter-patch.ts";
+import { toolGuardHooks } from "./tool-guard.ts";
+
+// The patched adapter reads its guard from here: a build that lacks it fails the session's start.
+Object.assign(globalThis, {
+  niwaToolGuardHooks: (niwa: Parameters<typeof toolGuardHooks>[0]) => toolGuardHooks(niwa, BUILTIN_TOOL_NAMES),
+});
 
 Bun.plugin({
   name: "niwa-claude-code-adapter",

@@ -29,3 +29,9 @@ test("a build without one of the lines does not load", () => {
   const [first, second] = ADAPTER_PATCHES;
   expect(() => patchAdapter(first!.from, "acp-agent.js")).toThrow(second!.what);
 });
+
+test("the patched adapter puts niwa's guard before its own hook on every tool call", async () => {
+  const { path, source } = await pinnedSource();
+  const patched = patchAdapter(source, path);
+  expect(patched).toContain("globalThis.niwaToolGuardHooks(params._meta?.niwa), createPreToolUseHook(");
+});

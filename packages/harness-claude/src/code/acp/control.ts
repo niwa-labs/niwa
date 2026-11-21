@@ -1182,18 +1182,23 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     tools: ToolsMode | undefined,
     effort: string | undefined,
     reverse: ReverseHandler | undefined,
+    servers: readonly McpServerSpec[] | undefined,
   ): Record<string, unknown> {
     const allowed = tools === undefined || tools === "all" ? undefined : tools === "niwa-only" ? [] : [...tools.allow];
     const off = [...new Set([...disabled, ...(allowed === undefined ? [] : claudeToolsOff(allowed))])];
     const given = {
       ...(off.length === 0 ? {} : { disallowedTools: off }),
+      // A session held to a set of tools is given the servers niwa names and no other: the ones of
+      // the owner's settings, which the adapter loads, are no part of the set.
+      ...(allowed === undefined ? {} : { strictMcpConfig: true }),
       // The program's own `--effort <level>`, for the whole life of the session.
       ...(effort === undefined || effort === "" ? {} : { extraArgs: { effort } }),
     };
     const niwa = {
       // A session whose questions have somewhere to go keeps AskUserQuestion (niwa's adapter entry reads this).
       ...(reverse === undefined ? {} : { askUserQuestion: true }),
-      ...(allowed === undefined ? {} : { tools: allowed }),
+      // The guard of the adapter entry holds the session to the tools it allows and the servers it was given.
+      ...(allowed === undefined ? {} : { tools: allowed, servers: (servers ?? []).map((server) => server.name) }),
     };
     const meta = {
       ...(Object.keys(given).length === 0 ? {} : { claudeCode: { options: given } }),
@@ -1259,7 +1264,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
         const created = await call(session, "session/new", {
           cwd: startOptions.cwd ?? process.cwd(),
           mcpServers: mcpServersOf(startOptions.servers),
-          ...sessionMetaOf(disabled, startOptions.tools, startOptions.effort ?? defaultEffort, startOptions.reverse),
+          ...sessionMetaOf(disabled, startOptions.tools, startOptions.effort ?? defaultEffort, startOptions.reverse, startOptions.servers),
         });
         if (!created.ok) {
           throw unavailable("start", created.error ?? "the agent did not start a session");
@@ -1326,7 +1331,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
           sessionId: id.native,
           cwd: resumeOptions?.cwd ?? process.cwd(),
           mcpServers: mcpServersOf(resumeOptions?.servers),
-          ...sessionMetaOf(disabled, resumeOptions?.tools, defaultEffort, resumeOptions?.reverse),
+          ...sessionMetaOf(disabled, resumeOptions?.tools, defaultEffort, resumeOptions?.reverse, resumeOptions?.servers),
         });
         if (!loaded.ok) {
           throw unavailable("resume", loaded.error ?? "the agent did not resume the session");

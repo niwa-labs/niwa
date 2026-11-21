@@ -23,6 +23,11 @@ export const ADAPTER_PATCHES: readonly AdapterPatch[] = [
     from: 'tools: { type: "preset", preset: "claude_code" },',
     to: 'tools: Array.isArray(params._meta?.niwa?.tools) ? params._meta.niwa.tools : { type: "preset", preset: "claude_code" },',
   },
+  {
+    what: "put niwa's guard before every tool call",
+    from: "hooks: [createPreToolUseHook(settingsManager, this.logger)],",
+    to: "hooks: [...globalThis.niwaToolGuardHooks(params._meta?.niwa), createPreToolUseHook(settingsManager, this.logger)],",
+  },
 ];
 
 /** The adapter's source with every change made, or an error naming the one it does not have. */
