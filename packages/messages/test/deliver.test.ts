@@ -29,7 +29,7 @@ import type {
   StartOptions,
 } from "@niwa-labs/testing";
 
-import { MessageDelivered, MessageSent, messageSend, messages } from "../src/index.ts";
+import { MessageDelivered, MessageSent, messageReceive, messageSend, messages } from "../src/index.ts";
 
 /** The harness the fake control side serves. */
 const HARNESS = "fake-harness";
@@ -171,6 +171,30 @@ test("a message to a session is delivered as text, and the receipt is recorded o
     const admitted = await recordsOf(niwa, CORE_TYPES.invocationAdmitted);
     expect(admitted.length).toBe(1);
     expect((admitted[0]?.data as { handler: string }).handler).toBe("messages/message.sent:session");
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+});
+
+test("a message that came in from outside for a session is delivered once, and its receipt is recorded", async () => {
+  const home = await tempHome();
+  const control = new FakeControl();
+  const niwa = await serve(control, home.path);
+
+  try {
+    await niwa.call(messageReceive(), { ...toSession(), from: { kind: "client", id: "outsider" } });
+
+    await eventually(() => control.sent.length === 1, 5_000, "the message should reach the session");
+    expect(control.sent[0]).toContain("From: client outsider");
+    expect(control.sent[0]).toContain(TEXT);
+    await eventually(
+      async () => (await recordsOf(niwa, MessageDelivered.name)).length === 1,
+      5_000,
+      "the delivery should be recorded",
+    );
+    expect(control.entered).toBe(1);
+    expect(control.sent.length).toBe(1);
   } finally {
     await niwa.close();
     await home.cleanup();

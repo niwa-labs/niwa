@@ -62,6 +62,17 @@ export const MessageToSession: Trigger<MessageType> = trigger(MessageSent, {
   filter: { "to.kind": "session" },
 });
 
+/**
+ * A trigger over the messages that came in for a session.
+ *
+ * The same narrowing of "message.received": a message from outside is delivered to a session as
+ * a message from inside is.
+ */
+export const MessageReceivedForSession: Trigger<MessageType> = trigger(MessageReceived, {
+  name: "message.received:session",
+  filter: { "to.kind": "session" },
+});
+
 /*
  * The helpers below are pure over the records above: the ids of messages, and of the modules that
  * issue their ids the same way. An entity is born in the record its creating call writes first.

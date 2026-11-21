@@ -33,7 +33,7 @@ import type { SessionSendInput, SessionSendOutput } from "@niwa-labs/sessions/re
 
 import { messageGetRef, messageListRef, messageReceiveRef, messageSendRef } from "./actions.ts";
 import { Message, MessageInput } from "./envelope.ts";
-import { MessageDelivered, MessageReceived, MessageSent, MessageToSession, birthOf, describeMessage, messageIds, messagesOf } from "./records.ts";
+import { MessageDelivered, MessageReceived, MessageReceivedForSession, MessageSent, MessageToSession, birthOf, describeMessage, messageIds, messagesOf } from "./records.ts";
 import { render } from "./render.ts";
 
 export {
@@ -53,6 +53,7 @@ export type { MessageBodyType } from "./envelope.ts";
 export {
   MessageDelivered,
   MessageReceived,
+  MessageReceivedForSession,
   MessageSent,
   MessageToSession,
   birthOf,
@@ -209,15 +210,18 @@ export function messages(opts?: MessagesOptions): Plugin {
       }),
     );
 
-    // A message to a session goes into that session, once, as the text of the envelope.
-    // A session slow to take a message holds no message to another session.
-    api.on(MessageToSession, { concurrency: Number.POSITIVE_INFINITY }, async (message, step) => {
-      if (message.to.kind !== "session") return;
-      const sent = await step<SessionSendInput, SessionSendOutput>(SESSION_SEND, {
-        session: `${message.to.harness} ${message.to.id}`,
-        message: render(message),
+    // A message to a session goes into that session, once, as the text of the envelope, whether it was
+    // sent from inside or came in from outside. A session slow to take a message holds no message to
+    // another session.
+    for (const source of [MessageToSession, MessageReceivedForSession]) {
+      api.on(source, { concurrency: Number.POSITIVE_INFINITY }, async (message, step) => {
+        if (message.to.kind !== "session") return;
+        const sent = await step<SessionSendInput, SessionSendOutput>(SESSION_SEND, {
+          session: `${message.to.harness} ${message.to.id}`,
+          message: render(message),
+        });
+        await step.emit(MessageDelivered, { message, receipt: sent.receipt });
       });
-      await step.emit(MessageDelivered, { message, receipt: sent.receipt });
-    });
+    }
   });
 }

@@ -22,6 +22,7 @@ export type { MessageBodyType } from "./envelope.ts";
 export {
   MessageDelivered,
   MessageReceived,
+  MessageReceivedForSession,
   MessageSent,
   MessageToSession,
   birthOf,
