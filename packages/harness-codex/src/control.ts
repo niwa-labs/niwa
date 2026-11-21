@@ -320,6 +320,10 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
   /** The sessions by thread id; `owned` also holds those still starting. */
   const sessions = new Map<string, LiveSession>();
   const owned = new Set<LiveSession>();
+  /** The processes being created: one that is not yet a session is still the control side's to stop. */
+  const spawning = new Set<Promise<AgentProcess>>();
+  /** The launch of each thread that is being brought up: a thread has one writer, so a second launch waits for the first. */
+  const launching = new Map<string, Promise<void>>();
   let disposed = false;
 
   function unavailable(ability: string, detail: string): Unavailable {
@@ -566,7 +570,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     if (disposed) throw unavailable("start", "the control side is disposed");
     // A tool mode Codex cannot hold is refused before the child exists.
     const toolFlags = codexToolsModeFlags(harnessId, ability, plan.tools);
-    const child = await spawnAgent({
+    const creating = spawnAgent({
       harness: harnessId,
       program: binary,
       args: ["app-server", "--stdio", ...toolFlags],
@@ -583,6 +587,13 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       box: plan.box,
       needs: CODEX_NEEDS,
     });
+    spawning.add(creating);
+    let child: AgentProcess;
+    try {
+      child = await creating;
+    } finally {
+      spawning.delete(creating);
+    }
     const session = new LiveSession(child);
     owned.add(session);
 
@@ -629,6 +640,11 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       );
     });
 
+    // A control side disposed while the process was being created owns it all the same.
+    if (disposed) {
+      await stopSession(session);
+      throw unavailable(ability, "the control side is disposed");
+    }
     const initialized = await call(session, "initialize", {
       clientInfo: { name: "niwa", title: "niwa", version: "0.1.0" },
     });
@@ -815,6 +831,25 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     return { status: "started", turn, at };
   }
 
+  /** Runs `launch` once the earlier launches of the same thread are over, whether they worked or not. */
+  async function launchAlone<T>(native: string, launch: () => Promise<T>): Promise<T> {
+    const earlier = launching.get(native);
+    const run = (async (): Promise<T> => {
+      await earlier;
+      return launch();
+    })();
+    const over = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    launching.set(native, over);
+    try {
+      return await run;
+    } finally {
+      if (launching.get(native) === over) launching.delete(native);
+    }
+  }
+
   function requireSession(id: SessionId, ability: string): LiveSession {
     const session = sessions.get(id.native);
     if (session === undefined) {
@@ -869,6 +904,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         const threadId = idOf(asRecord(started.result).thread);
         if (threadId === undefined) throw unavailable("start", "the CLI started a thread without naming it");
 
+        if (disposed || session.ended) throw unavailable("start", session.failure ?? "the session did not outlive its start");
         reportModel(session, started.result);
         session.nativeId = threadId;
         session.config = config;
@@ -904,49 +940,54 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         resumeOptions?.visible,
       );
 
-      // A held session continues in its own child: a second child would be a second writer.
-      const held = sessions.get(id.native);
-      if (held !== undefined && !held.ended && !held.stopping) {
-        if (resumeOptions?.tools !== undefined || resumeOptions?.box !== undefined) {
-          throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
+      // A held session continues in its own child: a second child would be a second writer. The
+      // launches of one thread follow one another, so the second sees what the first made.
+      const session = await launchAlone(id.native, async (): Promise<LiveSession> => {
+        const held = sessions.get(id.native);
+        if (held !== undefined && !held.ended && !held.stopping) {
+          if (resumeOptions?.tools !== undefined || resumeOptions?.box !== undefined) {
+            throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
+          }
+          // The thread was given its config when it started, and it cannot take another one.
+          // The same config is no change at all; a different one is refused, never dropped.
+          if (config !== undefined && !sameConfig(config, held.config)) {
+            throw new Unsupported(
+              harnessId,
+              "control",
+              "resume",
+              "a running session cannot take another server or tool set",
+            );
+          }
+          // The one who resumes names where its reverse requests go from now on.
+          if (resumeOptions?.reverse !== undefined) held.reverse = resumeOptions.reverse;
+          return held;
         }
-        // The thread was given its config when it started, and it cannot take another one.
-        // The same config is no change at all; a different one is refused, never dropped.
-        if (config !== undefined && !sameConfig(config, held.config)) {
-          throw new Unsupported(
-            harnessId,
-            "control",
-            "resume",
-            "a running session cannot take another server or tool set",
-          );
-        }
-        // The one who resumes names where its reverse requests go from now on.
-        if (resumeOptions?.reverse !== undefined) held.reverse = resumeOptions.reverse;
-        if (text !== "") await runTurn(held, id.native, text);
-        return;
-      }
 
-      const session = await spawnSession(undefined, resumeOptions ?? {}, "resume");
-      session.reverse = resumeOptions?.reverse;
-      try {
-        const resumed = await call(session, "thread/resume", {
-          ...threadParams(resumeOptions?.model ?? defaultModel, config, modeOf(resumeOptions?.mode, options.mode, CODEX_LAUNCH)),
-          threadId: id.native,
-        });
-        if (!resumed.ok) throw unavailable("resume", resumed.error ?? "the CLI did not resume the thread");
-        if (idOf(asRecord(resumed.result).thread) !== id.native) {
-          throw unavailable("resume", "the CLI did not resume the thread that was asked for");
+        const spawned = await spawnSession(undefined, resumeOptions ?? {}, "resume");
+        spawned.reverse = resumeOptions?.reverse;
+        try {
+          const resumed = await call(spawned, "thread/resume", {
+            ...threadParams(resumeOptions?.model ?? defaultModel, config, modeOf(resumeOptions?.mode, options.mode, CODEX_LAUNCH)),
+            threadId: id.native,
+          });
+          if (!resumed.ok) throw unavailable("resume", resumed.error ?? "the CLI did not resume the thread");
+          if (idOf(asRecord(resumed.result).thread) !== id.native) {
+            throw unavailable("resume", "the CLI did not resume the thread that was asked for");
+          }
+          if (disposed || spawned.ended) throw unavailable("resume", spawned.failure ?? "the session did not outlive its resume");
+          reportModel(spawned, resumed.result);
+        } catch (error) {
+          await stopSession(spawned);
+          throw error;
         }
-        reportModel(session, resumed.result);
-      } catch (error) {
-        await stopSession(session);
-        throw error;
-      }
 
-      session.nativeId = id.native;
-      session.config = config;
-      session.effort = defaultEffort === "" ? undefined : defaultEffort;
-      sessions.set(id.native, session);
+        spawned.nativeId = id.native;
+        spawned.config = config;
+        spawned.effort = defaultEffort === "" ? undefined : defaultEffort;
+        sessions.set(id.native, spawned);
+        return spawned;
+      });
+      // The turn of the prompt is not part of the launch: it runs after the next resume may start.
       if (text !== "") await runTurn(session, id.native, text);
     },
 
@@ -1069,7 +1110,10 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     async dispose(): Promise<void> {
       disposed = true;
       sessions.clear();
+      // A process still being created becomes a session of this side before the stop reaches it.
+      await Promise.allSettled([...spawning]);
       await Promise.all([...owned].map((session) => stopSession(session)));
+      sessions.clear();
     },
   };
 }

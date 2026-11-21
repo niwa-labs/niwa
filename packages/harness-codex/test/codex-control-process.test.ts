@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
 
-import { InputNotSent, InputPossiblySent, modelName, promptFromText, type LifeEvent, Unavailable, Unsupported } from "@niwa-labs/harness";
+import { HarnessIdSchema, InputNotSent, InputPossiblySent, modelName, promptFromText, sessionId, type LifeEvent, Unavailable, Unsupported } from "@niwa-labs/harness";
 import type { SessionId } from "@niwa-labs/harness";
 import { codexControl } from "../src/control.ts";
 import type { CodexControlOptions } from "../src/control.ts";
@@ -427,6 +427,43 @@ test("the start returns before the first turn ends: a first turn that never ends
   // The session takes messages at once: they wait behind the first turn.
   expect(await codex.send(id, "two")).toMatchObject({ status: "queued", turn: 2 });
   await codex.dispose();
+});
+
+/** A session this control side does not hold, named by its thread. */
+const cold = sessionId(HarnessIdSchema.parse("codex-fake"), "99999999-2222-3333-4444-555555555555");
+
+test("resumes of one thread that overlap share one process, so the thread has one writer", async () => {
+  process.env.FAKE_MODE = "hold";
+  const codex = control();
+  await Promise.all([codex.resume(cold), codex.resume(cold), codex.resume(cold)]);
+
+  expect(await spawns()).toHaveLength(1);
+  expect((await requests()).filter((frame) => frame.method === "thread/resume")).toHaveLength(1);
+  expect(await codex.state(cold)).toBe("idle");
+  await codex.stop(cold);
+  expect(await codex.state(cold)).toBe("unknown");
+});
+
+test("a resume that fails does not hold up the resume that follows it", async () => {
+  process.env.FAKE_MODE = "hold";
+  const codex = control({ binary: join(dir, "missing-codex") });
+  const failed = codex.resume(cold).catch((error: unknown) => error);
+  const second = codex.resume(cold).catch((error: unknown) => error);
+  expect(await failed).toBeInstanceOf(Error);
+  expect(await second).toBeInstanceOf(Error);
+});
+
+test("a control side disposed while a resume is starting its process does not keep that session", async () => {
+  process.env.FAKE_MODE = "hold";
+  const codex = control();
+  const resuming = codex.resume(cold).catch((error: unknown) => error);
+  // The launch has asked for its process, and a process is not there before the next turn of the event loop.
+  for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  await codex.dispose();
+
+  expect(await resuming).toBeInstanceOf(Unavailable);
+  expect(await codex.state(cold)).toBe("unknown");
+  expect((await requests()).filter((frame) => frame.method === "thread/resume")).toEqual([]);
 });
 
 test("a message to a busy session is queued, and the turns run in the order the messages came", async () => {
