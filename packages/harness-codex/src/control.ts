@@ -723,8 +723,22 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     const started = await call(session, "turn/start", params);
     if (!started.ok) {
       wait.cancel();
-      session.busy = false;
-      throw inputFailure(harnessId, "send", started.dispatch ?? "uncertain", started.error ?? "the CLI refused the turn");
+      const dispatch = started.dispatch ?? "uncertain";
+      const failure = inputFailure(harnessId, "send", dispatch, started.error ?? "the CLI refused the turn");
+      if (dispatch !== "uncertain" || session.ended) {
+        // Codex did not take the turn: nothing runs, and what queued behind it goes on in its order.
+        session.busy = false;
+        drainQueue(session);
+      } else if (session.activeTurnId === undefined) {
+        // Codex neither answered nor announced the turn, so nobody knows whether one runs. Another
+        // turn on top of it would be a second writer, and what waits could wait forever: the
+        // session is closed, and a later resume starts from what Codex has on disk.
+        session.end(`${started.error ?? "the CLI did not answer the turn"}: the session was closed because the turn may be running`);
+        await stopSession(session);
+      }
+      // Otherwise Codex announced the turn before the answer was lost: it runs, it ends by its
+      // own notification, and the session stays busy until then.
+      throw failure;
     }
     // The end may already have been processed, and a newer turn may already have taken over:
     // only a turn that is still the running one gets its id.
@@ -782,8 +796,6 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
           at: Date.now(),
           detail: `a queued message could not be started: ${String(error)}`,
         });
-        // The messages behind it still wait for a turn of their own.
-        drainQueue(session);
       });
   }
 

@@ -28,7 +28,9 @@ const FRAMES = fileURLToPath(new URL("./fixtures/codex-frames.ts", import.meta.u
  * on), `novel-request` (asks something the schemas do not know, and goes on once it is answered),
  * `drift` (the turn ends with a status the schemas do not know), `drift-message` (the agent's final
  * message carries a field the schemas do not know), `ask-user` (the turn asks the questions in
- * FAKE_QUESTIONS and ends once they are answered).
+ * FAKE_QUESTIONS and ends once they are answered), `refuse-first` (the first turn is refused after a
+ * short wait, the later ones run), `announce-silent` (a turn is announced and never answered nor ended),
+ * `silent` (a turn is neither answered nor announced).
  *
  * The requests that come in are written to `requests.log`, the notifications that go out to
  * `events.log`, so a test can see what was asked and in which order it happened.
@@ -57,6 +59,7 @@ const finish = (status, id) => {
 let pending = [];
 let released = 0;
 let turns = 0;
+let refused = false;
 setInterval(() => {
   if (mode !== "hold") return;
   let wanted = 0;
@@ -84,6 +87,17 @@ process.stdin.on("data", (chunk) => {
     else if (frame.method === "thread/resume") send({ id: frame.id, result: { thread: { id: frame.params.threadId }, model: process.env.FAKE_MODEL } });
     else if (frame.method === "turn/start") {
       if (mode === "die") process.exit(1);
+      if (mode === "refuse-first" && !refused) {
+        refused = true;
+        setTimeout(() => send({ id: frame.id, error: { code: -32600, message: "the turn was refused" } }), 300);
+        continue;
+      }
+      if (mode === "silent") continue;
+      if (mode === "announce-silent") {
+        turns += 1;
+        emit(turnStarted(THREAD, "t" + turns));
+        continue;
+      }
       if (mode === "refuse-turn") {
         send({ id: frame.id, error: { code: -32600, message: "the turn was refused" } });
         continue;
@@ -340,6 +354,53 @@ test("a message Codex refuses, or one to a session it does not hold, was not sen
   const { session: id } = await codex.start({ prompt: promptFromText("") });
   await expect(codex.send(id, "go")).rejects.toBeInstanceOf(InputNotSent);
   await expect(codex.send({ ...id, native: "elsewhere" as never }, "go")).rejects.toBeInstanceOf(InputNotSent);
+  await codex.dispose();
+});
+
+test("a message queued behind a turn Codex refuses to start takes its turn, in its order", async () => {
+  process.env.FAKE_MODE = "refuse-first";
+  process.env.FAKE_TEXT = '{"v":1}';
+  const codex = control();
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+
+  const refusedFirst = codex.send(id, "one").catch((error: unknown) => error);
+  // The first turn waits for Codex's answer, so these come in while the session is busy.
+  expect(await codex.send(id, "two")).toMatchObject({ status: "queued" });
+  const asked = codex.ask(id, { schema: z.object({ v: z.number() }), prompt: promptFromText("question") });
+
+  expect(await refusedFirst).toBeInstanceOf(InputNotSent);
+  expect((await asked).value).toEqual({ v: 1 });
+  expect(await startedTurns()).toEqual(["one", "two", "question"]);
+  await until(async () => (await codex.state(id)) === "idle", "the queue was served");
+  await codex.dispose();
+});
+
+test("a turn Codex announced but never answered keeps the session busy until its own end", async () => {
+  process.env.FAKE_MODE = "announce-silent";
+  const codex = control({ callTimeoutMs: 300 });
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+
+  const failure = await codex.send(id, "one").catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(InputPossiblySent);
+  // The turn runs: another message waits behind it instead of starting a second turn.
+  expect(await codex.state(id)).toBe("running");
+  expect(await codex.send(id, "two")).toMatchObject({ status: "queued" });
+  expect(await startedTurns()).toEqual(["one"]);
+  await codex.dispose();
+});
+
+test("a turn Codex neither answered nor announced closes the session, and what waited behind it is told", async () => {
+  process.env.FAKE_MODE = "silent";
+  const codex = control({ callTimeoutMs: 300 });
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+
+  const first = codex.send(id, "one").catch((error: unknown) => error);
+  const asked = codex.ask(id, { schema: z.string(), prompt: promptFromText("question") }).catch((error: unknown) => error);
+
+  expect(await first).toBeInstanceOf(InputPossiblySent);
+  expect(await asked).toBeInstanceOf(Error);
+  expect(await codex.state(id)).toBe("unknown");
+  expect(await grandchildGone()).toBe(true);
   await codex.dispose();
 });
 
