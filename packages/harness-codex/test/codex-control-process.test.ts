@@ -442,6 +442,16 @@ test("the thread is named to the caller before its first turn is sent", async ()
   await codex.dispose();
 });
 
+test("a closed session's process is gone, and the side holds it no more", async () => {
+  process.env.FAKE_MODE = "ok";
+  const codex = control();
+  const started = await codex.start({ prompt: promptFromText("") });
+  await codex.close?.(started.session);
+  expect(await codex.state(started.session)).toBe("unknown");
+  expect(await grandchildGone()).toBe(true);
+  await codex.dispose();
+});
+
 test("a start whose first turn Codex refused leaves no session behind", async () => {
   process.env.FAKE_MODE = "refuse-turn";
   const codex = control();

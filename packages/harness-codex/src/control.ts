@@ -1115,6 +1115,14 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       session.cancelAsking();
     },
 
+    async close(id: SessionId): Promise<void> {
+      const session = sessions.get(id.native);
+      if (session === undefined) return;
+      sessions.delete(id.native);
+      session.dropQueue("the session was closed");
+      await stopSession(session);
+    },
+
     async ask<T>(id: SessionId, askOptions: AskOptions<T>): Promise<AskAnswer<T>> {
       const session = requireSession(id, "ask");
       const text = promptText(askOptions.prompt);

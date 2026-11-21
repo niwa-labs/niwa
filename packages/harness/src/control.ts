@@ -435,6 +435,13 @@ export interface SessionControl {
   state(id: SessionId): Promise<SessionState>;
 
   /**
+   * Stops the process of one session and lets it go: what is running in it stops, and the session
+   * is the harness's to resume later where it can. A side that holds no process per session may
+   * leave it out.
+   */
+  close?(id: SessionId): Promise<void>;
+
+  /**
    * Stops every session this side owns.
    *
    * A side that owns processes — the harness CLI and the MCP servers it was given — stops them
