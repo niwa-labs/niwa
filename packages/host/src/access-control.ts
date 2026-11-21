@@ -17,6 +17,7 @@ import type {
   AskQuestion,
   AskScope,
   Caller,
+  Effect,
   Grant,
   GrantId,
   NewRecord,
@@ -55,6 +56,8 @@ export interface AccessHost {
   commit(records: NewRecord[]): StoredRecord[];
   /** Read a record. */
   read(id: RecordId): StoredRecord | undefined;
+  /** The effect of an installed action; undefined for a name no plugin serves. */
+  effectOf(name: string): Effect | undefined;
 }
 
 /** The profile the owner has not set, as a plugin or the host declares it. */
@@ -71,6 +74,9 @@ export class AccessControl {
   private readonly defaults = new Map<string, ProfileDefault>([["default", () => DEFAULT_PROFILE]]);
 
   constructor(private readonly host: AccessHost) {}
+
+  /** Is the name that of an irreversible action: one a mask does not grant. */
+  readonly irreversible = (name: string): boolean => this.host.effectOf(name) === "irreversible";
 
   /** A plugin names the profile it owns; the owner's own setting wins over it. */
   declareProfile(name: string, rules: ProfileDefault): void {
@@ -136,7 +142,7 @@ export class AccessControl {
         return { rules: grant(requested) };
       case "limited":
         // The owner starts what it likes: its grant is `call:*`, and the verbs beyond calls are its own to hand out.
-        return standing.id === OWNER_GRANT_ID ? { rules: grant(requested) } : narrow(standing.grant, requested);
+        return standing.id === OWNER_GRANT_ID ? { rules: grant(requested) } : narrow(standing.grant, requested, { irreversible: this.irreversible });
       case "closed":
       case "off":
         return { refused: requested.map((spec) => ruleText(rule(spec))) };
@@ -201,7 +207,7 @@ export class AccessControl {
     const issued = this.grantRecord(principal, after, before.parent, by);
     const records: NewRecord[] = [issued];
     const closed: Principal[] = [];
-    if (narrowed(before.grant, after)) records.push(...this.closing(by, before, "its parent's grant was narrowed", closed, false));
+    if (narrowed(before.grant, after, { irreversible: this.irreversible })) records.push(...this.closing(by, before, "its parent's grant was narrowed", closed, false));
     this.host.commit(records);
     return { grant: grantId(issued.id), closed };
   }

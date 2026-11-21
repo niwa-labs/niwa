@@ -212,3 +212,26 @@ test("a grant that gives up an ask is widened, whatever rules sit under it", () 
   const own = grant([{ do: "a.*@x/*", ask: true }, "a.b@*"]);
   expect(narrowed(own, own)).toBe(false);
 });
+
+test("a mask never grants an irreversible action: only a rule that names it does", () => {
+  const masks = grant(["*", "forge.*", "forge.pr.*@git.example.com/acme/billing/pr/*"]);
+  expect(match(masks, "call", "forge.pr.merge", "git.example.com/acme/billing/pr/7")).toBeDefined();
+  expect(match(masks, "call", "forge.pr.merge", "git.example.com/acme/billing/pr/7", { irreversible: true })).toBeUndefined();
+  const named = grant(["forge.*", "forge.pr.merge@git.example.com/acme/billing/pr/*"]);
+  expect(match(named, "call", "forge.pr.merge", "git.example.com/acme/billing/pr/7", { irreversible: true })).toMatchObject({ name: "forge.pr.merge" });
+  expect(match(named, "call", "forge.pr.merge", "git.example.com/acme/other/pr/7", { irreversible: true })).toBeUndefined();
+});
+
+test("a child cannot name an irreversible action its parent holds only by a mask", () => {
+  const irreversible = (name: string): boolean => name === "forge.pr.merge";
+  expect(narrow(grant(["forge.*"]), ["forge.pr.merge"], { irreversible })).toEqual({ refused: ["call:forge.pr.merge"] });
+  expect(narrow(grant(["*"]), ["forge.pr.merge@h/p/pr/1"], { irreversible })).toEqual({ refused: ["call:forge.pr.merge@h/p/pr/1"] });
+  // The parent names it: the child may have it, as narrow as it asks.
+  const named = narrow(grant(["forge.*", "forge.pr.merge@h/p/pr/*"]), ["forge.pr.merge@h/p/pr/1"], { irreversible });
+  expect("rules" in named && specsOf(named.rules)).toEqual(["call:forge.pr.merge@h/p/pr/1"]);
+  // A mask the child asks for does not carry the parent's rule that names it.
+  const masked = narrow(grant(["forge.*", "forge.pr.merge@h/p/pr/*"]), ["forge.*"], { irreversible });
+  expect("rules" in masked && specsOf(masked.rules)).toEqual(["call:forge.*"]);
+  // An action that is not irreversible is held by a mask as before.
+  expect("rules" in narrow(grant(["forge.*"]), ["forge.pr.read"], { irreversible })).toBe(true);
+});

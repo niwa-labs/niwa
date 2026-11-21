@@ -19,6 +19,7 @@ import {
   grantIdSchema,
   principalSchema,
   OWNER_GRANT,
+  OWNER_GRANT_ID,
   RuleSpecSchema,
   grant,
   grantId,
@@ -55,7 +56,7 @@ export const IssuedData = z.object({
 });
 
 /** The grant the owner has: it is the host's own, not a record. */
-export const OWNER_GRANT_ID: GrantId = grantId("owner");
+export { OWNER_GRANT_ID };
 
 /** The grant of a connection with no token, or one the host did not make: the `default` profile, not a record. */
 export const DEFAULT_GRANT_ID: GrantId = grantId("default");

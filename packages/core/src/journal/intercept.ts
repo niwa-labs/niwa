@@ -11,7 +11,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { Standing } from "../access.ts";
 import { NOT_ANSWERED, REFUSED_BY_OWNER } from "../denied.ts";
-import { match, ruleText } from "../grant.ts";
+import { OWNER_GRANT_ID, match, ruleText } from "../grant.ts";
 import type {
   Action,
   ActionName,
@@ -20,6 +20,7 @@ import type {
   AskScope,
   Caller,
   Denial,
+  Effect,
   GrantId,
   GuardFn,
   InterceptContext,
@@ -47,9 +48,10 @@ export type Permit =
 /**
  * The grant's match for one `call` or `emit`: no rule is a denial, a rule allows, and a rule
  * with `ask` is a denial that says it asks: `decide` puts the question to the owner for a call.
- * Whatever else decides with `permit` (an `emit`) takes it as the denial it is.
+ * Whatever else decides with `permit` (an `emit`) takes it as the denial it is. A call of an
+ * irreversible action is matched only by a rule that names it, except under the owner's grant.
  */
-export function permit(standing: Standing, verb: Verb, name: string, target?: string): Permit {
+export function permit(standing: Standing, verb: Verb, name: string, target?: string, effect?: Effect): Permit {
   const wanted = `${verb}:${name}${target === undefined ? "" : `@${target}`}`;
   switch (standing.kind) {
     case "unlimited":
@@ -59,9 +61,14 @@ export function permit(standing: Standing, verb: Verb, name: string, target?: st
     case "closed":
       return { allowed: false, reason: `its grant was closed: ${standing.reason}`, grant: standing.id, missing: wanted };
     case "limited": {
-      const found = match(standing.grant, verb, name, target);
+      // The owner's `*` is the owner's own: for anyone else a mask does not grant an irreversible action.
+      const irreversible = effect === "irreversible" && standing.id !== OWNER_GRANT_ID;
+      const found = match(standing.grant, verb, name, target, { irreversible });
       if (found === undefined) {
-        return { allowed: false, reason: `"${name}" is not in the grant`, grant: standing.id, missing: wanted };
+        const reason = irreversible && match(standing.grant, verb, name, target) !== undefined
+          ? `"${name}" is irreversible: only a rule that names it grants it, not a mask`
+          : `"${name}" is not in the grant`;
+        return { allowed: false, reason, grant: standing.id, missing: wanted };
       }
       if (found.ask) {
         return { allowed: false, reason: "ask", asks: true, grant: standing.id, rule: ruleText(found), missing: wanted };
@@ -267,7 +274,7 @@ async function decideIn<I, In = I>(opts: DecideOptions<I, In>): Promise<Decision
   // 4. The grant's match: what is not listed is forbidden. It comes before the guards, and a guard
   // cannot lift it: guards only add refusals.
   const target = opts.action.target?.(checked.data);
-  let access = opts.standing === undefined ? undefined : permit(opts.standing, "call", opts.action.name, target);
+  let access = opts.standing === undefined ? undefined : permit(opts.standing, "call", opts.action.name, target, opts.action.effect);
   // 4b. A rule that asks: the owner answers, now, about this call. The answer lets it through to
   // the guards, which may still refuse it.
   if (access !== undefined) {

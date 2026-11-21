@@ -113,6 +113,34 @@ export function grant(specs: readonly RuleSpec[]): Grant {
 /** The owner's grant: everything that may be called. */
 export const OWNER_GRANT: Grant = grant(["*"]);
 
+/** The id of the owner's grant: the owner calls an irreversible action by its `*`, nobody else does. */
+export const OWNER_GRANT_ID: GrantId = grantId("owner");
+
+/** Is this the owner's own grant, the one value the host gives the owner: its `*` covers irreversible actions too. */
+export function isOwnerGrant(of: Grant): boolean {
+  return of === OWNER_GRANT;
+}
+
+/**
+ * What a match or a narrowing needs to know of the actions: which are irreversible.
+ *
+ * A mask never grants an irreversible action: only a rule whose name is the action's own does.
+ */
+export interface Irreversibility {
+  /** The call is of an irreversible action. */
+  readonly irreversible?: boolean;
+}
+
+/** Which names are of irreversible actions, for a narrowing. */
+export interface NarrowOptions {
+  readonly irreversible?: (name: string) => boolean;
+}
+
+/** Is the name of this rule a mask rather than one name? */
+function masked(of: Rule): boolean {
+  return prefixOf(of.name) !== undefined;
+}
+
 /** Which of two rules that both match is the longer: the name first, then a target, then `ask`. */
 function longer(a: Rule, b: Rule): boolean {
   const names = specificity(a.name) - specificity(b.name);
@@ -125,12 +153,14 @@ function longer(a: Rule, b: Rule): boolean {
  * The rule of a grant that decides a verb on a name, and a target when the call has one.
  *
  * A rule with a target says nothing about a call without one; a rule without a target covers
- * every target. Of the rules that match the longest wins.
+ * every target. Of the rules that match the longest wins. For an irreversible action only the
+ * rules that name it count: a mask does not grant it.
  */
-export function match(of: Grant, verb: Verb, name: string, target?: string): Rule | undefined {
+export function match(of: Grant, verb: Verb, name: string, target?: string, opts: Irreversibility = {}): Rule | undefined {
   let best: Rule | undefined;
   for (const candidate of of.rules) {
     if (candidate.verb !== verb || !matches(candidate.name, name)) continue;
+    if (opts.irreversible === true && masked(candidate)) continue;
     if (candidate.target !== undefined && (target === undefined || !matches(candidate.target, target))) continue;
     if (best === undefined || longer(candidate, best)) best = candidate;
   }
@@ -144,10 +174,15 @@ function holds(parent: Rule, requested: Rule): boolean {
   return requested.target !== undefined && covers(parent.target, requested.target);
 }
 
-/** The rule of a grant that governs a requested rule: the longest of those that hold it. */
-function governing(of: Grant, requested: Rule): Rule | undefined {
+/**
+ * The rule of a grant that governs a requested rule: the longest of those that hold it. A request
+ * that names an irreversible action is held only by a rule that names it too.
+ */
+function governing(of: Grant, requested: Rule, opts: NarrowOptions = {}): Rule | undefined {
+  const exact = !masked(requested) && requested.verb === "call" && opts.irreversible?.(requested.name) === true;
   let best: Rule | undefined;
   for (const candidate of of.rules) {
+    if (exact && masked(candidate)) continue;
     if (holds(candidate, requested) && (best === undefined || longer(candidate, best))) best = candidate;
   }
   return best;
@@ -199,25 +234,32 @@ export type Narrowed = { readonly rules: Grant } | { readonly refused: readonly 
  *   one holding the other (the name is wider in one and the target in the other) and no longer
  *   parent rule answers for that part: the request would otherwise let it through without a
  *   question.
+ *
+ * With `irreversible`, a request that names an irreversible action is held only by a parent rule
+ * that names it, and a mask the child asks for does not carry such a rule along: a mask never
+ * grants an irreversible action, at any depth.
  */
-export function narrow(parent: Grant, requested: readonly RuleSpec[]): Narrowed {
+export function narrow(parent: Grant, requested: readonly RuleSpec[], opts: NarrowOptions = {}): Narrowed {
   const refused: string[] = [];
   const rules: Rule[] = [];
+  // A rule of the parent that names an irreversible action is not carried by a mask the child asks for.
+  const named = (own: Rule): boolean => !masked(own) && own.verb === "call" && opts.irreversible?.(own.name) === true;
   for (const spec of requested) {
     const asked = rule(spec);
-    const over = governing(parent, asked);
+    const over = governing(parent, asked, opts);
     if (over === undefined) {
       refused.push(ruleText(asked));
       continue;
     }
     rules.push({ ...asked, ask: asked.ask || over.ask });
     for (const own of parent.rules) {
+      if (masked(asked) && named(own)) continue;
       if (inside(asked, own)) {
         rules.push(own);
       } else if (own.ask && !holds(own, asked)) {
         // Only where the rule decides: a longer parent rule over the shared part answers for it.
         const shared = common(asked, own);
-        if (shared !== undefined && governing(parent, shared)?.ask === true) rules.push({ ...shared, ask: true });
+        if (shared !== undefined && governing(parent, shared, opts)?.ask === true) rules.push({ ...shared, ask: true });
       }
     }
   }
@@ -231,8 +273,8 @@ export function narrow(parent: Grant, requested: readonly RuleSpec[]): Narrowed 
  * Only that is a narrowing: a grant that only gains rules is a widening, which touches nothing
  * that is already living.
  */
-export function narrowed(before: Grant, after: Grant): boolean {
-  const kept = narrow(after, before.rules.map(specOf));
+export function narrowed(before: Grant, after: Grant, opts: NarrowOptions = {}): boolean {
+  const kept = narrow(after, before.rules.map(specOf), opts);
   if ("refused" in kept) return true;
   return kept.rules.rules.some((now) => {
     if (!now.ask) return false;

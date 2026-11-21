@@ -917,7 +917,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         const rights = api.rights(installer);
         if (rights === "unlimited") continue;
         for (const held of specsOf(rights)) {
-          const inside = narrow(grant([spec]), [held]);
+          const inside = narrow(grant([spec]), [held], { irreversible: (name) => api.effectOf(name) === "irreversible" });
           if (!("refused" in inside)) kept.push(...specsOf(inside.rules));
         }
       }

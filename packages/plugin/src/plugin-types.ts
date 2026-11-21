@@ -6,6 +6,7 @@ import type { Subscribable } from "./trigger.ts";
 import type {
   Action,
   ActionRef,
+  Effect,
   AdjustFn,
   Ask,
   Asker,
@@ -312,6 +313,12 @@ export interface PluginApi {
    * Ask it with `match` from the grant of niwa to know whether a name may be called.
    */
   rights(caller: Caller): Grant | "unlimited";
+  /**
+   * The effect class of an action the host serves, by its name; undefined for a name nothing
+   * serves. What a plugin that narrows rules by itself needs: a mask never grants an
+   * irreversible action, so a narrowing is told which names are.
+   */
+  effectOf(name: string): Effect | undefined;
   /**
    * Hold `caller` to its grant for one `verb` on one `name`, as `decide()` does for a call: the
    * decision of a subject a grant limits is recorded, and a refusal is a `DeniedError` that carries

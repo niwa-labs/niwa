@@ -78,6 +78,7 @@ import type {
   AnyWaited,
   AppendEntry,
   Caller,
+  Effect,
   ClientId,
   Description,
   EmitOptions,
@@ -615,6 +616,7 @@ class Niwa implements Host {
     doors: () => this.requireDoors(),
     commit: (records) => this.append(records),
     read: (id) => this.journal?.get(id),
+    effectOf: (name) => this.effectOf(name),
   });
   /** The actions of access: the host registers them for itself. */
   private readonly accessActionList = accessActions(this.access, () => this.requireDoors());
@@ -913,6 +915,7 @@ class Niwa implements Host {
       },
       narrow: (caller, requested) => this.access.narrowFor(caller, requested),
       rights: (caller) => this.access.rightsOf(caller),
+      effectOf: (name) => this.effectOf(name),
       profile: (name, rules) => {
         live();
         installed.profiles.add(name);
@@ -1280,6 +1283,15 @@ class Niwa implements Host {
   /** The action of a name: a declared one, or one a plugin's catalog reads from the journal now. */
   private actionOf(name: ActionName): AnyAction | undefined {
     return this.actions.get(name) ?? this.catalogued().find((entry) => entry.action.name === name)?.action;
+  }
+
+  /** The effect of an action by its name; undefined for a name nothing serves. */
+  private effectOf(name: string): Effect | undefined {
+    try {
+      return this.actionOf(actionName(name))?.effect;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Every action: the declared ones, then the ones the catalogs read now that no declared one shadows. */
@@ -1761,7 +1773,7 @@ class Niwa implements Host {
     const checked = found?.input.safeParse(how?.input);
     const input = checked?.success === true ? checked.data : how?.input;
     const target = found?.target === undefined || checked?.success !== true ? undefined : found.target(checked.data);
-    let answer = permit(standing, verb, name, target);
+    let answer = permit(standing, verb, name, target, found?.effect);
     if (verb === "call") {
       answer = await settleAsk(answer, {
         caller,
