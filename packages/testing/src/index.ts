@@ -38,6 +38,7 @@ export { claudePrompt, fakeSdkQuery } from "./harness-claude.ts";
 export type { FakeCall } from "./harness-claude.ts";
 export { ZCODE_FAKE } from "./harness-zcode.ts";
 export * from "./requests.ts";
+export * from "./sessions.ts";
 
 const READY_TIMEOUT_MS = 10_000; // How long `ready()` waits for the host to accept a connection.
 const STOP_GRACE_MS = 5_000; // How long `stop()` gives SIGTERM before SIGKILL.
