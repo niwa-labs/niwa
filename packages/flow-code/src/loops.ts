@@ -9,7 +9,7 @@ import type { Attempt, Judged, Seat } from "@niwa-labs/flow";
 import { runCheck } from "@niwa-labs/proc/flow";
 import type { ArtifactRef, Check } from "@niwa-labs/proc/flow";
 
-import { checkFailed, commitBy, findingsText, uncommitted } from "./review.ts";
+import { changesAfterCheck, checkFailed, commitBy, findingsText, uncommitted } from "./review.ts";
 import { seatIn, stateOf } from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 
@@ -44,15 +44,17 @@ export async function tddLoop(
           outcome.set(round, { verdict: "FAIL", findings: [{ title: "the new test passes before the change", evidence: before.summary, severity: "blocks" }], method: "check (red)" });
           return { sha: red.sha, redSha: "", check: before.artifact };
         }
-        if (red.dirty) {
-          outcome.set(round, uncommitted());
+        const redChange = red.dirty ? uncommitted() : await changesAfterCheck(opts.wt, red.sha);
+        if (redChange !== undefined) {
+          outcome.set(round, redChange);
           return { sha: red.sha, redSha: "", check: before.artifact };
         }
         redSha = red.sha;
       }
       const green = await commitBy(opts.author, opts.wt, `Make the failing test of the commit ${redSha} pass, for this task:\n${opts.task}${notes}`);
       const after = await runCheck("green", opts.test);
-      outcome.set(round, green.dirty ? uncommitted() : after.ok ? passed("green") : checkFailed("the test", after.summary));
+      const greenFailure = green.dirty ? uncommitted() : after.ok ? await changesAfterCheck(opts.wt, green.sha) : checkFailed("the test", after.summary);
+      outcome.set(round, greenFailure ?? passed("green"));
       return { sha: green.sha, redSha, check: after.artifact };
     },
     judge: async (_value, round) => outcome.get(round) as Judged,
@@ -120,7 +122,7 @@ export async function debugLoop(
         judged: { verdict: "INCONCLUSIVE" as const, findings: [{ title, evidence: before.summary, severity: before.ok ? ("note" as const) : ("blocks" as const) }], method: "check (before)" },
       };
     }
-    const results = new Map<number, { ok: boolean; dirty: boolean; summary: string; artifact: ArtifactRef }>();
+    const results = new Map<number, { judged: Judged; artifact: ArtifactRef }>();
     const attempt = await revise("fix", {
       ...(opts.max === undefined ? {} : { max: opts.max }),
       write: async (feedback, round) => {
@@ -132,13 +134,11 @@ export async function debugLoop(
         );
         const { sha, dirty } = await stateOf(opts.wt);
         const after = await runCheck("after", opts.repro);
-        results.set(round, { ok: after.ok, dirty, summary: after.summary, artifact: after.artifact });
+        const failure = dirty ? uncommitted() : after.ok ? await changesAfterCheck(opts.wt, sha) : checkFailed("the repro", after.summary);
+        results.set(round, { judged: failure ?? passed("repro"), artifact: after.artifact });
         return { sha, cause: fixed.cause };
       },
-      judge: async (_value, round) => {
-        const after = results.get(round) as { ok: boolean; dirty: boolean; summary: string };
-        return after.dirty ? uncommitted() : after.ok ? passed("repro") : checkFailed("the repro", after.summary);
-      },
+      judge: async (_value, round) => results.get(round)!.judged,
     });
     return { cause: attempt.value.cause, sha: attempt.value.sha, before: before.artifact, after: (results.get(attempt.rounds) as { artifact: ArtifactRef }).artifact, judged: attempt.judged };
   });
@@ -175,11 +175,15 @@ export async function coverageLoop(
 ): Promise<{ before: number; after: number; sha: string; reached: boolean; failure?: { reason: string; artifact: ArtifactRef } }> {
   checkKey(key, "the key of a coverage loop");
   const measure: Check = { ...opts.measure, report: opts.measure.report ?? "json" };
-  const read = async (label: string): Promise<{ coverage: number } | { failure: { reason: string; artifact: ArtifactRef } }> => {
+  const read = async (label: string, sha?: string): Promise<{ coverage: number } | { failure: { reason: string; artifact: ArtifactRef } }> => {
     const measured = await runCheck(label, measure);
     if (!measured.ok) return { failure: { reason: `the coverage measure did not pass: ${measured.summary}`, artifact: measured.artifact } };
     const coverage = coverageOf(measured.report);
     if (coverage === undefined) return { failure: { reason: `the coverage measure printed no report with a coverage: ${measured.summary}`, artifact: measured.artifact } };
+    if (sha !== undefined) {
+      const change = await changesAfterCheck(opts.wt, sha);
+      if (change !== undefined) return { failure: { reason: findingsText(change.findings), artifact: measured.artifact } };
+    }
     return { coverage };
   };
   type State = { coverage: number; sha: string; clean: boolean; failure?: { reason: string; artifact: ArtifactRef } };
@@ -199,7 +203,7 @@ export async function coverageLoop(
             (state.clean ? "" : "\n\nThe last round left changes uncommitted: commit them.") +
             (state.failure === undefined ? "" : `\n\nThe last round did not count:\n${state.failure.reason}`),
         );
-        const measured = await read("measure");
+        const measured = await read("measure", added.dirty ? undefined : added.sha);
         return "failure" in measured
           ? { coverage: state.coverage, sha: added.sha, clean: !added.dirty, failure: measured.failure }
           : { coverage: measured.coverage, sha: added.sha, clean: !added.dirty };

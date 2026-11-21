@@ -166,6 +166,26 @@ test("a fix left uncommitted is sent back to the author without being reviewed",
   expect(reviews).toBe(2);
 }, 30_000);
 
+test("a passing check that changes the worktree cannot clear a review round", async () => {
+  const flow = await host({ reviewer: () => ({ verdict: "PASS", findings: [] }) });
+  const ended = await flow.run(`
+    import { inWorktree, reviewFix } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, async (wt) => {
+        const out = await reviewFix("review", {
+          wt, base: "main", author: "reviewer", reviewers: ["reviewer"], max: 1,
+          test: { cmd: ["sh", "-c", "touch uncommitted.txt"], cwd: wt.path },
+        });
+        return { verdict: out.judged.verdict, check: out.value.check?.digest, findings: out.judged.findings };
+      }));`);
+  expect(resultOf(ended)).toMatchObject({
+    verdict: "FAIL",
+    check: expect.stringMatching(/^sha256:/),
+    findings: [{ title: "the work was left uncommitted" }],
+  });
+  expect(flow.calls.reviewer).toEqual([]);
+}, 30_000);
+
 test("a review panel names the reviewer that could not look, apart from a clean review", async () => {
   const flow = await host({
     author: () => ({ summary: "unused" }),
@@ -207,6 +227,22 @@ test("test first takes a test that fails before the change, then a change that m
   expect(reds).toBe(2);
 }, 30_000);
 
+test("a red-phase check that changes the worktree cannot establish a failing commit", async () => {
+  const flow = await host({ author: (call) => ({ sha: commitFile(dirOf(call), "check.txt", "x\n") }) });
+  const ended = await flow.run(`
+    import { inWorktree, tddLoop } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, async (wt) => {
+        const out = await tddLoop("tdd", {
+          task: "add a test", wt, author: "author", max: 1,
+          test: { cmd: ["sh", "-c", "touch uncommitted.txt; exit 1"], cwd: wt.path },
+        });
+        return { redSha: out.value.redSha, judged: out.judged };
+      }));`);
+  expect(resultOf(ended)).toMatchObject({ redSha: "", judged: { verdict: "FAIL", findings: [{ title: "the work was left uncommitted" }] } });
+  expect(flow.calls.author).toHaveLength(1);
+}, 30_000);
+
 test("debugging needs a failing repro, and fixes until the repro passes", async () => {
   let tries = 0;
   const flow = await host({
@@ -228,6 +264,21 @@ test("debugging needs a failing repro, and fixes until the repro passes", async 
   expect(tries).toBe(2);
 }, 30_000);
 
+test("a passing repro that changes the worktree cannot clear a bug fix", async () => {
+  const flow = await host({ author: (call) => ({ cause: "missing file", sha: commitFile(dirOf(call), "fixed.txt", "x\n") }) });
+  const ended = await flow.run(`
+    import { debugLoop, inWorktree } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, async (wt) => {
+        const out = await debugLoop("bug", {
+          wt, symptom: "missing file", author: "author", max: 1,
+          repro: { cmd: ["sh", "-c", "test -f fixed.txt && touch uncommitted.txt"], cwd: wt.path },
+        });
+        return out.judged;
+      }));`);
+  expect(resultOf(ended)).toMatchObject({ verdict: "FAIL", findings: [{ title: "the work was left uncommitted" }] });
+}, 30_000);
+
 test("coverage rises round by round until the measure reports the threshold", async () => {
   const flow = await host({
     author: (call) => {
@@ -246,6 +297,21 @@ test("coverage rises round by round until the measure reports the threshold", as
       }));`);
   expect(resultOf(ended)).toEqual({ before: 0.25, after: 0.75, reached: true });
   expect(flow.calls.author).toHaveLength(2);
+}, 30_000);
+
+test("a coverage measure that changes a committed round cannot reach the threshold", async () => {
+  const flow = await host({ author: (call) => ({ sha: commitFile(dirOf(call), "added.txt", "x\n") }) });
+  const ended = await flow.run(`
+    import { coverageLoop, inWorktree } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, (wt) => coverageLoop("cov", {
+        wt, threshold: 0.5, author: "author", max: 1,
+        measure: {
+          cmd: ["sh", "-c", "if test -f added.txt; then touch uncommitted.txt; echo '{\\"coverage\\": 1}'; else echo '{\\"coverage\\": 0}'; fi"],
+          cwd: wt.path,
+        },
+      })));`);
+  expect(resultOf(ended)).toMatchObject({ before: 0, after: 0, reached: false, failure: { reason: expect.stringContaining("the work was left uncommitted") } });
 }, 30_000);
 
 test("a coverage measure that fails gives no coverage, whatever it printed", async () => {

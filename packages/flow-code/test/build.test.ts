@@ -70,6 +70,26 @@ test("an economy implementation whose author leaves the work uncommitted is not 
   expect(out.sha).toBe(gitIn(out.path, "rev-parse", "HEAD"));
 }, 30_000);
 
+test("a passing check that changes the worktree cannot clear an implementation", async () => {
+  const build: Reply = (call) => ({ sha: commitFile(dirOf(call), "work.txt", "x\n") });
+  const flow = await host({ author: build, reviewer: () => ({ verdict: "PASS", findings: [] }) });
+  const ended = await flow.run(`
+    import { implement } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const verdicts = [];
+      for (const mode of ["economy", "race"] as const) {
+        const done = await implement(mode, {
+          task: "Add work.txt", repo: "$REPO", mode, seats: { author: "author", reviewer: "reviewer" },
+          test: { cmd: ["sh", "-c", "touch uncommitted.txt"], cwd: "$REPO" },
+        });
+        verdicts.push(done.judged.verdict);
+      }
+      return verdicts;
+    });`);
+  expect(resultOf(ended)).toEqual(["FAIL", "FAIL"]);
+  expect(flow.calls.reviewer).toEqual([]);
+}, 30_000);
+
 test("a race is won by the first fork whose test passes, while a slower fork is still working", async () => {
   const build: Reply = (call) => ({ sha: commitFile(dirOf(call), "work.txt", `${String(call.harness)}\n`) });
   // The first seat never answers: the call must not wait for it.

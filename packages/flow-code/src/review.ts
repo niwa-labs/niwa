@@ -42,6 +42,14 @@ export function uncommitted(): Judged {
   };
 }
 
+/** A check can count for a commit only if the worktree is still clean and at that commit. */
+export async function changesAfterCheck(wt: Worktree, sha: string): Promise<Judged | undefined> {
+  const after = await stateOf(wt);
+  if (after.dirty) return uncommitted();
+  if (after.sha !== sha) return checkFailed("the worktree", `the check started at ${sha} but the worktree is now at ${after.sha}`);
+  return undefined;
+}
+
 /** A check that did not pass, as a judgement that blocks. */
 export function checkFailed(what: string, summary: string): Judged {
   return { verdict: "FAIL", findings: [{ title: `${what} did not pass`, evidence: summary, severity: "blocks" }], method: `check (${what})` };
@@ -72,7 +80,10 @@ export async function reviewFix(key: string, opts: ReviewFixOptions & { test?: C
       const state = feedback === null ? await stateOf(opts.wt, "head") : await commitBy(opts.author, opts.wt, `Fix what the review found in the changes against ${opts.base}:\n${findingsText(feedback.findings)}`);
       const check = opts.test === undefined ? undefined : await runCheck("test", opts.test);
       if (state.dirty) blocked.set(round, uncommitted());
-      else if (check !== undefined && !check.ok) blocked.set(round, checkFailed("the test", check.summary));
+      else if (check !== undefined) {
+        const failure = check.ok ? await changesAfterCheck(opts.wt, state.sha) : checkFailed("the test", check.summary);
+        if (failure !== undefined) blocked.set(round, failure);
+      }
       return { sha: state.sha, ...(check === undefined ? {} : { check: check.artifact }) };
     },
     judge: async ({ sha }, round) =>
