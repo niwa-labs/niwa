@@ -88,6 +88,12 @@ export interface Bot {
 
   /** Send a text message to a chat. */
   sendMessage(chat: ChatId, text: string, keyboard?: InlineKeyboard): Promise<SentMessage>;
+
+  /**
+   * Tell Telegram a press of a button was seen, with a short word to show the one who pressed it.
+   * Until then the button shows that it is waiting.
+   */
+  answerCallbackQuery(query: string, text?: string): Promise<void>;
 }
 
 /** The options of the client. */
@@ -175,6 +181,13 @@ export function createBot(opts: BotOptions): Bot {
         chat_id: chat,
         text,
         ...(keyboard === undefined ? {} : { reply_markup: keyboard }),
+      });
+    },
+
+    async answerCallbackQuery(query, text) {
+      await call<boolean>("answerCallbackQuery", {
+        callback_query_id: query,
+        ...(text === undefined ? {} : { text }),
       });
     },
   };

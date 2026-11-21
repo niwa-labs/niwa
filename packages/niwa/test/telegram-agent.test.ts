@@ -29,6 +29,7 @@ function fakeBot(): { bot: Bot; push(update: Update): void; sent: string[] } {
       sent.push(text);
       return { message_id: sent.length as MessageId, chat: { id: chat } };
     },
+    async answerCallbackQuery() {},
   };
   return { bot, push: (update) => void waiting.push(update), sent };
 }

@@ -20,7 +20,7 @@ import { answeredBy, RequestAnswered, RequestCreated, requestAsk, question, requ
 import { z } from "zod";
 
 import {
-  Answered,
+  Pressed,
   Ignored,
   Posted,
   Received,
@@ -85,6 +85,8 @@ function fakeTelegram(): {
   }>;
   /** The offsets the polls asked from. */
   offsets: number[];
+  /** What the surface told Telegram of the presses it saw. */
+  acks: Array<{ callback_query_id: string; text?: string }>;
   /** Refuse this many of the next sends, as Telegram does when it will not take a message. */
   refuse(count: number): void;
   push(update: unknown): void;
@@ -92,6 +94,7 @@ function fakeTelegram(): {
 } {
   const sent: ReturnType<typeof fakeTelegram>["sent"] = [];
   const offsets: number[] = [];
+  const acks: ReturnType<typeof fakeTelegram>["acks"] = [];
   let pending: Array<{ update_id: number }> = [];
   let refusing = 0;
 
@@ -123,6 +126,11 @@ function fakeTelegram(): {
         });
       }
 
+      if (method === "answerCallbackQuery") {
+        acks.push(body as (typeof acks)[number]);
+        return Response.json({ ok: true, result: true });
+      }
+
       return Response.json({ ok: false, description: `unknown method ${method}` }, { status: 404 });
     },
   });
@@ -131,6 +139,7 @@ function fakeTelegram(): {
     base: server.url.toString().replace(/\/$/, ""),
     sent,
     offsets,
+    acks,
     refuse(count: number) {
       refusing = count;
     },
@@ -636,9 +645,10 @@ test("telegram: a request to the owner is a message, and a press answers it", as
 
     const records = await recordsOf(home.path);
     expect(records.some((record) => record.type === Posted.name)).toBe(true);
-    const answers = records.filter((record) => record.type === Answered.name);
-    expect(answers).toHaveLength(1);
-    expect(answers[0]?.data).toMatchObject({ answer: "yes" });
+    const presses = records.filter((record) => record.type === Pressed.name);
+    expect(presses).toHaveLength(1);
+    expect(presses[0]?.data).toMatchObject({ message: 1, query: "cb400", data: "answer:0" });
+    expect(fake.acks).toEqual([{ callback_query_id: "cb400", text: "Answer sent" }]);
 
     // The answer is the request's: it is written by the requests module, and it is the owner's.
     const answered = records.filter((record) => record.type === RequestAnswered.name);
@@ -650,12 +660,15 @@ test("telegram: a request to the owner is a message, and a press answers it", as
     // A second press on the same message is late: it changes nothing and the handler ends.
     fake.push(callbackUpdate(401, 1, buttons[1]?.[0]?.callback_data ?? ""));
     await eventually(
-      async () => (await recordsOf(home.path, 300)).filter((r) => r.type === Answered.name).length === 2,
+      async () => (await recordsOf(home.path, 300)).filter((r) => r.type === Pressed.name).length === 2,
       5_000,
       "the late press should be written down",
     );
     const after = await recordsOf(home.path, 300);
     expect(after.filter((record) => record.type === RequestAnswered.name)).toHaveLength(1);
+    // The owner is told the late press was not taken, on the button and in the chat.
+    expect(fake.acks.map((ack) => ack.text)).toEqual(["Answer sent", "Not accepted"]);
+    expect(fake.sent.at(-1)?.text).toContain("was not accepted");
 
     // Every button of a long Cyrillic choice stays inside the 64 bytes Telegram allows.
     const long = keyboardFor(["Разрешить всё до конца сессии", "Отклонить и объяснить причину"]);
@@ -801,7 +814,7 @@ test("telegram: a press from another chat is only noted, and the owner's request
     await eventually(() => fake.offsets.includes(501), 5_000, "the press should be handled");
     const records = await recordsOf(home.path);
     expect(records.filter((record) => record.type === Ignored.name)).toHaveLength(1);
-    expect(records.filter((record) => record.type === Answered.name)).toHaveLength(0);
+    expect(records.filter((record) => record.type === Pressed.name)).toHaveLength(0);
     expect(records.filter((record) => record.type === RequestAnswered.name)).toHaveLength(0);
     expect(records.filter((record) => record.type === Continued.name)).toHaveLength(0);
 
@@ -820,6 +833,65 @@ test("telegram: a press from another chat is only noted, and the owner's request
     await home.cleanup();
   }
 }, 30_000);
+
+test("telegram: a press that answers nothing is written down and the owner is told", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    host.use(requests());
+    host.use(telegram(options(fake.base)));
+    await host.serve();
+    fake.push(callbackUpdate(530, 999, "answer:0"));
+    await eventually(() => fake.sent.length === 1, 15_000, "the owner should be told");
+    expect(fake.sent[0]?.text).toContain("does not belong to a request");
+    expect(fake.acks).toEqual([{ callback_query_id: "cb530", text: "Not accepted" }]);
+    const presses = (await recordsOf(home.path, 200)).filter((record) => record.type === Pressed.name);
+    expect(presses).toHaveLength(1);
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: a press is resolved by the chat as well as the message, so a former chat's post is not found", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const FORMER = chatId(5555);
+
+  try {
+    const first = createNiwa({ home: home.path });
+    const surface = telegram(options(fake.base));
+    first.use(requests({ bind: surface.bind() }));
+    first.use(asker());
+    first.use(surface);
+    await first.serve();
+    const client = await connectAsOwner(home.path);
+    await client.emit(Start, { to: { kind: "owner" } });
+    await eventually(() => fake.sent.length === 1, 5_000, "the request should be posted");
+    const data = fake.sent[0]?.reply_markup?.inline_keyboard[0]?.[0]?.callback_data ?? "";
+    await client.close();
+    await first.close();
+
+    // The owner's chat is another now: message 1 of it is not message 1 of the old chat.
+    const second = createNiwa({ home: home.path });
+    const moved = telegram({ ...options(fake.base), owner: FORMER });
+    second.use(requests({ bind: moved.bind() }));
+    second.use(asker());
+    second.use(moved);
+    await second.serve();
+    fake.push(callbackUpdate(540, 1, data, FORMER));
+    await eventually(() => fake.acks.length === 1, 15_000, "the press should be answered");
+    expect(fake.acks[0]?.text).toBe("Not accepted");
+    expect((await recordsOf(home.path, 200)).filter((record) => record.type === RequestAnswered.name)).toHaveLength(0);
+    await second.close();
+  } finally {
+    fake.stop();
+    await home.cleanup();
+  }
+}, 40_000);
 
 test("telegram: without speaksFor the surface is a plain client, and its press is refused", async () => {
   const home = await tempHome();
@@ -841,7 +913,7 @@ test("telegram: without speaksFor the surface is a plain client, and its press i
     // The owner's chat pressed it, but this instance does not speak for the owner.
     fake.push(callbackUpdate(510, 1, data));
     await eventually(
-      async () => (await recordsOf(home.path, 200)).some((record) => record.type === Answered.name),
+      async () => (await recordsOf(home.path, 200)).some((record) => record.type === Pressed.name),
       5_000,
       "the press should be written down",
     );

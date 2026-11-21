@@ -59,7 +59,8 @@ export const TELEGRAM_SEND = "telegram.send";
 export const TELEGRAM_RECEIVED = "telegram.received";
 export const TELEGRAM_IGNORED = "telegram.ignored";
 export const TELEGRAM_REQUEST = "telegram.request";
-export const TELEGRAM_ANSWER = "telegram.answer";
+export const TELEGRAM_PRESS = "telegram.press";
+export const TELEGRAM_ACKNOWLEDGE = "telegram.acknowledge";
 export const TELEGRAM_TO_AGENT = "telegram.to-agent";
 export const TELEGRAM_POST_REQUEST = "telegram.post-request";
 
@@ -169,6 +170,8 @@ export const Ignored = record(
 export const Posted = record(
   TELEGRAM_REQUEST,
   z.object({
+    /** The bot that sent it: a message id is only unique within the chat of one bot. */
+    bot: z.string(),
     /** The id of the request: the message is the way back to it. */
     request: RequestId,
     chat: chatSchema,
@@ -180,15 +183,22 @@ export const Posted = record(
   }),
 );
 
-/** The press of a button: the owner chose one of the answers of a request. */
-export const Answered = record(
-  TELEGRAM_ANSWER,
+/**
+ * The press of a button in the owner's chat, as it came: written before the offset passes it, so
+ * a press is never lost to the time it takes to find what it answers.
+ */
+export const Pressed = record(
+  TELEGRAM_PRESS,
   z.object({
     ...Source,
     update: updateSchema,
-    request: RequestId,
-    answer: z.string(),
     chat: chatSchema,
+    /** The message the button is under. */
+    message: messageSchema,
+    /** The id of the press, which the acknowledgement answers. */
+    query: z.string(),
+    /** What the button carried back. */
+    data: z.string(),
   }),
 );
 
@@ -196,7 +206,7 @@ export const Answered = record(
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The record types the polling service restores its offset from. */
-const OFFSET_TYPES = [Received, Ignored, Answered];
+const OFFSET_TYPES = [Received, Ignored, Pressed];
 
 export interface TelegramOptions {
   /** The token of the bot: what Telegram gave it. */
@@ -260,8 +270,8 @@ function ignoredId(source: UpdateSource, update: UpdateId): string {
 }
 
 /** The id of the record of a button press. */
-function answeredId(source: UpdateSource, update: UpdateId): string {
-  return `rec_telegram_answer_${source.bot}_${String(source.epoch)}_${String(update)}`;
+function pressedId(source: UpdateSource, update: UpdateId): string {
+  return `rec_telegram_press_${source.bot}_${String(source.epoch)}_${String(update)}`;
 }
 
 /**
@@ -309,7 +319,7 @@ export class TelegramService {
   private readonly pollTimeout: number;
   private readonly retryDelay: number;
   private readonly hooks: TelegramHooks;
-  private readonly botId: string;
+  readonly botId: string;
   private readonly offsetTtl: number;
   private emit: ServiceContext["emit"] | undefined;
   private now: ServiceContext["now"] | undefined;
@@ -448,7 +458,7 @@ export class TelegramService {
     return chat.type === "private" && chat.id === this.owner && from !== undefined && (from.id as number) === (this.owner as number);
   }
 
-  /** A button was pressed: it is the owner's answer to the request the message shows. */
+  /** A button was pressed: it is written down, and a handler makes it the owner's answer to the request the message shows. */
   private async handleCallback(
     update: UpdateId,
     query: NonNullable<Update["callback_query"]>,
@@ -465,45 +475,20 @@ export class TelegramService {
       );
       return;
     }
-    const parsed = parseCallback(query.data);
-    if (parsed === undefined) return;
-
-    const posted = await this.postedOf(message.message_id);
-    const answer = posted?.choices[parsed.index];
-    if (posted === undefined || answer === undefined) return;
-
+    // The press is written down as it came, and the offset passes it only after that. What it
+    // answers is looked up by a handler, which may take as long as it must.
     await this.write(
-      Answered,
+      Pressed,
       {
         ...this.source,
         update,
-        request: posted.request,
-        answer,
         chat: message.chat.id,
+        message: message.message_id,
+        query: query.id,
+        data: query.data ?? "",
       },
-      answeredId(this.source, update),
+      pressedId(this.source, update),
     );
-  }
-
-  /**
-   * The request the message shows, when the record of that message is committed.
-   *
-   * The record is written right after the message is sent, so a press that arrives before it is
-   * committed waits for it a little: the owner pressed a button, and the press is not lost.
-   */
-  private async postedOf(message: MessageId): Promise<z.infer<typeof Posted.schema> | undefined> {
-    if (this.journal === undefined) return undefined;
-    const deadline = Date.now() + POSTED_WAIT_MS;
-    for (;;) {
-      const found = this.journal.find({ type: Posted.name, field: "message", equals: message });
-      const last = found.at(-1);
-      if (last !== undefined) {
-        const parsed = Posted.schema.safeParse(last.data);
-        if (parsed.success) return parsed.data;
-      }
-      if (Date.now() >= deadline) return undefined;
-      await Bun.sleep(POSTED_POLL_MS);
-    }
   }
 
   private async write<T>(type: RecordType<T>, data: T, id?: string): Promise<void> {
@@ -567,6 +552,19 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
   const service = new TelegramService(opts, hooks);
   const send = telegramSend({ bot: service.client, owner: opts.owner });
 
+  const acknowledge = action(TELEGRAM_ACKNOWLEDGE, {
+    description: "Tell Telegram that a press of a button was seen, with a word for the one who pressed it.",
+    input: z.object({ query: z.string(), text: z.string().max(200).optional() }),
+    output: z.object({}),
+    recovery: "do-not-repeat",
+    effect: "write",
+    world: "external",
+    run: async (input) => {
+      await service.client.answerCallbackQuery(input.query, input.text);
+      return {};
+    },
+  });
+
   const toAgent = hooks.toAgent;
   const deliver = action(TELEGRAM_TO_AGENT, {
     description: "Hand a message of the owner's chat to the owner's main agent.",
@@ -616,6 +614,7 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
         options.length === 0 ? undefined : keyboardFor(options.map((option) => option.label)),
       );
       await ctx.emit(Posted, {
+        bot: service.botId,
         request: created.id,
         chat: opts.owner,
         message: sent.message_id,
@@ -628,9 +627,10 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
 
   const built = plugin(PLUGIN_NAME, (api: PluginApi) => {
     journal = () => api.journal?.();
-    api.declare(Received, Ignored, Posted, Answered);
+    api.declare(Received, Ignored, Posted, Pressed);
     api.action(send);
     api.action(postRequest);
+    api.action(acknowledge);
     // Without a hook nothing is delivered, so no action says that something was.
     if (toAgent !== undefined) api.action(deliver);
 
@@ -663,7 +663,7 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     // this surface was installed is posted too; one that is ended or already shown is passed over.
     api.on(RequestCreated, { id: "request", from: "start" }, async (data: Created, step) => {
       if (data.to.kind !== "owner") return;
-      if (ended(api, data.id) || postedTo(api, data.id, opts.owner)) return;
+      if (ended(api, data.id) || postedTo(api, data.id, service.botId, opts.owner)) return;
       const outcome = await step.outcome(postRequest, { request: data.id });
       if (outcome.status === "completed") return;
       const reason =
@@ -676,18 +676,31 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     });
 
     // A press of a button is the owner's answer: the request is answered, and the one who asked
-    // goes on. A press on a request that is not open any more is refused, and the refusal ends
-    // the handler: a late answer does nothing, and nothing waits for a decision.
-    api.on(Answered, { id: "answer" }, async (data, step) => {
-      const outcome = await step.outcome(REQUEST_ANSWER, { id: data.request, answer: { ids: [OptionIdSchema.parse(data.answer)] } });
-      if (outcome.status === "completed") return;
+    // goes on. The press says at once what became of it: a toast on the button, and a message
+    // when the answer was not taken, so a refusal is never mistaken for an answer. A press on a
+    // request that is not open any more is refused, and nothing waits for a decision.
+    api.on(Pressed, { id: "press", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
+      const told = async (toast: string, notice?: string): Promise<void> => {
+        await step.outcome(acknowledge, { query: data.query, text: toast });
+        if (notice !== undefined) await step.outcome(send, { text: fit(notice) });
+      };
+      const parsed = parseCallback(data.data);
+      if (parsed === undefined) return void (await told("Unknown button"));
+      const posted = await postedFor(api, { bot: data.bot, chat: data.chat, message: data.message }, POSTED_WAIT_MS);
+      const answer = posted?.choices[parsed.index];
+      if (posted === undefined || answer === undefined) {
+        return void (await told("Not accepted", "That button does not belong to a request that is open here."));
+      }
+      const outcome = await step.outcome(REQUEST_ANSWER, { id: posted.request, answer: { ids: [OptionIdSchema.parse(answer)] } });
+      if (outcome.status === "completed") return void (await told("Answer sent"));
       const reason =
-        outcome.status === "denied"
+        outcome.status === "denied" || outcome.status === "cancelled"
           ? outcome.reason
           : outcome.status === "failed"
             ? outcome.error
             : "the answer is not known";
-      console.error(`niwa: telegram: the request "${data.request}" was not answered: ${reason}`);
+      console.error(`niwa: telegram: the request "${posted.request}" was not answered: ${reason}`);
+      await told("Not accepted", `Your answer was not accepted: ${reason}`);
     });
   });
   const handlerPrefix = `${PLUGIN_NAME}/`;
@@ -720,14 +733,48 @@ function createdOf(journal: JournalReader, request: string): Created | undefined
   return parsed.success ? parsed.data : undefined;
 }
 
-/** Whether the request is already shown in the chat: one message of it is enough. */
-function postedTo(api: PluginApi, request: string, chat: ChatId): boolean {
+/** Whether the request is already shown in the chat of the bot: one message of it is enough. */
+function postedTo(api: PluginApi, request: string, bot: string, chat: ChatId): boolean {
   const journal = api.journal?.();
   if (journal === undefined) return false;
   return journal.find({ type: Posted.name, field: "request", equals: request }).some((stored) => {
     const parsed = Posted.schema.safeParse(stored.data);
-    return parsed.success && parsed.data.chat === chat;
+    return parsed.success && parsed.data.bot === bot && parsed.data.chat === chat;
   });
+}
+
+/** A message of a chat of a bot: a message id alone is not unique. */
+interface MessageAddress {
+  readonly bot: string;
+  readonly chat: ChatId;
+  readonly message: MessageId;
+}
+
+/**
+ * The request a message shows, when the record of that message is committed.
+ *
+ * The record is written right after the message is sent, so a press that arrives before it is
+ * committed waits for it up to `waitMs`: the owner pressed a button, and the press is not lost.
+ */
+async function postedFor(
+  api: PluginApi,
+  at: MessageAddress,
+  waitMs: number,
+): Promise<z.infer<typeof Posted.schema> | undefined> {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const found = api
+      .journal?.()
+      ?.find({ type: Posted.name, field: "message", equals: at.message })
+      .flatMap((stored) => {
+        const parsed = Posted.schema.safeParse(stored.data);
+        return parsed.success && parsed.data.bot === at.bot && parsed.data.chat === at.chat ? [parsed.data] : [];
+      })
+      .at(-1);
+    if (found !== undefined) return found;
+    if (Date.now() >= deadline) return undefined;
+    await Bun.sleep(POSTED_POLL_MS);
+  }
 }
 
 /** The most a message of Telegram holds, in the units Telegram counts: UTF-16 code units. */
