@@ -1,0 +1,64 @@
+/**
+ * composition.ts — the default composition: the plugins most hosts run, in the order they are installed.
+ *
+ * A composition file may export `defaultComposition({ ... })` as it is, or take it and add to it. The
+ * order matters: a plugin that offers a built-in workflow or declares the record types one starts on is
+ * installed before the workflow module that reads them, and the agents module after sessions, whose
+ * binding it wraps so that an agent's sessions speak as the agent.
+ */
+
+import { agents as agentsModule } from "@niwa-labs/agent";
+import type { AgentOptions } from "@niwa-labs/agent";
+import { git } from "@niwa-labs/git";
+import type { GitOptions } from "@niwa-labs/git";
+import type { HarnessInstanceRegistry, HarnessKindRegistry } from "@niwa-labs/harness";
+import { history } from "@niwa-labs/history";
+import { messages } from "@niwa-labs/messages";
+import type { Plugin } from "@niwa-labs/plugin";
+import { requests } from "@niwa-labs/requests";
+import { insertPlugin, sessions } from "@niwa-labs/sessions";
+import { tasks } from "@niwa-labs/tasks";
+import { timers } from "@niwa-labs/timer";
+import { workflow } from "@niwa-labs/workflow";
+import type { WorkflowOptions } from "@niwa-labs/workflow";
+
+import { NIWA_CLI } from "./inserts.ts";
+
+/** What the default composition is made with. */
+export interface DefaultCompositionOptions {
+  /** The home of the host: the niwa MCP server of a session connects to it. */
+  readonly home: string;
+  /** The harness installations, and the kinds that serve them. */
+  readonly harnesses: HarnessInstanceRegistry;
+  readonly kinds: HarnessKindRegistry;
+  /** The agents of the host, the harness of each role and the default agent of `niwa agent attach`. */
+  readonly agents?: AgentOptions;
+  readonly git?: GitOptions;
+  readonly workflow?: WorkflowOptions;
+}
+
+/**
+ * The plugins of the default composition: messages, requests, tasks, timers, git, history, the inserts'
+ * reports (so a harness can say a session ended), sessions, the agents module and workflow.
+ */
+export function defaultComposition(options: DefaultCompositionOptions): Plugin[] {
+  const made = sessions({
+    harnesses: options.harnesses,
+    kinds: options.kinds,
+    niwaMcp: { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
+  });
+  const agents = agentsModule(options.agents);
+  const bind = agents.bind(made.bind());
+  return [
+    messages({ bind }),
+    requests({ bind }),
+    tasks({ messages: { bind } }),
+    timers([]),
+    git(options.git),
+    history({ harnesses: { harnesses: options.harnesses, kinds: options.kinds } }),
+    insertPlugin(),
+    made,
+    agents,
+    workflow(options.workflow),
+  ];
+}

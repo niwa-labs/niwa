@@ -3,7 +3,9 @@
 
 import { expect, test } from "bun:test";
 
+import { createNiwa } from "@niwa-labs/host";
 import { plugin } from "@niwa-labs/plugin";
+import { tempHome } from "@niwa-labs/testing";
 
 import * as niwa from "../src/index.ts";
 import { pluginsOf } from "../src/serve.ts";
@@ -37,3 +39,22 @@ test("the package re-exports the foundation, the plugins and the kinds", () => {
     expect(name in niwa).toBe(true);
   }
 });
+
+test("the default composition holds the base plugins with history and the agents, and a host serves it", async () => {
+  const home = await tempHome();
+  try {
+    const plugins = niwa.defaultComposition({ home: home.path, harnesses: new niwa.HarnessInstanceRegistry(), kinds: new niwa.HarnessKindRegistry(), agents: { default: "rin" } });
+    expect(plugins.map((one) => String(one.name))).toEqual(["messages", "requests", "tasks", "timers", "git", "history", "insert", "sessions", "agents", "workflow"]);
+    const host = createNiwa({ home: home.path });
+    host.use(...plugins);
+    await host.serve();
+    try {
+      const names = (await host.describe()).actions.map((action) => String(action.name));
+      for (const name of ["history.watch", "history.signal", "insert.report", "agent.attach", "agent.tell", "workflow.start"]) expect(names).toContain(name);
+    } finally {
+      await host.close();
+    }
+  } finally {
+    await home.cleanup();
+  }
+}, 60_000);

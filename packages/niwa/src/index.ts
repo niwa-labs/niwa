@@ -18,6 +18,7 @@ export * from "@niwa-labs/git";
 export * from "@niwa-labs/proc";
 export * from "@niwa-labs/history";
 export * from "@niwa-labs/sessions";
+export * from "@niwa-labs/agent";
 export * from "@niwa-labs/workflow";
 export * from "@niwa-labs/web";
 export * from "@niwa-labs/mcp";
@@ -29,6 +30,7 @@ export type { Answer, CallOptions, Question, SessionRef } from "@niwa-labs/core"
 export { fold } from "@niwa-labs/requests";
 export { sameAddress } from "@niwa-labs/sessions";
 
+export * from "./composition.ts";
 export * from "./kinds.ts";
 export * from "./inserts.ts";
 export * from "./mcp.ts";
