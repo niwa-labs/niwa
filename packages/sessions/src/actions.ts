@@ -27,15 +27,7 @@ import {
   UserRecordSchema,
 } from "@niwa-labs/harness";
 import { SessionWorktree, WorktreeOption } from "@niwa-labs/git/records";
-import {
-  CoverageSchema,
-  DigestReadSchema,
-  FileIndexSchema,
-  ReadModeSchema,
-  SearchMatchSchema,
-  SearchQuerySchema,
-  SessionRecordSchema,
-} from "@niwa-labs/history/records";
+import { CoverageSchema, ReadAnswerSchema, SearchMatchSchema, SearchQuerySchema, readInput } from "@niwa-labs/history/records";
 
 import { NiwaSessionIdSchema } from "./identity.ts";
 import { PromptInputSchema } from "./prompt.ts";
@@ -144,44 +136,9 @@ export const sessionBelong = actionRef("session.belong", {
 
 export const sessionRead = actionRef("session.read", {
   description: "Reads the transcript of a session through the harness's reading side. The transcript is never written into niwa's journal.",
-  input: z.object({
-    /** The session to read. */
-    session: SessionRefInput,
-    /** Continue from this position, as the last record carried. */
-    from: z.string().min(1).optional(),
-    window: z.object({
-      limit: z.number().int().positive().max(250),
-      before: z.string().min(1).optional(),
-    })
-      .describe("Return up to limit records immediately before the given locator, or from the end of the transcript. Cannot be combined with from.")
-      .optional(),
-    /**
-     * How much to keep: `full` (every record, the default), `digest` (messages whole, each tool call
-     * on one line with its result cut in the middle) or `brief` (what was asked and answered, the
-     * files changed, the calls made, the checklist and the outcome). A digest or a brief is read in
-     * windows: go on from its `next`, giving its `files`.
-     */
-    mode: ReadModeSchema.optional(),
-    /** About how many tokens a window of a digest or a brief holds. Default: 40000. */
-    budget: z.number().int().positive().optional(),
-    /** The file index the window before gave, so its references keep their meaning. */
-    files: FileIndexSchema.optional(),
-  })
-    .refine((input) => input.from === undefined || input.window === undefined, "from and window cannot be combined")
-    .refine((input) => input.window === undefined || input.mode === undefined || input.mode === "full", "window reads records: it takes no digest or brief"),
-  output: z.object({
-    /** The records the harness holds, in its own order; none for a digest or a brief. */
-    records: z.array(SessionRecordSchema),
-    /** How much of the session was actually read. */
-    coverage: CoverageSchema,
-    /** Present for a window request. */
-    page: z.object({
-      /** Whether additional earlier records were observed. */
-      hasEarlier: z.boolean(),
-    }).optional(),
-    /** The window of a digest or a brief. */
-    digest: DigestReadSchema.optional(),
-  }),
+  /** The session to read, and what to read of it: see `history.read`, which takes the same. */
+  input: readInput(SessionRefInput),
+  output: ReadAnswerSchema,
 });
 
 export const sessionSearch = actionRef("session.search", {

@@ -112,6 +112,59 @@ export const DigestReadSchema = z.object({
   restarted: z.boolean(),
 });
 
+/**
+ * What a read of a transcript is given beside the session: where to go on from, or the window of
+ * records before a locator; and how much of the records to keep, with the budget and the file index
+ * of the window before.
+ */
+const readFields = {
+  /** Continue from this position, as the last record carried. */
+  from: z.string().min(1).optional(),
+  window: z
+    .object({
+      limit: z.number().int().positive().max(250),
+      before: z.string().min(1).optional(),
+    })
+    .describe("Return up to limit records immediately before the given locator, or from the end of the transcript. Cannot be combined with from.")
+    .optional(),
+  /**
+   * How much to keep: `full` (every record, the default), `digest` (messages whole, each tool call
+   * on one line with its result cut in the middle) or `brief` (what was asked and answered, the
+   * files changed, the calls made, the checklist and the outcome). A digest or a brief is read in
+   * windows: go on from its `next`, giving its `files`.
+   */
+  mode: ReadModeSchema.optional(),
+  /** About how many tokens a window of a digest or a brief holds. Default: 40000. */
+  budget: z.number().int().positive().optional(),
+  /** The file index the window before gave, so its references keep their meaning. */
+  files: FileIndexSchema.optional(),
+} as const;
+
+/** The input of a read of a transcript: the session, as the caller names it, beside `readFields`, with the rules that bind them. */
+export function readInput<Session extends z.ZodType>(session: Session) {
+  return z
+    .object({ session, ...readFields })
+    .refine((input) => input.from === undefined || input.window === undefined, "from and window cannot be combined")
+    .refine((input) => input.window === undefined || input.mode === undefined || input.mode === "full", "window reads records: it takes no digest or brief");
+}
+
+/** What a read of a transcript answers with. */
+export const ReadAnswerSchema = z.object({
+  /** The records the harness holds, in its own order; none for a digest or a brief. */
+  records: z.array(SessionRecordSchema),
+  /** How much of the session was actually read. */
+  coverage: CoverageSchema,
+  /** Present for a window request. */
+  page: z
+    .object({
+      /** Whether additional earlier records were observed. */
+      hasEarlier: z.boolean(),
+    })
+    .optional(),
+  /** The window of a digest or a brief. */
+  digest: DigestReadSchema.optional(),
+});
+
 /** A watch of a session began: the session, its harness, the directory it works in when the harness says, and its process when known. */
 export const HistorySessionSeen = record(
   "history.session.seen",
@@ -184,4 +237,11 @@ export const historyUnwatch = actionRef("history.unwatch", {
   description: "Stops following a session.",
   input: z.object({ session: SessionIdSchema }),
   output: z.object({ stopped: z.boolean() }),
+});
+
+export const historyRead = actionRef("history.read", {
+  description:
+    "Reads the transcript of a session of any harness through the harness's reading side, whole or compressed: `mode` `digest` or `brief` reads a window of about `budget` tokens, and the next window goes on from its `next`. The transcript is never written into niwa's journal.",
+  input: readInput(SessionIdSchema),
+  output: ReadAnswerSchema,
 });

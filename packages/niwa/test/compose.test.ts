@@ -50,7 +50,7 @@ test("the default composition holds the base plugins with history and the agents
     await host.serve();
     try {
       const names = (await host.describe()).actions.map((action) => String(action.name));
-      for (const name of ["history.watch", "history.signal", "insert.report", "agent.attach", "agent.tell", "workflow.start"]) expect(names).toContain(name);
+      for (const name of ["history.read", "history.watch", "history.signal", "insert.report", "agent.attach", "agent.tell", "workflow.start"]) expect(names).toContain(name);
     } finally {
       await host.close();
     }
