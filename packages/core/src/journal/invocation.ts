@@ -102,7 +102,7 @@ export interface RunnerDeps {
   /** Commit the records and publish them. Returns the committed records. */
   append(recs: NewRecord[]): StoredRecord[];
   /** Commit the records with their links, and publish them. */
-  appendAll(entries: AppendEntry[]): StoredRecord[];
+  appendAll(entries: AppendEntry[], batch?: RecordId): StoredRecord[];
   /** The actions of the host, by name. A step never needs it: a step has the action by value. */
   resolveAction(name: string): Action<any, any> | undefined;
   /**
@@ -123,7 +123,7 @@ export interface RunnerDeps {
    * The placement of the record is the runtime's business: the actor is the caller, and the
    * cause and the root come from the invocation the call runs in.
    */
-  emit(action: ActionName, caller: Caller, entries: readonly { type: RecordType<any>; data: unknown; place: Placement }[]): Promise<StoredRecord[]>;
+  emit(action: ActionName, caller: Caller, entries: readonly { type: RecordType<any>; data: unknown; place: Placement }[], batch?: RecordId): Promise<StoredRecord[]>;
   /**
    * Check a record a handler writes, as a record written over the wire is checked: the type is
    * declared, and the handler's own plugin declares it, or it is open, or the caller's grant lets it
@@ -527,7 +527,7 @@ function stepEmits(
   });
   if (writes.some(({record}) => ctx.deps.journal.get(record.id) === undefined)) startRunning(ctx);
   try {
-    return ctx.deps.appendAll(writes);
+    return ctx.deps.appendAll(writes, batch ? recordId(`${ctx.invocation}/batch/${key}`) : undefined);
   } catch (error) {
     if (error instanceof RecordRefused) throw error;
     // The same key with other content is a replay mismatch, not a failure of the host.
@@ -998,12 +998,12 @@ async function callAction<I, O, In = I>(
  * returns the record it wrote instead of writing a second one.
  */
 function emitFor(ctx: RunContext, action: ActionName, operation: OperationId) {
-  return actionEmits(async entries => {
+  return actionEmits(async (entries, batch) => {
     const placed = entries.map(({type, data, ordinal}) => ({
       type, data, place: {id: recordId(`${operation}/emit/${ordinal}`), stream: ctx.stream, cause: ctx.cause, root: ctx.root},
     }));
     if (placed.some(({place}) => ctx.deps.journal.get(place.id) === undefined)) startRunning(ctx);
-    return ctx.deps.emit(action, ctx.actor, placed);
+    return ctx.deps.emit(action, ctx.actor, placed, batch === undefined ? undefined : recordId(`${operation}/batch/${batch}`));
   });
 }
 

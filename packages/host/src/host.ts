@@ -2611,7 +2611,7 @@ class Niwa implements Host {
       artifacts: this.artifacts,
       now: () => this.clock.now(),
       append: (records) => this.append(records),
-      appendAll: (entries) => this.appendAll(entries),
+      appendAll: (entries, batch) => this.appendAll(entries, batch),
       resolveAction: (name) => this.resolveActionByName(name),
       interceptsOf: (name) => {
         try {
@@ -2621,7 +2621,7 @@ class Niwa implements Host {
         }
       },
       standingOf: (caller) => this.access.standing(caller),
-      emit: async (action, caller, entries) => this.emitAs(action, caller, entries),
+      emit: async (action, caller, entries, batch) => this.emitAs(action, caller, entries, batch),
       admitEmit: (caller, name, data) => {
         const declared = this.declaredType(name);
         if (declared === undefined) throw new UnknownType(name);
@@ -2647,15 +2647,15 @@ class Niwa implements Host {
   // --- writing ---------------------------------------------------------------
 
   /** Commit the records, then publish them. */
-  private append(records: NewRecord[]): StoredRecord[] {
-    return this.appendAll(records.map((record) => ({ record })));
+  private append(records: NewRecord[], batch?: RecordId): StoredRecord[] {
+    return this.appendAll(records.map((record) => ({ record })), batch);
   }
 
   /** Commit the records with their links, then publish them. */
-  private appendAll(entries: AppendEntry[]): StoredRecord[] {
+  private appendAll(entries: AppendEntry[], batch?: RecordId): StoredRecord[] {
     let committed: StoredRecord[];
     try {
-      committed = this.requireJournal().appendAll(entries);
+      committed = this.requireJournal().appendAll(entries, batch);
     } catch (error) {
       if (error instanceof RecordRefused && error.newlyRecorded) this.publish([error.audit]);
       throw error;
@@ -2839,7 +2839,7 @@ class Niwa implements Host {
    */
   private emitAs(
     action: ActionName, caller: Caller,
-    entries: readonly { type: AnyType; data: unknown; place: Placement }[],
+    entries: readonly { type: AnyType; data: unknown; place: Placement }[], batch?: RecordId,
   ): StoredRecord[] {
     const owned = this.typesOfAction(action);
     return this.append(entries.map(({type, data, place}) => {
@@ -2848,7 +2848,7 @@ class Niwa implements Host {
       const parsed = declared.schema.safeParse(data);
       if (!parsed.success) throw new ValidationError(`the data of "${type.name}" is not valid`, parsed.error.issues);
       return { ...place, type: type.name, schema: declared.version, data: parsed.data, actor: caller };
-    }));
+    }), batch);
   }
 
   /** Call an action outside any invocation: not a step, not journaled. */
@@ -2946,7 +2946,7 @@ class Niwa implements Host {
       // and is its own root, and the later ones of the same call belong to it. Every record
       // after the first hangs on the one before it, so the trace down from the root reaches
       // all of them.
-      ...actionEmits(async entries => {
+      ...actionEmits(async (entries, batch) => {
         let tail = previous;
         const placed = entries.map(({type, data, ordinal}) => {
           const id = recordId(`${operation}/emit/${ordinal}`);
@@ -2955,7 +2955,7 @@ class Niwa implements Host {
           return {type, data, place};
         });
         try {
-          const rows = this.emitAs(name, made?.actor ?? caller, placed);
+          const rows = this.emitAs(name, made?.actor ?? caller, placed, batch === undefined ? undefined : recordId(`${operation}/batch/${batch}`));
           previous = rows.at(-1) ?? previous;
           return rows;
         } catch (error) {

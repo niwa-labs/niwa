@@ -252,3 +252,43 @@ test("guard keys see the same JSON on first write and after restart", async () =
     await expect(host.emit(normalized, {when: "day"})).rejects.toMatchObject({code: "duplicate"});
   } finally { await host.close(); await home.cleanup(); }
 });
+
+for (const refused of [false, true]) {
+  for (const replaySize of [0, 1, 2, 3]) {
+    test(`a durable ${refused ? "refused" : "accepted"} batch of two replays with ${replaySize} entries`, async () => {
+      const home = await tempHome();
+      let size = 2;
+      const worker = plugin("admission", api => {
+        api.declare(Create, Trigger, Wake, Result);
+        api.on(Trigger, async (_, step) => {
+          const entries = Array.from({length: size}, (_, i) => ({
+            type: Create, data: data(String(i), refused && i === 1 ? 9 : 0, 1),
+          }));
+          try { await step.emitAll(entries, {key: "batch"}); }
+          catch (error) { if (!(error instanceof RecordRefused)) throw error; }
+          await step.wait(Wake);
+          await step.emit(Result, {});
+        });
+      });
+      let host = createNiwa({home: home.path});
+      const state = async (value: string) => (await host.records.read({types: [CORE_TYPES.invocationState]}))
+        .some(row => (row.data as {state: string}).state === value);
+      try {
+        host.use(worker);
+        await host.serve();
+        await host.emit(Trigger, {});
+        await eventually(() => state("waiting"));
+        await host.close();
+        size = replaySize;
+        host = createNiwa({home: home.path});
+        host.use(worker);
+        await host.serve();
+        await host.emit(Wake, {});
+        if (size === 2) await eventually(async () => (await host.records.read({types: [Result]})).length === 1);
+        else await eventually(() => state("paused"));
+        expect(await host.records.read({types: [Create]})).toHaveLength(refused ? 0 : 2);
+        expect(await host.records.read({types: [CORE_TYPES.recordRefused]})).toHaveLength(refused ? 1 : 0);
+      } finally { await host.close(); await home.cleanup(); }
+    });
+  }
+}

@@ -675,7 +675,7 @@ export interface Journal extends JournalReader {
   /** All or nothing, in one transaction. */
   appendMany(recs: NewRecord[]): StoredRecord[];
   /** All or nothing, in one transaction, each record with the links it declares. */
-  appendAll(entries: AppendEntry[]): StoredRecord[];
+  appendAll(entries: AppendEntry[], batch?: RecordId): StoredRecord[];
   /** The records a record depends on, apart from its cause. */
   linksOf(id: RecordId): RecordId[];
   /** The records that grew from a record: what it caused, and what depends on it through a link. */

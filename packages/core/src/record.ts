@@ -16,7 +16,6 @@ import type { z } from "zod";
 import { CORE } from "./types.ts";
 import type {
   ActionContext,
-  EmitBatch,
   StoredRecord,
   RecordGuard,
   RecordId,
@@ -236,13 +235,12 @@ function sortValue(value: unknown, path: Set<object>, key: string): unknown {
 
 /** Both action emit forms draw ids from the same operation-local sequence. */
 export function actionEmits(
-  write: (entries: readonly { type: RecordType<any>; data: unknown; ordinal: number }[]) => Promise<StoredRecord[]>,
+  write: (entries: readonly { type: RecordType<any>; data: unknown; ordinal: number }[], batch?: number) => Promise<StoredRecord[]>,
 ): Pick<ActionContext, "emit" | "emitAll"> {
   let ordinal = 0;
-  const emitAll = <const T extends readonly RecordType<any>[]>(entries: EmitBatch<T>) =>
-    write(entries.map(({type, data}) => ({type, data, ordinal: ++ordinal})));
+  let batch = 0;
   return {
-    emit: async (type, data) => (await emitAll([{type, data}]))[0]!,
-    emitAll,
+    emit: async (type, data) => (await write([{type, data, ordinal: ++ordinal}]))[0]!,
+    emitAll: entries => write(entries.map(({type, data}) => ({type, data, ordinal: ++ordinal})), ++batch),
   };
 }

@@ -52,7 +52,7 @@ import type {
  * It grows when the tables change. The statements that create the tables are idempotent, so a
  * journal of a lower version is brought forward by running them again.
  */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS records (
@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS links (
   PRIMARY KEY (from_id, to_id)
 );
 CREATE INDEX IF NOT EXISTS links_to ON links (to_id);
+CREATE TABLE IF NOT EXISTS batch_intents (id TEXT PRIMARY KEY, digest TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS refused_intents (
   intent TEXT PRIMARY KEY,
   digest TEXT NOT NULL,
@@ -368,12 +369,17 @@ class SqliteJournal implements Journal {
    * The links are committed in the same transaction as the records: a record that exists has
    * its links, and a link to a record that was not written is not written either.
    */
-  appendAll(entries: AppendEntry[]): StoredRecord[] {
-    if (entries.length === 0) return [];
+  appendAll(entries: AppendEntry[], batch?: RecordId): StoredRecord[] {
+    if (entries.length === 0 && batch === undefined) return [];
     this.assertOpen();
     const result = inTransaction(this.db, () => {
       this.assertOwnership();
-      const intent = entries[0]!.record.id;
+      if (batch !== undefined) {
+        const digest = batchDigest(entries);
+        const prior = this.db.query<{ digest: string }, [string]>("SELECT digest FROM batch_intents WHERE id = ?").get(batch);
+        if (prior && prior.digest !== digest) throw new IntegrityError(batch, `batch "${batch}" repeated with different content`);
+        if (!prior) this.db.run("INSERT INTO batch_intents VALUES (?, ?)", [batch, digest]);
+      }
       const prior = this.db.query<{digest: string; audit: string}, [string]>("SELECT digest, audit FROM refused_intents WHERE intent = ?");
       for (const {record} of entries) {
         const previous = prior.get(record.id);
@@ -416,7 +422,7 @@ class SqliteJournal implements Journal {
               id, type: CORE_TYPES.recordRefused, schema: 1, stream: rec.stream, actor: rec.actor,
               cause: rec.cause !== null && this.get(rec.cause) ? rec.cause : null,
               root: this.get(rec.root) ? rec.root : id,
-              data: { intent, attempted: rec.id, recordType: rec.type, group: guard.group, entity, code: denial.code, reason: denial.reason },
+              data: { intent: batch ?? entries[0]!.record.id, attempted: rec.id, recordType: rec.type, group: guard.group, entity, code: denial.code, reason: denial.reason },
             }, this.clock.now());
             this.db.run("INSERT INTO refused_intents VALUES (?, ?, ?)", [rec.id, batchDigest(entries), id]);
             return RecordRefused.fromAudit(audit, true);
