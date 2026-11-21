@@ -12,12 +12,12 @@
  * subagent was spawned, that the context was compacted. What the event layer repeats is not read
  * twice.
  *
- * **The locator.** `codex:v1:<prefixBytes>:<prefixHash>:<line>:<byte>:<after>`: the revision of
- * the file the position was taken from, the place in it, and how many of that line's records were
- * already delivered. The revision is a hash of the bytes that are final by the end of that line,
- * so a file that grows keeps the locators it already gave out, and a file that was rewritten does
- * not answer to them. The position is counted in the *decoded* JSONL, which is the same space for
- * a plain rollout and for a compressed one.
+ * **The locator.** `codex:v2:<through>:<digest>:<line>:<byte>:<after>`: the revision of the file
+ * the position was taken from, the place in it, and how many of that line's records were already
+ * delivered. The revision is the digest of every byte up to the end of that line (`through` of
+ * them), so a file that grows keeps the locators it already gave out, and a file in which any
+ * earlier byte was rewritten does not answer to them. The position is counted in the *decoded*
+ * JSONL, which is the same space for a plain rollout and for a compressed one.
  *
  * **The half-written tail.** The last line of a rollout that is being written has no newline yet.
  * It is marked `incomplete`, and the reader does not move past it.
@@ -30,7 +30,7 @@
 
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { open, readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { createZstdDecompress } from "node:zlib";
 
@@ -109,25 +109,25 @@ interface RawLine {
   /** `false` when the line has no newline after it: the tail of the file, maybe half written. */
   readonly complete: boolean;
   /**
-   * The first bytes of the file, up to `PREFIX_BYTES`.
+   * How many bytes of the file are final by the end of this line: through the newline of a line
+   * that is whole, before a line that is not.
    *
-   * They are final: a line that is whole will not change, so the hash of the bytes up to the end
-   * of that line does not change either when the file grows.
+   * A line that is whole will not change, so the digest of the bytes up to its end does not
+   * change either when the file grows.
    */
-  readonly head: Buffer;
+  readonly through: number;
+  /** The SHA-256 of those `through` bytes, in hex. */
+  readonly digest: string;
 }
 
 /** A locator read back. */
 interface Position {
-  readonly prefixBytes: number;
-  readonly prefixHash: string;
+  readonly through: number;
+  readonly digest: string;
   readonly line: number;
   readonly byte: number;
   readonly after: number;
 }
-
-/** How many bytes of the head of a rollout the revision hashes. */
-const PREFIX_BYTES = 4096;
 
 /**
  * The locator of one record: the revision it was taken from, and where it sits in it.
@@ -140,31 +140,28 @@ const PREFIX_BYTES = 4096;
  */
 function makeLocator(line: RawLine, after: number): Locator {
   // A line that is not whole may still change, so the revision covers only the bytes before it:
-  // the hash then holds when the line is completed, and the tail is read again.
-  const final = line.complete ? line.byte + line.bytes.length + 1 : line.byte;
-  const prefix = line.head.subarray(0, Math.min(final, line.head.length));
-  const hash = createHash("sha256").update(prefix).digest("hex");
+  // the digest then holds when the line is completed, and the tail is read again.
   const delivered = line.complete ? after : 0;
   return LocatorSchema.parse(
-    `codex:v1:${prefix.length}:${hash}:${line.line}:${line.byte}:${delivered}`,
+    `codex:v2:${line.through}:${line.digest}:${line.line}:${line.byte}:${delivered}`,
   );
 }
 
 /** A locator that is not this side's own is refused by name. */
 function decodeLocator(locator: Locator): Position {
   const parts = locator.split(":");
-  const [tag, version, prefixBytes, prefixHash, line, byte, after] = parts;
-  const prefixLength = Number(prefixBytes);
+  const [tag, version, through, digest, line, byte, after] = parts;
+  const throughBytes = Number(through);
   const lineNumber = Number(line);
   const byteOffset = Number(byte);
   const delivered = Number(after);
   if (
     parts.length !== 7 ||
     tag !== "codex" ||
-    version !== "v1" ||
-    prefixHash === undefined ||
-    !Number.isSafeInteger(prefixLength) ||
-    prefixLength < 0 ||
+    version !== "v2" ||
+    digest === undefined ||
+    !Number.isSafeInteger(throughBytes) ||
+    throughBytes < 0 ||
     !Number.isSafeInteger(lineNumber) ||
     lineNumber < 1 ||
     !Number.isSafeInteger(byteOffset) ||
@@ -175,8 +172,8 @@ function decodeLocator(locator: Locator): Position {
     throw new Error(`codex: locator ${locator} is not of this side's form`);
   }
   return {
-    prefixBytes: prefixLength,
-    prefixHash: prefixHash!,
+    through: throughBytes,
+    digest,
     line: lineNumber,
     byte: byteOffset,
     after: delivered,
@@ -226,23 +223,24 @@ function openRollout(rollout: Rollout): { source: NodeJS.ReadableStream; close: 
 
 /** The lines of a decoded rollout, cut on raw bytes. */
 async function* linesOf(source: NodeJS.ReadableStream): AsyncGenerator<RawLine> {
-  let head: Buffer = Buffer.alloc(0);
+  // The digest of every byte of the whole lines read so far, kept as the file is read.
+  const whole = createHash("sha256");
+  let through = 0;
   let carry: Buffer = Buffer.alloc(0);
   let lineStart = 0;
   let lineNo = 1;
 
   for await (const chunk of source) {
     const bytes = Buffer.from(chunk as Uint8Array);
-    if (head.length < PREFIX_BYTES) {
-      head = Buffer.concat([head, bytes]).subarray(0, PREFIX_BYTES);
-    }
     const data = carry.length === 0 ? bytes : Buffer.concat([carry, bytes]);
     let from = 0;
     for (;;) {
       const lf = data.indexOf(0x0a, from);
       if (lf < 0) break;
       const line = data.subarray(from, lf);
-      yield { line: lineNo, byte: lineStart, bytes: line, complete: true, head };
+      whole.update(data.subarray(from, lf + 1));
+      through += line.length + 1;
+      yield { line: lineNo, byte: lineStart, bytes: line, complete: true, through, digest: whole.copy().digest("hex") };
       lineNo += 1;
       lineStart += line.length + 1;
       from = lf + 1;
@@ -251,7 +249,7 @@ async function* linesOf(source: NodeJS.ReadableStream): AsyncGenerator<RawLine> 
   }
   if (carry.length > 0) {
     // The tail of a file that is being written: it has no newline yet, so it may be half written.
-    yield { line: lineNo, byte: lineStart, bytes: carry, complete: false, head };
+    yield { line: lineNo, byte: lineStart, bytes: carry, complete: false, through, digest: whole.copy().digest("hex") };
   }
 }
 
@@ -543,48 +541,36 @@ export class CodexReading implements SessionReading {
   /**
    * Does the position still mean what it meant?
    *
-   * A rollout is only appended to, so the bytes that were final stay final and their hash holds.
-   * A file that was rewritten fails the hash, and a position that is not at the start of a line
-   * does not name a record at all.
+   * A rollout is only appended to, so the bytes that were final stay final and their digest holds.
+   * A file in which any byte before the position was rewritten fails the digest, and a position
+   * that is not at the start of a line does not name a record at all.
    */
   async #positionHolds(rollout: Rollout, position: Position): Promise<boolean> {
-    let head: Buffer;
     try {
-      head = await this.#headOf(rollout, position.prefixBytes);
+      return (await this.#digestThrough(rollout, position.through)) === position.digest;
     } catch {
       return false;
     }
-    if (head.length !== position.prefixBytes) return false;
-    if (createHash("sha256").update(head).digest("hex") !== position.prefixHash) return false;
-    return true;
   }
 
-  /** The first `count` bytes of the decoded rollout. */
-  async #headOf(rollout: Rollout, count: number): Promise<Buffer> {
-    if (!rollout.compressed) {
-      const handle = await open(rollout.path, "r");
+  /** The digest of the first `count` bytes of the decoded rollout; `undefined` when the file is shorter. */
+  async #digestThrough(rollout: Rollout, count: number): Promise<string | undefined> {
+    const hash = createHash("sha256");
+    let left = count;
+    if (left > 0) {
+      const { source, close } = openRollout(rollout);
       try {
-        const buffer = Buffer.alloc(count);
-        const { bytesRead } = await handle.read(buffer, 0, count, 0);
-        return buffer.subarray(0, bytesRead);
+        for await (const chunk of source) {
+          const bytes = Buffer.from(chunk as Uint8Array);
+          hash.update(bytes.subarray(0, left));
+          left -= Math.min(bytes.length, left);
+          if (left === 0) break;
+        }
       } finally {
-        await handle.close();
+        close();
       }
     }
-    const { source, close } = openRollout(rollout);
-    const chunks: Buffer[] = [];
-    let total = 0;
-    try {
-      for await (const chunk of source) {
-        const buffer = Buffer.from(chunk as Uint8Array);
-        chunks.push(buffer);
-        total += buffer.length;
-        if (total >= count) break;
-      }
-    } finally {
-      close();
-    }
-    return Buffer.concat(chunks).subarray(0, count);
+    return left === 0 ? hash.digest("hex") : undefined;
   }
 
   /**

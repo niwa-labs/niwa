@@ -304,6 +304,42 @@ test("a rewritten file is detected: the read restarts and raw refuses the old lo
   await expect(reading().raw(ID, old)).rejects.toThrow("does not belong");
 });
 
+test("a record rewritten in place far into the file is detected, though the file is as long as before", async () => {
+  // The first message is longer than any prefix a revision could be limited to.
+  const text = (late: string): string =>
+    meta(NATIVE) + message(1, "user", "x".repeat(6000)) + message(2, "user", "two") + message(3, "user", late);
+  const path = rollout(NATIVE, text("late one"));
+  const [, second, third] = await all(reading().read(ID));
+  const [secondAt, thirdAt] = [second?.locator as Locator, third?.locator as Locator];
+  expect(await reading().raw(ID, thirdAt)).toMatchObject({ payload: { content: [{ text: "late one" }] } });
+
+  // The same length, at the same place: only the content differs.
+  writeFileSync(path, text("LATE ONE"));
+  await expect(reading().raw(ID, thirdAt)).rejects.toThrow("does not belong");
+  // The locator before the rewritten record is still good, and a read from it delivers the new text.
+  const rest = await all(reading().read(ID, secondAt));
+  expect(rest).toHaveLength(1);
+  expect(rest[0]).toMatchObject({ kind: "user", text: "LATE ONE" });
+
+  // A rewrite of the record the locator names is no longer the position it was.
+  writeFileSync(path, text("late one").replace("two", "TWO"));
+  await expect(reading().raw(ID, secondAt)).rejects.toThrow("does not belong");
+  expect(await all(reading().read(ID, secondAt))).toHaveLength(3);
+});
+
+test("a compressed rollout rewritten in place far into the file is detected too", async () => {
+  const dir = join(home, "sessions", "2026", "01", "01");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `rollout-2026-01-01T00-00-00-${NATIVE}.jsonl.zst`);
+  const text = (late: string): string => meta(NATIVE) + message(1, "user", "x".repeat(6000)) + message(2, "user", late);
+  writeFileSync(path, Bun.zstdCompressSync(Buffer.from(text("late one"))));
+  const [, second] = await all(reading().read(ID));
+  const old = second?.locator as Locator;
+
+  writeFileSync(path, Bun.zstdCompressSync(Buffer.from(text("LATE ONE"))));
+  await expect(reading().raw(ID, old)).rejects.toThrow("does not belong");
+});
+
 test("the compressed copy of a rollout is the same session and is read", async () => {
   const dir = join(home, "sessions", "2026", "01", "01");
   mkdirSync(dir, { recursive: true });
