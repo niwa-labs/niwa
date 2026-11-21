@@ -43,6 +43,8 @@ export interface RegisteredVersion {
   phases?: WorkflowPhases;
   /** Why it does not start: the errors of its latest check, when that check failed. */
   broken?: string;
+  /** A candidate version of a gated built-in, not accepted yet. */
+  candidate?: true;
 }
 
 /** A registered workflow: its id, the record that issued it, and its versions, the latest last. */
@@ -80,11 +82,16 @@ export function workflowsOf(journal: JournalReader): RegisteredWorkflow[] {
     };
     const known = byId.get(data.workflow);
     if (known === undefined) {
-      byId.set(data.workflow, { id: data.workflow, record: row.id, versions: [version], latest: version, ...(data.builtin === undefined ? {} : { builtin: data.builtin }) });
+      const first = data.candidate === true ? { ...version, candidate: true as const } : version;
+      byId.set(data.workflow, { id: data.workflow, record: row.id, versions: [first], latest: first, ...(data.builtin === undefined ? {} : { builtin: data.builtin }) });
     } else {
+      // A version that was accepted stays accepted; a candidate moves the latest version only while no version is accepted.
+      const was = known.versions.find((one) => one.version === data.version);
+      const candidate = data.candidate === true && (was === undefined || was.candidate === true);
+      const now = candidate ? { ...version, candidate: true as const } : version;
       // A version registered again is the same version: it moves to the end, it is not listed twice.
-      known.versions = [...known.versions.filter((one) => one.version !== data.version), version];
-      known.latest = version;
+      known.versions = [...known.versions.filter((one) => one.version !== data.version), now];
+      if (!candidate || known.latest.candidate === true) known.latest = now;
     }
   }
   return [...byId.values()];

@@ -33,6 +33,12 @@ export interface BuiltinWorkflow {
    * before the workflow module.
    */
   readonly triggers?: ReadonlyArray<RecordType<any> | string>;
+  /**
+   * Each new version comes in as a candidate: it is registered, and neither the latest version of the workflow nor its
+   * installation moves to it until it is promoted. Before a version was accepted, the candidate is shown and starts on
+   * nothing.
+   */
+  readonly gated?: boolean;
 }
 
 /** Where a plugin offers a built-in workflow: `api.offer(BUILTIN_WORKFLOW, { name, file, description, triggers })`. */

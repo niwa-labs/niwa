@@ -337,6 +337,8 @@ export const WorkflowVersionEntry = z.object({
   phases: WorkflowPhases.optional(),
   /** Why it does not start, when it is broken. */
   broken: z.string().optional(),
+  /** A candidate version of a gated built-in: not accepted yet, it is started only by name of its version. */
+  candidate: z.literal(true).optional(),
 });
 
 export const workflowList = listRef("workflow.list", {

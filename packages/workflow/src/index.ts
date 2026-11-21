@@ -210,7 +210,7 @@ interface RunFacts extends RunOrigin {
 type RunState = "running" | "waiting" | "paused" | "done";
 
 /** What the sync of one built-in answers, and what the retirement of the ones no plugin offers takes and answers. */
-const BuiltinSynced = z.object({ workflow: z.string(), installation: z.string() });
+const BuiltinSynced = z.object({ workflow: z.string(), installation: z.string().optional() });
 const BuiltinRetireInput = z.object({ keep: z.array(Builtin) });
 const BuiltinRetired = z.object({ uninstalled: z.array(z.string()) });
 
@@ -416,6 +416,9 @@ export function workflow(opts: WorkflowOptions = {}) {
     /** What a start of a registered workflow runs: the stored copy of its latest version. A broken workflow does not start. */
     const registeredTarget = (registered: RegisteredWorkflow): { file: string } & RunOrigin => {
       const latest = registered.latest;
+      if (latest.candidate === true) {
+        throw new RunRefusal("candidate", `the workflow ${registered.id} has only a candidate version: it is not started by its id until a version is promoted`);
+      }
       if (latest.broken !== undefined) {
         throw new RunRefusal("workflow-broken", `the workflow ${registered.id} is broken, it does not start: ${latest.broken}. Register a version that passes`);
       }
@@ -1080,6 +1083,9 @@ export function workflow(opts: WorkflowOptions = {}) {
     ): Promise<{ id: InstallationId; profile: string; on: Subscription[] }> => {
       // A broken workflow is installed all the same: its runs do not start until a version passes.
       const registered = input.registered;
+      if (registered?.latest.candidate === true) {
+        throw new RunRefusal("candidate", `the workflow ${registered.id} has only a candidate version: it is installed once a version is promoted`);
+      }
       const file = registered === undefined ? resolveFile(opts.root, input.file ?? "") : storedOf(registered.id, registered.latest.version);
       const script = readScript(file);
       if (script === undefined) throw new RunRefusal("script-unreadable", `the script "${file}" cannot be read`);
@@ -1266,7 +1272,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       ctx: ActionContext,
       file: string,
       existing: RegisteredWorkflow | undefined,
-      builtin?: { builtin: Builtin; description: EntityDescription },
+      builtin?: { builtin: Builtin; description: EntityDescription; candidate?: true },
     ) => {
       const script = readScript(file);
       const version = versionOf(file);
@@ -1322,7 +1328,10 @@ export function workflow(opts: WorkflowOptions = {}) {
         ...(subscriptions.length === 0 ? {} : { on: subscriptions }),
         ...(report.phases === undefined ? {} : { phases: report.phases }),
         ...(builtin === undefined ? {} : { builtin: builtin.builtin }),
+        ...(builtin?.candidate === true ? { candidate: true } : {}),
       });
+      // A candidate is not what the workflow is yet: the workflows that call it or read its records are not checked against it.
+      if (builtin?.candidate === true) return { id, version, description, added: true, rechecked: [] };
       // The workflows that call it, when its contract changed, and the ones that wait for or read the records it
       // writes, when what it writes changed (a new name changes the types as well): each is checked again, once.
       const before = existing?.latest;
@@ -1427,34 +1436,46 @@ export function workflow(opts: WorkflowOptions = {}) {
         }
         const version = versionOf(value.file);
         if (version === undefined) throw new Error(`the built-in workflow "${value.name}" of "${by}" has no script at "${value.file}"`);
-        wanted.push(WantedBuiltin.parse({ plugin: by, name: value.name, file: value.file, description: value.description, version }));
+        wanted.push(WantedBuiltin.parse({ plugin: by, name: value.name, file: value.file, description: value.description, version, ...(value.gated === true ? { gated: true } : {}) }));
       }
       return wanted;
     };
 
     const sameBuiltin = (one: Builtin | undefined, other: Builtin): boolean => one?.plugin === other.plugin && one.name === other.name;
 
-    /** The installation that is this built-in as it is wanted: of its workflow, at its version, under its description. */
-    const isCurrent = (one: Installation, registered: RegisteredWorkflow, item: WantedBuiltin): boolean =>
-      sameBuiltin(one.builtin, item) && one.workflow === registered.id && one.version === item.version && one.description === item.description;
+    /** The installation that is this built-in as it stands: of its workflow, at its accepted latest version, under its description. */
+    const isCurrent = (one: Installation, registered: RegisteredWorkflow, item: Builtin): boolean =>
+      sameBuiltin(one.builtin, item) &&
+      one.workflow === registered.id &&
+      one.version === registered.latest.version &&
+      one.description === registered.latest.description;
 
     /**
-     * Whether the built-ins that stand are exactly the wanted ones: each registered at its version and installed once at
-     * it, and no other built-in installed. A host that starts again with nothing changed writes nothing.
+     * Whether a wanted built-in is registered as it is wanted: its version is the latest one, or, for a gated built-in,
+     * one of its versions, a candidate until it is promoted.
+     */
+    const isRegistered = (registered: RegisteredWorkflow, item: WantedBuiltin): boolean => {
+      if (item.gated !== true) return registered.latest.version === item.version && registered.latest.description === item.description;
+      return registered.versions.some((one) => one.version === item.version && one.description === item.description);
+    };
+
+    /**
+     * Whether the built-ins that stand are exactly the wanted ones: each registered as it is wanted and installed once at
+     * its accepted latest version, a built-in with no accepted version not at all, and no other built-in installed. A host
+     * that starts again with nothing changed writes nothing.
      */
     const builtinsSettled = (reader: JournalReader, wanted: readonly WantedBuiltin[]): boolean => {
       const workflows = workflowsOf(reader);
       const stands = standing(reader).filter((one) => one.builtin !== undefined);
-      if (stands.length !== wanted.length) return false;
-      return wanted.every((item) => {
+      let installed = 0;
+      const each = wanted.every((item) => {
         const registered = builtinOf(workflows, item);
-        return (
-          registered !== undefined &&
-          registered.latest.version === item.version &&
-          registered.latest.description === item.description &&
-          stands.some((one) => isCurrent(one, registered, item))
-        );
+        if (registered === undefined || !isRegistered(registered, item)) return false;
+        if (registered.latest.candidate === true) return !stands.some((one) => sameBuiltin(one.builtin, item));
+        installed += 1;
+        return stands.some((one) => isCurrent(one, registered, item));
       });
+      return each && stands.length === installed;
     };
 
     // When the host starts, the built-ins are compared with what stands, and asked for when they differ: a new build of
@@ -1469,6 +1490,20 @@ export function workflow(opts: WorkflowOptions = {}) {
       });
       return () => {};
     });
+
+    /**
+     * The installation of a built-in made what its registration says: one at its accepted latest version, and none while
+     * it has only a candidate. An installation of another version is ended.
+     */
+    const installBuiltin = async (ctx: ActionContext, registered: RegisteredWorkflow, builtin: Builtin): Promise<{ installation?: string }> => {
+      const stands = standing(journal()).filter((one) => sameBuiltin(one.builtin, builtin));
+      const current = registered.latest.candidate === true ? undefined : stands.find((one) => isCurrent(one, registered, builtin));
+      for (const stale of stands) if (stale !== current) await uninstallOne(ctx, stale.id, "replaced by another version of the built-in");
+      if (registered.latest.candidate === true) return {};
+      if (current !== undefined) return { installation: current.id };
+      const installed = await installScript(ctx, { registered, description: registered.latest.description, builtin });
+      return { installation: installed.id };
+    };
 
     /**
      * One built-in made what it is wanted to be: registered from the file its plugin ships (its id found by the plugin and
@@ -1488,14 +1523,13 @@ export function workflow(opts: WorkflowOptions = {}) {
           throw new DeniedError("only the workflow module installs its built-ins");
         }
         const builtin: Builtin = { plugin: item.plugin, name: item.name };
-        const { id } = await registerScript(ctx, item.file, builtinOf(workflowsOf(journal()), builtin), { builtin, description: item.description });
-        const registered = workflowOf(id);
-        const stands = standing(journal()).filter((one) => sameBuiltin(one.builtin, builtin));
-        const current = stands.find((one) => isCurrent(one, registered, item));
-        for (const stale of stands) if (stale !== current) await uninstallOne(ctx, stale.id, "replaced by another version of the built-in");
-        if (current !== undefined) return { workflow: id, installation: current.id };
-        const installed = await installScript(ctx, { registered, description: item.description, builtin });
-        return { workflow: id, installation: installed.id };
+        const existing = builtinOf(workflowsOf(journal()), builtin);
+        // A gated built-in registers a version it does not know as a candidate; one it knows, accepted or not, stays as it is.
+        const id =
+          item.gated === true && existing !== undefined && isRegistered(existing, item)
+            ? existing.id
+            : (await registerScript(ctx, item.file, existing, { builtin, description: item.description, ...(item.gated === true ? { candidate: true as const } : {}) })).id;
+        return { workflow: id, ...(await installBuiltin(ctx, workflowOf(id), builtin)) };
       },
     });
     api.action(builtinSync);

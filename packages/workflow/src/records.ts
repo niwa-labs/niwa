@@ -339,6 +339,8 @@ export const WorkflowRegistered = record(
     phases: WorkflowPhases.optional(),
     /** The built-in it is: registered by the workflow module from the file the plugin ships, never by hand. */
     builtin: Builtin.optional(),
+    /** A candidate version of a gated built-in: it moves neither the latest version nor the installation. */
+    candidate: z.literal(true).optional(),
   }),
 );
 
@@ -347,6 +349,8 @@ export const WantedBuiltin = Builtin.extend({
   file: z.string().min(1),
   description: EntityDescription,
   version: WorkflowVersion,
+  /** Its new versions come in as candidates. */
+  gated: z.literal(true).optional(),
 });
 export type WantedBuiltin = z.infer<typeof WantedBuiltin>;
 
