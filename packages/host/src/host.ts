@@ -55,7 +55,6 @@ import {
   timestamp,
   readFiltered,
   targetName,
-  holds,
   matchesQuery,
   overlaps,
   resolveQuery,
@@ -336,11 +335,11 @@ interface Served {
   readonly until?: Seq;
 }
 
-/** One part of what wakes a subscription: types, and equality on the paths of their data. */
-interface Selector {
-  readonly types: readonly RecordTypeName[];
-  readonly filter: Readonly<Record<string, unknown>> | undefined;
-}
+/**
+ * One part of what wakes a subscription: a query of the core without a position. The types are
+ * absent when the query names none, as they are in the core: every type.
+ */
+type Selector = Omit<ResolvedQuery, "from">;
 
 /** The type a subscriber's handler reads its records through: any data, as it was written. */
 const ANY_DATA = z.unknown();
@@ -1990,7 +1989,7 @@ class Niwa implements Host {
     // A record of another version of the type is not this handler's business: it is passed over and
     // stays readable, because the journal is the history of what happened.
     if (entry.schema !== undefined && record.schema !== entry.schema) return "schema";
-    if (!entry.selectors.some((one) => selectsType(one, record.type) && holds(record.data, one.filter))) return "filtered";
+    if (!entry.selectors.some((one) => matchesQuery(one, record))) return "filtered";
     const chain = this.ownChain(journal, id, record);
     if (chain.length > entry.subscribing.depth) {
       if (entry.subscribing.depth === 0) return "self";
@@ -2090,9 +2089,21 @@ class Niwa implements Host {
           const subscribing = subscribingOf(`plugin "${name}", subscriber "${one.id}"`, {
             ...(one.concurrency === undefined ? {} : { concurrency: one.concurrency }),
           });
-          const selectors = one.queries.map((query) => ({ types: query.types.map((type) => recordTypeName(type)), filter: query.filter }));
+          let selectors: Selector[];
+          try {
+            selectors = one.queries.map((query) => {
+              // The position of a subscriber is its own (`from`, `until`): a query that carries one says two things.
+              if ((query as RecordQuery).from !== undefined) throw new TypeError("a query of a subscriber has no position: the subscriber has its own");
+              const { types, filter, stream } = resolveQuery(query);
+              return { ...(types === undefined ? {} : { types }), ...(filter === undefined ? {} : { filter }), ...(stream === undefined ? {} : { stream }) };
+            });
+          } catch (error) {
+            this.fail(`reading the subscribers of "${name}"`, new TypeError(`subscriber "${one.id}": ${error instanceof Error ? error.message : String(error)}`));
+            continue;
+          }
           this.handlers.set(id, {
-            types: [...new Set(selectors.flatMap((query) => query.types))],
+            // A query that names no type wakes on every type: so does the subscriber.
+            types: selectors.some((query) => query.types === undefined || query.types.length === 0) ? [] : [...new Set(selectors.flatMap((query) => query.types ?? []))],
             selectors,
             schema: undefined,
             version: installed.version,

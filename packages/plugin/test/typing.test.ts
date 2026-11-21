@@ -21,7 +21,7 @@ function refusedLines(): number[] {
   return [...new Set(lines)].sort((a, b) => a - b);
 }
 
-test("a setup that may return a promise, a timer with no schedule or two, an agent on both a harness and a role or on neither, a trigger with an offer of another type, and an offered trigger without its definition do not compile", () => {
+test("a setup that may return a promise, a timer with no schedule or two, an agent on both a harness and a role or on neither, a trigger with an offer of another type, an offered trigger without its definition, and a subscriber query literal with a position of its own do not compile", () => {
   const marked = readFileSync(FIXTURE, "utf8")
     .split("\n")
     .flatMap((line, index) => (line.endsWith("// error") ? [index + 1] : []));

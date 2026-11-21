@@ -28,7 +28,7 @@ import type {
   Token,
   Verb,
   Narrowed,
-  DataFilter,
+  RecordQuery,
   PathFilter,
   RuleSpec,
 } from "@niwa-labs/core";
@@ -77,6 +77,12 @@ export interface HandlerOptions<T = unknown> {
 }
 
 /**
+ * A query a subscription is woken by: the one query of the core, without a position of its own. A
+ * query value that does carry a `from` is refused by the host when it reads the subscriber.
+ */
+export type SubscriberQuery = Omit<RecordQuery<any>, "from">;
+
+/**
  * A subscription a plugin reads from the journal: its own records are data, not code registered at
  * setup. Its id, with the plugin's name, is its identity: its position and its own chain of causes.
  */
@@ -84,10 +90,11 @@ export interface Subscriber {
   /** Its name inside the plugin; it has no "/". */
   readonly id: string;
   /**
-   * The records it is woken by: a record that answers any of the queries, each of types as names or
-   * families and equality on paths of their data.
+   * The records it is woken by: a record that answers any of the queries, each the query of the core
+   * (types as names or families, equality on paths of their data, the stream). The position it
+   * reads after is `from` below, never the query's own.
    */
-  readonly queries: ReadonlyArray<{ readonly types: readonly string[]; readonly filter?: DataFilter }>;
+  readonly queries: ReadonlyArray<SubscriberQuery>;
   /** The position it starts after when it is new: where it was made. */
   readonly from: number;
   /** The position after which it admits nothing: where it ended. */

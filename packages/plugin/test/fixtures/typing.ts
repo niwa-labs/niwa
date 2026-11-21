@@ -1,10 +1,11 @@
 // Code that a plugin author writes. A line ending in `// error` must not compile; every other line must.
 
 import { record } from "@niwa-labs/core";
+import type { RecordQuery } from "@niwa-labs/core";
 import { z } from "zod";
 
 import { offerKey, plugin, trigger as triggerOf, AGENT, TIMER_OFFER } from "../../src/index.ts";
-import type { AgentOffer, PluginApi, TimerDef, TimerOffer, Trigger } from "../../src/index.ts";
+import type { AgentOffer, PluginApi, Subscriber, TimerDef, TimerOffer, Trigger } from "../../src/index.ts";
 
 plugin("typing-sync", (api) => {
   api.declare();
@@ -47,3 +48,7 @@ plugin("typing-agents", (api) => {
   api.offer(AGENT, { name: "a", harness: "h", role: "r", prompt: "p" }); // error
 });
 export const anAgent: AgentOffer = { name: "a", role: "r", prompt: "p" };
+
+declare const aQuery: RecordQuery;
+export const byStream: Subscriber["queries"] = [{ types: ["a.*"], filter: { x: 1 }, stream: "s" }, aQuery];
+export const placed: Subscriber["queries"] = [{ types: ["a.*"], from: 3 }]; // error
