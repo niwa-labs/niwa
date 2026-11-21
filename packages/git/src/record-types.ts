@@ -36,6 +36,13 @@ export const Worktree = z.object({
 });
 export type Worktree = z.infer<typeof Worktree>;
 
+/**
+ * What a worktree is going to be made from, written before its checkout is: a create cut off after the checkout
+ * and made again takes the checkout it made from the same repository, base commit, branch and directory, not from
+ * what the base is by then. The id of the worktree is issued from this record.
+ */
+export const WorktreeReserved = record("git.worktree.reserved", Worktree);
+
 /** A worktree was made. */
 export const WorktreeCreated = record("git.worktree.created", Worktree);
 
@@ -72,5 +79,35 @@ export const HeadMoved = record(
   }),
 );
 
+/**
+ * The remote a worktree's work goes to, as the repository's own configuration says it: the remote a push of its
+ * base goes to. It is shown only when it is verified: the remote is configured, its fetch and push URLs name the
+ * same project, and that project is on a server (`host`, lower case, no port) at a path of at least a group and a
+ * name, without `.git`. A remote on this machine, or one that pushes elsewhere, is not shown.
+ */
+export const WorktreeRemote = z.object({
+  /** The name of the remote in the repository. */
+  name: z.string().min(1),
+  host: z.string().min(1),
+  path: z.string().min(1),
+});
+export type WorktreeRemote = z.infer<typeof WorktreeRemote>;
+
+/**
+ * The verified remote of a worktree is another than the last one recorded for it (none, at first): it was set, it
+ * changed, or it is gone or no longer verifies. The project it names is by path; which project that is on the
+ * server is for the module that talks to the server.
+ */
+export const RemoteUpdated = record(
+  "git.remote.updated",
+  z.object({
+    worktree: WorktreeId,
+    /** The top of the repository the worktree was made from. */
+    repo: z.string().min(1),
+    /** The remote now; absent when there is none that verifies. */
+    remote: WorktreeRemote.optional(),
+  }),
+);
+
 /** Every record type of the git module. */
-export const GIT_TYPES = [WorktreeCreated, WorktreeRemoved, HeadMoved] as const;
+export const GIT_TYPES = [WorktreeReserved, WorktreeCreated, WorktreeRemoved, HeadMoved, RemoteUpdated] as const;

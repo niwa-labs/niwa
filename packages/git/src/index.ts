@@ -10,9 +10,11 @@
  * - **git.worktree.get** shows one, with how it stands now: dirty, commits ahead of its base, the
  *   live niwa sessions in it.
  * - **git.worktree.remove** removes the directory and the branch. It refuses a worktree that is
- *   dirty, ahead of its base or has a live session in it, unless forced.
+ *   dirty, ahead of its base (on its branch or on the head of its checkout), has a live session in it
+ *   or cannot be read, unless forced; git's own refusal (a locked worktree) stands without force.
  * - **git.head.observe** records `git.head.moved` for each worktree whose head is on another commit
- *   than the last one recorded for it. The module looks by itself when a session's turn ends in a
+ *   than the last one recorded for it, and `git.remote.updated` for each whose verified remote is
+ *   another than the last recorded. The module looks by itself when a session's turn ends in a
  *   worktree, and names that session in the record; a run that looks is who its record is of.
  *
  * The list and a get show each worktree's head and the remote its base pushes to, verified from the
@@ -23,11 +25,12 @@
  * unused. `git({ cleanup: false })` turns it off; the host needs the timers and the workflow module for it.
  *
  * Niwa never merges: the branch is what the work left, and merging it is the agent's or the owner's.
- * The id is issued from the record that makes the worktree, so a replayed create finds what it made.
+ * The id is issued from the record that reserves the worktree (its repository, base commit, branch and
+ * directory, written before the checkout), so a replayed create finds what it made and makes the same.
  */
 
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CatchableError, EntityDescription, IdIndex, action, idSchema, recordId, seq, stableJson } from "@niwa-labs/core";
@@ -44,14 +47,23 @@ import {
   gitWorktreeRemove,
 } from "./actions.ts";
 import type { WorktreeEntity, WorktreeState } from "./actions.ts";
-import { aheadOf, branchOf, commitOf, copyIncluded, currentBase, gitOut, gitRun, headOf, isDirty, topOf, verifiedRemote } from "./git.ts";
-import { HeadMoved, WorktreeCreated, WorktreeRemoved } from "./record-types.ts";
+import { aheadOf, branchOf, commitOf, commonDirOf, copyIncluded, currentBase, gitOut, gitRun, headOf, isDirty, repoOf, verifiedRemote } from "./git.ts";
+import { HeadMoved, RemoteUpdated, WorktreeCreated, WorktreeRemote, WorktreeRemoved, WorktreeReserved } from "./record-types.ts";
 import type { Worktree, WorktreeId } from "./record-types.ts";
 
 const DAY_MS = 86_400_000;
 
 /** Why a worktree action did not do what it was asked. */
-export type WorktreeRefusalCode = "not-a-repo" | "unknown-base" | "occupied" | "dirty" | "ahead" | "live-session" | "orphan";
+export type WorktreeRefusalCode =
+  | "not-a-repo"
+  | "unknown-base"
+  | "occupied"
+  | "dirty"
+  | "ahead"
+  | "live-session"
+  | "orphan"
+  | "unverifiable"
+  | "changed";
 
 /**
  * A refusal of the git module: the code says which, the message says why. It is the caller's to
@@ -93,12 +105,12 @@ function fold(journal: JournalReader | undefined): Map<string, Entry> {
   return entries;
 }
 
-/** The ids of worktrees: a worktree is born in the record that makes it. */
+/** The ids of worktrees: a worktree is born in the record that reserves it. */
 function worktreeIds(journal: () => JournalReader | undefined): IdIndex<"worktree"> {
   return new IdIndex("worktree", () => {
     const issued: IssuedId[] = [];
-    for (const stored of journal()?.since(seq(0), [WorktreeCreated.name]) ?? []) {
-      const parsed = WorktreeCreated.schema.safeParse(stored.data);
+    for (const stored of journal()?.since(seq(0), [WorktreeReserved.name]) ?? []) {
+      const parsed = WorktreeReserved.schema.safeParse(stored.data);
       if (parsed.success) issued.push({ id: parsed.data.id, seed: stored.id });
     }
     return issued;
@@ -169,22 +181,58 @@ interface Place {
   readonly bootedAt: number;
 }
 
-/** How a worktree stands now: dirty, ahead of its base, the sessions alive in it, its head and the remote of its base. */
-async function standing(
-  place: Place,
-  worktree: Worktree,
-): Promise<Pick<WorktreeEntity, "dirty" | "aheadOfBase" | "sessions" | "head" | "remote">> {
-  const present = existsSync(worktree.path);
-  const dirty = present ? await isDirty(worktree.path) : false;
-  const branch = await commitOf(worktree.repo, `refs/heads/${worktree.branch}`);
-  // Ahead of the base as it is now: a base branch that took the commits makes them merged.
-  const base = (await commitOf(worktree.repo, worktree.base)) === undefined ? worktree.baseSha : worktree.base;
-  const aheadOfBase = branch === undefined ? 0 : await aheadOf(worktree.repo, base, worktree.branch);
-  const sessions = present ? liveSessionsIn(place.journal(), real(worktree.path), place.bootedAt) : [];
-  const head = present ? await headOf(worktree.path) : undefined;
-  const remote = existsSync(worktree.repo) ? await verifiedRemote(worktree.repo, worktree.base) : undefined;
-  return { dirty, aheadOfBase, sessions, ...(head === undefined ? {} : { head }), ...(remote === undefined ? {} : { remote }) };
+/** How a worktree stands, as the list and a get show it. */
+type Standing = Pick<WorktreeEntity, "dirty" | "aheadOfBase" | "sessions" | "head" | "remote">;
+
+/** How a worktree stands, and what removing it would need to know. */
+interface Inspected {
+  readonly standing: Standing;
+  /** The commit its branch is on, when it has one. */
+  readonly tip: string | undefined;
+  /** Whether what was read can be trusted: the repository and the checkout answered. What cannot be read is not known to be clean. */
+  readonly sound: boolean;
 }
+
+/**
+ * How a worktree stands now: dirty, ahead of its base, the sessions alive in it, its head and the remote of its base.
+ *
+ * Ahead counts what is reachable from the branch and from the head of the checkout, so work committed after
+ * detaching the head is not lost with the branch.
+ */
+async function inspect(place: Place, worktree: Worktree): Promise<Inspected> {
+  const present = existsSync(worktree.path);
+  const known = existsSync(worktree.repo);
+  let sound = known || !present;
+  let dirty = false;
+  let head: string | undefined;
+  let tip: string | undefined;
+  let aheadOfBase = 0;
+  let remote: Awaited<ReturnType<typeof verifiedRemote>>;
+  try {
+    if (present) {
+      dirty = await isDirty(worktree.path);
+      head = await headOf(worktree.path);
+    }
+    if (known) {
+      tip = await commitOf(worktree.repo, `refs/heads/${worktree.branch}`);
+      // Ahead of the base as it is now: a base branch that took the commits makes them merged.
+      const base = (await commitOf(worktree.repo, worktree.base)) === undefined ? worktree.baseSha : worktree.base;
+      const tips = [...new Set([tip, head].filter((commit): commit is string => commit !== undefined))];
+      aheadOfBase = tips.length === 0 ? 0 : await aheadOf(worktree.repo, base, tips);
+      remote = await verifiedRemote(worktree.repo, worktree.base);
+    }
+  } catch {
+    sound = false;
+  }
+  const sessions = present ? liveSessionsIn(place.journal(), real(worktree.path), place.bootedAt) : [];
+  return {
+    standing: { dirty, aheadOfBase, sessions, ...(head === undefined ? {} : { head }), ...(remote === undefined ? {} : { remote }) },
+    tip,
+    sound,
+  };
+}
+
+const standing = async (place: Place, worktree: Worktree): Promise<Standing> => (await inspect(place, worktree)).standing;
 
 /** The last head recorded for each worktree: the one its last `git.head.moved` names, else none. */
 function recordedHeads(journal: JournalReader | undefined): Map<string, string> {
@@ -194,6 +242,18 @@ function recordedHeads(journal: JournalReader | undefined): Map<string, string> 
     if (parsed.success) heads.set(parsed.data.worktree, parsed.data.head);
   }
   return heads;
+}
+
+/** The last verified remote recorded for each worktree: absent for one whose last record says there is none. */
+function recordedRemotes(journal: JournalReader | undefined): Map<string, WorktreeRemote> {
+  const remotes = new Map<string, WorktreeRemote>();
+  for (const stored of journal?.since(seq(0), [RemoteUpdated.name]) ?? []) {
+    const parsed = RemoteUpdated.schema.safeParse(stored.data);
+    if (!parsed.success) continue;
+    if (parsed.data.remote === undefined) remotes.delete(parsed.data.worktree);
+    else remotes.set(parsed.data.worktree, parsed.data.remote);
+  }
+  return remotes;
 }
 
 /** The directory a session was started in, by its ref, from the sessions module's records read by name. */
@@ -207,9 +267,13 @@ function cwdOfSession(journal: JournalReader | undefined, session: string): stri
 }
 
 /** Why a worktree may not be removed, or undefined when it may. */
-function refusalOf(id: string, state: Pick<WorktreeEntity, "dirty" | "aheadOfBase" | "sessions">): WorktreeRefusal | undefined {
+function refusalOf(id: string, inspected: Inspected): WorktreeRefusal | undefined {
+  const state = inspected.standing;
   if (state.sessions.length > 0) {
     return new WorktreeRefusal("live-session", `the worktree "${id}" has a live session in it (${state.sessions.join(", ")})`);
+  }
+  if (!inspected.sound) {
+    return new WorktreeRefusal("unverifiable", `the worktree "${id}" and its repository cannot both be read, so nothing says what would be lost`);
   }
   if (state.dirty) return new WorktreeRefusal("dirty", `the worktree "${id}" has uncommitted changes`);
   if (state.aheadOfBase > 0) {
@@ -218,31 +282,68 @@ function refusalOf(id: string, state: Pick<WorktreeEntity, "dirty" | "aheadOfBas
   return undefined;
 }
 
-/** Remove the directory and the branch of a worktree; what is gone already stays gone. */
-async function dismantle(repo: string, path: string, branch: string): Promise<void> {
-  if (existsSync(path)) {
-    const removed = existsSync(repo) ? await gitRun(repo, ["worktree", "remove", "--force", "--force", path]) : undefined;
-    if (removed?.code !== 0) rmSync(path, { recursive: true, force: true });
-  }
-  if (!existsSync(repo)) return;
-  await gitRun(repo, ["worktree", "prune"]);
-  if ((await commitOf(repo, `refs/heads/${branch}`)) !== undefined) await gitOut(repo, ["branch", "-D", branch]);
+/** What is removed with a worktree: where its repository is, if it is anywhere, its directory and its branch. */
+interface Dismantled {
+  readonly repo: string | undefined;
+  readonly path: string;
+  readonly branch: string;
 }
 
 /**
- * Make the checkout of a worktree, or take the one a create that was cut off made: the same path on
- * the same branch. A directory on another branch is not taken.
+ * Remove the directory and the branch of a worktree; what is gone already stays gone.
+ *
+ * Without `force`, git decides whether the directory may go (it keeps a dirty or locked one), and the branch goes
+ * only if it is still on `tip`, the commit that was checked. With `force`, a directory git will not remove is
+ * deleted. Either way, what was asked to go is checked to be gone before this returns.
  */
-async function checkout(repo: string, path: string, branch: string, baseSha: string): Promise<void> {
+async function dismantle(target: Dismantled, force: boolean, tip: string | undefined): Promise<void> {
+  const { repo, path, branch } = target;
+  const known = repo !== undefined && existsSync(repo);
+  if (existsSync(path)) {
+    const removed = known ? await gitRun(repo, ["worktree", "remove", ...(force ? ["--force", "--force"] : []), path]) : undefined;
+    if (removed?.code !== 0) {
+      if (!force) {
+        throw new WorktreeRefusal("changed", `git keeps ${path}: ${removed?.stderr.trim() ?? "its repository cannot be read"}`);
+      }
+      rmSync(path, { recursive: true, force: true });
+    }
+    if (existsSync(path)) throw new Error(`${path} is still there after it was removed`);
+  }
+  if (!known) return;
+  await gitRun(repo, ["worktree", "prune"]);
+  const now = await commitOf(repo, `refs/heads/${branch}`);
+  if (now === undefined) return;
+  if (!force && now !== tip) {
+    throw new WorktreeRefusal("changed", `the branch "${branch}" moved while the worktree was being removed, and is kept`);
+  }
+  await gitOut(repo, ["update-ref", "-d", `refs/heads/${branch}`, now]);
+  if ((await commitOf(repo, `refs/heads/${branch}`)) !== undefined) throw new Error(`the branch "${branch}" is still there after it was removed`);
+}
+
+/**
+ * Make the checkout of a worktree from its reservation, or take the one a create that was cut off made: the same
+ * path, on the same branch, of the same repository. A directory that is not that, or a branch that is not where
+ * the reservation put it, is not taken.
+ */
+async function checkout(reserved: Worktree): Promise<void> {
+  const { repo, path, branch, baseSha } = reserved;
   if (existsSync(path)) {
     const on = await gitRun(path, ["symbolic-ref", "--short", "-q", "HEAD"]);
-    if (on.code === 0 && on.stdout.trim() === branch && real((await gitOut(path, ["rev-parse", "--show-toplevel"])).trim()) === real(path)) return;
-    throw new WorktreeRefusal("occupied", `${path} exists and is not the worktree of the branch "${branch}"`);
+    const top = await gitRun(path, ["rev-parse", "--show-toplevel"]);
+    const mine = on.code === 0 && on.stdout.trim() === branch && top.code === 0 && real(top.stdout.trim()) === real(path);
+    if (mine && (await commonDirOf(path)) === (await commonDirOf(repo))) return;
+    throw new WorktreeRefusal("occupied", `${path} exists and is not the worktree of the branch "${branch}" of ${repo}`);
   }
   mkdirSync(dirname(path), { recursive: true });
   await gitRun(repo, ["worktree", "prune"]);
-  const branchExists = (await commitOf(repo, `refs/heads/${branch}`)) !== undefined;
-  await gitOut(repo, branchExists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, baseSha]);
+  const tip = await commitOf(repo, `refs/heads/${branch}`);
+  if (tip === undefined) {
+    await gitOut(repo, ["worktree", "add", "-b", branch, path, baseSha]);
+    return;
+  }
+  // A cut-off create made the branch and not the directory: the branch is still where it was put.
+  if (tip !== baseSha) throw new WorktreeRefusal("occupied", `the branch "${branch}" exists and is not on ${baseSha}`);
+  await gitOut(repo, ["worktree", "add", path, branch]);
 }
 
 /** The timer of the cleanup, the one its script starts on. */
@@ -291,7 +392,7 @@ export function git(options: GitOptions = {}): Plugin {
     const place: Place = { journal, store: () => join(api.home(), "worktrees"), bootedAt };
     const entries = () => fold(journal());
 
-    api.declare(WorktreeCreated, WorktreeRemoved, HeadMoved);
+    api.declare(WorktreeReserved, WorktreeCreated, WorktreeRemoved, HeadMoved, RemoteUpdated);
 
     api.action(
       action(gitWorktreeCreate, {
@@ -301,21 +402,30 @@ export function git(options: GitOptions = {}): Plugin {
         effect: "write",
         world: "local",
         async run(input, ctx) {
-          const id = ids.issue(birthOf(ctx));
+          const birth = birthOf(ctx);
+          const id = ids.issue(birth);
           const known = entries().get(id);
           if (known !== undefined) return known.worktree;
-          const top = await topOf(resolve(input.repo));
-          if (top === undefined) throw new WorktreeRefusal("not-a-repo", `${input.repo} is not inside a git repository`);
-          const repo = real(top);
-          const base = input.base ?? (await currentBase(repo));
-          const baseSha = await commitOf(repo, base);
-          if (baseSha === undefined) throw new WorktreeRefusal("unknown-base", `"${base}" names no commit of ${repo}`);
-          const path = join(real(api.home()), "worktrees", id);
-          await checkout(repo, path, id, baseSha);
-          await copyIncluded(repo, path);
-          const worktree: Worktree = { id, description: input.description, repo, path, branch: id, base, baseSha };
-          await ctx.emit(WorktreeCreated, worktree);
-          return worktree;
+          // What an earlier attempt reserved is what this one makes: the base is not read again.
+          const earlier = journal()?.get(birth);
+          let reserved: Worktree;
+          if (earlier === undefined) {
+            const top = await repoOf(resolve(input.repo));
+            if (top === undefined) throw new WorktreeRefusal("not-a-repo", `${input.repo} is not inside a git repository`);
+            const repo = real(top);
+            const base = input.base ?? (await currentBase(repo));
+            const baseSha = await commitOf(repo, base);
+            if (baseSha === undefined) throw new WorktreeRefusal("unknown-base", `"${base}" names no commit of ${repo}`);
+            const path = join(real(api.home()), "worktrees", id);
+            reserved = { id, description: input.description, repo, path, branch: id, base, baseSha };
+          } else {
+            reserved = WorktreeReserved.schema.parse(earlier.data);
+          }
+          await ctx.emit(WorktreeReserved, reserved);
+          await checkout(reserved);
+          await copyIncluded(reserved.repo, reserved.path);
+          await ctx.emit(WorktreeCreated, reserved);
+          return reserved;
         },
       }),
     );
@@ -367,32 +477,68 @@ export function git(options: GitOptions = {}): Plugin {
       }),
     );
 
+    // One look at a worktree at a time: what is recorded for it is read, the checkout is sampled and the change is
+    // written before the next look reads what is recorded, so two looks never write the same change twice.
+    const looks = new Map<string, Promise<unknown>>();
+    const lookAt = async <T>(worktree: string, look: () => Promise<T>): Promise<T> => {
+      const turn = (looks.get(worktree) ?? Promise.resolve()).then(look, look);
+      const done = turn.catch(() => undefined);
+      looks.set(worktree, done);
+      try {
+        return await turn;
+      } finally {
+        if (looks.get(worktree) === done) looks.delete(worktree);
+      }
+    };
+
     api.action(
       action(gitHeadObserve, {
-        // A head recorded once is the last one known: looking again writes nothing for it.
+        // What is recorded is the last one known: looking again writes nothing new, and a look cut off is made
+        // again by writing what it wrote under the same identity, then going on.
         recovery: "repeat",
         effect: "record",
         world: "niwa",
         async run(input, ctx) {
           const only = input.worktree === undefined ? undefined : ids.require(input.worktree);
-          const heads = recordedHeads(journal());
           const moved: Array<{ worktree: WorktreeId; head: string }> = [];
+          // The records are numbered in the order they are written: an attempt that was cut off wrote the first
+          // ones, and they are written again as they were, so the new ones follow them and are not taken for them.
+          for (let ordinal = 1; ; ordinal += 1) {
+            const written = journal()?.get(recordId(`${ctx.operationId}/emit/${String(ordinal)}`));
+            if (written === undefined) break;
+            if (written.type === RemoteUpdated.name) {
+              await ctx.emit(RemoteUpdated, RemoteUpdated.schema.parse(written.data));
+              continue;
+            }
+            const head = HeadMoved.schema.parse(written.data);
+            await ctx.emit(HeadMoved, head);
+            moved.push({ worktree: head.worktree, head: head.head });
+          }
           for (const { worktree, removed } of entries().values()) {
-            if (removed || (only !== undefined && worktree.id !== only) || !existsSync(worktree.path)) continue;
-            const head = await headOf(worktree.path);
-            const previous = heads.get(worktree.id) ?? worktree.baseSha;
-            if (head === undefined || head === previous) continue;
-            const branch = await branchOf(worktree.path);
-            await ctx.emit(HeadMoved, {
-              worktree: worktree.id,
-              repo: worktree.repo,
-              path: worktree.path,
-              ...(branch === undefined ? {} : { branch }),
-              head,
-              previous,
-              ...(input.session === undefined ? {} : { session: input.session }),
+            if (removed || (only !== undefined && worktree.id !== only)) continue;
+            await lookAt(worktree.id, async () => {
+              if (!existsSync(worktree.path)) return;
+              const head = await headOf(worktree.path);
+              const previous = recordedHeads(journal()).get(worktree.id) ?? worktree.baseSha;
+              if (head !== undefined && head !== previous) {
+                const branch = await branchOf(worktree.path);
+                await ctx.emit(HeadMoved, {
+                  worktree: worktree.id,
+                  repo: worktree.repo,
+                  path: worktree.path,
+                  ...(branch === undefined ? {} : { branch }),
+                  head,
+                  previous,
+                  ...(input.session === undefined ? {} : { session: input.session }),
+                });
+                moved.push({ worktree: worktree.id, head });
+              }
+              const remote = existsSync(worktree.repo) ? await verifiedRemote(worktree.repo, worktree.base) : undefined;
+              const recorded = recordedRemotes(journal()).get(worktree.id);
+              if (stableJson(remote ?? null) !== stableJson(recorded ?? null)) {
+                await ctx.emit(RemoteUpdated, { worktree: worktree.id, repo: worktree.repo, ...(remote === undefined ? {} : { remote }) });
+              }
             });
-            moved.push({ worktree: worktree.id, head });
           }
           return { moved };
         },
@@ -432,9 +578,10 @@ export function git(options: GitOptions = {}): Plugin {
       emit: (data: { id: WorktreeId; forced: boolean }) => Promise<unknown>,
     ): Promise<void> => {
       const { worktree } = entry;
-      const refusal = refusalOf(worktree.id, await standing(place, worktree));
+      const seen = await inspect(place, worktree);
+      const refusal = refusalOf(worktree.id, seen);
       if (refusal !== undefined && !force) throw refusal;
-      await dismantle(worktree.repo, worktree.path, worktree.branch);
+      await dismantle(worktree, force, seen.tip);
       await emit({ id: idSchema("worktree").parse(worktree.id), forced: refusal !== undefined });
     };
 
@@ -448,19 +595,18 @@ export function git(options: GitOptions = {}): Plugin {
           const force = input.force ?? false;
           const id = ids.resolve(input.id);
           const entry = id === undefined ? undefined : entries().get(id);
-          if (entry !== undefined) {
-            if (entry.removed) return { id: entry.worktree.id, removed: false };
+          if (entry !== undefined && !entry.removed) {
             await removeEntry(entry, force, (data) => ctx.emit(WorktreeRemoved, data));
             return { id: entry.worktree.id, removed: true };
           }
-          // A directory of the store that no record names.
-          const orphan = idSchema("worktree").safeParse(input.id);
+          // A directory of the store that no record names, or that took the place of a worktree that was removed.
+          const orphan = entry === undefined ? idSchema("worktree").safeParse(input.id) : idSchema("worktree").safeParse(entry.worktree.id);
           const path = orphan.success ? join(place.store(), orphan.data) : undefined;
-          if (!orphan.success || path === undefined || !existsSync(path)) return { id: input.id, removed: false };
+          if (!orphan.success || path === undefined || !existsSync(path)) return { id: orphan.success ? orphan.data : input.id, removed: false };
           if (!force) throw new WorktreeRefusal("orphan", `${path} has no record, so nothing says what it holds: remove it with force`);
-          const common = await gitRun(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-          const repo = common.code === 0 ? dirname(common.stdout.trim()) : path;
-          await dismantle(repo, path, orphan.data);
+          const common = await commonDirOf(path);
+          const repo = common === undefined ? undefined : basename(common) === ".git" ? dirname(common) : undefined;
+          await dismantle({ repo, path, branch: orphan.data }, true, undefined);
           return { id: orphan.data, removed: true };
         },
       }),
@@ -487,7 +633,6 @@ export {
   SessionWorktree,
   gitCleanupConfig,
   gitHeadObserve,
-  WorktreeRemote,
   WorktreeEntity,
   WorktreeOption,
   WorktreeState,
@@ -497,4 +642,15 @@ export {
   gitWorktreeRemove,
 } from "./actions.ts";
 export type { WorktreeOptionGiven } from "./actions.ts";
-export { CommitId, GIT_TYPES, HeadMoved, Worktree, WorktreeCreated, WorktreeId, WorktreeRemoved } from "./record-types.ts";
+export {
+  CommitId,
+  GIT_TYPES,
+  HeadMoved,
+  RemoteUpdated,
+  Worktree,
+  WorktreeCreated,
+  WorktreeId,
+  WorktreeRemote,
+  WorktreeRemoved,
+  WorktreeReserved,
+} from "./record-types.ts";

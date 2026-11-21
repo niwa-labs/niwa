@@ -91,9 +91,9 @@ export async function isDirty(dir: string): Promise<boolean> {
   return (await gitOut(dir, ["status", "--porcelain", "--untracked-files=normal"])).trim() !== "";
 }
 
-/** How many commits `branch` has that `base` has not. */
-export async function aheadOf(dir: string, base: string, branch: string): Promise<number> {
-  return Number((await gitOut(dir, ["rev-list", "--count", `${base}..${branch}`])).trim());
+/** How many commits are reachable from the tips that `base` has not: work that would be lost with them. */
+export async function aheadOf(dir: string, base: string, tips: readonly string[]): Promise<number> {
+  return Number((await gitOut(dir, ["rev-list", "--count", ...tips, `^${base}`])).trim());
 }
 
 /** The commit the head of a checkout is on, or undefined when it has none. */
