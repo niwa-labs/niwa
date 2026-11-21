@@ -14,7 +14,7 @@ import type { GitOptions } from "@niwa-labs/git";
 import type { HarnessInstanceRegistry, HarnessKindRegistry } from "@niwa-labs/harness";
 import { history } from "@niwa-labs/history";
 import { messages } from "@niwa-labs/messages";
-import type { Plugin } from "@niwa-labs/plugin";
+import type { CallerBinding, Plugin } from "@niwa-labs/plugin";
 import { requests } from "@niwa-labs/requests";
 import { insertPlugin, sessions } from "@niwa-labs/sessions";
 import { tasks } from "@niwa-labs/tasks";
@@ -35,6 +35,12 @@ export interface DefaultCompositionOptions {
   readonly agents?: AgentOptions;
   readonly git?: GitOptions;
   readonly workflow?: WorkflowOptions;
+  /**
+   * Wraps the binding of callers to addresses that messages, requests and tasks are given: the sessions'
+   * binding under the agents'. A surface that speaks for the owner gives its own here
+   * (`(fallback) => surface.bind(fallback)`), so that what it does is the owner's.
+   */
+  readonly bind?: (fallback: CallerBinding) => CallerBinding;
 }
 
 /**
@@ -48,7 +54,8 @@ export function defaultComposition(options: DefaultCompositionOptions): Plugin[]
     niwaMcp: { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
   });
   const agents = agentsModule(options.agents);
-  const bind = agents.bind(made.bind());
+  const bound = agents.bind(made.bind());
+  const bind = options.bind === undefined ? bound : options.bind(bound);
   return [
     messages({ bind }),
     requests({ bind }),
