@@ -113,7 +113,8 @@ Time and the outside:
   import { TaskDone } from "@niwa-labs/tasks/records"; then wait(TaskDone, { filter: { task: task.id }, from }) and
   read.records(TaskDone, { filter, from, limit }) give data typed by its schema, and read.records({ types: [TaskDone,
   TaskUpdated] }) data typed by each. The import is resolved from the folder of the script, so the plugin's package
-  must be found from there; a registered copy and a boxed run find packages in the node_modules niwa runs with.
+  must be found from there; a registered copy and a boxed run find packages in the node_modules niwa runs with, and
+  the packages of other repositories that a plugin on the host offers to scripts (@niwa-labs/forge/flow).
   The host waits for and reads the type at the version it writes; the check and the run refuse a type the host
   does not know and a reference to another version of it.
 - The records entry of a plugin also gives query builders: taskDone(task.id) from "@niwa-labs/tasks/records" is the

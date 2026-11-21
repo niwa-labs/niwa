@@ -178,3 +178,20 @@ export const PendingExternalAnswerSchema = z.object({ items: z.array(PendingExte
  * reports holds, the offer is not read.
  */
 export const PENDING_EXTERNAL: OfferKey<PendingExternal> = offerKey("pending.external", "host");
+
+/**
+ * A package a plugin gives scripts: a package of `@niwa-labs` that is installed where the plugin is and not among the
+ * packages niwa runs with (`@niwa-labs/forge`, whose `/flow` entry a delivery script imports). The workflow module, when
+ * the host has one, reads it once the plugins are installed: a stored copy of a script finds the package by its name as
+ * it finds niwa's own, its manifest names it with its version, and a script process in a box may read it. It is offered
+ * to the host, so a plugin offers it whether or not the host runs scripts, and in any order.
+ */
+export interface ScriptPackage {
+  /** The name of the package: `@niwa-labs/<name>`. */
+  readonly name: string;
+  /** The folder of the package, an absolute path: the one whose `package.json` has that name. */
+  readonly root: string;
+}
+
+/** Where a plugin offers a package to scripts: `api.offer(SCRIPT_PACKAGE, { name, root })`. */
+export const SCRIPT_PACKAGE: OfferKey<ScriptPackage> = offerKey("script.package", "host");

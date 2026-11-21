@@ -67,6 +67,11 @@ export function modulesDir(): string | undefined {
   return existsSync(found) ? found : undefined;
 }
 
+/** The folder of a package and the folders of the packages it needs when it runs: what reading it takes. */
+export function packageRoots(root: string): string[] {
+  return [root, ...dependencyRoots(root, new Set())];
+}
+
 let readable: string[] | undefined;
 
 /** What a script process in a box may read: this package, the packages it loads, and the packages niwa runs with. */

@@ -39,7 +39,7 @@ import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE } from "@niwa-labs/core";
-import { BUILTIN_WORKFLOW, PENDING_EXTERNAL, PendingExternalAnswerSchema } from "@niwa-labs/plugin";
+import { BUILTIN_WORKFLOW, PENDING_EXTERNAL, PendingExternalAnswerSchema, SCRIPT_PACKAGE } from "@niwa-labs/plugin";
 import type { ServiceContext, Subscriber } from "@niwa-labs/plugin";
 import type { Action, ActionContext, ArtifactStore, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StoredRecord } from "@niwa-labs/core";
 import { scriptOn } from "@niwa-labs/script";
@@ -121,7 +121,9 @@ import {
 } from "./records.ts";
 import type { EmittedRecord, FlowCall, Subscription, WorkflowId } from "./records.ts";
 import { builtinOf, declaredBy, dependentsOf, flowActionName, readersOf, versionOf, workflowIdsOf, workflowsOf } from "./registry.ts";
-import { storedEntry, storedVersion, storeVersion, workflowsDir } from "./store.ts";
+import { packageRoots } from "./installation.ts";
+import { linkOfferedPackages, offeredPackageOf, storedEntry, storedVersion, storeVersion, workflowsDir } from "./store.ts";
+import type { OfferedPackage } from "./store.ts";
 import type { RegisteredWorkflow } from "./registry.ts";
 import { decide } from "./revise.ts";
 import type { CurrentCall, RecordedCall, RevisionReport } from "./revise.ts";
@@ -289,6 +291,27 @@ export function workflow(opts: WorkflowOptions = {}) {
         if (!type.name.startsWith(SCRIPT_TYPES)) triggers.set(type.name, type);
       }
     }
+    /**
+     * The packages the plugins give scripts from outside niwa's tree, read once every plugin is installed: a stored copy
+     * finds them, and a box may read them and what they load. An offer that is not a niwa package at its folder, or a
+     * second folder for a name, is not given to scripts, and the host says why when it starts.
+     */
+    let offered: { packages: OfferedPackage[]; roots: string[]; refused: string[] } | undefined;
+    const scriptPackages = (): { packages: OfferedPackage[]; roots: string[]; refused: string[] } => {
+      if (offered !== undefined) return offered;
+      const packages: OfferedPackage[] = [];
+      const refused: string[] = [];
+      for (const { plugin: by, value } of api.offers(SCRIPT_PACKAGE)) {
+        const found = offeredPackageOf(value.name, value.root);
+        const known = typeof found === "string" ? undefined : packages.find((one) => one.name === found.name);
+        if (typeof found === "string") refused.push(`the package "${by}" offers scripts is not given to them: ${found}`);
+        else if (known !== undefined && known.root !== found.root) refused.push(`${found.name} is offered to scripts from ${known.root}, so not from ${found.root}`);
+        else if (known === undefined) packages.push(found);
+      }
+      offered = { packages, roots: packages.flatMap((one) => packageRoots(one.root)), refused };
+      return offered;
+    };
+
     // The types a script may start on, with the schema of their data: the triggers, and the records of scripts that have a schema.
     const triggerSchemas = [...new Map([...emits, ...triggers]).values()].map((type) => ({
       name: type.name,
@@ -330,7 +353,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         ? {
             sandbox: opts.sandbox ?? "srt",
             denyRead: [join(api.home(), OWNER_TOKEN_FILE), join(api.home(), HOST_KEY_FILE)],
-            read: [workflowsDir(api.home())],
+            read: [workflowsDir(api.home()), ...scriptPackages().roots],
           }
         : undefined;
 
@@ -1427,11 +1450,13 @@ export function workflow(opts: WorkflowOptions = {}) {
       }
       if (existing !== undefined && existing.latest.version === version && existing.latest.description === description) {
         storeVersion(api.home(), existing.id, version, file);
+        linkOfferedPackages(api.home(), scriptPackages().packages);
         return { id: existing.id, version, description: existing.latest.description, added: false, rechecked: [] };
       }
       const id = existing?.id ?? workflowIndex.issue(ctx.operationId);
       // The code of the version is kept in the home before it is registered: a registered version always has its copy.
       storeVersion(api.home(), id, version, file);
+      linkOfferedPackages(api.home(), scriptPackages().packages);
       const uses = await scriptUses({ file, text: script.text });
       const reads = await scriptReads({ file, text: script.text });
       const on = await scriptOn({ file, text: script.text });
@@ -1615,6 +1640,10 @@ export function workflow(opts: WorkflowOptions = {}) {
     // niwa with a changed script, a plugin that offers a new one or no longer offers one.
     api.service((ctx) => {
       hostClock = ctx;
+      // The packages offered now are the ones a stored copy finds: a package no plugin offers any more is not found.
+      const scripts = scriptPackages();
+      for (const problem of scripts.refused) console.error(`niwa: ${problem}`);
+      linkOfferedPackages(api.home(), scripts.packages);
       // The deadlines of the runs that are going are waited for again: one that passed while the host was away comes now.
       for (const run of new Set(journal().find({ type: RunRequested.name }).map((row) => RunRequested.schema.parse(row.data).run))) {
         if (statusOf(journal(), run).state !== "finished") watchDeadline(run);

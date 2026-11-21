@@ -18,12 +18,15 @@
  * A script takes `z`, `workflow` and `niwa` as globals and its types from `@niwa-labs/script`, which the check maps
  * wherever the script is. A package it imports by name is found as the runtime and the check find any: in a
  * `node_modules` above the file. `<home>/workflows/node_modules` is a link to the packages niwa runs with, so a
- * copy finds the ones a script in niwa's own tree finds.
+ * copy finds the ones a script in niwa's own tree finds. The folder of each workflow holds a link to each package a
+ * plugin offers to scripts from outside niwa's tree (`<wf-id>/node_modules/@niwa-labs/forge`), so its copies find it as
+ * the script did where it was written. The links are inside the folder a box may read: a box that cannot list a folder
+ * does not find the `node_modules` in it.
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { SCRIPT_ABI } from "@niwa-labs/script";
 import { z } from "zod";
@@ -98,12 +101,8 @@ function writeManifest(path: string, manifest: Manifest): void {
  */
 export const workflowsDir = (home: string): string => join(home, WORKFLOWS_DIR);
 
-/** Link `<home>/workflows/node_modules` to the packages niwa runs with, when it is not that link already. */
-function linkPackages(home: string): void {
-  const modules = modulesDir();
-  if (modules === undefined) return;
-  const target = realpathSync(modules);
-  const link = join(workflowsDir(home), "node_modules");
+/** Make `link` a link to the folder `target`, when it is not that link already; it is swapped in whole. */
+function linkFolder(link: string, target: string): void {
   const present = lstatSync(link, { throwIfNoEntry: false });
   if (present?.isSymbolicLink() === true && readlinkSync(link) === target) return;
   mkdirSync(dirname(link), { recursive: true });
@@ -111,6 +110,53 @@ function linkPackages(home: string): void {
   rmSync(aside, { force: true });
   symlinkSync(target, aside, "dir");
   renameSync(aside, link);
+}
+
+/** Link `<home>/workflows/node_modules` to the packages niwa runs with, when it is not that link already. */
+function linkPackages(home: string): void {
+  const modules = modulesDir();
+  if (modules === undefined) return;
+  linkFolder(join(workflowsDir(home), "node_modules"), realpathSync(modules));
+}
+
+/** A package a plugin offers to scripts, with its folder. */
+export interface OfferedPackage {
+  /** `@niwa-labs/<name>`. */
+  readonly name: string;
+  /** Its folder, with the links resolved. */
+  readonly root: string;
+}
+
+/** A package a plugin offers to scripts, as it is found: its name and folder, or why it is not one. */
+export function offeredPackageOf(name: string, root: string): OfferedPackage | string {
+  if (!/^@niwa-labs\/[a-z0-9][a-z0-9._-]*$/.test(name)) return `"${name}" is not a package of @niwa-labs`;
+  if (!isAbsolute(root)) return `the folder of ${name} is not an absolute path: ${root}`;
+  let found: unknown;
+  try {
+    found = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown }).name;
+  } catch {
+    found = undefined;
+  }
+  if (found !== name) return `${root} is not the folder of ${name}`;
+  return { name, root: realpathSync(root) };
+}
+
+/**
+ * Make the folder of every stored workflow hold a link to each package plugins offer to scripts now, and nothing else:
+ * a package no plugin offers any more is not found by a copy.
+ */
+export function linkOfferedPackages(home: string, packages: readonly OfferedPackage[]): void {
+  const dir = workflowsDir(home);
+  if (!existsSync(dir)) return;
+  const wanted = new Map(packages.map((one) => [one.name.slice("@niwa-labs/".length), one.root]));
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith("wf-")) continue;
+    const scope = join(dir, entry.name, "node_modules", "@niwa-labs");
+    if (existsSync(scope)) {
+      for (const name of readdirSync(scope)) if (!wanted.has(name)) rmSync(join(scope, name), { force: true });
+    }
+    for (const [name, root] of wanted) linkFolder(join(scope, name), root);
+  }
 }
 
 const versionDir = (home: string, id: WorkflowId, version: WorkflowVersion): string => join(home, WORKFLOWS_DIR, id, version);
