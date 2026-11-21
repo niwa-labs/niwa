@@ -5,8 +5,8 @@
  * error carrying what git said, except where the caller asks for the exit code.
  */
 
-import { constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { basename, dirname, join, sep } from "node:path";
 
 /** What a git command answered. */
 interface GitResult {
@@ -46,6 +46,31 @@ export async function topOf(dir: string): Promise<string | undefined> {
   if (!existsSync(dir)) return undefined;
   const result = await gitRun(dir, ["rev-parse", "--show-toplevel"]);
   return result.code === 0 ? result.stdout.trim() : undefined;
+}
+
+/**
+ * The directory of the repository a checkout belongs to: the top of the repository, or, for a linked worktree,
+ * the top of the repository that owns it, so the answer does not depend on the checkout it was asked from. A
+ * repository whose git directory is not named `.git` (a submodule) is its own top.
+ */
+export async function repoOf(dir: string): Promise<string | undefined> {
+  const top = await topOf(dir);
+  if (top === undefined) return undefined;
+  const common = await gitRun(top, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const gitDir = common.code === 0 ? common.stdout.trim() : "";
+  if (basename(gitDir) === ".git" && existsSync(dirname(gitDir))) return dirname(gitDir);
+  return top;
+}
+
+/** The git directory a checkout shares with the others of its repository, with its links resolved. */
+export async function commonDirOf(dir: string): Promise<string | undefined> {
+  const result = await gitRun(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (result.code !== 0) return undefined;
+  try {
+    return realpathSync(result.stdout.trim());
+  } catch {
+    return undefined;
+  }
 }
 
 /** The current branch of a checkout, or its commit when HEAD is detached. */
@@ -107,7 +132,12 @@ export function remoteProject(url: string): { host: string; path: string } | und
       return undefined;
     }
     host = parsed.hostname;
-    path = decodeURIComponent(parsed.pathname);
+    try {
+      path = decodeURIComponent(parsed.pathname);
+    } catch {
+      // A path that is not valid percent-encoding names no project.
+      return undefined;
+    }
   } else {
     // The scp-like form: [user@]host:path. A colon after a slash is a local path.
     const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(url);
@@ -122,23 +152,42 @@ export function remoteProject(url: string): { host: string; path: string } | und
   return { host, path };
 }
 
+/** What a repository's configuration says for a key, or "" when it says nothing. */
+async function configured(repo: string, key: string): Promise<string> {
+  const result = await gitRun(repo, ["config", "--get", key]);
+  return result.code === 0 ? result.stdout.trim() : "";
+}
+
 /**
- * The remote the work on `base` goes to, verified from the repository's configuration: the remote `base` tracks,
- * else `origin`. It is undefined when that remote is not configured, its URL names no project on a server, or its
- * push URL names another project than its fetch URL.
+ * The remote a push of `base` goes to, by the rules git pushes by: the push remote of the branch, else
+ * `remote.pushDefault`, else the remote the branch tracks, else `origin`. A branch that tracks a local branch
+ * (remote ".") goes to no remote.
+ */
+async function pushRemoteOf(repo: string, base: string): Promise<string | undefined> {
+  const named = (await configured(repo, `branch.${base}.pushRemote`)) || (await configured(repo, "remote.pushDefault"));
+  const name = named || (await configured(repo, `branch.${base}.remote`)) || "origin";
+  return name === "." ? undefined : name;
+}
+
+/**
+ * The remote the work on `base` goes to, verified from the repository's configuration: the remote a push of `base`
+ * goes to. It is undefined when that remote is not configured, its URL names no project on a server, or any of its
+ * push URLs names another project than its fetch URL.
  */
 export async function verifiedRemote(repo: string, base: string): Promise<{ name: string; host: string; path: string } | undefined> {
-  const tracked = (await gitRun(repo, ["config", "--get", `branch.${base}.remote`])).stdout.trim();
-  // "." is the repository itself: a branch that tracks a local branch goes to no remote.
-  const name = tracked === "" ? "origin" : tracked;
-  if (name === ".") return undefined;
+  const name = await pushRemoteOf(repo, base);
+  if (name === undefined) return undefined;
   const fetch = await gitRun(repo, ["remote", "get-url", name]);
   if (fetch.code !== 0) return undefined;
   const project = remoteProject(fetch.stdout.trim());
   if (project === undefined) return undefined;
-  const push = await gitRun(repo, ["remote", "get-url", "--push", name]);
-  const pushed = push.code === 0 ? remoteProject(push.stdout.trim()) : undefined;
-  if (pushed === undefined || pushed.host !== project.host || pushed.path !== project.path) return undefined;
+  const push = await gitRun(repo, ["remote", "get-url", "--push", "--all", name]);
+  const urls = push.stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  if (push.code !== 0 || urls.length === 0) return undefined;
+  for (const url of urls) {
+    const pushed = remoteProject(url);
+    if (pushed === undefined || pushed.host !== project.host || pushed.path !== project.path) return undefined;
+  }
   return { name, ...project };
 }
 
@@ -147,10 +196,22 @@ function paths(listing: string): string[] {
   return listing.split("\0").filter((path) => path !== "");
 }
 
+/** Whether a path is there, a link included. */
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Copy into a new worktree the files of the repository that are ignored by git and listed in
  * `<repo>/.worktreeinclude` (gitignore syntax): `.env`, local settings. A tracked file, or an
- * untracked one git does not ignore, is never copied, whatever the include says. The copy is a
+ * untracked one git does not ignore, is never copied, whatever the include says; neither is a file
+ * the new checkout tracks (the base may track what the source ignores), nor one that is there
+ * already (a create made again), nor one that would land outside the checkout. The copy is a
  * clone where the file system makes one (APFS), a plain copy elsewhere; a link is followed, never
  * made. Answers how many files were copied.
  */
@@ -163,11 +224,22 @@ export async function copyIncluded(repo: string, into: string): Promise<number> 
   const ignored = await gitRun(repo, ["check-ignore", "-z", "--stdin"], `${named.join("\0")}\0`);
   // check-ignore answers 1 when none is ignored.
   if (ignored.code !== 0 && ignored.code !== 1) throw new Error(`git check-ignore failed: ${ignored.stderr.trim()}`);
-  const copied = paths(ignored.stdout);
-  for (const path of copied) {
+  const candidates = paths(ignored.stdout);
+  if (candidates.length === 0) return 0;
+  const tracked = new Set(paths(await gitOut(into, ["ls-files", "-z"])));
+  const inside = realpathSync(into);
+  let copied = 0;
+  for (const path of candidates) {
+    const parts = path.split("/");
+    // The path, or a directory on the way to it, is a tracked file of the new checkout.
+    if (parts.some((_, at) => tracked.has(parts.slice(0, at + 1).join("/")))) continue;
     const target = join(into, path);
+    if (present(target)) continue;
     mkdirSync(dirname(target), { recursive: true });
+    const landing = realpathSync(dirname(target));
+    if (landing !== inside && !landing.startsWith(`${inside}${sep}`)) continue;
     copyFileSync(join(repo, path), target, constants.COPYFILE_FICLONE);
+    copied += 1;
   }
-  return copied.length;
+  return copied;
 }
