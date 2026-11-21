@@ -27,7 +27,8 @@ const FRAMES = fileURLToPath(new URL("./fixtures/codex-frames.ts", import.meta.u
  * `hold` (every turn waits for a release), `novel` (says something the schemas do not know, and goes
  * on), `novel-request` (asks something the schemas do not know, and goes on once it is answered),
  * `drift` (the turn ends with a status the schemas do not know), `drift-message` (the agent's final
- * message carries a field the schemas do not know).
+ * message carries a field the schemas do not know), `ask-user` (the turn asks the questions in
+ * FAKE_QUESTIONS and ends once they are answered).
  *
  * The requests that come in are written to `requests.log`, the notifications that go out to
  * `events.log`, so a test can see what was asked and in which order it happened.
@@ -93,6 +94,7 @@ process.stdin.on("data", (chunk) => {
       emit(turnStarted(THREAD, turnId));
       if (process.env.FAKE_REROUTE) notify("model/rerouted", { threadId: "${THREAD}", turnId, fromModel: process.env.FAKE_MODEL, toModel: process.env.FAKE_REROUTE, reason: "highRiskCyberActivity" });
       if (mode === "approval") send(serverRequest("srv1", "item/commandExecution/requestApproval", THREAD, turnId, commandApprovalParams({ command: "ls" })));
+      else if (mode === "ask-user") send(serverRequest("srv1", "item/tool/requestUserInput", THREAD, turnId, { isBlocking: true, itemId: "call-2", questions: JSON.parse(process.env.FAKE_QUESTIONS) }));
       else if (mode === "novel-request") send({ id: "srv2", method: "novel/ask", params: { why: "because" } });
       else if (mode === "hold") pending.push(turnId);
       else if (mode === "drift-message") {
@@ -136,6 +138,7 @@ afterEach(async () => {
   delete process.env.FAKE_TEXT;
   delete process.env.FAKE_MODEL;
   delete process.env.FAKE_REROUTE;
+  delete process.env.FAKE_QUESTIONS;
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -235,6 +238,38 @@ async function signsOfFirstTurn(side: { life(id: SessionId): AsyncIterable<LifeE
   }
   return signs;
 }
+
+/** Run a first turn that asks the questions, with a person who answers every one with "blue"; what the person was asked, and what Codex was told. */
+async function askedPerson(questions: readonly object[]): Promise<{ asked: string[]; reply: unknown }> {
+  process.env.FAKE_MODE = "ask-user";
+  process.env.FAKE_QUESTIONS = JSON.stringify(questions);
+  const asked: string[] = [];
+  const codex = control();
+  const { session: id } = await codex.start({
+    prompt: promptFromText("go"),
+    reverse: async (_session, { question }) => {
+      asked.push(question.title);
+      return { text: "blue" };
+    },
+  });
+  await until(async () => (await codex.state(id)) === "idle", "the first turn ended");
+  return { asked, reply: JSON.parse(await readFile(join(dir, "reply.json"), "utf8")).result };
+}
+
+test("a question of Codex is put to the person, and the answer goes back under its id", async () => {
+  const { asked, reply } = await askedPerson([{ id: "color", header: "", question: "Which color?", isOther: false, isSecret: false }]);
+  expect(asked).toEqual(["Which color?"]);
+  expect(reply).toEqual({ answers: { color: { answers: ["blue"] } } });
+});
+
+test("a request with a secret question is refused: the person is not asked, and no answer is kept", async () => {
+  const { asked, reply } = await askedPerson([
+    { id: "color", header: "", question: "Which color?", isOther: false, isSecret: false },
+    { id: "token", header: "", question: "Your token?", isOther: false, isSecret: true },
+  ]);
+  expect(asked).toEqual([]);
+  expect(reply).toEqual({ answers: {} });
+});
 
 test("a notification that is not in the snapshot is a typed sign of life that carries the message, and the turn goes on", async () => {
   process.env.FAKE_MODE = "novel";

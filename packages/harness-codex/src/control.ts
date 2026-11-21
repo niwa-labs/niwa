@@ -425,8 +425,15 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       case "item/commandExecution/requestApproval":
       case "item/fileChange/requestApproval":
       case "item/permissions/requestApproval":
-      case "item/tool/requestUserInput":
         if (session.reverse !== undefined) {
+          void askReverse(session, session.reverse, id, request);
+          return;
+        }
+        break;
+      case "item/tool/requestUserInput":
+        // An answer to a secret question would be kept in clear text with every other answer, and
+        // nothing yet asks for input that is hidden: such a request is refused, never asked.
+        if (session.reverse !== undefined && !request.params.questions.some((asked) => asked.isSecret)) {
           void askReverse(session, session.reverse, id, request);
           return;
         }
