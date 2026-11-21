@@ -46,7 +46,7 @@ import { scriptOn } from "@niwa-labs/script";
 import { requireBox } from "@niwa-labs/sandbox";
 import type { BoxSandboxName } from "@niwa-labs/sandbox";
 import { requestCancel } from "@niwa-labs/requests/records";
-import { SessionEnded, SessionMarked, sessionInterrupt } from "@niwa-labs/sessions/records";
+import { SessionEnded, SessionMarked, sessionEnd, sessionInterrupt } from "@niwa-labs/sessions/records";
 
 import { AskCancelled, AskExpired, bridge } from "./bridge.ts";
 import {
@@ -886,7 +886,10 @@ export function workflow(opts: WorkflowOptions = {}) {
         // any more, whatever its script was doing.
         stopRun(run);
         // The agents it started are not left working for nobody.
-        for (const session of sessionsOf(journal(), facts.invocations)) await ctx.step.outcome(sessionInterrupt, { session });
+        for (const session of sessionsOf(journal(), facts.invocations)) {
+          await ctx.step.outcome(sessionInterrupt, { session });
+          await ctx.step.outcome(sessionEnd, { session, reason: `the run ${run} that started it was cancelled` });
+        }
         // What the run asked is not left open: the owner is not asked about a run that ended, and a
         // session that was asked through a request is no longer waited for. The cancel is made as the
         // address the request was put to, the one that may withdraw it.
@@ -1889,6 +1892,10 @@ export function workflow(opts: WorkflowOptions = {}) {
       // that fails another way does not write over the pause before it.
       if (ended.ok) {
         await atBoundary(() => step.emit(RunFinished, { run, outcome: outcomeOf(described?.output, ended.result) }, { key: "finished" }));
+        // The sessions its agent calls started were kept up for it while it ran: they go with it.
+        for (const session of sessionsOf(journal(), factsOf(journal(), run)?.invocations ?? [])) {
+          await step.outcome(sessionEnd, { session, reason: `the run ${run} that started it finished` }, { key: `end-session:${digestOf(String(session))}` });
+        }
         return;
       }
       // The script did not catch the end of an `ask` the owner cancelled or nobody answered. A retry

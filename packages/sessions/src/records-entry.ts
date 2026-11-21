@@ -38,6 +38,7 @@ export {
   sessionAsk,
   sessionBelong,
   sessionGet,
+  sessionEnd,
   sessionInterrupt,
   sessionList,
   sessionOpenQuestions,

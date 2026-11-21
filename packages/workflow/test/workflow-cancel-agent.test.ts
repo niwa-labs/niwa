@@ -117,6 +117,8 @@ async function cancelledMidTurn(structuredOutput: boolean): Promise<void> {
   const states = records.filter((row) => row.type === "niwa.invocation.state").map((row) => (row.data as { state: string }).state);
   expect(states).not.toContain("paused");
   expect((await niwa.call(requestOpen, {})).requests).toEqual([]);
+  // The session of the agent call goes with the run.
+  expect(records.filter((row) => row.type === "session.ended").map((row) => (row.data as { reason: string }).reason)).toEqual([`the run ${run} that started it was cancelled`]);
 }
 
 test("cancelling a run in the middle of an agent turn leaves no pause and no question", () => cancelledMidTurn(true), 30_000);

@@ -132,6 +132,7 @@ import {
   sessionAsk,
   sessionBelong,
   sessionGet,
+  sessionEnd,
   sessionInterrupt,
   sessionList,
   SESSION_LIST_DEFAULT,
@@ -301,6 +302,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
   const bootedAt = Date.now() as Timestamp;
   // The sessions whose signs of life are being followed: one loop per session.
   const followed = new Set<SessionRef>();
+  /** The sessions `session.end` ended: their end is written once, by it, not again when their stream closes. */
+  const ending = new Set<SessionRef>();
   // The sessions niwa was asked to interrupt: their next turn end is written as interrupted.
   const interrupting = new Set<SessionRef>();
   // The numbering of each session's turns. A harness counts its turns from 1 in each process: the
@@ -601,7 +604,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             }
           }
           // The control side closes the stream of a session only when the session is over.
-          await api.emit(SessionEnded, { session: ref, reason: "the control side closed the session" });
+          if (!ending.has(ref)) await api.emit(SessionEnded, { session: ref, reason: "the control side closed the session" });
         } catch {
           // The stream stopped, or the host closed. What was written stays; the state of the
           // session reads as unknown from here on.
@@ -1388,6 +1391,33 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     );
 
     api.action(
+      action(sessionEnd, {
+        // Ending a session that ended already leaves it as it is: it may be made again.
+        recovery: "repeat",
+        effect: "write",
+        world: "local",
+        run: async (input, ctx) => {
+          const ref = refOf(input.session);
+          const id = sessionOf(ref);
+          const over = api.journal?.()?.find({ type: SessionEnded.name, field: "session", equals: ref }).length ?? 0;
+          if (over > 0) return { ended: false };
+          const control = bindings.find((binding) => binding.instance.id === id.harness)?.control;
+          // A turn it runs stops where the harness can stop one; a harness that cannot, or a session with no turn, is
+          // not a reason to keep it.
+          if (control !== undefined && instanceOf(bindings, id.harness).sides.control?.interrupt === true && (await control.state(id).catch(() => "unknown")) === "running") {
+            interrupting.add(ref);
+            await control.interrupt(id).catch(() => interrupting.delete(ref));
+          }
+          await ctx.emit(SessionEnded, { session: ref, reason: input.reason });
+          // The stream of life the process ends with says nothing more: the end is written.
+          ending.add(ref);
+          await control?.close?.(id);
+          return { ended: true };
+        },
+      }),
+    );
+
+    api.action(
       action(sessionOpenQuestions, {
         // A read of what waits changes nothing: it may be made again.
         recovery: "repeat",
@@ -1623,6 +1653,7 @@ export {
   sessionAsk,
   sessionBelong,
   sessionGet,
+  sessionEnd,
   sessionInterrupt,
   sessionList,
   sessionOpenQuestions,

@@ -292,6 +292,13 @@ export const sessionInterrupt = actionRef("session.interrupt", {
   output: z.object({ interrupted: z.boolean() }),
 });
 
+export const sessionEnd = actionRef("session.end", {
+  description:
+    "Ends a session: a turn it runs is interrupted where the harness can, its process is let go where the harness holds one, and its end is written with the reason. A session that already ended is left as it is.",
+  input: z.object({ session: SessionRefInput, reason: z.string().min(1) }),
+  output: z.object({ ended: z.boolean() }),
+});
+
 export const sessionAsk = actionRef("session.ask", {
   description: "Asks a session and returns a value that passed a schema. A harness with structured output answers natively; for the others the session is given the question's id and calls `submit-answer`.",
   input: z.object({
