@@ -32,7 +32,7 @@ export function answerOf(question: Question, filled: Filled): Built {
       return { answer: { ids: [only] } };
     }
     case "multi":
-      return filled.picked.length === 0 ? { problem: "Pick at least one." } : { answer: { ids: [...filled.picked] } };
+      return { answer: { ids: [...filled.picked] } };
     case "text":
       return filled.text.trim() === "" ? { problem: "Write an answer." } : { answer: { text: filled.text } };
     case "form": {

@@ -18,8 +18,8 @@ test("a choice takes exactly one option", () => {
   expect(answerOf(choice, { picked: ["yes"], text: "" })).toEqual({ answer: { ids: ["yes"] } });
 });
 
-test("a multiple choice takes at least one", () => {
-  expect(answerOf(multi, EMPTY)).toEqual({ problem: "Pick at least one." });
+test("a multiple choice accepts zero or more options", () => {
+  expect(answerOf(multi, EMPTY)).toEqual({ answer: { ids: [] } });
   expect(answerOf(multi, { picked: ["yes", "no"], text: "" })).toEqual({ answer: { ids: ["yes", "no"] } });
 });
 
@@ -69,6 +69,7 @@ test("a permission of a tool shows the tool and what it acts on", () => {
 
 test("a question that takes other sends the text when nothing is picked, and refuses text with a pick", () => {
   const open: Question = { kind: "multi", title: "Which?", options, allowOther: true };
+  expect(answerOf(open, EMPTY)).toEqual({ answer: { ids: [] } });
   expect(answerOf(open, { picked: [], text: "something else" })).toEqual({ answer: { text: "something else" } });
   expect(answerOf(open, { picked: ["yes"], text: "something else" })).toEqual({ problem: "Pick from the options or write your own answer, not both." });
   expect(answerOf(open, { picked: ["yes"], text: "  " })).toEqual({ answer: { ids: ["yes"] } });
