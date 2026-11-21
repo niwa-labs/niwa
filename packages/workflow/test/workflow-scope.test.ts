@@ -465,3 +465,24 @@ test("next() over a stream of waits gives the first record to arrive, and closin
   const settled = ofType(await t.records(), "workflow.scope.settled").map((row) => row.data as { key: string; outcome: string });
   expect(settled.map(({ key, outcome }) => `${key}:${outcome}`).sort()).toEqual(["a:done", "b:cancelled"]);
 }, 30_000);
+
+test("the cancel of the branches left is the same on the replay, whichever of them ended before the block left", async () => {
+  const t = await setup();
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    return await race("either", {
+      a: async () => { await wait("stub.finished", { filter: { id: "a" } }); for (let n = 0; n < 3; n += 1) await now(); return "a"; },
+      // On the replay the cancel reaches b at its first step and c only after ten: b ends before the winner does, c after.
+      b: () => wait("stub.finished", { filter: { id: "b" } }),
+      c: async () => { for (let n = 0; n < 10; n += 1) await now(); return wait("stub.finished", { filter: { id: "c" } }); },
+    });
+  });`);
+  await eventually(
+    async () => ofType(await t.records(), "niwa.step.intent").filter((row) => (row.data as { action: string }).action === "niwa.wait").length === 3,
+    10_000,
+    "the run should wait for the three records",
+  );
+  await t.niwa.call("stub.finish" as ActionName, { id: "a" } as never);
+  expect(await t.ended(run)).toEqual({ status: "done", result: { key: "a", value: "a" } });
+  const settled = ofType(await t.records(), "workflow.scope.settled").map((row) => row.data as { key: string; outcome: string });
+  expect(settled.map(({ key, outcome }) => `${key}:${outcome}`).sort()).toEqual(["a:done", "b:cancelled", "c:cancelled"]);
+}, 30_000);

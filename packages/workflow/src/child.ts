@@ -736,10 +736,16 @@ async function snapshot(group: Group, keys: string[]): Promise<string[]> {
   return (await requestAt({ op: "scope-snapshot", scope: group.path, keys }, `snapshot:${group.path}:${String(++group.requests)}`)) as string[];
 }
 
-/** Cancel branches of a group: the host ends their steps, and those of the groups inside them up to a shield. */
+/**
+ * Cancel branches of a group: the host ends their steps, and those of the groups inside them up to a shield.
+ *
+ * The prefixes are a step the host checks on a replay, so they are what the script decided and not
+ * which branches happen to have ended by now: a branch that ended keeps its recorded outcome under a
+ * cancel. Only the branches still going are marked cancelled here.
+ */
 async function cancelMembers(group: Group, reason: string, targets: readonly Member[], whole: boolean): Promise<void> {
   const prefixes = whole ? [group.path] : targets.map((member) => member.path);
-  for (const member of targets) member.cancelled ??= reason;
+  for (const member of targets) if (member.result === undefined) member.cancelled ??= reason;
   if (prefixes.length === 0) return;
   for (const [key, path] of inflightLabels) {
     if (prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}.`))) prefixes.push(key);
@@ -801,7 +807,7 @@ function scopeApi(group: Group) {
       if (keys === undefined) group.branchesCancelled ??= why;
       const targets = (keys ?? [...group.members.keys()]).flatMap((key) => {
         const member = group.members.get(key);
-        return member === undefined || member.result !== undefined ? [] : [member];
+        return member === undefined ? [] : [member];
       });
       await cancelMembers(group, why, targets, false);
     },
@@ -882,7 +888,8 @@ async function runGroup<T>(path: string, segments: readonly string[], opts: Scop
   if (failed && pausesRun(failure)) throw failure;
   if (group.pausedBy !== undefined) throw group.pausedBy;
   if (failed || onExit === "cancel") {
-    const left = [...group.members.values()].filter((member) => member.result === undefined);
+    // The branches the script was not given an outcome of: the outcomes are given in the order the run committed them, on a replay too.
+    const left = [...group.members.values()].filter((member) => member.order === undefined || !group.given.has(member.order));
     group.branchesCancelled ??= failed ? "the scope failed" : "the scope was left";
     await cancelMembers(group, group.branchesCancelled, left, false);
   }
