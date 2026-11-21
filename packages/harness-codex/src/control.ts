@@ -1061,17 +1061,25 @@ const CODEX_NEEDS: HarnessNeeds = {
   net: ["api.openai.com", "chatgpt.com"],
 };
 
-/** The tools Codex can switch off, and the `-c` that does it (`codex app-server --help`). */
+/**
+ * The built-in tools Codex can switch off, by the name an allow-list gives them, and the `-c` that
+ * does it: its shell, its web search, its plan, its image viewer, and the tools of the features it
+ * has on by default (sleep, image generation, the agents it spawns, its plugin suggestions). A
+ * feature key a build does not know is only warned about, so an older Codex starts all the same.
+ */
 const CODEX_SWITCHES: ReadonlyArray<{ tool: string; flag: readonly string[] }> = [
   { tool: "shell", flag: ["-c", "features.shell_tool=false"] },
   { tool: "web_search", flag: ["-c", 'web_search="disabled"'] },
+  { tool: "update_plan", flag: ["-c", "tools.update_plan.enabled=false"] },
+  { tool: "view_image", flag: ["-c", "features.view_image=false"] },
+  { tool: "sleep", flag: ["-c", "features.sleep_tool=false"] },
+  { tool: "image_generation", flag: ["-c", "features.image_generation=false"] },
+  { tool: "spawn_agent", flag: ["-c", "features.multi_agent=false"] },
+  { tool: "tool_suggest", flag: ["-c", "features.tool_suggest=false"] },
 ];
 
-/**
- * The tools Codex gives every session that no flag switches off: `apply_patch` comes with the
- * model, and the plan and image tools with Codex itself.
- */
-export const CODEX_FIXED_TOOLS: readonly string[] = ["apply_patch", "update_plan", "view_image"];
+/** The tools Codex gives every session that no flag switches off: `apply_patch` comes with the model. */
+export const CODEX_FIXED_TOOLS: readonly string[] = ["apply_patch"];
 
 /** The flags for a tool allowance: each switchable tool that is not allowed is switched off. */
 export function codexToolFlags(allow: readonly string[]): string[] {

@@ -271,9 +271,19 @@ test("pi's launch carries the tool allowlist; nothing allowed and only niwa's to
 });
 
 test("codex's launch switches off what an allow-list leaves out, and refuses a mode it cannot hold before it spawns", async () => {
-  expect(codexToolFlags([])).toEqual(["-c", "features.shell_tool=false", "-c", 'web_search="disabled"']);
-  expect(codexToolFlags(["shell"])).toEqual(["-c", 'web_search="disabled"']);
-  expect(codexToolFlags(["shell", "web_search", "apply_patch"])).toEqual([]);
+  const everyOther = [
+    "-c", "tools.update_plan.enabled=false",
+    "-c", "features.view_image=false",
+    "-c", "features.sleep_tool=false",
+    "-c", "features.image_generation=false",
+    "-c", "features.multi_agent=false",
+    "-c", "features.tool_suggest=false",
+  ];
+  expect(codexToolFlags([])).toEqual(["-c", "features.shell_tool=false", "-c", 'web_search="disabled"', ...everyOther]);
+  expect(codexToolFlags(["shell"])).toEqual(["-c", 'web_search="disabled"', ...everyOther]);
+  expect(
+    codexToolFlags(["shell", "web_search", "update_plan", "view_image", "sleep", "image_generation", "spawn_agent", "tool_suggest", "apply_patch"]),
+  ).toEqual([]);
 
   const codex = codexControl({ harness: "codex-fake", binary: await fake("codex", FAKE_CODEX) });
   controls.push(codex);
@@ -286,10 +296,10 @@ test("codex's launch switches off what an allow-list leaves out, and refuses a m
   });
   await expect(codex.start({ prompt: empty, cwd: dir, tools: { allow: ["web_search"] } })).rejects.toMatchObject({
     code: "Unsupported",
-    message: expect.stringContaining("apply_patch, update_plan, view_image"),
+    message: expect.stringContaining("Codex cannot switch apply_patch off"),
   });
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
-    ["app-server", "--stdio", "-c", "features.shell_tool=false"],
+    ["app-server", "--stdio", "-c", "features.shell_tool=false", ...everyOther],
     ["app-server", "--stdio"],
   ]);
 });

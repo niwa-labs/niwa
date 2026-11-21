@@ -45,7 +45,7 @@ import type { SessionsOptions } from "@niwa-labs/sessions";
 import { tempDir, tempHome, fakeSdkQuery } from "@niwa-labs/testing";
 
 import { ClaudeSdkControl } from "@niwa-labs/harness-claude";
-import { CODEX_FIXED_TOOLS, codexControl } from "@niwa-labs/harness-codex";
+import { CODEX_FIXED_TOOLS, codexControl, codexToolFlags } from "@niwa-labs/harness-codex";
 import { mcodeControl } from "@niwa-labs/harness-mcode";
 import { PiControl } from "@niwa-labs/harness-pi";
 
@@ -387,7 +387,7 @@ test("pi and codex are launched with the flags of the grant", async () => {
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
     ["--mode", "rpc", "--tools", "read,grep"],
     ["--mode", "rpc"],
-    ["app-server", "--stdio", "-c", "features.shell_tool=false"],
+    ["app-server", "--stdio", ...codexToolFlags(["web_search", ...CODEX_FIXED_TOOLS])],
     ["app-server", "--stdio"],
   ]);
 });
@@ -431,7 +431,7 @@ test("a codex grant whose tools leave out what Codex cannot switch off refuses t
   const host = await served([{ instance: { ...instance("codex-fake"), sides: { control: { ...instance("codex-fake").sides.control!, tools: { niwaOnly: false, allow: true } } } }, control: codex }]);
 
   await expect(host.call(START, { harness: "codex-fake", prompt: "go", cwd: dir, visible: { actions: ["tool:web_search"] } })).rejects.toThrow(
-    "Codex cannot switch apply_patch, update_plan, view_image off",
+    "Codex cannot switch apply_patch off",
   );
   // Only niwa's tools is refused by the installation itself, before the side is asked.
   await expect(host.call(START, { harness: "codex-fake", prompt: "go", cwd: dir, tools: "niwa-only" })).rejects.toThrow("tools niwa-only");
