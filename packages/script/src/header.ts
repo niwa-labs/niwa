@@ -148,6 +148,21 @@ export function literalOf(ts: typeof Ts, node: Ts.Expression): { value: unknown 
 /** What `on` holds: the subscriptions, or the place and the reason where it is not a list of them. */
 export type On = { subscriptions: Array<Subscription & { line: number; column: number }> } | { bad: { line: number; column: number; message: string } };
 
+/** What the error of a type named in `on` by an expression says. */
+const AS_TEXT = 'the header is read as text: name the type as text, as in on: ["task.done"]; a type imported by reference is for wait and read.records';
+
+/** Whether an entry of `on` names its type by an expression, a reference, rather than as text. */
+function namedInCode(ts: typeof Ts, item: Ts.Expression): boolean {
+  const reference = (node: Ts.Expression): boolean => {
+    const inner = bare(ts, node);
+    return ts.isIdentifier(inner) || ts.isPropertyAccessExpression(inner);
+  };
+  if (!ts.isObjectLiteralExpression(item)) return reference(item);
+  return item.properties.some(
+    (property) => ts.isPropertyAssignment(property) && ts.isIdentifier(property.name) && property.name.text === "type" && reference(property.initializer),
+  );
+}
+
 /**
  * `on` of a parsed script: the records that start it, each a type or a type with a filter.
  *
@@ -173,7 +188,7 @@ export function onOf(ts: typeof Ts, source: Ts.SourceFile): On | undefined {
       : ts.isObjectLiteralExpression(item) ? literalOf(ts, item)?.value : undefined;
     // A bare type and an object are held to the same schema, so an empty type is refused in both.
     const parsed = Subscription.strict().safeParse(written);
-    if (!parsed.success) return { bad: { ...where, message: shape } };
+    if (!parsed.success) return { bad: { ...where, message: namedInCode(ts, item) ? `${shape}. ${AS_TEXT}` : shape } };
     subscriptions.push({ ...parsed.data, ...where });
   }
   return { subscriptions };

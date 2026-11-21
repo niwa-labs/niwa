@@ -232,3 +232,14 @@ test("a script that imports a package is not given the errors the package has un
   const file = await scriptIn(home, "imports.js", [importing("Ping"), "export default workflow({}, async () => {", "  void Ping;", "});"]);
   expect(await errorsOf(host, file)).toEqual([]);
 }, 60_000);
+
+test("the header names the types a script starts on as text: a reference there is refused and the error says where it goes", async () => {
+  const { host, home } = await served();
+  for (const on of ["[Ping]", '[{ type: Ping, filter: { "to.id": "owner" } }]']) {
+    const file = await scriptIn(home, "header.ts", [importing("Ping"), `export default workflow({ on: ${on} }, async () => {});`]);
+    const errors = (await errorsOf(host, file)).filter((error) => error.code === "on");
+    expect(errors).toEqual([
+      { line: 2, code: "on", message: expect.stringContaining('the header is read as text: name the type as text, as in on: ["task.done"]; a type imported by reference is for wait and read.records') },
+    ]);
+  }
+}, 60_000);
