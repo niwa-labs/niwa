@@ -2,13 +2,15 @@
  * web.ts — `niwa web [--port N]`: the web cockpit of a running host.
  *
  * It prints the address and the login link, and serves until it is stopped. The web surface draws
- * no page: the cockpit app is a package of its own, and until it brings its pages a plain notice
- * stands at `/` and at the trace of a record, while the API under `/api` serves as it does.
+ * no page: the cockpit app is a package of its own, built when it is missing or older than its
+ * sources, and `niwa web` hands it to the surface. When it cannot be built a plain notice stands at
+ * `/` and at the trace of a record, while the API under `/api` serves as it does.
  */
 
+import { cockpitApp } from "@niwa-labs/cockpit";
 import { TOKEN_ENV } from "@niwa-labs/core";
 import { serveWeb } from "@niwa-labs/web";
-import type { WebOptions, WebPages, WebServer } from "@niwa-labs/web";
+import type { WebApp, WebOptions, WebPages, WebServer } from "@niwa-labs/web";
 
 import { COCKPIT_OWNER_ACTIONS } from "./cockpit-pages.ts";
 
@@ -25,7 +27,7 @@ function noticePage(title: string): string {
 `;
 }
 
-/** The pages `niwa web` serves until the cockpit app brings its own. */
+/** The pages the surface serves when it has no app, and under the app for the trace of a record. */
 export const NOTICE_PAGES: WebPages = {
   feed: () => noticePage("niwa"),
   trace: (recordId) => noticePage(`niwa: ${recordId}`),
@@ -45,17 +47,37 @@ export function portOf(args: readonly string[]): number | undefined {
   return Number.isInteger(port) && port >= 0 && port <= 65_535 ? port : undefined;
 }
 
-/** Serve the cockpit of the home on the port, until SIGINT or SIGTERM. */
-export async function runWeb(
-  home: string,
-  port: number,
-  env: Record<string, string | undefined>,
-  pages: WebPages = NOTICE_PAGES,
-): Promise<void> {
+/** The built cockpit app, or undefined, with the reason printed, when it cannot be had: the API still serves. */
+async function appOrNotice(): Promise<WebApp | undefined> {
+  try {
+    return await cockpitApp();
+  } catch (error) {
+    console.error(`niwa web: the cockpit app is not available, a plain notice is served instead: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+/**
+ * Serve the cockpit of the home on the port, with the app it is given or the built one. The address and the login link are
+ * for the caller to print.
+ */
+export async function startWeb(home: string, port: number, env: Record<string, string | undefined>, app?: WebApp | undefined): Promise<WebServer> {
   // The owner's own tool speaks for the owner. A process a session started (`NIWA_ID`) is that
   // session, not the owner: its page is a plain client.
   const speaksFor = env[TOKEN_ENV]?.trim() ? undefined : "owner";
-  const server = await serveCockpit({ home, port, pages, ...(speaksFor === undefined ? {} : { speaksFor }) });
+  const served = app ?? (await appOrNotice());
+  return serveCockpit({
+    home,
+    port,
+    pages: NOTICE_PAGES,
+    ...(served === undefined ? {} : { app: served }),
+    ...(speaksFor === undefined ? {} : { speaksFor }),
+  });
+}
+
+/** Serve the cockpit of the home on the port, until SIGINT or SIGTERM. */
+export async function runWeb(home: string, port: number, env: Record<string, string | undefined>): Promise<void> {
+  const server = await startWeb(home, port, env);
   console.log(`niwa web: ${server.url} (home ${home})`);
   console.log(`niwa web: open this link once to log in: ${server.loginUrl}`);
 
