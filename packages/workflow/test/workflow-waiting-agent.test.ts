@@ -41,7 +41,7 @@ test("a run waiting for an agent shows its harness, session and turn", async () 
   });
   const host = createNiwa({ home: home.path });
   host.use(
-    plugin("fake-agent", (api) => {
+    plugin("sessions", (api) => {
       api.declare(SessionStarted, SessionTurnStarted);
       api.action(fake);
     }),

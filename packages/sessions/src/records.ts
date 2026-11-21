@@ -88,6 +88,7 @@ export const SessionStarted = record(
     /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck; absent when none was set. */
     stuckAfter: z.number().int().positive().optional(),
   }),
+  { providerOnly: "sessions" },
 );
 
 /**
@@ -350,6 +351,7 @@ export const SessionStartReserved = record(
     /** The directory the session is started in, when it was given one. */
     cwd: z.string().optional(),
   }),
+  { providerOnly: "sessions" },
 );
 
 /** The harness named the session of a start under an operation, before its first prompt went. */

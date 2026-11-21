@@ -226,6 +226,7 @@ export const RunFinished = record(
     /** How it ended. */
     outcome: RunOutcome,
   }),
+  { providerOnly: "workflow" },
 );
 
 /**
@@ -252,7 +253,7 @@ export const RunRequested = record("workflow.run.requested", z.object({
   /** Run again the steps from this one on: a step key, a key prefix of a branch or scope, or the title of a phase. */
   from: z.string().min(1).optional(),
   ...RunOrigin,
-}));
+}), { providerOnly: "workflow" });
 
 /** A call of the script was taken from an earlier start of the run instead of being made again. */
 export const StepReused = record(

@@ -47,7 +47,7 @@ import { tempDir, tempHome, fakeSdkQuery, eventually, connectAsOwner, requests, 
 import { requestAnswer, requestOpen } from "@niwa-labs/requests/records";
 import { boxRules } from "@niwa-labs/proc";
 import { workflow, workflowCancel, workflowInspect, workflowStart } from "@niwa-labs/workflow";
-import { sessionStart, sessionEnd, sessionOpenQuestions } from "@niwa-labs/sessions/records";
+import { SessionStartReserved, sessionStart, sessionEnd, sessionOpenQuestions } from "@niwa-labs/sessions/records";
 import { ClaudeSdkControl } from "@niwa-labs/harness-claude";
 import { codexControl } from "@niwa-labs/harness-codex";
 import { mcodeControl } from "@niwa-labs/harness-mcode";
@@ -607,3 +607,47 @@ test.each(["cancel", "finish", "branch"])("a run owns its authenticated session 
   }
   expect(stopped.sort()).toEqual(["s1", "s2"]);
 }, 60000);
+
+test("a cancelled branch revokes an unnamed start and closes the session when the harness names it", async () => {
+  const home = await tempHome();
+  let release!: () => void;
+  const named = new Promise<void>(resolve => { release = resolve; });
+  let closed = false;
+  class Delayed extends Recording {
+    override async start(options: StartOptions) {
+      const result = await super.start(options);
+      await named;
+      return result;
+    }
+    override async *life() { await new Promise<void>(resolve => { this.ended = resolve; }); }
+    private ended?: () => void;
+    async close() { closed = true; this.ended?.(); }
+  }
+  const harness = new Delayed();
+  const host = createNiwa({ home: home.path });
+  host.use(stub(home.path), sessions({ harnesses: [{ instance: instance("rec"), control: harness }],
+    niwaMcp: { command: "niwa", args: ["mcp"] } }), workflow({ triggers: [StubFinished] }));
+  await host.serve();
+  cleanups.push(async () => { release(); await host.close(); await home.cleanup(); });
+  const file = join(home.path, "unnamed.js");
+  await writeFile(file, [
+    'export default workflow({ uses: ["session.start@rec", "niwa.records.read"] }, async () => {',
+    '  await race("work", { helper: () => call("session.start", { harness: "rec", prompt: "", box: { only: [] } }),',
+    '    winner: () => wait("stub.finished", { filter: { id: "winner" } }) });',
+    '  await wait("stub.finished", { filter: { id: "stop" } });',
+    '});',
+  ].join("\n"));
+  const { run } = await host.call(workflowStart, { file });
+  await eventually(() => harness.starts.length === 1);
+  const mark = (await host.records.read({ types: [SessionStartReserved.name] }))[0]?.data as { mark: string };
+  await host.call(actionName("workflow.stop"), { run, at: "@work.helper" });
+  await eventually(async () => (await host.records.read()).some(row => row.type === "niwa.access.closed" &&
+    (row.data as { principal: { id: string } }).principal.id === mark.mark));
+  const child = await connect({ home: home.path, token: token(harness.starts[0]!.env![TOKEN_ENV]!) });
+  cleanups.push(() => child.close());
+  await expect(child.call(sessionStart, { harness: "rec", prompt: "" })).rejects.toThrow("closed");
+  release();
+  await eventually(() => closed);
+  expect((await host.records.read()).some(row => row.type === "workflow.run.finished")).toBe(false);
+  await host.call(workflowCancel, { run });
+}, 30_000);
