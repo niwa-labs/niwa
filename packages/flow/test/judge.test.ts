@@ -170,6 +170,7 @@ test("a script's output can be the Attempt of a revision judged by verify, votes
       }));`);
   expect(resultOf(ended)).toMatchObject({ value: { n: 1 }, rounds: 1, stopped: "accepted", judged: { verdict: "PASS", votes: [{ verdict: "PASS" }] } });
 }, 30_000);
+
 test("a panel counts only the sheets that score every candidate", () => {
   const two = ["x", "y"];
   const rules = { pass: 85, warn: 75 };
@@ -195,4 +196,20 @@ test("a panel whose judge scored only some candidates decides nothing", async ()
       return { winner: out.winner, band: out.band, scores: out.scores };
     });`);
   expect(resultOf(ended)).toEqual({ winner: null, band: "INCONCLUSIVE", scores: { one: [], two: [] } });
+}, 30_000);
+
+test("a grid gives a cell that failed no score, and refuses a score that is not a finite number", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { paramGrid } from "@niwa-labs/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const grid = await paramGrid("grid", {
+        grid: { n: [1, 2, 3] },
+        run: async (cell) => { if (cell.n === 2) throw new Error("no"); return cell.n; },
+        score: (n) => n * 10,
+      });
+      const refused = await paramGrid("nan", { grid: { n: [1] }, run: async (cell) => cell.n, score: () => Number.NaN }).then(() => "kept", (error) => (error as Error).name);
+      return { scores: grid.cells.map((cell) => cell.score), best: grid.best, refused };
+    });`);
+  expect(resultOf(ended)).toEqual({ scores: [10, null, 30], best: 2, refused: "TypeError" });
 }, 30_000);

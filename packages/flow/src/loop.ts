@@ -74,14 +74,18 @@ export function gridCells<P>(grid: Record<string, readonly P[]>): Record<string,
   return cells;
 }
 
+/** A cell of a grid that ran: its parameters, how it ended, and its score, which is null for a cell that failed. */
+export type GridCell<P, R> = { params: Record<string, P>; result: Settled<R>; score: number | null };
+
 /**
- * Run every cell of a grid of parameters and score it. A failed cell scores `-Infinity`; `best` is
- * the index of the cell with the highest score, the first of equals, or -1 when every cell failed.
+ * Run every cell of a grid of parameters and score it. A cell that failed has no score (null), and
+ * a score of a cell that ran must be a finite number; `best` is the index of the cell with the
+ * highest score, the first of equals, or -1 when every cell failed.
  */
 export async function paramGrid<P, R>(
   key: string,
   opts: { grid: Record<string, readonly P[]>; run: (cell: Record<string, P>) => Promise<R>; score: (result: R) => number; concurrency?: number },
-): Promise<{ cells: { params: Record<string, P>; result: Settled<R>; score: number }[]; best: number }> {
+): Promise<{ cells: GridCell<P, R>[]; best: number }> {
   checkKey(key, "the key of a grid");
   const params = gridCells(opts.grid);
   const results = await map(
@@ -90,10 +94,14 @@ export async function paramGrid<P, R>(
     { key: (one) => one.key, ...(opts.concurrency === undefined ? {} : { concurrency: opts.concurrency }) },
     (one) => opts.run(one.cell),
   );
-  const cells = results.map((result, index) => ({ params: params[index] as Record<string, P>, result, score: result.ok ? opts.score(result.value) : Number.NEGATIVE_INFINITY }));
+  const cells = results.map((result, index): GridCell<P, R> => {
+    const score = result.ok ? opts.score(result.value) : null;
+    if (score !== null && !Number.isFinite(score)) throw new TypeError(`paramGrid "${key}": the score of the cell c${String(index)} is ${String(score)}, a finite number is needed`);
+    return { params: params[index] as Record<string, P>, result, score };
+  });
   let best = -1;
   cells.forEach((cell, index) => {
-    if (cell.result.ok && (best < 0 || cell.score > (cells[best] as { score: number }).score)) best = index;
+    if (cell.score !== null && (best < 0 || cell.score > ((cells[best] as GridCell<P, R>).score as number))) best = index;
   });
   return { cells, best };
 }

@@ -9,6 +9,7 @@ export { askSeat, consensus, firstPassing, map, mapReduce, parallel, rankAll, st
 export { graph, graphProblems } from "./graph.ts";
 export type { GraphNode } from "./graph.ts";
 export { escalate, gridCells, loop, paramGrid, revise, saturate } from "./loop.ts";
+export type { GridCell } from "./loop.ts";
 export { GateFailed, blindLabel, decidePanel, gate, panel, tally, verify } from "./judge.ts";
 export type { Band, PanelJudge, Require } from "./judge.ts";
 export { humanGate, settle } from "./wait.ts";
