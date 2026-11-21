@@ -34,6 +34,7 @@ export {
 } from "./client.ts";
 export type { InvocationStateData, WaitedRun } from "./client.ts";
 export { ZCODE_FAKE } from "./harness-zcode.ts";
+export * from "./requests.ts";
 
 const READY_TIMEOUT_MS = 10_000; // How long `ready()` waits for the host to accept a connection.
 const STOP_GRACE_MS = 5_000; // How long `stop()` gives SIGTERM before SIGKILL.
