@@ -7,21 +7,22 @@ import { Outlet, useRouterState } from "@tanstack/react-router";
 import { useFaults } from "./faults.tsx";
 import { useStatus } from "./status.tsx";
 
+const LINK = "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent";
+
 function Navigation() {
   const registry = useRegistry();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const active = (path: string): boolean => (path === "/" ? pathname === "/" : pathname === path || pathname.startsWith(`${path}/`));
+  const own = (path: string, label: string) => (
+    <PageLink to={path} className={`${LINK} ${active(path) ? "bg-accent font-medium" : ""}`}>
+      {label}
+    </PageLink>
+  );
   return (
     <nav aria-label="Pages" className="flex min-w-0 flex-col gap-0.5">
-      <PageLink to="/" className={`rounded-md px-2 py-1.5 text-sm hover:bg-accent ${pathname === "/" ? "bg-accent font-medium" : ""}`}>
-        Home
-      </PageLink>
+      {own("/", "Home")}
       {registry.nav.map((item) => (
-        <PageLink
-          key={item.path}
-          to={item.path}
-          className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent ${active(item.path) ? "bg-accent font-medium" : ""}`}
-        >
+        <PageLink key={item.path} to={item.path} className={`${LINK} ${active(item.path) ? "bg-accent font-medium" : ""}`}>
           {item.icon === undefined ? null : (
             <PluginBoundary plugin={item.plugin} place="nav.icon" fallback={() => null}>
               <item.icon className="size-4 shrink-0" />
@@ -30,6 +31,7 @@ function Navigation() {
           <span className="min-w-0 truncate">{item.label}</span>
         </PageLink>
       ))}
+      {own("/journal", "Journal")}
     </nav>
   );
 }

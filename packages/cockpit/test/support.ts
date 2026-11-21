@@ -3,14 +3,14 @@
 export type Served = Record<string, () => Response>;
 
 /** What the stub saw: each address asked for, and the record feeds that were opened and then closed by the app. */
-export type Seen = { urls: string[]; feedsOpened: number; feedsClosed: number };
+export type Seen = { urls: string[]; feedsOpened: number; feedsClosed: number; push?: (record: unknown) => void };
 
 export function seen(): Seen {
   return { urls: [], feedsOpened: 0, feedsClosed: 0 };
 }
 
 export function fetching(served: Served, saw: string[] | Seen): typeof fetch {
-  const log = Array.isArray(saw) ? { urls: saw, feedsOpened: 0, feedsClosed: 0 } : saw;
+  const log: Seen = Array.isArray(saw) ? { urls: saw, feedsOpened: 0, feedsClosed: 0 } : saw;
   return (async (input: Request | string | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     log.urls.push(url);
@@ -20,6 +20,8 @@ export function fetching(served: Served, saw: string[] | Seen): typeof fetch {
       log.feedsOpened += 1;
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
+          const encoder = new TextEncoder();
+          log.push = (record) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(record)}\n\n`));
           init?.signal?.addEventListener("abort", () => {
             log.feedsClosed += 1;
             controller.close();

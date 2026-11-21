@@ -99,7 +99,7 @@ test("the icon of a page is drawn beside its label in the navigation, and an ico
   const { cockpit, container } = await open("/", stubs(plugins, saw));
   const nav = container.querySelector("nav")!;
   const links = [...nav.querySelectorAll("a")].map((link) => link.textContent);
-  expect(links).toEqual(["Home", "Alpha", "Beta"]);
+  expect(links).toEqual(["Home", "Alpha", "Beta", "Journal"]);
   const alpha = nav.querySelector('a[href="/alpha"]')!;
   expect(alpha.querySelector('svg[data-icon="alpha"]')).not.toBeNull();
   // The failed icon is a fault of its module, the label stays a link.
@@ -163,4 +163,30 @@ test("a module that asks for the home page is reported, and the cockpit still op
   expect(home.cockpit.faults.snapshot().map((fault) => [fault.plugin, fault.phase, fault.place])).toEqual([["greedy", "register", "/"]]);
   const page = await open("/fine", stubs(plugins, saw));
   expect(page.container.textContent).toContain("a page");
+});
+
+function demo(seq: number, type: string, data: unknown = {}) {
+  return { id: `r${String(seq)}`, seq, stream: "main", type, schema: 1, data, actor: { kind: "host" }, cause: null, root: `r${String(seq)}`, at: 1_700_000_000_000 + seq };
+}
+
+test("the journal is a page of the frame: each record is drawn by the view its type was given, and by a plain row when none was", async () => {
+  const saw = seen();
+  const plugins: Plugins = {
+    views: definePlugin({
+      id: "views",
+      setup: (ctx) => ctx.slots.register("record.view", { key: "demo.seen", component: ({ record }) => <p data-view="demo.seen">seen at {record.seq}</p> }),
+    }),
+  };
+  const { container } = await open("/journal", stubs(plugins, saw));
+  expect(container.querySelector('[data-slot="journal"]')).not.toBeNull();
+  expect(container.querySelector("nav")?.textContent).toContain("Journal");
+  await act(async () => {
+    saw.push?.(demo(11, "demo.seen"));
+    saw.push?.(demo(12, "demo.other", { note: "plain" }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  const rows = [...container.querySelectorAll('[data-slot="journal"] li')].map((row) => row.textContent);
+  // Newest first.
+  expect(rows).toEqual(['12demo.other{"note":"plain"}', "seen at 11"]);
+  expect(container.querySelector('[data-view="demo.seen"]')).not.toBeNull();
 });

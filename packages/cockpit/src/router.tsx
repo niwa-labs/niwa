@@ -1,4 +1,4 @@
-/** The cockpit's routes: the home page, and one route for each page the loaded modules registered. */
+/** The cockpit's routes: the home page, the journal, and one route for each page the loaded modules registered. */
 
 import { PageView, type RegisteredPage } from "@niwa-labs/cockpit-sdk";
 import {
@@ -12,6 +12,7 @@ import {
 } from "@tanstack/react-router";
 
 import { Home } from "./home.tsx";
+import { Journal } from "./journal.tsx";
 import { NotFound, Shell } from "./shell.tsx";
 
 /** The query as strings, as the SDK gives it to a page: `?n=1` stays `"1"`. */
@@ -39,11 +40,12 @@ function RoutedPage({ page }: { page: RegisteredPage }) {
 export function createCockpitRouter(registry: { pages: readonly RegisteredPage[] }, history?: RouterHistory) {
   const root = createRootRoute({ component: Shell, notFoundComponent: NotFound });
   const home = createRoute({ getParentRoute: () => root, path: "/", component: Home });
+  const journal = createRoute({ getParentRoute: () => root, path: "/journal", component: Journal });
   const pages: AnyRoute[] = registry.pages.map((page) =>
     createRoute({ getParentRoute: () => root, path: page.path, component: () => <RoutedPage page={page} /> }),
   );
   return createRouter({
-    routeTree: root.addChildren([home, ...pages]),
+    routeTree: root.addChildren([home, journal, ...pages]),
     parseSearch,
     stringifySearch,
     ...(history === undefined ? {} : { history }),

@@ -17,7 +17,13 @@ modules in `niwa.cockpit.catalog`.
 4. Only then make the router, from the pages the modules registered. No module is added later.
 
 The shell is the navigation, the status bar of the feed, the faults and the place a page is drawn
-in. The home page is the tiles that modules put in the `home.tile` slot.
+in. The home page is the tiles that modules put in the `home.tile` slot. The journal, at `/journal`,
+shows the latest records newest first: each is drawn by the view a module gave its type in the
+`record.view` slot, and by a plain row when no module did.
+
+`/`, `/journal` and the addresses the web server answers itself (`/api`, `/assets`, `/modules`,
+`/feed`, `/trace` and the rest) are the cockpit's: a module that asks for a page there is left out
+and reported.
 
 ## One copy of the libraries
 
