@@ -69,9 +69,9 @@ test("pi refuses niwa actions, servers and a tool switch by name, before a proce
   await pi.dispose();
 });
 
-test("pi has only the full mode: ask and auto are refused naming it, before a process is started; the instance's mode is the default", async () => {
+test("pi has only the full mode: ask and auto are refused naming it, before a process is started; with none chosen it starts in full", async () => {
   const bare = new PiControl({ harness: "pi-fake", binary: join(dir, "pi") });
-  for (const mode of ["ask", "auto", undefined] as const) {
+  for (const mode of ["ask", "auto"] as const) {
     const failure = await bare.start({ prompt: promptFromText("go"), ...(mode === undefined ? {} : { mode }) }).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Unsupported);
     expect(String(failure)).toContain(`is not one of full`);
@@ -80,7 +80,7 @@ test("pi has only the full mode: ask and auto are refused naming it, before a pr
   await bare.dispose();
 
   process.env.FAKE_HOLD = "1";
-  const pi = new PiControl({ mode: "full", harness: "pi-fake", binary: join(dir, "pi") });
+  const pi = new PiControl({ harness: "pi-fake", binary: join(dir, "pi") });
   expect((await pi.start({ prompt: promptFromText("go") })).mode).toBe("full");
   await pi.dispose();
 });
