@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Badge, Button, cn } from "@niwa-labs/ui-kit";
 
 import { answerAction, openAction, resolveAction, type OpenPaused, type OpenRequest, type Option } from "./actions.ts";
-import { addressText, answerOf, EMPTY, otherAnswer, type Built, type Filled } from "./answers.ts";
+import { addressText, answerOf, EMPTY, subjectLines, type Built, type Filled } from "./answers.ts";
 
 function OptionButton({ option, selected, onPick }: { option: Option; selected: boolean; onPick: () => void }) {
   return (
@@ -49,7 +49,7 @@ function AnswerForm({ request, onSent }: { request: OpenRequest; onSent: () => v
       className="flex min-w-0 flex-col gap-2"
       onSubmit={(event) => {
         event.preventDefault();
-        submit(single && filled.picked.length === 0 && filled.text !== "" ? otherAnswer(filled.text) : answerOf(question, filled));
+        submit(answerOf(question, filled));
       }}
     >
       {options.length === 0 ? null : (
@@ -95,6 +95,16 @@ function RequestCard({ request, onSent }: { request: OpenRequest; onSent: () => 
         </span>
       </header>
       {request.input.detail === undefined ? null : <p className="whitespace-pre-wrap text-sm text-muted-foreground">{request.input.detail}</p>}
+      {request.input.kind === "permission" ? (
+        <dl data-slot="subject" className="grid min-w-0 grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border bg-muted/40 px-3 py-2 text-xs">
+          {subjectLines(request.input.subject).map((line) => (
+            <div key={line.label} className="contents">
+              <dt className="text-muted-foreground">{line.label}</dt>
+              <dd className="min-w-0 whitespace-pre-wrap break-words font-mono">{line.value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       <AnswerForm request={request} onSent={onSent} />
     </article>
   );
