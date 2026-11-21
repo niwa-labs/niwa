@@ -28,8 +28,8 @@ export const PROC_RUN_CLASS = { effect: "write", world: "local" } as const;
 /** The effect class of `proc.exec`. Nothing confines the command, so nothing is promised about it. */
 export const PROC_EXEC_CLASS = { effect: "irreversible", world: "external" } as const;
 
-/** The name of an environment variable. */
-export const EnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "not a valid environment variable name");
+/** The name of an environment variable (the sandbox has its own, for its spec). */
+const EnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "not a valid environment variable name");
 
 /** The name of a secret: it is also a valid name of an environment variable. */
 export const SecretName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "a secret name is letters, digits and underscores");

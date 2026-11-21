@@ -40,13 +40,19 @@ function signalGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/** What the supervisor needs of a stream's reader. */
+interface Reader {
+  read(): Promise<{ done: boolean; value?: Uint8Array | undefined }>;
+  cancel(): Promise<unknown>;
+}
+
 /** Reads a stream into the capture until it ends or is cancelled. */
-async function pump(reader: ReadableStreamDefaultReader<Uint8Array>, feed: (chunk: Uint8Array) => void): Promise<void> {
+async function pump(reader: Reader, feed: (chunk: Uint8Array) => void): Promise<void> {
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) return;
-      feed(value);
+      if (value !== undefined) feed(value);
     }
   } catch {
     // A stream that fails has said all it will.
@@ -57,7 +63,7 @@ async function pump(reader: ReadableStreamDefaultReader<Uint8Array>, feed: (chun
 export async function supervise(child: LaunchedBox, capture: OutputCapture, options: SuperviseOptions): Promise<Ended> {
   const started = Date.now();
   child.stdin.end();
-  const readers = [child.stdout.getReader(), child.stderr.getReader()] as const;
+  const readers: readonly [Reader, Reader] = [child.stdout.getReader(), child.stderr.getReader()];
   const reading = Promise.all([
     pump(readers[0], (chunk) => capture.feed("out", chunk)),
     pump(readers[1], (chunk) => capture.feed("err", chunk)),

@@ -15,6 +15,7 @@ export * from "@niwa-labs/messages";
 export * from "@niwa-labs/tasks";
 export * from "@niwa-labs/timer";
 export * from "@niwa-labs/git";
+export * from "@niwa-labs/proc";
 export * from "@niwa-labs/history";
 export * from "@niwa-labs/sessions";
 export * from "@niwa-labs/workflow";
