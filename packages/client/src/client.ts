@@ -184,12 +184,18 @@ class WireConnection {
       return;
     }
     this.socket = socket;
-    this.send({
-      id: this.helloId,
-      op: "hello",
-      client: this.options.client,
-      ...(this.options.token === undefined ? {} : { token: this.options.token }),
-    });
+    try {
+      this.send({
+        id: this.helloId,
+        op: "hello",
+        client: this.options.client,
+        ...(this.options.token === undefined ? {} : { token: this.options.token }),
+      });
+    } catch (error) {
+      // A hello that cannot be built or written leaves a connection nobody holds: close it.
+      this.die();
+      throw error;
+    }
   }
 
   /** One request/response exchange: `build` gets a fresh request id; the reply is matched by it. */
