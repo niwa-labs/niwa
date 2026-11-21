@@ -56,7 +56,7 @@ test("a session that may see an observation action sees it, and the other tools 
     pair = await mcpPair(home.path, ["surface.greet", "niwa.describe"]);
 
     const names = (await pair.client.listTools()).tools.map((tool) => tool.name);
-    expect(names.sort()).toEqual(["surface_greet", "niwa_describe"]);
+    expect(names.sort()).toEqual(["niwa_describe", "surface_greet"]);
 
     const described = await pair.client.callTool({ name: "niwa_describe", arguments: {} });
     expect(described.isError).toBeFalsy();
