@@ -188,8 +188,11 @@ export const AgentDigestDue = record("agent.digest.due", z.object({ agent: Agent
 /** A native session was let go of. */
 export const AgentDetached = record("agent.detached", z.object({ agent: AgentName, session: SessionRefText }));
 
+/** The journal position before an attach or detach starts changing a watch. */
+export const AgentAttachmentChanging = record("agent.attachment.changing", z.object({ session: SessionRefText }));
+
 /** The record types the module declares. */
-export const AGENT_TYPES = [AgentCreated, AgentSessionStarted, AgentTurnRouted, AgentTurnQueued, AgentTurnDelivered, AgentTurnFailed, AgentAttached, AgentDetached, AgentDigestDue] as const;
+export const AGENT_TYPES = [AgentCreated, AgentSessionStarted, AgentTurnRouted, AgentTurnQueued, AgentTurnDelivered, AgentTurnFailed, AgentAttached, AgentDetached, AgentDigestDue, AgentAttachmentChanging] as const;
 
 /**
  * The digests of attached sessions, as they reach an agent: what a plugin that takes them in (a memory)

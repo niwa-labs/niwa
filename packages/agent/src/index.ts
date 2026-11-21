@@ -48,6 +48,7 @@ import {
   AGENT_PROMPT_SECTION,
   AGENT_TYPES,
   AgentAttached,
+  AgentAttachmentChanging,
   AgentCreated,
   AgentDefinition,
   AgentDetached,
@@ -246,9 +247,10 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     };
 
     /** The native sessions attached to agents now: by session, the agent and the directory. */
-    const attachments = (): Map<string, { agent: string; cwd: string; from?: string }> => {
+    const attachments = (before = Infinity): Map<string, { agent: string; cwd: string; from?: string }> => {
       const now = new Map<string, { agent: string; cwd: string; from?: string }>();
       for (const stored of recordsOf(journal(), [AgentAttached.name, AgentDetached.name])) {
+        if (stored.seq >= before) break;
         if (stored.type === AgentAttached.name) {
           const attached = AgentAttached.schema.parse(stored.data);
           now.set(attached.session, { agent: attached.agent, cwd: attached.cwd, ...(attached.from === undefined ? {} : { from: attached.from }) });
@@ -637,7 +639,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
           require(name);
           const harness = input.harness ?? (await installationOf(input.kind!, ctx));
           const session = `${harness} ${input.native}`;
-          const now = attachments();
+          const changing = await ctx.emit(AgentAttachmentChanging, { session });
+          const now = attachments(changing.seq);
           const before = now.get(session);
           // A new session of the same harness in the same directory takes the place of the ones before it.
           for (const [other, one] of now) {
@@ -671,7 +674,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
         effect: "record",
         world: "niwa",
         run: async (input, ctx) => {
-          const attached = attachments().get(input.session);
+          const changing = await ctx.emit(AgentAttachmentChanging, { session: input.session });
+          const attached = attachments(changing.seq).get(input.session);
           if (attached === undefined) return {};
           await ctx.emit(AgentDetached, { agent: attached.agent, session: input.session });
           const space = input.session.indexOf(" ");
