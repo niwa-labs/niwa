@@ -11,7 +11,7 @@
  * Widening beyond the default takes the `box.*` rules of the caller's grant.
  */
 
-import { coveringRule, rule, specsOf } from "@niwa-labs/core";
+import { coveringRule, matches, rule, specsOf } from "@niwa-labs/core";
 import type { Grant, Rule, RuleSpec, Verb } from "@niwa-labs/core";
 import type { ToolAllowance, ToolsMode } from "@niwa-labs/harness";
 
@@ -69,7 +69,12 @@ export function toolsOfSession(asked: ToolsMode | undefined, granted: ToolAllowa
  */
 export function toolsOfGrant(given: Grant): ToolAllowance | undefined {
   const tools = given.rules.filter((each) => LAUNCH_VERBS.includes(each.verb)).map(plain);
-  const allow = tools.filter((each) => !each.ask).map((each) => each.name as string);
+  const allowed = tools.filter((each) => !each.ask);
+  const exception = tools.find((entry) => entry.ask && allowed.some((other) => matches(other.name, entry.name)));
+  if (exception !== undefined) {
+    throw new SessionRefusal("tool-exception", `the launch cannot express a tool allowance with an exception for ${exception.name}`);
+  }
+  const allow = allowed.map((each) => String(each.name));
   return tools.length === 0 || allow.includes("*") ? undefined : { allow };
 }
 

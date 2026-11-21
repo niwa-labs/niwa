@@ -198,6 +198,7 @@ test("tool rules are the allowance; no tool rule and `tool:*` leave the harness 
   expect(toolsOfGrant(grant(["tool:read", "tool:grep", "request.open"]))).toEqual({ allow: ["read", "grep"] });
   expect(toolsOfGrant(grant(["request.open"]))).toBeUndefined();
   expect(toolsOfGrant(grant(["tool:*"]))).toBeUndefined();
+  expect(() => toolsOfGrant(grant(["tool:*", { do: "tool:Read", ask: true }]))).toThrow("exception for Read");
   // A rule that asks grants nothing at launch; the grant still speaks of tools, so none is allowed.
   expect(toolsOfGrant(grant([{ do: "tool:Bash", ask: true }]))).toEqual({ allow: [] });
   expect(() => toolsOfGrant(grant(["tool:Read@x"]))).toThrow("has a target");
