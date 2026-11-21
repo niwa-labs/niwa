@@ -142,7 +142,7 @@ export class PiInsert implements HarnessInsert {
   /** Pi left the session: it quit, or went on in another one. A reload goes on in the same session. */
   async onSessionShutdown(event: PiSessionShutdown, session: PiSessionInfo): Promise<void> {
     if (event.reason === "reload") return;
-    await this.emit({ kind: "session-ended", session: piSession(session.id), reason: event.reason, at: Date.now() });
+    await this.emit({ kind: "session-ended", session: piSession(session.id, this.harness), reason: event.reason, at: Date.now() });
   }
 
   /** Pi has no id for a prompt, so the insert numbers them within the session. */

@@ -37,3 +37,10 @@ test("a pi that niwa started says so in its environment: it reports no hand-open
   await byHand.onSessionStart({ reason: "startup" }, info);
   expect(reported).toMatchObject([{ kind: "opened-by-hand", session: piSession("native-1") }]);
 });
+
+test("the end of a session is reported under the installation the insert belongs to", async () => {
+  const reported: InsertEvent[] = [];
+  const insert = new PiInsert({ report: async (event) => void reported.push(event), harness: "pi-work" });
+  await insert.onSessionShutdown({ reason: "quit" }, info);
+  expect(reported).toMatchObject([{ kind: "session-ended", session: piSession("native-1", "pi-work"), reason: "quit" }]);
+});
