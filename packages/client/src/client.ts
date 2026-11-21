@@ -566,8 +566,22 @@ class LiveSubscription {
     });
   }
 
-  /** The frames, in order, until the client closes. */
-  async *iterate(): AsyncGenerator<LiveFrame, void, undefined> {
+  /** Return closes the socket even if a next call is waiting on a quiet channel. */
+  iterate(): AsyncIterableIterator<LiveFrame> {
+    const frames = this.readFrames();
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      next: () => frames.next(),
+      return: () => {
+        this.close();
+        return frames.return();
+      },
+    };
+  }
+
+  /** The frames, in order, until the subscription closes. */
+  private async *readFrames(): AsyncGenerator<LiveFrame, void, undefined> {
+    if (this.isClosed) return;
     this.runner ??= this.run();
     try {
       for (;;) {
