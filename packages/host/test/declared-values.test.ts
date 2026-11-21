@@ -19,8 +19,9 @@ import { counter, eventually, spawnHost, tempHome, connectAsOwner } from "@niwa-
 import { z } from "zod";
 
 import { Note, unloadExtra } from "./fixtures/declared-values-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/declared-values-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/declared-values-host.ts", import.meta.url));
 
 /** From the beginning of the journal. */
 const FROM_START = seq(0);

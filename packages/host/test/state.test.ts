@@ -18,6 +18,7 @@
 // Only the public API is used: the entries of the packages and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import { connect } from "@niwa-labs/client";
 import { seq } from "@niwa-labs/core";
@@ -27,7 +28,7 @@ import { z } from "zod";
 
 import { Add, Bump, Fill, Seen, Take } from "./fixtures/state-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/state-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/state-host.ts", import.meta.url));
 
 /** From the beginning of the journal. */
 const FROM_START = seq(0);

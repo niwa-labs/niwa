@@ -16,6 +16,7 @@
 // Only the public API is used: the entries of the packages and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import { connect } from "@niwa-labs/client";
 import { createNiwa } from "@niwa-labs/host";
@@ -25,7 +26,7 @@ import { counter, eventually, gate, spawnHost, tempHome, connectAsOwner } from "
 
 import { GUARD_LOG, Start, actionsOf } from "./fixtures/intercept-step-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/intercept-step-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/intercept-step-host.ts", import.meta.url));
 
 /** The lines of a file the host wrote, or nothing when it wrote none. */
 async function linesOf(path: string): Promise<string[]> {

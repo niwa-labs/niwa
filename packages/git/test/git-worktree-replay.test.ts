@@ -6,13 +6,14 @@
 import { expect, test } from "bun:test";
 import { chmodSync, existsSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { eventually, gate, spawnHost, tempHome, connectAsOwner, lastState, watch } from "@niwa-labs/testing";
 
 import { Start } from "./fixtures/git-worktree-host.ts";
 import { gitIn, makeRepo } from "./git-repo.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/git-worktree-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/git-worktree-host.ts", import.meta.url));
 
 test("a create cut off inside git is made again under the same identity and takes the checkout it made", async () => {
   const home = await tempHome();

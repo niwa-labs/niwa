@@ -18,8 +18,9 @@ import { seq } from "@niwa-labs/core";
 import { eventually, spawnHost, tempHome, connectAsOwner } from "@niwa-labs/testing";
 
 import { CHANNEL, Message, sendFrame } from "./fixtures/live-frames-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/live-frames-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/live-frames-host.ts", import.meta.url));
 
 /** From the beginning of the journal. */
 const FROM_START = seq(0);

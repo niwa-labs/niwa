@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const SQLITE = "bun:sqlite";
-const ENTRY = new URL("../src/index.ts", import.meta.url).pathname;
+const ENTRY = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const transpiler = new Bun.Transpiler({ loader: "ts" });
 
 interface Edge {

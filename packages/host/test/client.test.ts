@@ -26,6 +26,7 @@
 // Only the public API is used: the entries of the packages (types, connect, seq) and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import type { NiwaApi } from "@niwa-labs/client";
 import type { StoredRecord } from "@niwa-labs/core";
@@ -36,7 +37,7 @@ import { z } from "zod";
 
 import { Note, echo } from "./fixtures/client-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/client-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/client-host.ts", import.meta.url));
 
 /** The data of a Note record: { n }. */
 const NoteData = z.object({ n: z.number() });

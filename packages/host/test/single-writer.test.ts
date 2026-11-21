@@ -19,6 +19,7 @@
 // Only the public API is used: the entries of the packages and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import type { StoredRecord } from "@niwa-labs/core";
 import { connect } from "@niwa-labs/client";
@@ -27,7 +28,7 @@ import { counter, eventually, gate, spawnHost, tempHome, connectAsOwner } from "
 
 import { Probe, Start } from "./fixtures/single-writer-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/single-writer-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/single-writer-host.ts", import.meta.url));
 
 /** From the beginning of the journal. */
 const FROM_START = seq(0);

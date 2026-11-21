@@ -4,6 +4,7 @@
 
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { actionName } from "@niwa-labs/core";
 import { createNiwa } from "@niwa-labs/host";
@@ -11,7 +12,7 @@ import { plugin, pluginName } from "@niwa-labs/plugin";
 import { tempHome, connectAsOwner } from "@niwa-labs/testing";
 import { z } from "zod";
 
-const PLUGIN_ENTRY = new URL("../../plugin/src/index.ts", import.meta.url).pathname;
+const PLUGIN_ENTRY = fileURLToPath(new URL("../../plugin/src/index.ts", import.meta.url));
 const INSTALL = actionName("plugin.install");
 /** A host with one plugin of its own: the actions of the host are served once a plugin is installed. */
 const withBase = (home: string) => {

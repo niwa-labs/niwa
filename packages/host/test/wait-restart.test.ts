@@ -17,6 +17,7 @@
 // Only the public API is used: the entries of the packages and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import { connect } from "@niwa-labs/client";
 import { seq } from "@niwa-labs/core";
@@ -26,7 +27,7 @@ import { z } from "zod";
 
 import { Answer, Start } from "./fixtures/wait-restart-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/wait-restart-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/wait-restart-host.ts", import.meta.url));
 
 /** The question the handler asks and then waits about. */
 const QUESTION = "what is the answer";

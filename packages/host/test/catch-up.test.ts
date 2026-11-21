@@ -22,6 +22,7 @@
 
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { seq } from "@niwa-labs/core";
 import type { StoredRecord } from "@niwa-labs/core";
@@ -30,7 +31,7 @@ import { z } from "zod";
 
 import { Item } from "./fixtures/catch-up-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/catch-up-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/catch-up-host.ts", import.meta.url));
 
 /** The type the core writes when it admits an invocation. */
 const ADMITTED_TYPE = "niwa.invocation.admitted";

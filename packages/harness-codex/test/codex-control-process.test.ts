@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
 
@@ -19,7 +20,7 @@ import { eventually, tempDir } from "@niwa-labs/testing";
 const THREAD = "11111111-2222-3333-4444-555555555555";
 
 /** The frames the fake sends, built as the real server builds them; the fake script imports them by path. */
-const FRAMES = new URL("./fixtures/codex-frames.ts", import.meta.url).pathname;
+const FRAMES = fileURLToPath(new URL("./fixtures/codex-frames.ts", import.meta.url));
 
 /**
  * A fake server. FAKE_MODE: `ok`, `approval`, `die` (exits on turn/start), `fail` (turn fails),

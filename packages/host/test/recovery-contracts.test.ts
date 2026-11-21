@@ -19,8 +19,9 @@ import { connect } from "@niwa-labs/client";
 import { counter, eventually, gate, operations, spawnHost, tempHome, lastState, watch, connectAsOwner } from "@niwa-labs/testing";
 
 import { Start } from "./fixtures/recovery-contracts-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/recovery-contracts-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/recovery-contracts-host.ts", import.meta.url));
 
 /** Run the crash and the restart with one recovery contract; `seen` is the journal as observed. */
 async function crashAndRestart(recovery: "repeat" | "repeat-with-key") {

@@ -20,8 +20,9 @@ import { connect } from "@niwa-labs/client";
 import { counter, eventually, gate, spawnHost, tempHome, lastState, watch, connectAsOwner } from "@niwa-labs/testing";
 
 import { Start } from "./fixtures/crash-between-steps-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/crash-between-steps-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/crash-between-steps-host.ts", import.meta.url));
 
 test("crash between steps: the first action is called once, the second step runs, the invocation ends as done", async () => {
   const home = await tempHome();

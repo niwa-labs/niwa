@@ -26,6 +26,7 @@
 // Only the public API is used: the entries of the packages (types) and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import { actionName, CORE_TYPES, seq } from "@niwa-labs/core";
 import { connect } from "@niwa-labs/client";
@@ -34,7 +35,7 @@ import { counter, eventually, gate, spawnHost, tempHome, invocationOf, lastState
 
 import { Answered, Start } from "./fixtures/action-step-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/action-step-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/action-step-host.ts", import.meta.url));
 
 /** The type the core writes for the intent of a step. */
 const INTENT_TYPE = CORE_TYPES.stepIntent;

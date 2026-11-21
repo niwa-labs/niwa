@@ -19,8 +19,9 @@ import { issueId, recordId, seq } from "@niwa-labs/core";
 import { counter, eventually, spawnHost, tempHome, connectAsOwner } from "@niwa-labs/testing";
 
 import { EVERY_MS, TIMER_ID } from "./fixtures/missed-dues-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/missed-dues-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/missed-dues-host.ts", import.meta.url));
 
 /** How long the host stays down: long enough for more than two dues to pass. */
 const DOWN_MS = EVERY_MS * 2.5;

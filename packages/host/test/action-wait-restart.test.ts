@@ -14,8 +14,9 @@ import { eventually, spawnHost, tempHome, connectAsOwner } from "@niwa-labs/test
 import { z } from "zod";
 
 import { Answer, Start } from "./fixtures/action-wait-restart-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/action-wait-restart-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/action-wait-restart-host.ts", import.meta.url));
 
 /** The type the core writes for every change of an invocation's state. */
 const STATE_TYPE = "niwa.invocation.state";

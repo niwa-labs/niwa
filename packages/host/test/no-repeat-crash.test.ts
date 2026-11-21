@@ -19,8 +19,9 @@ import type { ActionName } from "@niwa-labs/core";
 import { counter, eventually, gate, spawnHost, tempHome, invocationOf, lastState, watch, connectAsOwner } from "@niwa-labs/testing";
 
 import { Start } from "./fixtures/no-repeat-crash-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/no-repeat-crash-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/no-repeat-crash-host.ts", import.meta.url));
 const RESOLVE = "niwa.invocation.resolve" as ActionName;
 
 /**

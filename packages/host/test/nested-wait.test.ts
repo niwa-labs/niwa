@@ -14,8 +14,9 @@ import type { StoredRecord } from "@niwa-labs/core";
 import { counter, eventually, spawnHost, tempHome, lastState, watch, connectAsOwner } from "@niwa-labs/testing";
 
 import { Answer, Start } from "./fixtures/nested-wait-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/nested-wait-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/nested-wait-host.ts", import.meta.url));
 
 /** The states the invocation went through, in the order the journal holds them. */
 function statesOf(seen: StoredRecord[]): string[] {

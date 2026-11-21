@@ -20,6 +20,7 @@
 // Only the public API is used: the entries of the packages and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import { connect } from "@niwa-labs/client";
 import { seq } from "@niwa-labs/core";
@@ -29,7 +30,7 @@ import { z } from "zod";
 
 import { Answer, Ask, Job } from "./fixtures/long-wait-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/long-wait-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/long-wait-host.ts", import.meta.url));
 
 /** The type the core writes for every change of an invocation's state. */
 const STATE_TYPE = "niwa.invocation.state";

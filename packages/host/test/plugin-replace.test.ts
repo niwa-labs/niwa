@@ -15,6 +15,7 @@
 // Only the public API is used: the entries of the packages (types, connect, seq) and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import type { StoredRecord } from "@niwa-labs/core";
 import { connect } from "@niwa-labs/client";
@@ -24,7 +25,7 @@ import { z } from "zod";
 
 import { Answer, Start, unload, upgrade } from "./fixtures/plugin-replace-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/plugin-replace-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/plugin-replace-host.ts", import.meta.url));
 
 /** The data of a CORE.invocationState record: { invocation, state, reason? }. */
 const InvocationState = z.object({

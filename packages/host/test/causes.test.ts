@@ -22,8 +22,9 @@ import type { StoredRecord } from "@niwa-labs/core";
 import { eventually, spawnHost, tempHome, connectAsOwner } from "@niwa-labs/testing";
 
 import { Done, Merged, Report, Seed } from "./fixtures/causes-host.ts";
+import { fileURLToPath } from "node:url";
 
-const HOST_SCRIPT = new URL("./fixtures/causes-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/causes-host.ts", import.meta.url));
 
 /** From the beginning of the journal. */
 const FROM_START = seq(0);

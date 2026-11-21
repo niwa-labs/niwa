@@ -22,6 +22,7 @@
 
 import { existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { CatchableError, EntityDescription, IdIndex, action, idSchema, recordId, seq, stableJson } from "@niwa-labs/core";
 import type { ActionContext, IssuedId, JournalReader, RecordId, RecordTypeName, StoredRecord } from "@niwa-labs/core";
@@ -216,7 +217,7 @@ async function checkout(repo: string, path: string, branch: string, baseSha: str
 export const CLEANUP_TIMER = "git-worktree-cleanup";
 
 /** The script of the cleanup, as it ships with the module. */
-const CLEANUP_SCRIPT = new URL("./workflows/worktree-cleanup.ts", import.meta.url).pathname;
+const CLEANUP_SCRIPT = fileURLToPath(new URL("./workflows/worktree-cleanup.ts", import.meta.url));
 
 /** How the cleanup of old worktrees runs. */
 export interface CleanupOptions {

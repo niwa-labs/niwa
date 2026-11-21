@@ -17,6 +17,7 @@
 // Only the public API is used: the entries of the packages and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import { action, deny, seq } from "@niwa-labs/core";
 import { connect } from "@niwa-labs/client";
@@ -35,7 +36,7 @@ import {
   Start,
 } from "./fixtures/intercept-order-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/intercept-order-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/intercept-order-host.ts", import.meta.url));
 
 /** The record type the core writes for what the intercepts decided. */
 const DECISION_TYPE = "niwa.step.decision";

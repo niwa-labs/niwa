@@ -16,6 +16,7 @@
 // Only the public API is used: the entries of the packages and "@niwa-labs/testing".
 
 import { expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 import { connect } from "@niwa-labs/client";
 import { seq } from "@niwa-labs/core";
@@ -24,7 +25,7 @@ import { eventually, spawnHost, tempHome, connectAsOwner } from "@niwa-labs/test
 
 import { Note } from "./fixtures/repeated-write-host.ts";
 
-const HOST_SCRIPT = new URL("./fixtures/repeated-write-host.ts", import.meta.url).pathname;
+const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/repeated-write-host.ts", import.meta.url));
 
 /** The explicit id the test writes under. */
 const ID = "repeated-write.note.1";
