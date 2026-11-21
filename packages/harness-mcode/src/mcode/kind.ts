@@ -78,7 +78,7 @@ export interface McodeKindOptions extends McodeReadingOptions {
    * How the control side is set up: the model it uses, the account profile it drives and what it
    * does with a permission request. Its own defaults are used when it is absent.
    */
-  readonly control?: Omit<McodeControlOptions, "harness" | "lineage">;
+  readonly control?: Omit<McodeControlOptions, "harness" | "lineage" | "home">;
 }
 
 /** What the caller names of a kind: every part has a default. */
@@ -99,6 +99,7 @@ export function minimaxKind(spec: MinimaxKindSpec, options: McodeKindOptions) {
     control: mcodeControl({
       harness: options.harness,
       ...(options.control ?? {}),
+      home: options.home,
       ...profileOf(options, spec.lineage),
       lineage: spec.lineage,
     }),

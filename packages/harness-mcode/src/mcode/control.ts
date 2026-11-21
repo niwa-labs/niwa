@@ -62,7 +62,7 @@ import type {
   SessionId,
   ReverseHandler,
 } from "@niwa-labs/harness";
-import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
+import { LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
 
 import { AcpClient, acpVariant, answerText, readVariant } from "@niwa-labs/acp";
@@ -82,6 +82,7 @@ import type {
   NcodeUpdateMarks,
   TurnStatusResult as TurnStatus,
 } from "../ncode/protocol.ts";
+import { homeOfProfile } from "./paths.ts";
 import { formFields, formSteps, isQuestionnaire, permissionAsk } from "./reverse.ts";
 import { Acp, EXTENSIONS_META, MCODE_ACP_PROTOCOL, McodeAgentNotification, McodeAgentRequest, McodeInitializeMeta } from "./protocol.ts";
 import type { McodeMethod, McodePermissionMode } from "./protocol.ts";
@@ -117,8 +118,14 @@ export const DEFAULT_BINARIES: Readonly<Record<MinimaxLineage, string>> = {
   fork: "mcode",
 };
 
-/** What mcode needs inside a box: its own directory. Its model endpoint depends on the profile, so the grant names it. */
-const MCODE_NEEDS: HarnessNeeds = { write: [homePath(".mcode")], net: [] };
+/**
+ * What mcode needs inside a box: the directory of the installation, where its sessions, logs and
+ * sign-in live. It depends on the installation and its profile, not on the program. Its model
+ * endpoint depends on the profile too, so the grant names it.
+ */
+function mcodeNeeds(home: string): HarnessNeeds {
+  return { write: [home], net: [] };
+}
 
 export interface McodeControlOptions {
   /** The harness instance id: half of a session's identity. */
@@ -141,6 +148,8 @@ export interface McodeControlOptions {
   readonly effort?: string;
   /** The account profile, when the caller pins one. Each profile is a separate account. */
   readonly profile?: string;
+  /** The directory the installation keeps its sessions in; the home of the profile when absent. */
+  readonly home?: string;
   /** How long one call (the handshake, a config option, a turn status) waits, in milliseconds. */
   readonly callTimeoutMs?: number;
   /** How long the agent has to let a cancelled turn go, in milliseconds; the call timeout by default. */
@@ -667,6 +676,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   const defaultModel = options.model;
   const defaultEffort = options.effort;
   const harnessId = HarnessIdSchema.parse(options.harness);
+  const home = options.home ?? homeOfProfile(options.profile);
 
   /** The sessions reachable by id. */
   const sessions = new Map<string, AcpSession>();
@@ -1003,7 +1013,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       env: { MCODE_DISABLE_TELEMETRY: "1", MCODE_SERVER_MODE: "off", ...plan.env },
       detached: true,
       box: plan.box,
-      needs: MCODE_NEEDS,
+      needs: mcodeNeeds(home),
     });
     const session = new AcpSession(child, cwd, turnTimeoutMs, cancelGraceMs);
     owned.add(session);
