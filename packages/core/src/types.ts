@@ -416,6 +416,12 @@ export interface StepOptions {
 export interface CallOptions {
   /** Why the caller makes this call: shown in the question when a rule of its grant asks. */
   reason?: string;
+  /**
+   * The caller's own id for this call, for asking again after a broken connection: the same id with
+   * the same action and input answers what the first call answered, and another call under it is a
+   * conflict. It is the caller's: another caller's id is another call.
+   */
+  operation?: string;
 }
 
 /** Options for writing a record that may be linked to other records. */
@@ -661,4 +667,6 @@ export const CORE = {
   accessAnswered: "niwa.access.answered",         // { grant, principal, name, target?, scope, request? }
   pluginInstalled: "niwa.plugin.installed",       // { plugin, version, module, hash }
   subscriptionPosition: "niwa.subscription.position", // { subscription, seq, reason }
+  callBegan: "niwa.call.began",                   // { operation, action, digest }
+  callSettled: "niwa.call.settled",               // { operation, action, digest, outcome }
 } as const;

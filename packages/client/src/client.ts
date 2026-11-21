@@ -794,12 +794,14 @@ class Client implements NiwaApi {
   async call<I, O, In = I>(action: ActionTarget<I, O, In>, input: NoInfer<In>, opts?: CallOptions): Promise<O> {
     const name = targetName(action);
     const reason = opts?.reason;
+    const operation = opts?.operation;
     return (await this.request((id) => ({
       id,
       op: "call",
       action: name,
       input,
       ...(reason === undefined ? {} : { reason }),
+      ...(operation === undefined ? {} : { operation }),
     }))) as O;
   }
 

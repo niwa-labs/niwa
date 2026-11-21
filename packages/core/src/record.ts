@@ -107,6 +107,8 @@ export const CORE_TYPES = {
   accessAnswered: recordTypeName(CORE.accessAnswered),
   pluginInstalled: recordTypeName(CORE.pluginInstalled),
   subscriptionPosition: recordTypeName(CORE.subscriptionPosition),
+  callBegan: recordTypeName(CORE.callBegan),
+  callSettled: recordTypeName(CORE.callSettled),
 } as const;
 
 /**

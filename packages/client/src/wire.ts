@@ -145,7 +145,15 @@ export const descriptionSchema = z.strictObject({
 export const clientMessageSchema = z.discriminatedUnion("op", [
   // The token is what says who the connection is; the client label only names it for people.
   z.strictObject({ id: requestIdSchema, op: z.literal("hello"), client: clientIdSchema, token: tokenSchema.optional() }),
-  z.strictObject({ id: requestIdSchema, op: z.literal("call"), action: actionNameSchema, input: z.unknown().optional(), reason: z.string().min(1).optional() }),
+  z.strictObject({
+    id: requestIdSchema,
+    op: z.literal("call"),
+    action: actionNameSchema,
+    input: z.unknown().optional(),
+    reason: z.string().min(1).optional(),
+    /** The caller's id for the call: a retry under it answers what the first call answered. */
+    operation: z.string().min(1).max(256).optional(),
+  }),
   z.strictObject({
     id: requestIdSchema,
     op: z.literal("emit"),

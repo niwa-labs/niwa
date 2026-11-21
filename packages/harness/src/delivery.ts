@@ -25,6 +25,8 @@ export type Dispatch = "unsent" | "refused" | "uncertain";
 export class InputNotSent extends Error {
   override name = "InputNotSent";
   readonly code = "InputNotSent";
+  /** Nothing was done: a call under the same operation id may be made again. */
+  readonly effectPossible = false;
 
   constructor(
     readonly harness: Harness["id"],

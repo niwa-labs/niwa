@@ -160,6 +160,7 @@ import {
   TracedRecordsOutput,
 } from "@niwa-labs/client";
 import { AccessControl } from "./access-control.ts";
+import { CallOperations } from "./call-operations.ts";
 import { accessActions } from "./access-actions.ts";
 import { installationOf, pluginInstallAction, removeCopyIfStale, removeStaleCopies } from "./plugin-install.ts";
 import { COCKPIT_MODULE, handlerSource, pluginVersion, pluginName, sealVersion } from "@niwa-labs/plugin";
@@ -201,6 +202,12 @@ const NO_STEP = "" as StepKey;
  * must not hang its own start.
  */
 const TRANSPORT_CLOCK: Clock = realClock();
+
+/** A call a client named with an operation id: the id it runs under, and what to do as it begins. */
+interface MadeUnder {
+  readonly operation: OperationId;
+  began(): void;
+}
 
 /**
  * What a call outside an invocation ended with.
@@ -617,6 +624,13 @@ class Niwa implements Host {
     commit: (records) => this.append(records),
     read: (id) => this.journal?.get(id),
     effectOf: (name) => this.effectOf(name),
+  });
+  /** The calls clients named with an operation id: a retry under one answers the first call. */
+  private readonly operations = new CallOperations({
+    find: (type, operation) => this.requireJournal().find({ type, field: "operation", equals: operation }),
+    commit: (records) => {
+      this.append(records);
+    },
   });
   /** The actions of access: the host registers them for itself. */
   private readonly accessActionList = accessActions(this.access, () => this.requireDoors());
@@ -2610,8 +2624,9 @@ class Niwa implements Host {
     input: NoInfer<In>,
     atDoor = false,
     reason?: string,
+    made?: MadeUnder,
   ): Promise<O> {
-    const result = await this.outsideCall<I, O, In>(caller, target, input, atDoor, reason);
+    const result = await this.outsideCall<I, O, In>(caller, target, input, atDoor, reason, made);
     switch (result.kind) {
       case "completed":
         return result.value;
@@ -2637,6 +2652,7 @@ class Niwa implements Host {
     input: NoInfer<In>,
     atDoor = false,
     reason?: string,
+    made?: MadeUnder,
   ): Promise<OutsideCall<O>> {
     const name = targetName(target);
     const found = this.actionOf(name);
@@ -2684,7 +2700,9 @@ class Niwa implements Host {
       const denied = decision.access === undefined ? undefined : this.detailsOf(decision.access, written);
       return { kind: "denied", reason: decision.reason, ...(denied === undefined ? {} : { denied }) };
     }
-    const operation = newOperationId();
+    // A call the client named runs under the operation id made from its name, and says it began.
+    const operation = made?.operation ?? newOperationId();
+    made?.began();
     let ordinal = 0;
     const output = await found.run(decision.final, {
       operationId: operation,
@@ -2860,9 +2878,13 @@ class Niwa implements Host {
         }
         return;
       case "call": {
-        const { action: target, input } = message;
+        const { action: target, input, operation } = message;
         return reply(connection, message.id, async () => {
-          return this.runAction(caller, target, input, true, message.reason);
+          if (operation === undefined) return this.runAction(caller, target, input, true, message.reason);
+          const recovery = this.actionOf(target)?.recovery;
+          return await this.operations.once(caller, operation, target, input, recovery, (id, began) =>
+            this.runAction(caller, target, input, true, message.reason, { operation: id, began }),
+          );
         });
       }
       case "emit": {
