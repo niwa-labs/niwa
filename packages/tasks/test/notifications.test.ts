@@ -1,7 +1,9 @@
-// What a task says to the address it reports to: the updates first, the end after them.
+// What a task says to the address it reports to: the updates first, the end after them, and an end
+// that is too large for a message is kept as an artifact the message points at.
 
 import { expect, test } from "bun:test";
 
+import { ARTIFACT_THRESHOLD, RECORD_DATA_LIMIT } from "@niwa-labs/core";
 import type { Address, Caller, RecordTypeName } from "@niwa-labs/core";
 import { MessageSent } from "@niwa-labs/messages/records";
 import { plugin } from "@niwa-labs/plugin";
@@ -9,7 +11,7 @@ import type { CallerBinding } from "@niwa-labs/plugin";
 import { connectAsOwner, createNiwa, messageSend, messages, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 
-import { taskCreate, taskFinish, taskReport, tasks } from "../src/index.ts";
+import { taskCreate, taskFail, taskFinish, taskReport, taskResult, tasks } from "../src/index.ts";
 
 const WORKER: Address = { kind: "agent", id: "worker" };
 const OWNER: Address = { kind: "owner" };
@@ -120,3 +122,49 @@ test("an end that waits for a late update holds no end of another task", async (
   });
 }, 30_000);
 
+test("a result too large for a message is kept as an artifact, and the end of the next task is still reported", async () => {
+  await served([], async (niwa, worker) => {
+    const big = "x".repeat(150 * 1024);
+    const first = (await niwa.call(taskCreate, input("big"))).id;
+    await worker.call(taskFinish, { task: first, result: big });
+    const second = (await niwa.call(taskCreate, input("small"))).id;
+    await worker.call(taskFinish, { task: second, result: "small done" });
+
+    await eventually(async () => (await toOwner(niwa)).length >= 2, "both ends should have been reported");
+    const messages = await toOwner(niwa);
+    const [bigMessage, smallMessage] = messages;
+    expect(smallMessage?.body.text).toBe("small done");
+
+    // The message holds a short text and the reference, not the result twice.
+    expect(bigMessage?.body.type).toBe("result");
+    expect(Buffer.byteLength(JSON.stringify(bigMessage))).toBeLessThan(ARTIFACT_THRESHOLD);
+    const kept = (bigMessage?.body.data as { artifact: { digest: string; size: number } }).artifact;
+    expect(Buffer.from(niwa.artifacts.read(kept)).toString()).toBe(JSON.stringify(big));
+
+    // The whole result is still what the task gives.
+    expect(await niwa.call(taskResult, { task: first })).toEqual({ task: first, outcome: { status: "result", result: big } });
+  });
+}, 30_000);
+
+test("a failure whose reason is too large for a message is kept as an artifact too", async () => {
+  await served([], async (niwa, worker) => {
+    const reason = "e".repeat(100 * 1024);
+    const { id } = await niwa.call(taskCreate, input());
+    await worker.call(taskFail, { task: id, reason });
+    await eventually(async () => (await toOwner(niwa)).length >= 1, "the failure should have been reported");
+    const [message] = await toOwner(niwa);
+    expect(message?.body.type).toBe("failure");
+    expect(Buffer.byteLength(JSON.stringify(message))).toBeLessThan(ARTIFACT_THRESHOLD);
+    const kept = (message?.body.data as { artifact: { digest: string } }).artifact;
+    expect(Buffer.from(niwa.artifacts.read(kept)).toString()).toBe(reason);
+  });
+}, 30_000);
+
+test("an end that no record could hold is refused before anything is written, and the task stays open", async () => {
+  await served([], async (niwa, worker) => {
+    const { id } = await niwa.call(taskCreate, input());
+    await expect(worker.call(taskFinish, { task: id, result: "y".repeat(RECORD_DATA_LIMIT) })).rejects.toThrow("more than a record holds");
+    await worker.call(taskFinish, { task: id, result: "fits" });
+    expect(await niwa.call(taskResult, { task: id })).toEqual({ task: id, outcome: { status: "result", result: "fits" } });
+  });
+}, 30_000);

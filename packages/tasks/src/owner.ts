@@ -5,12 +5,13 @@
  * - a task finishes once: the first end stands, and a second end is refused;
  * - only the responsible party reports and finishes;
  * - a report or a finish of a task that does not exist is refused;
- * - a result that does not fit the schema the task declared is refused, and the task stays open.
+ * - a result that does not fit the schema the task declared is refused, and the task stays open;
+ * - so is an end too large to be kept as one record.
  */
 
 import { z } from "zod";
 
-import { CatchableError } from "@niwa-labs/core";
+import { CatchableError, RECORD_DATA_LIMIT } from "@niwa-labs/core";
 import type { Address } from "@niwa-labs/core";
 import type { ResultSchema } from "@niwa-labs/messages/records";
 
@@ -53,6 +54,7 @@ export type TaskRefusalCode =
   | "not-responsible"
   | "result-schema"
   | "result-invalid"
+  | "result-too-large"
   | "no-task"
   | "not-an-executor"
   | "not-the-assignment";
@@ -129,6 +131,11 @@ function checkResult(contract: TaskContract, outcome: TaskOutcome): void {
   throw new TaskRefusal("result-invalid", `the result does not fit the schema the task "${contract.id}" declared: ${issues}`);
 }
 
+/** Can the end of a task be kept as one record? A record holds so much, and an end past it is not written. */
+export function fitsRecord(task: TaskId, outcome: TaskOutcome): boolean {
+  return Buffer.byteLength(JSON.stringify({ task, outcome })) <= RECORD_DATA_LIMIT;
+}
+
 /** Refuse a command that breaks a rule. Nothing is written here: the caller writes the fact. */
 export function decide(state: TaskState | undefined, command: Command): void {
   if (command.kind === "create") {
@@ -150,7 +157,15 @@ export function decide(state: TaskState | undefined, command: Command): void {
       `only the responsible party of the task "${command.task}" may ${command.kind} it`,
     );
   }
-  if (command.kind === "finish" && command.outcome !== undefined) checkResult(state.contract, command.outcome);
+  if (command.kind === "finish" && command.outcome !== undefined) {
+    checkResult(state.contract, command.outcome);
+    if (!fitsRecord(command.task, command.outcome)) {
+      throw new TaskRefusal(
+        "result-too-large",
+        `the end of the task "${command.task}" is more than ${String(RECORD_DATA_LIMIT)} bytes, which is more than a record holds`,
+      );
+    }
+  }
 }
 
 /** Are two addresses the same one? They are when they say the same thing, kind included. */

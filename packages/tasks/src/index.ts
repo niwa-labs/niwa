@@ -25,8 +25,8 @@
 
 import { z } from "zod";
 
-import { IdIndex, action } from "@niwa-labs/core";
-import type { Action, ActionContext, Address, Caller, CheckResult, JournalReader, Seq, Step, StoredRecord } from "@niwa-labs/core";
+import { ARTIFACT_THRESHOLD, IdIndex, RECORD_DATA_LIMIT, action } from "@niwa-labs/core";
+import type { Action, ActionContext, Address, ArtifactStore, Caller, CheckResult, JournalReader, Seq, Step, StoredRecord } from "@niwa-labs/core";
 import { bindingOf, COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import type { CallerBinding, MessagesOptions, Plugin } from "@niwa-labs/plugin";
@@ -156,7 +156,7 @@ export function tasks(opts: TasksOptions = {}): Plugin {
           from: contract.responsible,
           to: contract.reportTo,
           task: data.task,
-          body: outcomeBody(data.outcome),
+          body: outcomeBody(data.outcome, api.artifacts),
         });
       },
     );
@@ -443,18 +443,33 @@ export function taskResultAction(ledger: TaskLedger, waiters: TaskWaiters) {
  * The body of the message that says how the task ended: the Result, or the Failure.
  *
  * The text says what came of it, so a reader that only unfolds the envelope knows how the work
- * went; the result and the reason are carried along as they are.
+ * went; the result and the reason are carried along as they are. What is too large for a message
+ * is kept as an artifact: the message says so and points at it, and `task.result` still gives the
+ * whole of it.
  */
-function outcomeBody(outcome: TaskOutcome): MessageBody {
+function outcomeBody(outcome: TaskOutcome, artifacts: ArtifactStore): MessageBody {
   if (outcome.status === "failure") {
-    return { type: "failure", text: outcome.reason, reason: outcome.reason };
+    if (Buffer.byteLength(outcome.reason) <= ARTIFACT_THRESHOLD) {
+      return { type: "failure", text: outcome.reason, reason: outcome.reason };
+    }
+    const kept = artifacts.put(outcome.reason, "text/plain");
+    const start = `${outcome.reason.slice(0, PREVIEW_CHARS)}…`;
+    return { type: "failure", text: start, reason: start, data: { artifact: kept } };
   }
+  const text = textOf(outcome.result);
+  if (Buffer.byteLength(text) <= ARTIFACT_THRESHOLD) {
+    return { type: "result", text, data: outcome.result };
+  }
+  const kept = artifacts.put(JSON.stringify(outcome.result), "application/json");
   return {
     type: "result",
-    text: textOf(outcome.result),
-    data: outcome.result,
+    text: `The result is ${String(kept.size)} bytes, too large to carry in a message: it is kept as an artifact, and task.result gives it whole. It begins: ${text.slice(0, PREVIEW_CHARS)}…`,
+    data: { artifact: kept },
   };
 }
+
+/** How much of a text that is too large for a message the message still shows. */
+const PREVIEW_CHARS = 1000;
 
 /**
  * The text of a result: what it is, as a reader sees it.
@@ -487,7 +502,7 @@ export {
 } from "./actions.ts";
 export { TaskCreated, TaskDone, TaskId, TaskUpdated, TASK_TYPES } from "./records.ts";
 export type { TaskContract, TaskKind, TaskOutcome } from "./records.ts";
-export { TaskRefusal, decide, fold, sameAddress, stateOf } from "./owner.ts";
+export { TaskRefusal, decide, fitsRecord, fold, sameAddress, stateOf } from "./owner.ts";
 export type { Command, TaskRefusalCode, TaskState } from "./owner.ts";
 export { taskLedger } from "./ledger.ts";
 export type { TaskLedger } from "./ledger.ts";

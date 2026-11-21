@@ -24,7 +24,7 @@ import { MessageSent, render } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
 
 import type { TaskLedger } from "./ledger.ts";
-import { TaskRefusal, decide } from "./owner.ts";
+import { TaskRefusal, decide, fitsRecord } from "./owner.ts";
 import { TaskDone } from "./records.ts";
 import type { TaskOutcome } from "./records.ts";
 
@@ -111,8 +111,9 @@ export function executorHandler(
     const end = async (outcome: TaskOutcome) => {
       const state = ledger.state(task);
       if (state?.status === "done") return;
-      decide(state, { kind: "finish", task, by: address, outcome });
-      await step.emit(TaskDone, { task, outcome });
+      const kept: TaskOutcome = fitsRecord(task, outcome) ? outcome : { status: "failure", reason: "the result is too large to be kept with the task" };
+      decide(state, { kind: "finish", task, by: address, outcome: kept });
+      await step.emit(TaskDone, { task, outcome: kept });
     };
 
     const started = await attempted<{ session: string }>(step, SESSION_START, {
