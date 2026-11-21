@@ -23,7 +23,7 @@ import {
   promptFromText,
   sessionId,
 } from "@niwa-labs/harness";
-import type { Harness, LifeEvent, SessionId } from "@niwa-labs/harness";
+import type { Harness, LifeEvent, ReverseHandler, SessionId } from "@niwa-labs/harness";
 import { homePath, onBoxManifest, onSpawn, useSandbox } from "@niwa-labs/sandbox";
 import type { BoxRecord, LaunchedBox, Sandbox } from "@niwa-labs/sandbox";
 import { ZCODE_FAKE as FAKE, tempDir } from "@niwa-labs/testing";
@@ -699,6 +699,42 @@ test("a process that replaces a held one keeps its box, environment, tool restri
     forget();
     restore();
   }
+});
+
+test("a resume that is refused does not change who answers the session's requests; one that is accepted does", async () => {
+  const permission = {
+    requestId: "perm-x",
+    sessionId: "sess_fake-1",
+    toolCallId: "call-perm-x",
+    toolName: "Bash",
+    reason: "the tool wants to run",
+    riskLevel: "medium",
+    input: { command: "ls" },
+    options: [
+      { optionId: "allow_once", kind: "allow_once", name: "Allow once", response: { decision: "allow", reason: "Approved once" } },
+      { optionId: "deny", kind: "deny", name: "Deny", response: { decision: "deny", reason: "No" } },
+    ],
+  };
+  await writeFile(join(dir, "script.json"), JSON.stringify([{ ms: 400 }, { ask: { method: "interaction/requestPermission", params: permission } }]));
+  const first: string[] = [];
+  const second: string[] = [];
+  const answering = (log: string[]): ReverseHandler => async (_session, request) => {
+    log.push(request.raw.method);
+    return { cancelled: true };
+  };
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText("script"), cwd: dir, reverse: answering(first) });
+  // The turn runs, so the tools cannot change: the resume is refused, and it must leave the first handler in place.
+  await expect(c.resume(session, { tools: { allow: [] }, reverse: answering(second) })).rejects.toMatchObject({ code: "Unavailable" });
+  while (first.length + second.length === 0) await Bun.sleep(10);
+  expect([first.length, second.length]).toEqual([1, 0]);
+  // An accepted resume hands the requests to its caller.
+  while ((await c.state(session)) !== "idle") await Bun.sleep(10);
+  await writeFile(join(dir, "script.json"), JSON.stringify([{ ms: 400 }, { ask: { method: "interaction/requestPermission", params: { ...permission, requestId: "perm-y", toolCallId: "call-perm-y" } } }]));
+  await c.send(session, "script");
+  await c.resume(session, { reverse: answering(second) });
+  while (second.length === 0) await Bun.sleep(10);
+  expect([first.length, second.length]).toEqual([1, 1]);
 });
 
 test("the ZCode fields of a server go through to its mcpServers entry, and are absent by default", async () => {

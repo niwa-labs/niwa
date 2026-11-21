@@ -1135,8 +1135,6 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       let carried: Watcher[] = [];
       if (held !== undefined && !held.ended && !held.stopping) {
         if (resumeOptions?.box !== undefined) throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
-        // The one who resumes names where its reverse requests go from now on.
-        if (resumeOptions?.reverse !== undefined) held.reverse = resumeOptions.reverse;
         // What the process was born with is what it keeps: a surface that is the same changes
         // nothing, and one that differs is given to a new process, which takes the session on
         // again. That cannot be done under a running turn. What the resume does not name stays as it
@@ -1151,6 +1149,8 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         const surface = surfaceOf(launch.servers, launch.tools, launch.visible);
         const changed = Object.keys(named).length > 0 && JSON.stringify(surface) !== held.surface;
         if (!changed) {
+          // The resume is accepted: its caller names where the reverse requests go from now on.
+          if (resumeOptions?.reverse !== undefined) held.reverse = resumeOptions.reverse;
           if (text === "") return;
           // The prompt of a resume waits behind a running turn, as a send does; it is not an error.
           if (held.busy) held.queue.push({ text });
