@@ -117,7 +117,7 @@ import type { CurrentCall, RecordedCall, RevisionReport } from "./revise.ts";
 import { runScript, stopRun } from "./runner.ts";
 import { StatsFold, workflowStats } from "./stats.ts";
 import type { ScriptBox } from "./runner.ts";
-import { activeManualPause, manualPausesOf, openRequestsOfInvocations, runExists, runIds, runLine, statusOf } from "./status.ts";
+import { activeManualPause, manualPausesOf, openRequestsOfInvocations, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
 import type { RunState as RunStateName, RunStatus } from "./status.ts";
 import { causedByRunsOf, installationIdsOf, installationsOf, profileOf, profileRulesOf, standing, standingAt, startedBy } from "./subscriptions.ts";
 import type { Installation } from "./subscriptions.ts";
@@ -172,6 +172,7 @@ interface RunOrigin {
   workflow?: WorkflowId;
   version?: WorkflowVersion;
   installation?: InstallationId;
+  directory?: string;
 }
 
 /** A run as `workflow.run.started` records it. */
@@ -454,7 +455,13 @@ export function workflow(opts: WorkflowOptions = {}) {
             throw new RunRefusal("start-what", "a start names the workflow to run: its id, or a script file, one of the two");
           }
           const target = input.id === undefined ? { file: resolveFile(opts.root, input.file ?? "") } : registeredTarget(workflowOf(input.id));
-          const run = await requestRun(ctx, { ...target, args: input.args, ...(input.label === undefined ? {} : { label: input.label }), ...(input.box === undefined ? {} : { box: input.box }) });
+          const run = await requestRun(ctx, {
+            ...target,
+            args: input.args,
+            ...(input.label === undefined ? {} : { label: input.label }),
+            ...(input.box === undefined ? {} : { box: input.box }),
+            ...(input.directory === undefined ? {} : { directory: input.directory }),
+          });
           if (input.wait !== true) return { run, finished: false };
           const status = await settle(run, input.timeoutMs);
           return { ...status, finished: status.state === "finished" };
@@ -504,6 +511,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         ...(boxed ? { box: true } : {}),
         ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
         ...(input.version === undefined ? {} : { version: input.version }),
+        ...(input.directory === undefined ? {} : { directory: input.directory }),
       });
       return run;
     }
@@ -545,7 +553,8 @@ export function workflow(opts: WorkflowOptions = {}) {
           const runs = runIds(reader)
             .filter((run) => isOwnerOrStarter(ctx.caller, ownerOfRun(reader, run)))
             .filter((run) => input.state === undefined || statusOf(reader, run).state === input.state);
-          return { runs: runs.slice(-(input.limit ?? runs.length)).map((run) => runLine(reader, run)) };
+          const shown = runs.slice(-(input.limit ?? runs.length));
+          return { runs: shown.map((run) => runLine(reader, run)), entries: shown.map((run) => runEntry(reader, run)) };
         },
       }),
     );
@@ -1848,6 +1857,7 @@ function originOf(from: RunOrigin): RunOrigin {
     ...(from.workflow === undefined ? {} : { workflow: from.workflow }),
     ...(from.version === undefined ? {} : { version: from.version }),
     ...(from.installation === undefined ? {} : { installation: from.installation }),
+    ...(from.directory === undefined ? {} : { directory: from.directory }),
   };
 }
 

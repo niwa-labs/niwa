@@ -268,6 +268,43 @@ function outcomeLine(outcome: RunOutcome): string {
   }
 }
 
+/** A few words of what a run is up to or how it ended. */
+function aboutRun(status: RunStatus): string {
+  return status.state === "paused" ? (status.reason ?? "") : status.outcome !== undefined ? outcomeLine(status.outcome) : phaseLine(status);
+}
+
+/** A run of a list as fields: what a page needs to group and show runs without reading each one. */
+export const RunEntry = z.object({
+  run: z.string(),
+  name: z.string(),
+  state: RunState,
+  /** The directory the run was started for; absent for a run started with none. */
+  directory: z.string().optional(),
+  /** When the run was last asked for: its start, or the resume that began it again. */
+  requestedAt: z.iso.datetime(),
+  /** A few words of what the run is up to or how it ended. */
+  about: z.string(),
+  /** The questions the run asked that nobody has answered yet. */
+  requests: z.number().int().nonnegative(),
+});
+export type RunEntry = z.infer<typeof RunEntry>;
+
+/** One run of the list, as fields. */
+export function runEntry(journal: JournalReader, run: string): RunEntry {
+  const status = statusOf(journal, run);
+  const requested = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1);
+  const data = requested === undefined ? undefined : RunRequested.schema.parse(requested.data);
+  return {
+    run,
+    name: nameOfRun(journal, run),
+    state: status.state,
+    ...(data?.directory === undefined ? {} : { directory: data.directory }),
+    requestedAt: new Date(requested?.at ?? 0).toISOString(),
+    about: cut(aboutRun(status), 120),
+    requests: status.requests.length,
+  };
+}
+
 /**
  * One line of a list of runs: the id, the name, the state, a few words of what it is up to or how
  * it ended, the questions it asked, and for a paused run the command that answers its pause.
@@ -275,12 +312,7 @@ function outcomeLine(outcome: RunOutcome): string {
 export function runLine(journal: JournalReader, run: string): string {
   const status = statusOf(journal, run);
   const short = shortRun(run);
-  const about =
-    status.state === "paused"
-      ? (status.reason ?? "")
-      : status.outcome !== undefined
-        ? outcomeLine(status.outcome)
-        : phaseLine(status);
+  const about = aboutRun(status);
   const resolve =
     status.state !== "paused"
       ? ""

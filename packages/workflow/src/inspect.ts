@@ -36,6 +36,7 @@ export const WorkflowInspection = z.object({
     workflow: WorkflowId.optional(),
     version: WorkflowVersion.optional(),
     installation: InstallationId.optional(),
+    directory: z.string().optional(),
     requestedAt: ReceivedAt,
     startedAt: ReceivedAt.optional(),
     finishedAt: ReceivedAt.optional(),
@@ -79,7 +80,7 @@ export function inspectRun(journal: JournalReader, run: RunId): WorkflowInspecti
   const started = starts.findLast((row) => row.seq > requested.seq);
   const finished = forRun(RunFinished.name).findLast((row) => row.seq > requested.seq);
   const status = statusOf(journal, run);
-  const { file, label, workflow, version, installation } = RunRequested.schema.parse(requested.data);
+  const { file, label, workflow, version, installation, directory } = RunRequested.schema.parse(requested.data);
   // The phase of each step, by its invocation and its key.
   const stepPhases = new Map<string, string>();
   for (const row of forRun(StepPhase.name)) {
@@ -105,7 +106,7 @@ export function inspectRun(journal: JournalReader, run: RunId): WorkflowInspecti
   return {
     run,
     status,
-    origin: { file, label, workflow, version, installation, requestedAt: at(requested), startedAt: started && at(started), finishedAt: ended && at(ended) },
+    origin: { file, label, workflow, version, installation, directory, requestedAt: at(requested), startedAt: started && at(started), finishedAt: ended && at(ended) },
     phases,
     steps,
   };

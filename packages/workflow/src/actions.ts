@@ -25,8 +25,11 @@ import {
   WorkflowVersion,
 } from "./records.ts";
 import { WorkflowPhases } from "./language.ts";
-import { RunState, RunStatus } from "./status.ts";
+import { RunEntry, RunState, RunStatus } from "./status.ts";
 import { WorkflowInspection } from "./inspect.ts";
+
+/** An absolute path: a POSIX root, or a drive letter and a separator. */
+const ABSOLUTE_PATH = /^(\/|[A-Za-z]:[\\/])/;
 
 export const StartInput = z.object({
   /** The registered workflow to run, at its latest version: its id or any text that names it. */
@@ -37,6 +40,11 @@ export const StartInput = z.object({
   label: z.string().optional(),
   /** Run the script process in an empty box. Default: the module's own choice, which is no box. */
   box: z.boolean().optional(),
+  /**
+   * The directory the run is for, an absolute path: the project it belongs to, which the cockpit groups runs by. The CLI and
+   * the MCP server fill it with their working directory when the caller names none; a start with none has no directory.
+   */
+  directory: z.string().regex(ABSOLUTE_PATH, "a directory is an absolute path").optional(),
   /** Answer when the run finishes or pauses, or when `timeoutMs` has passed, as `workflow.wait` does. Default: answer at once. */
   wait: z.boolean().optional(),
   /** With `wait`: how long to wait, in milliseconds. Default: a minute. */
@@ -176,9 +184,9 @@ export const workflowInspect = actionRef("workflow.inspect", {
 });
 
 export const workflowRuns = actionRef("workflow.runs", {
-  description: "The runs, one line each: the id, the name, the state, a few words of what it is up to or how it ended, the questions it asked, and for a paused run the command that answers it.",
+  description: "The runs, one line each: the id, the name, the state, a few words of what it is up to or how it ended, the questions it asked, and for a paused run the command that answers it. `entries` has the same runs as fields, with the directory each was started for.",
   input: RunsInput,
-  output: z.object({ runs: z.array(z.string()) }),
+  output: z.object({ runs: z.array(z.string()), entries: z.array(RunEntry) }),
 });
 
 export const workflowCheck = actionRef("workflow.check", {

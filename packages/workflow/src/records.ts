@@ -39,7 +39,7 @@ export type InstallationId = z.infer<typeof InstallationId>;
 export const WorkflowVersion = z.string().regex(/^[0-9a-f]{64}$/, "a version is a sha256 in hex").brand<"WorkflowVersion">();
 export type WorkflowVersion = z.infer<typeof WorkflowVersion>;
 
-/** Where a run came from, when it is more than a file: the workflow and the version it runs, the installation that started it. */
+/** Where a run came from, when it is more than a file: the workflow and the version it runs, the installation that started it, the directory it was started for. */
 const RunOrigin = {
   /** The registered workflow the run runs, when it was started by its id. */
   workflow: WorkflowId.optional(),
@@ -47,6 +47,8 @@ const RunOrigin = {
   version: WorkflowVersion.optional(),
   /** The installation whose record started the run. */
   installation: InstallationId.optional(),
+  /** The directory the run was started for, an absolute path: the project it belongs to. Absent when the caller named none. */
+  directory: z.string().optional(),
 };
 
 export { JsonSchemaValue };
