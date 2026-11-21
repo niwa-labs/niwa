@@ -4,7 +4,11 @@
  * own (`answers.log`). A turn takes 200 ms and answers "fake reply"; the content "hang" never ends
  * until `session/stop`, "fail" fails, "die" kills the process, "give the word" answers with JSON,
  * and "silent" ends with no answer in the event, so it is read back from the transcript. The files
- * "old-subscribe", "no-subscribe" and "resume-fail" change what it accepts.
+ * "old-subscribe", "no-subscribe", "resume-fail", "no-v4", "bad-capabilities" and "no-message-id" change what it
+ * accepts. A `session/send` while a turn runs is refused, as the real server refuses it; the running turn is steered
+ * through `v4/command` (a text that begins with "reject" is rejected). The content "refuse" is refused after a pause, "mute" is never answered (its turn runs),
+ * "bad ack" is answered with something that is no acceptance, and "empty" ends with no answer anywhere. Each turn is
+ * written to the transcript, `session/messages`, as the user message that began it and the answer it gave.
  *
  * It speaks the wire as the real server does, in the shapes of the snapshot niwa types it with: every event
  * has its envelope and the payload its type needs, so a test that sends less says only what it means to
@@ -24,12 +28,14 @@ const { appendFileSync, existsSync } = await import("node:fs");
 const dir = import.meta.dir;
 const log = (name, value) => appendFileSync(dir + "/" + name, JSON.stringify(value) + "\\n");
 log("argv.log", process.argv.slice(2));
-log("env.log", { id: process.env.NIWA_ID, pid: process.pid });
+log("env.log", { id: process.env.NIWA_ID, pid: process.pid, storage: process.env.ZCODE_STORAGE_DIR, db: process.env.ZCODE_SESSION_DB_PATH });
 const out = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
 const subscribeKind = () => (existsSync(dir + "/old-subscribe") ? "desktop" : "desktop-continuous");
 
 let session = "sess_fake-1";
 let active;
+let turnNumber = 0;
+const transcript = [];
 let requestsOfServer = 0;
 const askClient = (method, params) => {
   requestsOfServer += 1;
@@ -40,7 +46,7 @@ const askClient = (method, params) => {
 const answerWaiters = new Map();
 const unanswered = new Map();
 const answered = (id) => new Promise((resolve) => { answerWaiters.set(id, resolve); });
-async function playScript() {
+async function playScript(userId) {
   const steps = JSON.parse(await Bun.file(dir + "/script.json").text());
   for (const step of steps) {
     if (active === undefined) return;
@@ -54,7 +60,11 @@ async function playScript() {
       if (step.wait !== false) await done;
     }
   }
-  if (active !== undefined) { active = undefined; event("turn.completed", { response: "fake reply", resultType: "success" }); }
+  if (active !== undefined) {
+    active = undefined;
+    transcript.push(message("assistant", "fake reply", "msg-assistant-" + turnNumber, userId));
+    event("turn.completed", { response: "fake reply", resultType: "success" });
+  }
 }
 let eventSeq = 0;
 /** What the snapshot needs in the payload of an event, so that a test names only what it cares about. */
@@ -83,18 +93,28 @@ const permissionParams = (requestId, toolName, input) => ({
 
 function turn(content) {
   active = content;
+  turnNumber += 1;
+  const userId = "msg-user-" + turnNumber;
+  transcript.push(message("user", content, userId));
   askClient("session/requestRuntimePreferences", { sessionId: session, scope: "user-execution" });
   askClient("interaction/requestOfficialMcpAuthHeaders", { requestId: "official-mcp-auth:1", workspace, pluginId: "zcode-site@zcode-plugins-official", mcpKey: "sites", targetOrigin: "https://zcode.z.ai" });
   askClient("session/readReplyLanguage", { sessionId: session });
   out({ method: "v4/conversation/contextCompositionChanged", params: { sessionId: session, revision: 1 } });
   if (content.includes("needs permission")) askClient("interaction/requestPermission", permissionParams("perm-1", "Bash", { command: "ls" }));
   out({ method: "state.updated", params: { type: "state.updated", scope: "session", sessionId: session, revision: 1, patch: { status: "running" } } });
-  event("turn.started", { input: content });
+  event("turn.started", { input: content, ...(existsSync(dir + "/no-message-id") ? {} : { messageId: userId }) });
   event("model.streaming", { delta: "x", kind: "text_delta" });
   if (content === "hang") return;
-  if (content === "script") return void playScript();
+  if (content === "script") return void playScript(userId);
   if (content === "die") process.exit(3);
-  const settle = (name, payload) => { if (active === undefined) return; active = undefined; event(name, payload); };
+  const settle = (name, payload) => {
+    if (active === undefined) return;
+    active = undefined;
+    // What the turn wrote into the transcript: its answer, unless it left none.
+    const written = content.startsWith("empty") || name !== "turn.completed" ? undefined : content.startsWith("silent") ? "from the transcript" : payload.response;
+    if (written !== undefined && written !== "") transcript.push(message("assistant", written, "msg-assistant-" + turnNumber, userId));
+    event(name, payload);
+  };
   if (content.startsWith("fail")) return void setTimeout(() => settle("turn.failed", { error: { type: "execution", message: "model exploded" } }), 50);
   const response = content.includes("give the fenced word")
     ? "Here it is: \`\`\`json\\n{\\"word\\":\\"fenced\\"}\\n\`\`\`"
@@ -107,17 +127,17 @@ function turn(content) {
   }, content === "slow" ? 600 : 200);
 }
 
-const message = (role, text) => ({
+const message = (role, text, messageId, parent) => ({
   info: role === "user"
-    ? { messageId: "msg-" + role, sessionId: session, role, time: { created: 1 }, agent: "build" }
-    : { messageId: "msg-" + role, sessionId: session, role, time: { created: 2 }, parentMessageId: "msg-user", agent: "build", path: { cwd: dir, root: dir }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
-  parts: [{ partId: "part-" + role, sessionId: session, messageId: "msg-" + role, type: "text", text }],
+    ? { messageId, sessionId: session, role, time: { created: 1 }, agent: "build" }
+    : { messageId, sessionId: session, role, time: { created: 2 }, parentMessageId: parent, agent: "build", path: { cwd: dir, root: dir }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+  parts: [{ partId: "part-" + messageId, sessionId: session, messageId, type: "text", text }],
 });
 
 function handle({ id, method, params }) {
   const ok = (result) => out({ id, result });
   switch (method) {
-    case "runtime/capabilities": return ok({ independentPlanState: true });
+    case "runtime/capabilities": return ok(existsSync(dir + "/bad-capabilities") ? "pong" : { independentPlanState: true });
     case "session/create": askClient("session/requestRuntimePreferences", { sessionId: session, scope: "runtime-materialization" }); return ok(snapshot());
     case "session/resume":
       if (existsSync(dir + "/resume-fail")) return out({ id, error: { code: -32603, message: "no such session" } });
@@ -126,9 +146,22 @@ function handle({ id, method, params }) {
       if (existsSync(dir + "/no-subscribe") || params.deliveryKind !== subscribeKind()) return out({ id, error: { code: -32602, message: "invalid_value in deliveryKind" } });
       return ok({ sessionId: params.sessionId, eventSeq: 0, events: [] });
     case "session/send":
-      ok({ accepted: true, sessionId: params.sessionId, stateRevision: 1 });
-      if (active !== undefined) return void event("turn.steerQueued", {});
+      // The real server takes no input while a prompt runs: a steer goes through v4/command.
+      if (active !== undefined) return out({ id, error: { code: -32010, message: "A prompt is already running for this session" } });
+      if (params.content.startsWith("refuse")) return void setTimeout(() => out({ id, error: { code: -32010, message: "the server refuses this message" } }), 100);
+      if (params.content.startsWith("bad ack")) out({ id, result: { ok: true } });
+      else if (!params.content.startsWith("mute")) ok({ accepted: true, sessionId: params.sessionId, stateRevision: 1 });
       return void turn(params.content);
+    case "v4/command": {
+      if (existsSync(dir + "/no-v4")) return out({ id, error: { code: -32601, message: "method not found" } });
+      if (params.type !== "sendText" || params.payload.text.startsWith("reject")) return out({ id, result: { commandId: params.commandId, status: "rejected", reasonCode: "proto.unsupported", revisionAtDecision: 1 } });
+      if (active === undefined) {
+        out({ id, result: { commandId: params.commandId, status: "accepted", revisionAtDecision: 1, result: { type: "inputAccepted", delivery: "startNow", inputId: params.commandId } } });
+        return void turn(params.payload.text);
+      }
+      out({ id, result: { commandId: params.commandId, status: "accepted", revisionAtDecision: 1, result: { type: "inputAccepted", delivery: "queue", inputId: params.commandId } } });
+      return void event("turn.steerQueued", { delivery: "guide" });
+    }
     case "session/stop":
       ok({});
       if (active !== undefined) {
@@ -138,7 +171,7 @@ function handle({ id, method, params }) {
       }
       return;
     case "session/messages":
-      return ok({ messages: [message("user", "q"), message("assistant", "from the transcript")] });
+      return ok({ messages: transcript });
     default: return out({ id, error: { code: -32601, message: "method not found" } });
   }
 }

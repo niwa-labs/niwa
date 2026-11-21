@@ -315,7 +315,36 @@ test("a message to a busy session waits for the turn after, and a steer goes int
   expect(running).toMatchObject({ status: "started", turn: 3 });
   const steered = await c.send(session, "steer", { into: "turn" });
   expect(steered).toMatchObject({ status: "delivered", turn: 3 });
-  expect((await requestsOf("session/send")).map((params) => params["content"]).slice(-2)).toEqual(["third", "steer"]);
+});
+
+test("a steer goes through v4/command as a guided sendText, never as a session/send, which a running turn refuses", async () => {
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText("slow"), cwd: dir });
+  const steered = await c.send(session, "steer", { into: "turn" });
+  expect(steered).toMatchObject({ status: "delivered", turn: 1 });
+  expect((await requestsOf("session/send")).map((params) => params["content"])).toEqual(["slow"]);
+  const [command] = await requestsOf("v4/command");
+  expect(command).toMatchObject({
+    sessionId: "sess_fake-1",
+    type: "sendText",
+    payload: { text: "steer", requestedDelivery: "guide" },
+    workspace: { workspacePath: dir, workspaceKey: dir },
+  });
+  expect(typeof command?.["commandId"]).toBe("string");
+  // Each steer is a command of its own.
+  await c.send(session, "again", { into: "turn" });
+  const ids = (await requestsOf("v4/command")).map((params) => params["commandId"]);
+  expect(new Set(ids).size).toBe(2);
+  // What the command did not take is a message that was not sent.
+  await expect(c.send(session, "reject this", { into: "turn" })).rejects.toMatchObject({ code: "InputNotSent" });
+});
+
+test("a ZCode without v4/command refuses a steer by name and sends nothing", async () => {
+  await writeFile(join(dir, "no-v4"), "");
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText("slow"), cwd: dir });
+  await expect(c.send(session, "steer", { into: "turn" })).rejects.toMatchObject({ code: "Unsupported" });
+  expect((await requestsOf("session/send")).map((params) => params["content"])).toEqual(["slow"]);
 });
 
 test("a resume of a held session with a prompt waits behind the running turn", async () => {

@@ -13,9 +13,13 @@
  * The native session id is ZCode's own (`sess_<uuid>`). The model is not set at create (ZCode
  * fails the create on it) but goes with every `session/send`, with the effort as its reasoning
  * level. A message to a busy session is queued by default and becomes a turn of its own when the
- * current turn ends; only a caller that asks for it is steered into the running turn, which is
- * what ZCode itself does with a `session/send` during a turn.
+ * current turn ends; only a caller that asks for it is steered into the running turn. ZCode refuses a
+ * `session/send` while a prompt runs, so a steer goes through `v4/command`, as a `sendText` that asks
+ * for the delivery `guide`; a ZCode without that method refuses the steer by name.
  */
+
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -57,7 +61,7 @@ import type {
   VisibleActions,
 } from "@niwa-labs/harness";
 import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
-import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
+import type { AgentProcess, BoxRequest, HarnessNeeds } from "@niwa-labs/sandbox";
 
 import { notificationAction, requestAction } from "./dispatch.ts";
 import type { Answered, TurnEnd } from "./dispatch.ts";
@@ -65,6 +69,7 @@ import { SessionMessageSchema } from "./protocol/generated/zcode-protocol.ts";
 import type { RequestPermissionParams, RequestUserInputParams } from "./protocol/generated/zcode-protocol.ts";
 import { readNotification, readRequest, unknownDetail, unknownVariantName, ZCODE_PROTOCOL } from "./protocol/index.ts";
 import type { UnknownVariant } from "./protocol/index.ts";
+import { dbPathOf } from "./paths.ts";
 import { directoryOf, persistedModeOf } from "./reading.ts";
 import { INPUT_CANCELLED, readPermission, readUserInput } from "./reverse.ts";
 
@@ -138,8 +143,19 @@ const FrameSchema = z.looseObject({
   method: z.string().optional(),
   params: z.unknown().optional(),
   result: z.unknown().optional(),
-  error: z.looseObject({ message: z.string().optional() }).optional(),
+  error: z.looseObject({ code: z.number().optional(), message: z.string().optional() }).optional(),
 });
+
+/** What ZCode answers a command of `v4/command` with: whether it took it, and how. */
+const CommandAckSchema = z.looseObject({
+  status: z.enum(["accepted", "rejected", "stale", "duplicate", "noop", "failed"]),
+  reasonCode: z.string().optional(),
+  message: z.string().optional(),
+  result: z.looseObject({ delivery: z.enum(["startNow", "queue", "guide"]).optional() }).optional(),
+});
+
+/** JSON-RPC's code for a method the server does not have. */
+const METHOD_NOT_FOUND = -32601;
 
 /** What a `session/messages` result is made of; each message is read by the snapshot's schema on its own, so one it does not know costs only itself. */
 const MessagesResultSchema = z.object({ messages: z.array(z.unknown()) });
@@ -149,6 +165,8 @@ interface Outcome {
   readonly ok: boolean;
   readonly result?: unknown;
   readonly error?: string;
+  /** The code of the error the server answered with, when it gave one. */
+  readonly code?: number;
   /** How far a call that failed got: never written, refused by the CLI, or written and never answered. */
   readonly dispatch?: Dispatch;
 }
@@ -396,7 +414,12 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       settle(
         frame.error === undefined
           ? { ok: true, result: frame.result }
-          : { ok: false, error: frame.error.message ?? "the call failed", dispatch: "refused" },
+          : {
+              ok: false,
+              error: frame.error.message ?? "the call failed",
+              ...(frame.error.code === undefined ? {} : { code: frame.error.code }),
+              dispatch: "refused",
+            },
       );
     } else if (frame.id !== undefined && frame.id !== null) {
       answerServerRequest(session, frame.id, frame.method, frame.params);
@@ -867,6 +890,47 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     return { status: "started", turn, at };
   }
 
+  /**
+   * Put a message into the turn that runs. ZCode refuses a `session/send` while a prompt runs, so this
+   * is a `sendText` command that asks for the delivery `guide`; its acknowledgement says what became of
+   * it. A ZCode that has no such command refuses by name, and nothing is sent.
+   */
+  async function steer(session: LiveSession, message: string): Promise<DeliveryReceipt> {
+    const at = Date.now();
+    const turn = session.turn;
+    const sent = await call(session, "v4/command", {
+      ...(session.cwd === undefined ? {} : wire(session.cwd)),
+      commandId: `niwa-${randomUUID()}`,
+      clientId: "niwa",
+      sessionId: session.nativeId,
+      type: "sendText",
+      payload: { text: message, requestedDelivery: "guide" },
+      issuedAt: at,
+    });
+    if (!sent.ok) {
+      if (sent.code === METHOD_NOT_FOUND) {
+        throw new Unsupported(harnessId, "control", "send", "this ZCode cannot steer a running turn: it has no v4/command");
+      }
+      throw inputFailure(harnessId, "send", sent.dispatch ?? "uncertain", sent.error ?? "the CLI refused the message");
+    }
+    // An answer that is no acknowledgement of the command is taken for a message that may have gone.
+    const ack = CommandAckSchema.safeParse(sent.result);
+    if (!ack.success) throw inputFailure(harnessId, "send", "uncertain", "the CLI's answer to the steer was not an acknowledgement");
+    switch (ack.data.status) {
+      case "accepted":
+      case "duplicate":
+        // The turn ended on its way: ZCode began a turn of the message instead of steering the old one.
+        return ack.data.result?.delivery === "startNow" ? { status: "started", at } : { status: "delivered", turn, at };
+      case "rejected":
+      case "stale":
+      case "noop":
+      case "failed":
+        throw new InputNotSent(harnessId, "send", `the CLI did not take the steer (${ack.data.status}): ${ack.data.reasonCode ?? ack.data.message ?? "no reason given"}`);
+      default:
+        return assertNever(ack.data.status, "command status");
+    }
+  }
+
   function requireSession(id: SessionId, ability: string): LiveSession {
     const session = sessions.get(id.native);
     if (session === undefined) throw unavailable(ability, `the session ${id.native} is not held by this control side`);
@@ -1041,15 +1105,8 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       if (session === undefined) {
         throw new InputNotSent(harnessId, "send", `the session ${id.native} is not held by this control side`);
       }
-      // A send during a running turn is steered into it by ZCode itself: only a caller that asks for it gets that.
-      if (session.busy && sendOptions?.into === "turn") {
-        const at = Date.now();
-        const params: Record<string, unknown> = { sessionId: id.native, content: message };
-        if (session.selection !== undefined) params["modelSelection"] = session.selection;
-        const steered = await call(session, "session/send", params);
-        if (!steered.ok) throw inputFailure(harnessId, "send", steered.dispatch ?? "uncertain", steered.error ?? "the CLI refused the message");
-        return { status: "delivered", turn: session.turn, at };
-      }
+      // Only a caller that asks for it is steered into the running turn.
+      if (session.busy && sendOptions?.into === "turn") return steer(session, message);
       return deliver(session, message);
     },
 
