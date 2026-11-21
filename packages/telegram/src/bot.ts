@@ -54,6 +54,8 @@ export interface Update {
     readonly date: number;
     readonly text?: string;
     readonly from?: { readonly id: UserId; readonly username?: string };
+    /** The message this one answers, when the sender replied to one. */
+    readonly reply_to_message?: { readonly message_id: MessageId };
   };
   readonly callback_query?: {
     readonly id: string;

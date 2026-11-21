@@ -50,7 +50,24 @@ const Choice = question("test.choice", {
 });
 
 /** Wakes the one who asks a question. */
-const Start = record("test.start", z.object({ to: Address, detail: z.string().optional() }), { open: true });
+const Start = record(
+  "test.start",
+  z.object({
+    to: Address,
+    detail: z.string().optional(),
+    /** The kind of question to ask; a choice of release by default. */
+    kind: z.enum(["multi", "text", "form", "other"]).optional(),
+  }),
+  { open: true },
+);
+
+/** The questions of the other kinds. */
+const Others = {
+  multi: question("test.multi", { kind: "multi", title: "Which environments?", options: [opt("a", "Alpha"), opt("b", "Beta"), opt("c", "Gamma")] }),
+  text: question("test.text", { kind: "text", title: "Why?" }),
+  form: question("test.form", { kind: "form", title: "Fill in", schema: { type: "object", properties: { x: { type: "string" } } } }),
+  other: question("test.other", { kind: "choice", title: "Which one?", options: [opt("yes", "Yes"), opt("no", "No")], allowOther: true }),
+};
 
 /** The answer of the owner, as the one who asked sees it. */
 const Continued = record("test.continued", z.object({ answer: z.string() }));
@@ -66,7 +83,8 @@ function asker(): ReturnType<typeof plugin> {
     api.declare(Start, Continued);
     // Each question is asked on its own: one that waits does not hold up the next.
     api.on(Start, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
-      const asked = data.detail === undefined ? Choice : { ...Choice, input: { ...Choice.input, detail: data.detail } };
+      const base = data.kind === undefined ? Choice : Others[data.kind];
+      const asked = data.detail === undefined ? base : { ...base, input: { ...base.input, detail: data.detail } };
       const { answer } = answeredBy(await step(requestAsk, { to: data.to, ...asked }));
       await step.emit(Continued, { answer: JSON.stringify(answer) });
     });
@@ -164,6 +182,13 @@ function messageUpdate(updateId: number, chat: number, text: string): unknown {
       from: { id: chat, username: chat === OWNER ? "owner" : "stranger" },
     },
   };
+}
+
+/** A reply of the owner to a message of the surface. */
+function replyUpdate(updateId: number, replyTo: number, text: string): unknown {
+  const update = messageUpdate(updateId, OWNER, text) as { message: Record<string, unknown> };
+  update.message["reply_to_message"] = { message_id: replyTo };
+  return update;
 }
 
 /** A button press on a message. */
@@ -892,6 +917,130 @@ test("telegram: a press is resolved by the chat as well as the message, so a for
     await home.cleanup();
   }
 }, 40_000);
+
+/** The answer the request of a kind gets from the replies, as the requests module records it. */
+async function replyingTo(
+  kind: "multi" | "text" | "form" | "other",
+  replies: string[],
+  seen: (fake: ReturnType<typeof fakeTelegram>, answered: () => Promise<unknown[]>) => Promise<void>,
+): Promise<void> {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+  const delivered: string[] = [];
+
+  try {
+    const surface = telegram(options(fake.base), { toAgent: async (text) => void delivered.push(text) });
+    host.use(requests({ bind: surface.bind() }));
+    host.use(asker());
+    host.use(surface);
+    await host.serve();
+    const client = await connectAsOwner(home.path);
+    await client.emit(Start, { to: { kind: "owner" }, kind });
+    await eventually(() => fake.sent.length === 1, 5_000, "the request should be posted");
+    replies.forEach((text, index) => fake.push(replyUpdate(900 + index, 1, text)));
+    await seen(fake, async () => {
+      const answered = (await recordsOf(home.path, 200)).filter((record) => record.type === RequestAnswered.name);
+      return answered.map((record) => (record.data as { answer: unknown }).answer);
+    });
+    expect(delivered).toEqual([]);
+    await client.close();
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}
+
+test("telegram: a reply to a text question answers it, and is not said to the agent", async () => {
+  await replyingTo("text", ["because the users asked"], async (fake, answered) => {
+    expect(fake.sent[0]?.reply_markup).toBeUndefined();
+    expect(fake.sent[0]?.text).toContain("Reply to this message");
+    await eventually(async () => (await answered()).length === 1, 5_000, "the reply should answer the request");
+    expect(await answered()).toEqual([{ text: "because the users asked" }]);
+  });
+}, 30_000);
+
+test("telegram: a multi question lists its options, and a reply with their numbers answers it", async () => {
+  await replyingTo("multi", ["1, 3"], async (fake, answered) => {
+    expect(fake.sent[0]?.reply_markup).toBeUndefined();
+    expect(fake.sent[0]?.text).toContain("1. Alpha\n2. Beta\n3. Gamma");
+    await eventually(async () => (await answered()).length === 1, 5_000, "the reply should answer the request");
+    expect(await answered()).toEqual([{ ids: ["a", "c"] }]);
+  });
+}, 30_000);
+
+test("telegram: a reply that does not fit the question is explained and leaves it open", async () => {
+  await replyingTo("multi", ["7", "maybe"], async (fake, answered) => {
+    await eventually(() => fake.sent.length === 3, 5_000, "both replies should be explained");
+    expect(fake.sent[1]?.text).toContain("There is no option 7");
+    expect(fake.sent[2]?.text).toContain("Reply with the number of an option");
+    expect(await answered()).toEqual([]);
+  });
+}, 30_000);
+
+test("telegram: a free text answers a question that allows another answer", async () => {
+  await replyingTo("other", ["neither, see the ticket"], async (fake, answered) => {
+    expect(fake.sent[0]?.reply_markup?.inline_keyboard.flat().map((button) => button.text)).toEqual(["Yes", "No"]);
+    expect(fake.sent[0]?.text).toContain("your own answer");
+    await eventually(async () => (await answered()).length === 1, 5_000, "the reply should answer the request");
+    expect(await answered()).toEqual([{ text: "neither, see the ticket" }]);
+  });
+}, 30_000);
+
+test("telegram: a form says where it can be answered, and a reply to it explains the same", async () => {
+  await replyingTo("form", ["{}"], async (fake, answered) => {
+    expect(fake.sent[0]?.reply_markup).toBeUndefined();
+    expect(fake.sent[0]?.text).toMatch(/answer request req-[0-9a-f]+ in the cockpit/);
+    await eventually(() => fake.sent.length === 2, 5_000, "the reply should be explained");
+    expect(fake.sent[1]?.text).toContain("cannot be filled in here");
+    expect(await answered()).toEqual([]);
+  });
+}, 30_000);
+
+test("telegram: the way to answer stays in a long question when the question is cut", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    const surface = telegram(options(fake.base));
+    host.use(requests({ bind: surface.bind() }));
+    host.use(asker());
+    host.use(surface);
+    await host.serve();
+    const client = await connectAsOwner(home.path);
+    await client.emit(Start, { to: { kind: "owner" }, kind: "text", detail: "y".repeat(6_000) });
+    await eventually(() => fake.sent.length === 1, 5_000, "the request should be posted");
+    expect(fake.sent[0]?.text.length).toBeLessThanOrEqual(4096);
+    expect(fake.sent[0]?.text.endsWith("Reply to this message with your answer.")).toBe(true);
+    await client.close();
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: a reply to a message that shows no request goes to the agent as any message does", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const delivered: string[] = [];
+  const host = createNiwa({ home: home.path });
+
+  try {
+    host.use(requests());
+    host.use(telegram(options(fake.base), { toAgent: async (text) => void delivered.push(text) }));
+    await host.serve();
+    fake.push(replyUpdate(950, 77, "about that earlier thing"));
+    await eventually(() => delivered.length === 1, 5_000, "the reply should reach the agent");
+    expect(delivered).toEqual(["about that earlier thing"]);
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
 
 test("telegram: without speaksFor the surface is a plain client, and its press is refused", async () => {
   const home = await tempHome();

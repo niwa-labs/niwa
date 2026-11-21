@@ -1,23 +1,27 @@
 /**
- * index.ts — the Telegram surface: the plugin and the action telegram.send.
+ * index.ts — the Telegram surface: the plugin and its actions.
  *
  * The service long-polls Telegram and writes each message of the owner's chat as a record. The
- * id of a record is made from the update id, and the offset to ask from is read back from the
- * journal, so a restart neither loses an update nor writes one twice. A chat that is not the
- * owner's is not a way into niwa: its message, or its press of a button, is written down as
- * ignored, without its text, and nothing it sends is done with the owner's rights.
+ * id of a record is made from the bot, the run of update ids and the update id, and the offset to
+ * ask from is read back from the journal while it is recent, so a restart neither loses an update
+ * nor writes one twice. Only the owner's private chat, and the owner in it, is a way into niwa: a
+ * message or a press of a button from anywhere else is written down as ignored, without its
+ * text, and nothing it sends is done with the owner's rights.
  *
  * The surface speaks for the owner only as an instance configured with `speaksFor`, and then only
- * for input from the owner's chat. Without it the surface is a plain client: a press of a button
- * in the owner's chat is refused by the requests module, which lets only the addressee answer.
+ * for input from the owner's chat. Without it the surface is a plain client: an answer from the
+ * owner's chat is refused by the requests module, which lets only the addressee answer.
  *
  * What waits for the owner is one list, and this chat is one view of it. A request addressed to
- * the owner is posted as a message with the choices it offers as buttons. A press of a button is the owner's answer: the press is written down, and the request
- * is answered by calling "request.answer" as the owner.
+ * the owner is posted as a message, and the message is the way back to the request. The owner
+ * answers it by a button (a choice, a confirmation, a permission) or by replying to the message
+ * (a text, the numbers of a multiple choice, or a text of his own where the question allows one);
+ * the answer is given by calling "request.answer" as the owner. A form is not filled here: the
+ * message says where to answer it.
  *
- * A button carries the answer and nothing else: Telegram gives a callback 64 bytes, and the id of
- * a request is longer. The request the press belongs to is the one the message shows, and the
- * record of that message says which request it is.
+ * A button carries the place of its answer and nothing else: Telegram gives a callback 64 bytes,
+ * and the id of a request is longer. A press is written down as it came, and a handler finds the
+ * request in the record of the message, by bot, chat and message.
  */
 
 import { NotSent, OptionIdSchema, action, client, optionsOf, owner, questionLines, record } from "@niwa-labs/core";
@@ -157,6 +161,8 @@ export const Received = record(
     text: z.string(),
     /** Who wrote it, as Telegram names them. */
     from: z.string().optional(),
+    /** The message it replies to, when it is a reply. */
+    reply: messageSchema.optional(),
   }),
 );
 
@@ -178,6 +184,10 @@ export const Posted = record(
     message: messageSchema,
     /** The name of the question that was asked. */
     question: z.string(),
+    /** The kind of the question: it says how a reply is read. */
+    kind: z.enum(["choice", "multi", "confirm", "text", "form", "permission"]),
+    /** Whether a text of the owner's own is an answer too. */
+    allowOther: z.boolean(),
     /** The choices the buttons stand for, in the order of the buttons. */
     choices: z.array(z.string()),
   }),
@@ -442,6 +452,7 @@ export class TelegramService {
         message: message.message_id,
         text,
         ...(message.from?.username === undefined ? {} : { from: message.from.username }),
+        ...(message.reply_to_message === undefined ? {} : { reply: message.reply_to_message.message_id }),
       },
       receivedId(this.source, update.update_id),
     );
@@ -608,17 +619,16 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
       if (created.to.kind !== "owner") throw new NotSent(`the request "${input.request}" is not addressed to the owner`);
       if (reader !== undefined && endedIn(reader, input.request)) throw new NotSent(`the request "${input.request}" is ended`);
       const options = optionsOf(created.input);
-      const sent = await service.client.sendMessage(
-        opts.owner,
-        fit(textOf(created)),
-        options.length === 0 ? undefined : keyboardFor(options.map((option) => option.label)),
-      );
+      const shown = render(created);
+      const sent = await service.client.sendMessage(opts.owner, shown.text, shown.keyboard);
       await ctx.emit(Posted, {
         bot: service.botId,
         request: created.id,
         chat: opts.owner,
         message: sent.message_id,
         question: created.question,
+        kind: created.input.kind,
+        allowOther: "allowOther" in created.input && created.input.allowOther,
         choices: options.map((option) => option.id),
       });
       return { messageId: sent.message_id, chat: opts.owner };
@@ -639,7 +649,21 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     // itself: the owner is asked, and only his "retry" delivers again.
     // A message the agent cannot take waits for the owner's word: the messages after it do not.
     api.on(Received, { id: "agent", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
-      if (toAgent === undefined || data.text === "") return;
+      if (data.text.trim() === "") return;
+      // A reply to the message that shows a request answers it: it is the owner's answer, not a
+      // word to the agent.
+      const shown =
+        data.reply === undefined ? undefined : await postedFor(api, { bot: data.bot, chat: data.chat, message: data.reply }, 0);
+      if (shown !== undefined) {
+        const read = answerFromReply(shown, data.text);
+        if ("problem" in read) return void (await step.outcome(send, { text: fit(read.problem) }));
+        const outcome = await step.outcome(REQUEST_ANSWER, { id: shown.request, answer: read.answer });
+        if (outcome.status === "completed") return void (await step.outcome(send, { text: `Answered: ${shown.question}` }));
+        const reason = reasonOf(outcome);
+        console.error(`niwa: telegram: the request "${shown.request}" was not answered: ${reason}`);
+        return void (await step.outcome(send, { text: fit(`Your answer was not accepted: ${reason}`) }));
+      }
+      if (toAgent === undefined) return;
       for (;;) {
         const outcome = await step.outcome(deliver, { text: data.text });
         if (outcome.status === "completed") return;
@@ -666,13 +690,7 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
       if (ended(api, data.id) || postedTo(api, data.id, service.botId, opts.owner)) return;
       const outcome = await step.outcome(postRequest, { request: data.id });
       if (outcome.status === "completed") return;
-      const reason =
-        outcome.status === "denied" || outcome.status === "cancelled"
-          ? outcome.reason
-          : outcome.status === "failed"
-            ? outcome.error
-            : "the outcome is not known";
-      console.error(`niwa: telegram: the request "${data.id}" was not posted: ${reason}`);
+      console.error(`niwa: telegram: the request "${data.id}" was not posted: ${reasonOf(outcome)}`);
     });
 
     // A press of a button is the owner's answer: the request is answered, and the one who asked
@@ -693,12 +711,7 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
       }
       const outcome = await step.outcome(REQUEST_ANSWER, { id: posted.request, answer: { ids: [OptionIdSchema.parse(answer)] } });
       if (outcome.status === "completed") return void (await told("Answer sent"));
-      const reason =
-        outcome.status === "denied" || outcome.status === "cancelled"
-          ? outcome.reason
-          : outcome.status === "failed"
-            ? outcome.error
-            : "the answer is not known";
+      const reason = reasonOf(outcome);
       console.error(`niwa: telegram: the request "${posted.request}" was not answered: ${reason}`);
       await told("Not accepted", `Your answer was not accepted: ${reason}`);
     });
@@ -780,20 +793,100 @@ async function postedFor(
 /** The most a message of Telegram holds, in the units Telegram counts: UTF-16 code units. */
 const MESSAGE_LIMIT = 4096;
 
-/** The text, cut to fit one message, with a note where it was cut. */
-export function fit(text: string): string {
-  if (text.length <= MESSAGE_LIMIT) return text;
+/** The text, cut to fit `room` units, with a note where it was cut. */
+export function fit(text: string, room: number = MESSAGE_LIMIT): string {
+  if (text.length <= room) return text;
   const note = "\n[cut]";
-  let end = MESSAGE_LIMIT - note.length;
+  let end = room - note.length;
   // Never between the two halves of a character outside the basic plane.
   const last = text.charCodeAt(end - 1);
   if (last >= 0xd800 && last <= 0xdbff) end -= 1;
   return `${text.slice(0, end)}${note}`;
 }
 
-/** The message about a request: the name of the question and what was asked. */
-function textOf(created: Created): string {
-  return [created.question, ...questionLines(created.input)].join("\n");
+/** Why a step did not complete, in a few words. */
+function reasonOf(outcome: Exclude<Outcome<unknown>, { status: "completed" }>): string {
+  switch (outcome.status) {
+    case "denied":
+    case "cancelled":
+      return outcome.reason;
+    case "failed":
+      return outcome.error;
+    case "unknown":
+      return "the outcome is not known";
+  }
+}
+
+/** A request as the owner sees it: the message, and the buttons when its answers are buttons. */
+function render(created: Created): { text: string; keyboard?: InlineKeyboard } {
+  const asked = created.input;
+  const options = optionsOf(asked);
+  const other = "allowOther" in asked && asked.allowOther;
+  const body = [created.question, ...questionLines(asked)].join("\n");
+  let footer: string;
+  let keyboard: InlineKeyboard | undefined;
+  switch (asked.kind) {
+    case "choice":
+    case "confirm":
+    case "permission":
+      keyboard = keyboardFor(options.map((option) => option.label));
+      footer = other ? "Or reply to this message with your own answer." : "";
+      break;
+    case "multi":
+      footer = [
+        ...options.map((option, index) => `${String(index + 1)}. ${option.label}`),
+        other
+          ? "Reply to this message with the numbers of your choices, for example 1, 3, or with your own answer."
+          : "Reply to this message with the numbers of your choices, for example 1, 3.",
+      ].join("\n");
+      break;
+    case "text":
+      footer = "Reply to this message with your answer.";
+      break;
+    case "form":
+      footer = `This asks for a form, which cannot be filled in here: answer request ${created.id} in the cockpit or with the CLI.`;
+      break;
+  }
+  if (footer === "") return { text: fit(body), ...(keyboard === undefined ? {} : { keyboard }) };
+  // The footer says how to answer: it stays whole when the question is cut.
+  const room = MESSAGE_LIMIT - Math.min(footer.length, MESSAGE_LIMIT / 2) - 1;
+  return { text: fit(`${fit(body, room)}\n${footer}`), ...(keyboard === undefined ? {} : { keyboard }) };
+}
+
+/** What a request is, as the record of its post keeps it. */
+type PostedData = z.infer<typeof Posted.schema>;
+
+/**
+ * The answer a reply to a posted request makes, or why it makes none.
+ *
+ * A text question takes the text. A question with options takes the numbers of the options the
+ * message lists (one for a choice, any for a multi), or the text itself when it allows another
+ * answer. A form cannot be filled in a chat: the owner is told where to answer it.
+ */
+export function answerFromReply(posted: PostedData, text: string): { answer: Answer } | { problem: string } {
+  const said = text.trim();
+  switch (posted.kind) {
+    case "text":
+      return { answer: { text: said } };
+    case "form":
+      return { problem: `That request is a form, which cannot be filled in here: answer request ${posted.request} in the cockpit or with the CLI.` };
+    case "choice":
+    case "multi":
+    case "confirm":
+    case "permission": {
+      const count = posted.choices.length;
+      if (/^\d+(?:[\s,]+\d+)*$/.test(said)) {
+        const places = [...new Set(said.split(/[\s,]+/).map(Number))];
+        const ids = places.map((place) => posted.choices[place - 1]);
+        const bad = places.find((_, index) => ids[index] === undefined);
+        if (bad !== undefined) return { problem: `There is no option ${String(bad)}: reply with a number from 1 to ${String(count)}.` };
+        if (posted.kind !== "multi" && ids.length !== 1) return { problem: "Reply with the number of one option." };
+        return { answer: { ids: ids.map((id) => OptionIdSchema.parse(id)) } };
+      }
+      if (posted.allowOther) return { answer: { text: said } };
+      return { problem: `Reply with the number of an option, from 1 to ${String(count)}.` };
+    }
+  }
 }
 
 export { createBot, chatId } from "./bot.ts";
