@@ -136,10 +136,16 @@ export class RequestLedger {
 
   /**
    * The request a command names: an id, a unique prefix or suffix of one, or the run whose one
-   * open ask it is. A text that names no request but is an id is said as an id, so a request the
+   * open ask it is. A whole id of an existing request names that one before any short form is tried. A text that names no request but is an id is said as an id, so a request the
    * caller may not act on is refused for that and not for being unknown.
    */
   named(input: { id?: string | undefined; run?: string | undefined }, sees: (request: Created) => boolean = () => true): RequestId {
+    if (input.id !== undefined) {
+      // The whole id of a request names it, open or ended: a longer id that starts with the same text
+      // is another request. Whether the caller may act on it is for the command to decide.
+      const whole = RequestId.safeParse(input.id);
+      if (whole.success && this.requests().has(whole.data)) return whole.data;
+    }
     // Only the requests the caller may act on are candidates: a short text never names, or lists in a refusal, another's.
     const states = [...this.requests().values()].filter((state) => sees(state.created));
     if (input.id !== undefined) {
