@@ -28,11 +28,16 @@ afterEach(async () => {
 
 const SCRIPT = [
   'import { map } from "@niwa-labs/flow";',
-  'import * as code from "@niwa-labs/flow-code";',
-  'import * as evals from "@niwa-labs/flow-eval";',
-  'export default workflow({ description: "Double with the flow helpers", output: z.json() }, async (): Promise<any> => {',
+  'import { selfTestVerdict } from "@niwa-labs/flow-code";',
+  'import { blindSet } from "@niwa-labs/flow-eval";',
+  'export default workflow({ description: "Use each flow library", output: z.json() }, async (): Promise<any> => {',
   '  const doubled = await map("double", [1, 2, 3], { key: (n) => "n" + String(n) }, async (n) => n * 2);',
-  "  return { doubled: doubled.map((one) => (one.ok ? one.value : null)), code: typeof code, evals: typeof evals };",
+  '  const blind = await blindSet("blind", { one: 1, two: 2 });',
+  "  return {",
+  "    doubled: doubled.map((one) => (one.ok ? one.value : null)),",
+  '    verdict: selfTestVerdict([{ status: "pass" }]),',
+  "    revealed: Object.keys(blind.labeled).map((label) => blind.reveal(label)).sort(),",
+  "  };",
   "});",
 ].join("\n");
 
@@ -48,8 +53,8 @@ async function registerAndRun(box: boolean): Promise<{ home: string; id: string;
   const src = join(home, "src");
   await mkdir(src, { recursive: true });
   await symlink(realpathSync(join(import.meta.dir, "..", "node_modules")), join(src, "node_modules"), "dir");
-  await writeFile(join(src, "double.ts"), SCRIPT);
-  const { id, version } = await host.call(workflowRegister, { file: join(src, "double.ts") });
+  await writeFile(join(src, "libraries.ts"), SCRIPT);
+  const { id, version } = await host.call(workflowRegister, { file: join(src, "libraries.ts") });
   const { run } = await host.call(workflowStart, { id });
   const outcome = (await host.call(workflowWait, { run, timeoutMs: 30_000 })).outcome;
   return { home, id, version, outcome };
@@ -57,7 +62,7 @@ async function registerAndRun(box: boolean): Promise<{ home: string; id: string;
 
 test("a stored script imports the script libraries by name, and its manifest names them with their versions", async () => {
   const { home, id, version, outcome } = await registerAndRun(false);
-  expect(outcome).toEqual({ status: "done", result: { doubled: [2, 4, 6], code: "object", evals: "object" } });
+  expect(outcome).toEqual({ status: "done", result: { doubled: [2, 4, 6], verdict: "PASS", revealed: ["one", "two"] } });
   const manifest = JSON.parse(readFileSync(join(home, "workflows", id, `${version}.json`), "utf8")) as { imports: Record<string, string | null> };
   expect(manifest.imports).toEqual({ "@niwa-labs/flow": "0.0.0", "@niwa-labs/flow-code": "0.0.0", "@niwa-labs/flow-eval": "0.0.0" });
 }, 60_000);
@@ -71,5 +76,5 @@ const boxed = live && (await nono().available());
 
 test.skipIf(!boxed)("a stored script that imports the script libraries runs in a nono box", async () => {
   const { outcome } = await registerAndRun(true);
-  expect(outcome).toEqual({ status: "done", result: { doubled: [2, 4, 6], code: "object", evals: "object" } });
+  expect(outcome).toEqual({ status: "done", result: { doubled: [2, 4, 6], verdict: "PASS", revealed: ["one", "two"] } });
 }, 60_000);
