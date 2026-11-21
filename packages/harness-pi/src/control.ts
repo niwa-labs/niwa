@@ -13,7 +13,10 @@
  * pi has no greeting, so the first request is the proof that it is there: `get_state` answers with
  * the id and the file of the session, and those two are the identity of the session.
  *
- * The turns of niwa are pi's runs: from `agent_start` to `agent_end`. The `turn_start` and
+ * The turns of niwa are pi's runs: from `agent_start` to `agent_end`. A run that pi retries, or runs
+ * again after compacting its context, is the same turn: an `agent_end` that ends a run for good holds
+ * the turn open until pi says it settled, announces a compaction (which holds it until that ends), or
+ * a short wait passes with nothing said. The `turn_start` and
  * `turn_end` of pi are the inner steps of a run — one per request to the model — and they are not
  * the turns of niwa, so they are not what this side reports.
  *
@@ -195,6 +198,11 @@ export interface PiControlOptions {
   readonly turnTimeoutMs?: number;
   /** How long a graceful stop waits before the hard kill, in milliseconds. */
   readonly stopGraceMs?: number;
+  /**
+   * How long a turn is held open after a run ends for good, in milliseconds, for pi to say that a
+   * compaction is under way or that it has settled. Default: 250.
+   */
+  readonly settleMs?: number;
   /** The environment pi is run in, on top of niwa's own. */
   readonly env?: Readonly<Record<string, string>>;
 }
@@ -208,6 +216,7 @@ export interface PiSessionControl extends SessionControl {
 
 const DEFAULT_CALL_TIMEOUT_MS = 60_000;
 const DEFAULT_STOP_GRACE_MS = 2_000;
+const DEFAULT_SETTLE_MS = 250;
 /** The most bytes one line of the wire may hold. */
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
 /** How much of stderr is kept to explain a death. */
@@ -276,6 +285,14 @@ class LiveSession {
   stop: Promise<void> | undefined;
   /** Whether a run ended with the word that pi will retry it: the turn is still open until the retry runs or pi settles. */
   holding = false;
+  /**
+   * The wait after a run that ended for good: pi may still compact its context and run again for the
+   * same request (an overflow it recovers from), which is the same turn. Cleared when the turn ends,
+   * a compaction begins, or the next run starts.
+   */
+  settling: ReturnType<typeof setTimeout> | undefined;
+  /** Whether the held turn is waiting for a compaction pi began, and the run that may follow it. */
+  compacting = false;
   /** What stderr said, kept for the error that explains a death. */
   stderrTail = "";
   /** The answers of pi that are waited for. */
@@ -916,10 +933,14 @@ export class PiControl implements PiSessionControl {
   #handleEvent(session: LiveSession, event: PiEvent): void {
     switch (event.type) {
       case "agent_start": {
+        // A run that begins with nothing between it and the end of the last is the run of a message
+        // that was queued: its own turn, after the one that ended.
+        if (session.settling !== undefined) this.#endTurn(session);
         session.busy = true;
         if (session.holding) {
-          // The run pi retries is the turn that is still open, not a new one.
+          // The run pi retries, or begins again after a compaction, is the turn that is still open.
           session.holding = false;
+          session.compacting = false;
           session.emit({ kind: "activity", at: Date.now(), detail: event.type });
           return;
         }
@@ -934,13 +955,33 @@ export class PiControl implements PiSessionControl {
           session.emit({ kind: "activity", at: Date.now(), detail: "agent_end (pi will retry)" });
           return;
         }
-        this.#endTurn(session);
+        // The run is over, but pi may compact its context and run the request again as part of the same
+        // turn, saying so only after this event: the turn is held open for a moment, and ends when pi
+        // settles, when nothing of the kind is announced, or when the compaction it announced ends.
+        this.#settle(session);
         return;
       }
       case "agent_settled": {
-        // pi gave up the retry it announced (an abort, or a retry that was cancelled): the turn it held open ends here.
-        if (session.holding) this.#endTurn(session);
+        // pi says nothing more is coming, or gave up the retry it announced (an abort): the turn held open ends here.
+        if (session.holding || session.settling !== undefined) this.#endTurn(session);
         else session.emit({ kind: "activity", at: Date.now(), detail: event.type });
+        return;
+      }
+      case "compaction_start": {
+        session.emit({ kind: "activity", at: Date.now(), detail: event.type });
+        // A compaction right after a run: the turn waits for it, and for the run that may follow.
+        if (session.settling !== undefined) this.#awaitCompaction(session);
+        return;
+      }
+      case "compaction_end": {
+        session.emit({ kind: "activity", at: Date.now(), detail: event.type });
+        if (session.settling !== undefined) this.#awaitCompaction(session);
+        if (!session.compacting) return;
+        session.compacting = false;
+        // pi runs the request again after the compaction (an overflow it recovered from): the turn is
+        // still open until that run ends. A compaction that does not, ends the turn it was held for.
+        if (event.willRetry && !event.aborted) session.holding = true;
+        else this.#endTurn(session);
         return;
       }
       // Everything else is a step of the run, or something pi says about its session. Each is a sign
@@ -955,8 +996,6 @@ export class PiControl implements PiSessionControl {
       case "tool_execution_update":
       case "tool_execution_end":
       case "queue_update":
-      case "compaction_start":
-      case "compaction_end":
       case "entry_appended":
       case "session_info_changed":
       case "thinking_level_changed":
@@ -974,8 +1013,29 @@ export class PiControl implements PiSessionControl {
     }
   }
 
+  /** A run ended for good: the turn is held open for a moment, then ends if pi has not said more. */
+  #settle(session: LiveSession): void {
+    clearTimeout(session.settling);
+    session.holding = false;
+    session.settling = setTimeout(() => {
+      session.settling = undefined;
+      if (!session.ended) this.#endTurn(session);
+    }, this.#options.settleMs ?? DEFAULT_SETTLE_MS);
+  }
+
+  /** pi began a compaction after a run: the turn is held until the compaction ends, with no time limit but the turn's own. */
+  #awaitCompaction(session: LiveSession): void {
+    clearTimeout(session.settling);
+    session.settling = undefined;
+    session.holding = true;
+    session.compacting = true;
+  }
+
   /** The turn that is open ends: nothing of it is in flight any more. */
   #endTurn(session: LiveSession): void {
+    clearTimeout(session.settling);
+    session.settling = undefined;
+    session.compacting = false;
     session.holding = false;
     session.busy = false;
     session.emit({ kind: "turn-ended", turn: session.turn, at: Date.now() });
@@ -1192,6 +1252,9 @@ export class PiControl implements PiSessionControl {
     session.ended = true;
     session.busy = false;
     session.holding = false;
+    session.compacting = false;
+    clearTimeout(session.settling);
+    session.settling = undefined;
     session.abortDialogs();
     for (const settle of session.pending.values()) {
       const tail = session.stderrTail.trim();

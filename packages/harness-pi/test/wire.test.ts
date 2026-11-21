@@ -84,7 +84,8 @@ const replies = async (): Promise<Array<Record<string, unknown>>> =>
     .filter((text) => text !== "")
     .map((text) => JSON.parse(text) as Record<string, unknown>);
 
-const pi = (): PiControl => new PiControl({ mode: "full", harness: "pi-wire", binary: join(dir, "pi"), callTimeoutMs: 20_000 });
+const pi = (settleMs?: number): PiControl =>
+  new PiControl({ mode: "full", harness: "pi-wire", binary: join(dir, "pi"), callTimeoutMs: 20_000, ...(settleMs === undefined ? {} : { settleMs }) });
 
 test("a get_state whose body is not what the snapshot says fails the start at once, naming the answer", async () => {
   env("FAKE_STATE", { sessionId: 5 });
@@ -172,6 +173,86 @@ test("pi giving up a retry it announced settles the turn it held open", async ()
     await run.send();
     await run.ended();
     expect(run.events.filter((event) => event.kind === "turn-ended")).toHaveLength(1);
+  } finally {
+    await side.dispose();
+  }
+});
+
+const compactionEnd = (willRetry: boolean, aborted = false) => ({ type: "compaction_end", reason: "overflow", result: { summary: "s", firstKeptEntryId: "e1", tokensBefore: 10 }, aborted, willRetry });
+const turnSigns = (events: readonly LifeEvent[]) =>
+  events.flatMap((event) => (event.kind === "turn-started" || event.kind === "turn-ended" ? [`${event.kind}:${String(event.turn)}`] : []));
+
+test("a run that ends for good and is followed by a compaction that retries is one turn, ended once after the last run", async () => {
+  env("FAKE_LINES", [
+    { type: "agent_end", messages: [], willRetry: false },
+    { type: "compaction_start", reason: "overflow" },
+    compactionEnd(true),
+    { type: "agent_start" },
+  ]);
+  const side = pi(30);
+  try {
+    const run = await watched(side);
+    await run.send();
+    await run.ended();
+    expect(turnSigns(run.events)).toEqual(["turn-started:1", "turn-ended:1"]);
+    expect(run.events.at(-1)?.kind).toBe("turn-ended");
+  } finally {
+    await side.dispose();
+  }
+});
+
+test("a compaction that was announced holds the turn for as long as it takes, not for the settle wait", async () => {
+  env("FAKE_LINES", [{ type: "agent_end", messages: [], willRetry: false }, { type: "compaction_start", reason: "threshold" }]);
+  env("FAKE_END", "null");
+  const side = pi(30);
+  try {
+    const run = await watched(side);
+    await run.send();
+    // Well past the settle wait: the turn is still open.
+    await Bun.sleep(200);
+    expect(turnSigns(run.events)).toEqual(["turn-started:1"]);
+    expect(await side.state({ harness: "pi-wire", native: "s1" } as never)).toBe("running");
+  } finally {
+    await side.dispose();
+  }
+});
+
+test("a compaction that does not retry ends the turn it held, with no settle wait", async () => {
+  env("FAKE_LINES", [{ type: "agent_end", messages: [], willRetry: false }, { type: "compaction_start", reason: "threshold" }, compactionEnd(false)]);
+  env("FAKE_END", "null");
+  const side = pi(60_000);
+  try {
+    const run = await watched(side);
+    await run.send();
+    await run.ended();
+    expect(turnSigns(run.events)).toEqual(["turn-started:1", "turn-ended:1"]);
+  } finally {
+    await side.dispose();
+  }
+});
+
+test("pi saying it settled ends a turn that was held for a moment, at once", async () => {
+  env("FAKE_LINES", [{ type: "agent_end", messages: [], willRetry: false }, { type: "agent_settled", aborted: false }]);
+  env("FAKE_END", "null");
+  const side = pi(60_000);
+  try {
+    const run = await watched(side);
+    await run.send();
+    await run.ended();
+    expect(turnSigns(run.events)).toEqual(["turn-started:1", "turn-ended:1"]);
+  } finally {
+    await side.dispose();
+  }
+});
+
+test("a run that begins right after one that ended for good is a turn of its own, as a queued message's run is", async () => {
+  env("FAKE_LINES", [{ type: "agent_end", messages: [], willRetry: false }, { type: "agent_start" }]);
+  const side = pi(30);
+  try {
+    const run = await watched(side);
+    await run.send();
+    await eventually(async () => run.events.filter((event) => event.kind === "turn-ended").length === 2);
+    expect(turnSigns(run.events)).toEqual(["turn-started:1", "turn-ended:1", "turn-started:2", "turn-ended:2"]);
   } finally {
     await side.dispose();
   }
