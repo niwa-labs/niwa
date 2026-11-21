@@ -26,7 +26,7 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { HOST_KEY_FILE, OWNER_TOKEN_FILE, action } from "@niwa-labs/core";
+import { HOST_KEY_FILE, OWNER_TOKEN_FILE, RECORD_DATA_LIMIT, action } from "@niwa-labs/core";
 import type { ActionContext } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin } from "@niwa-labs/plugin";
@@ -35,7 +35,7 @@ import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 
 import { OutputCapture } from "./artifact.ts";
 import { ProcRefusal } from "./refusal.ts";
-import { ProcFinished, fileTarget, procExec, procRun } from "./records.ts";
+import { MAX_TAIL_BYTES, ProcFinished, fileTarget, procExec, procRun } from "./records.ts";
 import type { BoxUsed, ProcFinishedData, ProcResult } from "./records.ts";
 import { launchPlain, supervise } from "./supervise.ts";
 
@@ -49,7 +49,10 @@ export interface ProcOptions {
   readonly sandbox?: Sandbox;
   /** The most bytes of output kept in an artifact. Default: 16 MiB. */
   readonly outputLimit?: number;
-  /** The bytes of the end of the output a result carries. Default: 4 KiB. */
+  /**
+   * The bytes of the end of the output a result carries, 0 to 64 KiB. Default: 4 KiB. A tail that
+   * would not fit the record of the command, once escaped, is cut to fit.
+   */
   readonly tailBytes?: number;
   /** How long a stopped command has to end before it is killed, in milliseconds. Default: 2000. */
   readonly killGraceMs?: number;
@@ -112,11 +115,34 @@ async function beforeStart<T>(start: () => Promise<T>): Promise<T> {
   }
 }
 
+/** An option that is a whole number in a range, or the error that says which one is not. */
+function wholeNumber(name: string, value: number | undefined, fallback: number, least: number, most: number): number {
+  const chosen = value ?? fallback;
+  if (!Number.isSafeInteger(chosen) || chosen < least || chosen > most) {
+    throw new TypeError(`proc option ${name} must be a whole number from ${String(least)} to ${String(most)}, got ${String(chosen)}`);
+  }
+  return chosen;
+}
+
+/** Room left in a record for what is not the tail: names the record's own fields and the escaping of the paths. */
+const RECORD_SLACK = 8 * 1024;
+
+/** The result with its tail cut from the front, for as long as the record that carries it would be more than a record holds. */
+function fitted(data: Omit<ProcFinishedData, keyof ProcResult>, result: ProcResult): ProcResult {
+  let tail = result.tail;
+  while (tail.length > 0 && Buffer.byteLength(JSON.stringify({ ...data, ...result, tail })) > RECORD_DATA_LIMIT - RECORD_SLACK) {
+    tail = tail.slice(Math.ceil(tail.length / 2));
+    // A cut in the middle of a character leaves half of it.
+    if (/^[\uDC00-\uDFFF]/.test(tail)) tail = tail.slice(1);
+  }
+  return { ...result, tail };
+}
+
 /** The proc module. */
 export function proc(options: ProcOptions = {}): Plugin {
-  const limit = options.outputLimit ?? DEFAULT_OUTPUT_LIMIT;
-  const tailBytes = options.tailBytes ?? DEFAULT_TAIL_BYTES;
-  const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+  const limit = wholeNumber("outputLimit", options.outputLimit, DEFAULT_OUTPUT_LIMIT, 1, Number.MAX_SAFE_INTEGER);
+  const tailBytes = wholeNumber("tailBytes", options.tailBytes, DEFAULT_TAIL_BYTES, 0, MAX_TAIL_BYTES);
+  const killGraceMs = wholeNumber("killGraceMs", options.killGraceMs, DEFAULT_KILL_GRACE_MS, 0, Number.MAX_SAFE_INTEGER);
   const natural = [nono(), srt()];
   // The host reads the target of a call to match its grant, then runs the action with the same
   // input object. The real path the target named is kept here, keyed by that object, so the
@@ -143,8 +169,10 @@ export function proc(options: ProcOptions = {}): Plugin {
       ctx: ActionContext,
       data: Omit<ProcFinishedData, keyof ProcResult>,
       result: ProcResult,
-    ): Promise<void> => {
-      await ctx.emit(ProcFinished, { ...data, ...result });
+    ): Promise<ProcResult> => {
+      const kept = fitted(data, result);
+      await ctx.emit(ProcFinished, { ...data, ...kept });
+      return kept;
     };
 
     api.action(
@@ -175,9 +203,8 @@ export function proc(options: ProcOptions = {}): Plugin {
           try {
             const child = await beforeStart(() => sandbox.launch(spec, input.cmd, { detached: true }));
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
-            const result: ProcResult = { ...ended, ...capture.finish() };
             const box: BoxUsed = { sandbox: sandbox.name, write: [...spec.write], net: [...spec.net] };
-            await finish(ctx, { action: "proc.run", cwd, program: input.cmd[0] as string, box }, result);
+            const result = await finish(ctx, { action: "proc.run", cwd, program: input.cmd[0] as string, box }, { ...ended, ...capture.finish() });
             return { ...result, box };
           } catch (error) {
             capture.discard();
@@ -213,9 +240,7 @@ export function proc(options: ProcOptions = {}): Plugin {
             ctx.signal?.throwIfAborted();
             const child = launchPlain(input.cmd, cwd, env);
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
-            const result: ProcResult = { ...ended, ...capture.finish() };
-            await finish(ctx, { action: "proc.exec", cwd, program: input.cmd[0] as string }, result);
-            return result;
+            return await finish(ctx, { action: "proc.exec", cwd, program: input.cmd[0] as string }, { ...ended, ...capture.finish() });
           } catch (error) {
             capture.discard();
             throw error;

@@ -32,6 +32,12 @@ export function fileTarget(path: string): string {
 /** The most a command may be given to finish, in milliseconds: an hour. */
 export const MAX_TIMEOUT_MS = 3_600_000;
 
+/** The most bytes of output a result may carry as its tail. */
+export const MAX_TAIL_BYTES = 64 * 1024;
+
+/** The longest working directory or program a call may name: what a path may be, so the record that names them stays small. */
+const MAX_NAMED = 4096;
+
 /** The name of an environment variable (the sandbox has its own, for its spec). */
 const EnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "not a valid environment variable name");
 
@@ -39,9 +45,13 @@ const EnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "not a valid enviro
 const Cmd = z
   .array(z.string())
   .min(1)
-  .refine((argv) => argv[0] !== undefined && argv[0].length > 0, "the program must not be empty");
+  .refine((argv) => argv[0] !== undefined && argv[0].length > 0, "the program must not be empty")
+  .refine((argv) => argv[0] === undefined || argv[0].length <= MAX_NAMED, `the program must not be longer than ${String(MAX_NAMED)} characters`);
 
-const Cwd = z.string().regex(/^\//, "the working directory must be an absolute path");
+const Cwd = z
+  .string()
+  .max(MAX_NAMED, `the working directory must not be longer than ${String(MAX_NAMED)} characters`)
+  .regex(/^\//, "the working directory must be an absolute path");
 
 const Timeout = z.number().int().min(1).max(MAX_TIMEOUT_MS);
 
