@@ -43,7 +43,7 @@ test("the package re-exports the foundation, the plugins and the kinds", () => {
 test("the default composition holds the base plugins with history and the agents, and a host serves it", async () => {
   const home = await tempHome();
   try {
-    const plugins = niwa.defaultComposition({ home: home.path, harnesses: new niwa.HarnessInstanceRegistry(), kinds: new niwa.HarnessKindRegistry(), agents: { default: "rin" } });
+    const plugins = niwa.defaultComposition({ home: home.path, harnesses: new niwa.HarnessInstanceRegistry(), agents: { default: "rin" } });
     expect(plugins.map((one) => String(one.name))).toEqual(["messages", "requests", "tasks", "timers", "git", "history", "insert", "sessions", "agents", "workflow"]);
     const host = createNiwa({ home: home.path });
     host.use(...plugins);

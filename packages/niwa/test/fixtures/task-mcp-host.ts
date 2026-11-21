@@ -29,7 +29,7 @@ import { sessions } from "@niwa-labs/sessions";
 import { tasks } from "@niwa-labs/tasks";
 import { z } from "zod";
 
-import { claudeCodeKind, claudeCodeSides } from "@niwa-labs/harness-claude";
+import { claudeCode, claudeCodeSides } from "@niwa-labs/harness-claude";
 import type { ClaudeCodeSessionControl } from "@niwa-labs/harness-claude";
 import { mcode, mcodeSides } from "@niwa-labs/harness-mcode";
 import type { McodeSessionControl } from "@niwa-labs/harness-mcode";
@@ -44,12 +44,12 @@ const MODEL = "minimax/MiniMax-M3.1-Flash";
 const INSTALLATION_HOME = join(homedir(), ".minimax");
 
 /** The kind of the installation: the mcode kind, bound to this home. */
-const kind = mcode({ harness: HARNESS, home: INSTALLATION_HOME, control: { mode: "full", model: MODEL } });
+const kind = mcode({ id: HARNESS, home: INSTALLATION_HOME, model: MODEL, control: { mode: "full" } });
 
 /** The installation the sessions module serves. */
 const instance: Harness = {
   id: HARNESS,
-  kind: kind.kind,
+  kind: kind.instance.kind,
   machine: machineId("machine-1"),
   home: INSTALLATION_HOME,
   sides: mcodeSides,
@@ -65,11 +65,11 @@ const ASKER_MODEL = "haiku";
 const ASKER_HOME = join(homedir(), ".claude");
 
 /** The kind of the asker's installation: the claude-code kind, bound to this home. */
-const askerKind = claudeCodeKind({
-  harness: ASKER_HARNESS,
+const askerKind = claudeCode({
+  id: ASKER_HARNESS,
   home: ASKER_HOME,
+  model: ASKER_MODEL,
   control: {
-    model: ASKER_MODEL,
     // The ACP adapter is a dependency of the package, not a program on the PATH.
     command: [join(import.meta.dir, "../../node_modules/.bin/claude-code-acp")],
   },
@@ -78,7 +78,7 @@ const askerKind = claudeCodeKind({
 /** The installation the asker of the check talks through. */
 const askerInstance: Harness = {
   id: ASKER_HARNESS,
-  kind: askerKind.kind,
+  kind: askerKind.instance.kind,
   machine: machineId("machine-1"),
   home: ASKER_HOME,
   sides: claudeCodeSides,

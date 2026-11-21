@@ -7,8 +7,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ADMITTED, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
-import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
+import { ADMITTED, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@niwa-labs/harness";
+import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CLAUDE_OPTIONS } from "../code/options.ts";
 import { ClaudeCodeReading } from "../code/reading.ts";
@@ -64,14 +64,18 @@ export const CLAUDE_SDK_CAPABILITIES: KindCapabilities = {
   insert: NO_INSERT,
 };
 
-/** What the kind needs. */
-export interface ClaudeSdkOptions {
-  /** The harness instance id: half of a session's identity. */
-  readonly harness?: HarnessId;
-  /** The home of the Claude Code installation: the directory that holds `projects`. */
-  readonly home?: string;
-  /** The model, when the caller does not choose one per start. */
-  readonly model?: string;
+/**
+ * How a Claude Agent SDK installation is found.
+ *
+ * The SDK is a library, not a program: there is no binary to look for, and the directory the
+ * Claude Code files are in is all there is.
+ */
+const CLAUDE_SDK_DETECTION = {
+  home: "~/.claude",
+} as const;
+
+/** What an installation of the SDK is given: its id, home and model, and how its control side is set up. */
+export interface ClaudeSdkInstanceOptions extends InstanceOptions {
   /** The effort, when the caller does not choose one per start. */
   readonly effort?: string;
   /** The Claude Code program the SDK runs, as a path. Default: the `claude` on the PATH. */
@@ -84,35 +88,37 @@ export interface ClaudeSdkOptions {
   readonly claude?: ClaudeSdkControlOptions["claude"];
 }
 
-/** The kind "claude-sdk", bound to the installation the options name. */
-export function claudeSdkKind(options: ClaudeSdkOptions = {}) {
-  const harness = options.harness ?? harnessId("claude-sdk");
-  const home = options.home ?? join(homedir(), ".claude");
-  return defineHarnessKind({
-    name: "claude-sdk",
-    reading: new ClaudeCodeReading({ harness, home }),
-    control: new ClaudeSdkControl({
-      harness,
-      home,
-      ...(options.model === undefined ? {} : { model: options.model }),
-      ...(options.effort === undefined ? {} : { effort: options.effort }),
-      ...(options.executable === undefined ? {} : { executable: options.executable }),
-      ...(options.mode === undefined ? {} : { mode: options.mode }),
-      ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
-      ...(options.claude === undefined ? {} : { claude: options.claude }),
-    }),
-    capabilities: CLAUDE_SDK_CAPABILITIES,
-    detect: CLAUDE_SDK_DETECTION,
-    options: CLAUDE_OPTIONS,
-  });
-}
+/** What the caller names of one installation: every part has a default. */
+export type ClaudeSdkOptions = Partial<ClaudeSdkInstanceOptions>;
 
 /**
- * How a Claude Agent SDK installation is found.
- *
- * The SDK is a library, not a program: there is no binary to look for, and the directory the
- * Claude Code files are in is all there is.
+ * The kind "claude-sdk". Each installation is bound to its own home (default `~/.claude`): its
+ * sessions are read from there and its processes write there.
  */
-const CLAUDE_SDK_DETECTION = {
-  home: "~/.claude",
-} as const;
+export const claudeSdkKind = defineHarnessKind<ClaudeSdkInstanceOptions>({
+  name: "claude-sdk",
+  capabilities: CLAUDE_SDK_CAPABILITIES,
+  implements: ["reading", "control"],
+  sides: claudeSdkSides,
+  detect: CLAUDE_SDK_DETECTION,
+  options: CLAUDE_OPTIONS,
+  home: () => join(homedir(), ".claude"),
+  bind: ({ id, home, model, effort, executable, mode, permissions, claude }) => ({
+    reading: new ClaudeCodeReading({ harness: id, home }),
+    control: new ClaudeSdkControl({
+      harness: id,
+      home,
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+      ...(executable === undefined ? {} : { executable }),
+      ...(mode === undefined ? {} : { mode }),
+      ...(permissions === undefined ? {} : { permissions }),
+      ...(claude === undefined ? {} : { claude }),
+    }),
+  }),
+});
+
+/** One installation of the SDK: `claude-sdk` at `~/.claude` unless the options say otherwise. */
+export function claudeSdk(options: ClaudeSdkOptions = {}): HarnessBinding {
+  return claudeSdkKind.bind({ ...options, id: options.id ?? "claude-sdk" });
+}

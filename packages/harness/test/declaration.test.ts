@@ -19,7 +19,7 @@ import {
   narrowSides,
   sidesOf,
 } from "@niwa-labs/harness";
-import type { Harness, KindCapabilities, SessionControl, SessionReading, SideCapabilities } from "@niwa-labs/harness";
+import type { Harness, HarnessSide, KindCapabilities, SessionControl, SessionReading, SideCapabilities } from "@niwa-labs/harness";
 
 const DECLARED: KindCapabilities = {
   reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
@@ -40,7 +40,18 @@ const DECLARED: KindCapabilities = {
 const reading = {} as SessionReading;
 const control = {} as SessionControl;
 
-const kind = () => defineHarnessKind({ name: "probe", reading, control, capabilities: DECLARED });
+/** A kind with code for the reading and the control side, bound to whatever installation asks. */
+function probe(capabilities: KindCapabilities = DECLARED, sides: readonly HarnessSide[] = ["reading", "control"]) {
+  return defineHarnessKind({
+    name: "probe",
+    capabilities,
+    implements: sides,
+    home: () => "/tmp/probe",
+    bind: () => ({ ...(sides.includes("reading") ? { reading } : {}), ...(sides.includes("control") ? { control } : {}) }),
+  });
+}
+
+const kind = () => probe();
 
 function instance(sides: SideCapabilities): Harness {
   return { id: harnessId("probe-1"), kind: harnessKind("probe"), machine: machineId("m"), home: "/tmp/probe", sides };
@@ -65,22 +76,13 @@ test("the default sides of a kind are its supported abilities, and a side with n
 
 test("a declaration that leaves an ability out does not register", () => {
   const { watch: _left, ...reading2 } = DECLARED.reading;
-  expect(() =>
-    defineHarnessKind({ name: "probe", reading, control, capabilities: { ...DECLARED, reading: reading2 } as unknown as KindCapabilities }),
-  ).toThrow();
+  expect(() => probe({ ...DECLARED, reading: reading2 } as unknown as KindCapabilities)).toThrow();
   // A supported ability has a status; a bare `true` is not a decision.
-  expect(() =>
-    defineHarnessKind({
-      name: "probe",
-      reading,
-      control,
-      capabilities: { ...DECLARED, reading: { ...DECLARED.reading, watch: { supported: true } } } as unknown as KindCapabilities,
-    }),
-  ).toThrow();
+  expect(() => probe({ ...DECLARED, reading: { ...DECLARED.reading, watch: { supported: true } } } as unknown as KindCapabilities)).toThrow();
 });
 
 test("a kind cannot support abilities of a side it has no code for", () => {
-  expect(() => defineHarnessKind({ name: "probe", reading, capabilities: DECLARED })).toThrow(/control/);
+  expect(() => probe(DECLARED, ["reading"])).toThrow(/control/);
 });
 
 test("an installation that claims more than its kind is refused, each excess named", () => {
@@ -135,13 +137,13 @@ test("the control conformance suite fails an installation that claims more than 
 test("a tool mode or a launch choice alone is a control side the kind must have code for", () => {
   const onlyNested = { ...DECLARED, reading: NO_READING, control: { ...NO_CONTROL, tools: { niwaOnly: ADMITTED, allow: UNSUPPORTED } } };
   expect(sidesOf(onlyNested).control).toBeDefined();
-  expect(() => defineHarnessKind({ name: "probe", capabilities: onlyNested })).toThrow(/control/);
+  expect(() => probe(onlyNested, [])).toThrow(/control/);
   const onlyModel = { ...DECLARED, reading: NO_READING, control: { ...NO_CONTROL, launch: { model: VERIFIED, effort: [], modes: [] } } };
-  expect(() => defineHarnessKind({ name: "probe", capabilities: onlyModel })).toThrow(/control/);
+  expect(() => probe(onlyModel, [])).toThrow(/control/);
   const onlyModes = { ...DECLARED, reading: NO_READING, control: { ...NO_CONTROL, launch: { model: UNSUPPORTED, effort: ["low"], modes: ["auto" as const] } } };
-  expect(() => defineHarnessKind({ name: "probe", capabilities: onlyModes })).toThrow(/control/);
+  expect(() => probe(onlyModes, [])).toThrow(/control/);
   // With the code for the side, the same declaration registers.
-  expect(() => defineHarnessKind({ name: "probe", control, capabilities: onlyNested })).not.toThrow();
+  expect(() => probe(onlyNested, ["control"])).not.toThrow();
 });
 
 test("the registry of instances checks an installation against its registered kind", () => {
@@ -156,4 +158,62 @@ test("the registry of instances checks an installation against its registered ki
   expect(registry.ids()).toEqual(["probe-1"]);
   // Without the kinds, the registry only keeps ids unique.
   expect(() => new HarnessInstanceRegistry().register(instance({ ...base, control: { ...base.control!, interrupt: true } }))).not.toThrow();
+});
+
+test("a kind binds each installation to its own id, home and model, with the sides the kind gives by default", () => {
+  const seen: Array<{ id: string; home: string }> = [];
+  const kind = defineHarnessKind({
+    name: "probe",
+    capabilities: DECLARED,
+    implements: ["reading", "control"],
+    home: () => "/tmp/probe-default",
+    bind: ({ id, home }) => {
+      seen.push({ id, home });
+      return { reading, control };
+    },
+  });
+  const one = kind.bind({ id: "probe-a", model: "small" });
+  const two = kind.bind({ id: "probe-b", home: "/tmp/probe-b", machine: "m2" });
+  expect(seen).toEqual([
+    { id: "probe-a", home: "/tmp/probe-default" },
+    { id: "probe-b", home: "/tmp/probe-b" },
+  ]);
+  expect(one.instance).toEqual({ id: harnessId("probe-a"), kind: harnessKind("probe"), machine: machineId("local"), home: "/tmp/probe-default", model: "small", sides: sidesOf(DECLARED) });
+  expect(two.instance).toMatchObject({ id: "probe-b", machine: "m2", home: "/tmp/probe-b" });
+  expect(two.instance.model).toBeUndefined();
+  expect(one.reading).toBe(reading);
+  expect(one.control).toBe(control);
+});
+
+test("an installation cannot claim what its kind cannot serve: wider sides, a model on a kind that takes none, a side without code", () => {
+  const base = sidesOf(DECLARED);
+  expect(() => kind().bind({ id: "probe-1", sides: { ...base, control: { ...base.control!, interrupt: true } } })).toThrow(CapabilityExceeded);
+  // What a machine shows may narrow the sides.
+  expect(kind().bind({ id: "probe-1", sides: { reading: base.reading! } }).instance.sides).toEqual({ reading: base.reading });
+  const noModel = probe({ ...DECLARED, control: { ...DECLARED.control, launch: { ...DECLARED.control.launch, model: UNSUPPORTED } } });
+  expect(() => noModel.bind({ id: "probe-1", model: "big" })).toThrow(/control\.launch\.model/);
+  const forgetful = defineHarnessKind({ name: "probe", capabilities: DECLARED, implements: ["reading", "control"], home: () => "/tmp/probe", bind: () => ({ reading }) });
+  expect(() => forgetful.bind({ id: "probe-1" })).toThrow(/without its control side/);
+  // Default sides beyond the declaration are a kind that does not register.
+  expect(() =>
+    defineHarnessKind({ name: "probe", capabilities: DECLARED, implements: ["reading", "control"], sides: { ...base, control: { ...base.control!, interrupt: true } }, home: () => "/tmp/probe", bind: () => ({ reading, control }) }),
+  ).toThrow(/control\.interrupt/);
+});
+
+test("the registry of instances keeps each installation with its own sides", () => {
+  const registry = new HarnessInstanceRegistry();
+  const otherControl = {} as SessionControl;
+  const twin = defineHarnessKind({
+    name: "probe",
+    capabilities: DECLARED,
+    implements: ["reading", "control"],
+    home: () => "/tmp/probe",
+    bind: ({ id }) => ({ reading, control: id === "probe-b" ? otherControl : control }),
+  });
+  registry.register(twin.bind({ id: "probe-a" }));
+  registry.register(twin.bind({ id: "probe-b" }));
+  expect(registry.ofKind("probe").map((one) => String(one.id))).toEqual(["probe-a", "probe-b"]);
+  expect(registry.bindingOf("probe-a").control).toBe(control);
+  expect(registry.bindingOf("probe-b").control).toBe(otherControl);
+  expect(registry.bindings().map((one) => String(one.instance.id))).toEqual(["probe-a", "probe-b"]);
 });

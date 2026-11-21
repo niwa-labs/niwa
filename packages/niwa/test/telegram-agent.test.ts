@@ -8,7 +8,7 @@ import { chatId, telegram } from "@niwa-labs/telegram";
 import type { Bot, ChatId, MessageId, Update, UpdateId } from "@niwa-labs/telegram";
 import { connectAsOwner, createNiwa, eventually, tempHome } from "@niwa-labs/testing";
 
-import { HarnessInstanceRegistry, HarnessKindRegistry, agentTell, defaultComposition } from "../src/index.ts";
+import { HarnessInstanceRegistry, agentTell, defaultComposition } from "../src/index.ts";
 
 /** The chat of the owner in the test. */
 const OWNER = chatId(4242);
@@ -57,7 +57,6 @@ test("a message of the owner's chat is said to the agent as the owner", async ()
       ...defaultComposition({
         home: home.path,
         harnesses: new HarnessInstanceRegistry(),
-        kinds: new HarnessKindRegistry(),
         agents: { agents: [{ name: "rin", harness: "none", prompt: "You keep the owner's work in order." }] },
         bind: (fallback) => surface.bind(fallback),
       }),

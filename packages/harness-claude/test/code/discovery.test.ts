@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { discover, findBundled, harnessId } from "@niwa-labs/harness";
+import { discover, findBundled } from "@niwa-labs/harness";
 import type { BundledProgram } from "@niwa-labs/harness";
 import { tempDir } from "@niwa-labs/testing";
 
@@ -64,7 +64,7 @@ test("discovery proposes the adapter the kind package found, not one the harness
   const home = join(root, "claude-home");
   await mkdir(join(root, ".claude"), { recursive: true });
   await mkdir(home, { recursive: true });
-  const kind = claudeCodeKind({ harness: harnessId("claude-code"), home });
+  const kind = claudeCodeKind;
   const env = { HOME: root, PATH: "" };
   const withAdapter = (bundled: BundledProgram) => ({ ...kind, detect: { bundled, home } });
 

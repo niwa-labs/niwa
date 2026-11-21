@@ -58,10 +58,8 @@ import type { Plugin, CallerBinding } from "@niwa-labs/plugin";
 import {
   DeliveryReceiptSchema,
   HarnessInstanceRegistry,
-  HarnessKindRegistry,
   InputNotSent,
   InputPossiblySent,
-  admitInstance,
   blocksOf,
   outcomeOf,
   requireAbility,
@@ -76,6 +74,7 @@ import type { Worktree, WorktreeOption } from "@niwa-labs/git/records";
 import type {
   DeliveryReceipt,
   Harness,
+  HarnessBinding,
   InputOutcome,
   KindOptions,
   McpServerSpec,
@@ -195,35 +194,14 @@ function runningLine(entry: SessionEntry): string {
   return [entry.id ?? entry.ref, active, entry.model ?? "", title.length > 60 ? `${title.slice(0, 59)}…` : title].filter((part) => part !== "").join("  ");
 }
 
-/**
- * One installation and the code that serves it.
- *
- * The side is bound to the installation here, because that is where the two meet: the instance
- * says which sides exist and what they can do, and the code of the side is what actually reads
- * the harness's files.
- */
-export interface HarnessBinding {
-  /** The installation. */
-  readonly instance: Harness;
-  /** The reading side, when this installation has one. */
-  readonly reading?: SessionReading;
-  /** The control side, when this installation has one. */
-  readonly control?: SessionControl;
-  /** The options block a session of this installation's kind takes at its start: `kind.options`, for a binding made by hand. */
-  readonly options?: KindOptions;
-}
-
 /** What the plugin is given: the harness installations it may read from. */
 export interface SessionsOptions {
   /**
-   * The installations, with the sides they serve.
-   *
-   * Either the bindings themselves, or a registry of instances together with the kinds that
-   * serve them.
+   * The installations, each with the sides that serve it (`kind.bind(...)`): the bindings
+   * themselves, or the registry they are kept in. Two installations of one kind are two
+   * bindings, each with its own sides.
    */
   readonly harnesses?: readonly HarnessBinding[] | HarnessInstanceRegistry;
-  /** The kinds, when the sides are resolved by kind rather than bound by hand. */
-  readonly kinds?: HarnessKindRegistry;
   /**
    * How niwa's own MCP server is started, for the sessions that may see niwa actions.
    *
@@ -1530,36 +1508,18 @@ function manifestRecord(made: BoxRecord, mark: string): BoxManifest {
   };
 }
 
-/**
- * The installations the plugin may read from, with their sides.
- *
- * When the kinds are given, the side is found in the kind the installation names; otherwise the
- * side is bound by hand.
- */
+/** The installations the plugin may read from and start sessions on, with their sides. */
 function resolveBindings(options: SessionsOptions): HarnessBinding[] {
-  const { harnesses, kinds } = options;
-  const sidesOf = (instance: Harness) => {
-    const kind = kinds?.get(instance.kind);
-    // An installation that claims what its kind cannot serve is refused here, before any call.
-    if (kind !== undefined) admitInstance(instance, kind);
-    return { reading: kind?.reading, control: kind?.control, options: kind?.options };
-  };
-  if (harnesses instanceof HarnessInstanceRegistry) {
-    return harnesses.ids().map((id) => {
-      const instance = harnesses.resolve(id);
-      if (instance === undefined) throw new Error(`harness "${id}" vanished from the registry`);
-      return { instance, ...sidesOf(instance) };
-    });
+  const { harnesses } = options;
+  if (harnesses instanceof HarnessInstanceRegistry) return harnesses.bindings();
+  const bindings = [...(harnesses ?? [])];
+  const seen = new Set<string>();
+  for (const { instance } of bindings) {
+    // Two bindings under one id would be one installation with two sets of sides.
+    if (seen.has(instance.id)) throw new Error(`harness instance "${instance.id}" is bound twice`);
+    seen.add(instance.id);
   }
-  return (harnesses ?? []).map((binding) => {
-    const ofKind = sidesOf(binding.instance);
-    return {
-      instance: binding.instance,
-      reading: binding.reading ?? ofKind.reading,
-      control: binding.control ?? ofKind.control,
-      options: binding.options ?? ofKind.options,
-    };
-  });
+  return bindings;
 }
 
 /** The options block a session was started with, as a control side is given it again. */

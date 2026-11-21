@@ -23,7 +23,7 @@ import {
   UNSUPPORTED,
   kindOptions,
 } from "@niwa-labs/harness";
-import { CLAUDE_CODE_CAPABILITIES, CLAUDE_OPTIONS } from "@niwa-labs/harness-claude";
+import { CLAUDE_CODE_CAPABILITIES, CLAUDE_OPTIONS, claudeCodeKind, claudeSdkKind } from "@niwa-labs/harness-claude";
 import type {
   AskAnswer,
   AskOptions,
@@ -37,13 +37,12 @@ import type {
   StartOptions,
   StartedSession,
 } from "@niwa-labs/harness";
-import { claudeCode, claudeSdkKind } from "@niwa-labs/harness-claude";
-import { CODEX_OPTIONS, codex } from "@niwa-labs/harness-codex";
-import { mcode, ncode } from "@niwa-labs/harness-mcode";
-import { pi } from "@niwa-labs/harness-pi";
-import { zcode } from "@niwa-labs/harness-zcode";
+import { CODEX_OPTIONS, codexKind } from "@niwa-labs/harness-codex";
+import { mcodeKind, ncodeKind } from "@niwa-labs/harness-mcode";
+import { piKind } from "@niwa-labs/harness-pi";
+import { zcodeKind } from "@niwa-labs/harness-zcode";
 import { sessions } from "@niwa-labs/sessions";
-import type { HarnessBinding } from "@niwa-labs/sessions";
+import type { HarnessBinding } from "@niwa-labs/harness";
 import { tempHome } from "@niwa-labs/testing";
 
 const HARNESS = "claude-sonnet";
@@ -116,7 +115,7 @@ interface Served {
 
 /** A served host with the sessions plugin over the given bindings, and what it has written so far. */
 async function serve(
-  bindings: readonly HarnessBinding[] | { harnesses: HarnessInstanceRegistry; kinds: HarnessKindRegistry },
+  bindings: readonly HarnessBinding[] | { harnesses: HarnessInstanceRegistry },
   home?: string,
 ): Promise<Served> {
   const fresh = home === undefined ? await tempHome() : undefined;
@@ -256,20 +255,25 @@ test("a resume of a session that was started with no options gives none", async 
   expect(Object.keys(control.resumes[0] ?? {})).not.toContain("blocks");
 });
 
-test("a kind registry carries the options each kind declares to the sessions plugin", async () => {
+/** A kind with a control side alone: each installation it binds gets the control side given. */
+const claudeLike = (control: SessionControl, declared = CLAUDE_CODE_CAPABILITIES.control) =>
+  defineHarnessKind({
+    name: "claude-code",
+    capabilities: { ...CLAUDE_CODE_CAPABILITIES, reading: NO_READING, control: declared, insert: NO_INSERT },
+    implements: ["control"],
+    options: CLAUDE_OPTIONS,
+    home: () => "/tmp/fake-home",
+    bind: () => ({ control }),
+  });
+
+test("an installation a kind binds carries the options the kind declares to the sessions plugin", async () => {
   const control = new RecordingControl();
   const kinds = new HarnessKindRegistry();
-  kinds.register(
-    defineHarnessKind({
-      name: "claude-code",
-      control,
-      capabilities: { ...CLAUDE_CODE_CAPABILITIES, reading: NO_READING, insert: NO_INSERT },
-      options: CLAUDE_OPTIONS,
-    }),
-  );
-  const harnesses = new HarnessInstanceRegistry();
-  harnesses.register(installation("claude-code"));
-  const { niwa } = await serve({ harnesses, kinds });
+  const kind = claudeLike(control);
+  kinds.register(kind);
+  const harnesses = new HarnessInstanceRegistry(kinds);
+  harnesses.register(kind.bind({ id: HARNESS }));
+  const { niwa } = await serve({ harnesses });
 
   await call(niwa, "session.start", { harness: HARNESS, prompt: "go", claude: { advisor: false } });
   expect(control.starts[0]?.blocks?.claude).toEqual({ advisor: false });
@@ -309,35 +313,24 @@ test("a question over the session is asked with the options the session was star
 
 test("every kind niwa serves declares the block named after it", () => {
   const blocks = [
-    claudeCode().options?.block,
-    claudeSdkKind().options?.block,
-    codex().options?.block,
-    mcode().options?.block,
-    ncode().options?.block,
-    pi({ harness: harnessId("pi"), sessionsRoot: "/tmp/niwa-options-pi" }).options?.block,
-    zcode().options?.block,
+    claudeCodeKind.options?.block,
+    claudeSdkKind.options?.block,
+    codexKind.options?.block,
+    mcodeKind.options?.block,
+    ncodeKind.options?.block,
+    piKind.options?.block,
+    zcodeKind.options?.block,
   ];
   expect(blocks).toEqual(["claude", "claude", "codex", "mcode", "ncode", "pi", "zcode"]);
 });
 
-test("an installation that claims more than its kind declares is refused before the plugin serves", async () => {
+test("an installation that claims more than its kind declares is refused before the plugin serves", () => {
   const kinds = new HarnessKindRegistry();
-  kinds.register(
-    defineHarnessKind({
-      name: "claude-code",
-      control: new RecordingControl(),
-      capabilities: {
-        ...CLAUDE_CODE_CAPABILITIES,
-        reading: NO_READING,
-        insert: NO_INSERT,
-        control: { ...CLAUDE_CODE_CAPABILITIES.control, structuredOutput: UNSUPPORTED },
-      },
-      options: CLAUDE_OPTIONS,
-    }),
-  );
-  const harnesses = new HarnessInstanceRegistry();
-  harnesses.register(installation("claude-code", true));
-  await expect(serve({ harnesses, kinds })).rejects.toThrow(/control\.structuredOutput/);
+  const kind = claudeLike(new RecordingControl(), { ...CLAUDE_CODE_CAPABILITIES.control, structuredOutput: UNSUPPORTED });
+  kinds.register(kind);
+  // Bound by the kind, or registered by hand against it: either way it is refused before anything can ask it.
+  expect(() => kind.bind({ id: HARNESS, sides: installation("claude-code", true).sides })).toThrow(/control\.structuredOutput/);
+  expect(() => new HarnessInstanceRegistry(kinds).register(installation("claude-code", true))).toThrow(/control\.structuredOutput/);
 });
 
 test("a tool mode the installation cannot hold is refused before anything is started, naming the mode", async () => {

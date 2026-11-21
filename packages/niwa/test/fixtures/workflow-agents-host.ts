@@ -33,12 +33,12 @@ const MODEL = "minimax/MiniMax-M3.1-Flash";
 const INSTALLATION_HOME = join(homedir(), ".minimax");
 
 /** The kind of the installation: the mcode kind, bound to this home. */
-const kind = mcode({ harness: HARNESS, home: INSTALLATION_HOME, control: { mode: "full", model: MODEL, turnTimeoutMs: 600_000 } });
+const kind = mcode({ id: HARNESS, home: INSTALLATION_HOME, model: MODEL, control: { mode: "full", turnTimeoutMs: 600_000 } });
 
 /** The installation the sessions module serves. */
 const instance: Harness = {
   id: HARNESS,
-  kind: kind.kind,
+  kind: kind.instance.kind,
   machine: machineId("machine-1"),
   home: INSTALLATION_HOME,
   sides: mcodeSides,

@@ -8,13 +8,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId, kindOptions } from "@niwa-labs/harness";
-import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
+import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
+import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CODEX_LAUNCH, codexControl } from "./control.ts";
 import type { CodexControlOptions } from "./control.ts";
 import { CodexReading } from "./reading.ts";
-import type { CodexReadingOptions } from "./reading.ts";
 
 export { CodexReading } from "./reading.ts";
 export type { CodexReadingOptions } from "./reading.ts";
@@ -61,45 +60,6 @@ export const CODEX_CAPABILITIES: KindCapabilities = {
 /** The block a Codex session takes at its start: `codex`, with no option of its own yet. */
 export const CODEX_OPTIONS = kindOptions("codex", NoOptions);
 
-/** What the kind needs: the installation, and how its control side is set up. */
-export interface CodexKindOptions extends CodexReadingOptions {
-  /**
-   * How the control side is set up: the model it uses, the working mode its sessions run in and
-   * the binary it drives. Its own defaults are used when it is absent.
-   */
-  readonly control?: Omit<CodexControlOptions, "harness" | "home">;
-}
-
-/** What the caller names of the kind: every part has a default. */
-export type CodexOptions = Partial<CodexKindOptions>;
-
-/** The kind "codex", bound to the installation the options name. */
-export function codexKind(options: CodexKindOptions) {
-  return defineHarnessKind({
-    name: "codex",
-    reading: new CodexReading(options),
-    // The home is resolved once: the control side starts its processes in the home the reading side lists.
-    control: codexControl({ ...(options.control ?? {}), harness: options.harness, home: options.home }),
-    capabilities: CODEX_CAPABILITIES,
-    detect: CODEX_DETECTION,
-    options: CODEX_OPTIONS,
-  });
-}
-
-function defaultHome(): string {
-  const named = process.env["CODEX_HOME"];
-  return named !== undefined && named !== "" ? named : join(homedir(), ".codex");
-}
-
-/** The kind for the installation at `home` (default `$CODEX_HOME`, else `~/.codex`: where Codex itself looks). */
-export function codex(options: CodexOptions = {}) {
-  return codexKind({
-    ...options,
-    harness: options.harness ?? harnessId("codex"),
-    home: options.home ?? defaultHome(),
-  });
-}
-
 /**
  * How a Codex installation is found: the program that runs it, and the directory it keeps its
  * rollouts in.
@@ -108,6 +68,49 @@ const CODEX_DETECTION = {
   binary: "codex",
   home: "~/.codex",
 } as const;
+
+/** What an installation of Codex is given: its id, home and model, and how its control side is set up. */
+export interface CodexInstanceOptions extends InstanceOptions {
+  /** Where the rollouts are, when not in `<home>/sessions`. */
+  readonly sessionsDir?: string;
+  /**
+   * How the control side is set up: the effort, the working mode its sessions run in and the binary
+   * it drives. Its own defaults are used when it is absent.
+   */
+  readonly control?: Omit<CodexControlOptions, "harness" | "home" | "model">;
+}
+
+/** What the caller names of one installation: every part has a default. */
+export type CodexOptions = Partial<CodexInstanceOptions>;
+
+function defaultHome(): string {
+  const named = process.env["CODEX_HOME"];
+  return named !== undefined && named !== "" ? named : join(homedir(), ".codex");
+}
+
+/**
+ * The kind "codex". Each installation is bound to its own home (default `$CODEX_HOME`, else
+ * `~/.codex`: where Codex itself looks): its rollouts are read from there, and its processes are
+ * started with it, so the sessions they write are the ones the reading side lists.
+ */
+export const codexKind = defineHarnessKind<CodexInstanceOptions>({
+  name: "codex",
+  capabilities: CODEX_CAPABILITIES,
+  implements: ["reading", "control"],
+  sides: codexSides,
+  detect: CODEX_DETECTION,
+  options: CODEX_OPTIONS,
+  home: defaultHome,
+  bind: ({ id, home, model, sessionsDir, control }) => ({
+    reading: new CodexReading({ harness: id, home, ...(sessionsDir === undefined ? {} : { sessionsDir }) }),
+    control: codexControl({ ...(control ?? {}), ...(model === undefined ? {} : { model }), harness: id, home }),
+  }),
+});
+
+/** One installation of Codex: `codex` at its default home unless the options say otherwise. */
+export function codex(options: CodexOptions = {}): HarnessBinding {
+  return codexKind.bind({ ...options, id: options.id ?? "codex" });
+}
 
 export { codexSkills } from "./skills.ts";
 export { nativeIdOfFileName } from "./paths.ts";

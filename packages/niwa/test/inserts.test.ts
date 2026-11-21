@@ -58,7 +58,7 @@ test("a Claude Code hook installed here reports to the host with no niwa on the 
   const claudeHome = await tempDir("claude-home");
 
   try {
-    await installInsert(claudeCode({ harness: harnessId("claude-code"), home: claudeHome }), home.path);
+    await installInsert(claudeCode({ id: harnessId("claude-code"), home: claudeHome }), home.path);
     const hooks = JSON.parse(await readFile(join(claudeHome, "plugins", "niwa-insert", "hooks", "hooks.json"), "utf8")) as {
       hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
     };

@@ -7,15 +7,14 @@
 
 import { existsSync } from "node:fs";
 
-import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId, kindOptions } from "@niwa-labs/harness";
-import type { HarnessDetection, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
+import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
+import type { HarnessDetection, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { MCODE_LAUNCH, mcodeControl } from "./control.ts";
 import type { McodeControlOptions, MinimaxLineage } from "./control.ts";
 import { durablePathOf } from "./durable.ts";
 import { DEFAULT_PROFILE, homeOfProfile } from "./paths.ts";
 import { McodeReading } from "./reading.ts";
-import type { McodeReadingOptions } from "./reading.ts";
 
 /**
  * The sides a MiniMax Code instance has by default.
@@ -64,26 +63,26 @@ export function minimaxCapabilities(lineage: MinimaxLineage): KindCapabilities {
   };
 }
 
-/** What a kind needs: the installation, and how its control side is set up. */
-export interface McodeKindOptions extends McodeReadingOptions {
+/** What an installation of a MiniMax Code kind is given: its id, home and model, and how its control side is set up. */
+export interface McodeInstanceOptions extends InstanceOptions {
   /**
-   * The account profile the installation belongs to. The control side is started with it, and
-   * `mcode()` derives the home from it (`default` is `~/.minimax`, any other `~/.minimax-<profile>`)
-   * when no home is given. Without a profile the control side is started with `--profile default`
-   * when the home holds a durable history (the fork of the harness, whose wrapper has a default
-   * profile of its own that could move sessions to another home), and without one otherwise. The
-   * published build takes no profile: naming one for `mcode` refuses its starts and resumes.
+   * The account profile the installation belongs to. The control side is started with it, and the
+   * home is derived from it (`default` is `~/.minimax`, any other `~/.minimax-<profile>`) when no
+   * home is given. Without a profile the control side is started with `--profile default` when the
+   * home holds a durable history (the fork of the harness, whose wrapper has a default profile of its
+   * own that could move sessions to another home), and without one otherwise. The published build
+   * takes no profile: naming one for `mcode` refuses its starts and resumes.
    */
   readonly profile?: string;
   /**
-   * How the control side is set up: the model it uses, the account profile it drives and what it
-   * does with a permission request. Its own defaults are used when it is absent.
+   * How the control side is set up: the account profile it drives and what it does with a permission
+   * request. Its own defaults are used when it is absent.
    */
-  readonly control?: Omit<McodeControlOptions, "harness" | "lineage" | "home">;
+  readonly control?: Omit<McodeControlOptions, "harness" | "lineage" | "home" | "model">;
 }
 
-/** What the caller names of a kind: every part has a default. */
-export type McodeOptions = Partial<McodeKindOptions>;
+/** What the caller names of one installation: every part has a default. */
+export type McodeOptions = Partial<McodeInstanceOptions>;
 
 /** One of the two kinds: its name, its lineage and how its installation is found. */
 export interface MinimaxKindSpec {
@@ -92,32 +91,30 @@ export interface MinimaxKindSpec {
   readonly detect: HarnessDetection;
 }
 
-/** The kind of `spec`, bound to the installation the options name. */
-export function minimaxKind(spec: MinimaxKindSpec, options: McodeKindOptions) {
-  return defineHarnessKind({
+/** The profile an installation names, in its own options or its control side's. */
+const profileNamed = (options: McodeInstanceOptions): string | undefined => options.profile ?? options.control?.profile;
+
+/** The kind of `spec`. Each installation is bound to its own home, the home of its profile unless it names one. */
+export function minimaxKind(spec: MinimaxKindSpec) {
+  return defineHarnessKind<McodeInstanceOptions>({
     name: spec.name,
-    reading: new McodeReading(options),
-    control: mcodeControl({
-      harness: options.harness,
-      ...(options.control ?? {}),
-      home: options.home,
-      ...profileOf(options, spec.lineage),
-      lineage: spec.lineage,
-    }),
     capabilities: minimaxCapabilities(spec.lineage),
+    implements: ["reading", "control"],
+    sides: minimaxSides(),
     detect: spec.detect,
     options: kindOptions(spec.name, NoOptions),
-  });
-}
-
-/** The kind of `spec` for the installation at `home` (default: the home of the profile, `~/.minimax`). */
-export function minimaxInstance(spec: MinimaxKindSpec, options: McodeOptions) {
-  const profile = options.profile ?? options.control?.profile;
-  return minimaxKind(spec, {
-    ...options,
-    harness: options.harness ?? harnessId(spec.name),
-    home: options.home ?? homeOfProfile(profile),
-    ...(profile === undefined ? {} : { profile }),
+    home: (options) => homeOfProfile(profileNamed(options)),
+    bind: (options) => ({
+      reading: new McodeReading({ harness: options.id, home: options.home }),
+      control: mcodeControl({
+        harness: options.id,
+        ...(options.control ?? {}),
+        ...(options.model === undefined ? {} : { model: options.model }),
+        home: options.home,
+        ...profileOf(options, spec.lineage),
+        lineage: spec.lineage,
+      }),
+    }),
   });
 }
 
@@ -127,8 +124,8 @@ export function minimaxInstance(spec: MinimaxKindSpec, options: McodeOptions) {
  * default`, so that the default profile of its wrapper cannot move sessions to another home; the
  * upstream harness is started without one, whatever its home holds.
  */
-function profileOf(options: McodeKindOptions, lineage: MinimaxLineage): { profile?: string } {
-  const named = options.profile ?? options.control?.profile;
+function profileOf(options: McodeInstanceOptions & { readonly home: string }, lineage: MinimaxLineage): { profile?: string } {
+  const named = profileNamed(options);
   if (named !== undefined) return { profile: named };
   // Upstream `mcode acp` has no --profile option (it exits with its usage text), and its home may hold a
   // durable history too: only the fork's wrapper has a profile of its own to pin.

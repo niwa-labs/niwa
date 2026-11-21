@@ -27,7 +27,7 @@ import type { HarnessDiscoverOutput } from "@niwa-labs/sessions";
 import type { CallerBinding } from "@niwa-labs/plugin";
 import { REQUEST_ANSWER, RequestCreated, requests } from "@niwa-labs/requests";
 import { eventually, tempDir, tempHome, connectAsOwner } from "@niwa-labs/testing";
-import { mcode, mcodeSides } from "@niwa-labs/harness-mcode";
+import { mcodeKind, mcodeSides } from "@niwa-labs/harness-mcode";
 
 /** The version the fake binary says. */
 const FAKE_VERSION = "9.9.9-fake";
@@ -65,7 +65,7 @@ async function serve(again?: { home: Awaited<ReturnType<typeof tempHome>>; root:
   host.use(requests({ bind }));
   host.use(
     harnessDiscovery({
-      kinds: [mcode({ home: join(root, ".minimax") })],
+      kinds: [mcodeKind],
       env: { PATH: bin, HOME: root },
     }),
   );

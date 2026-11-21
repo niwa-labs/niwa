@@ -8,10 +8,10 @@
  * side.
  */
 
-import type { SideCapabilities } from "@niwa-labs/harness";
+import type { HarnessBinding, SideCapabilities } from "@niwa-labs/harness";
 
-import { minimaxInstance, minimaxKind, minimaxSides } from "./kind.ts";
-import type { McodeKindOptions, McodeOptions, MinimaxKindSpec } from "./kind.ts";
+import { minimaxKind, minimaxSides } from "./kind.ts";
+import type { McodeOptions, MinimaxKindSpec } from "./kind.ts";
 
 export { McodeReading } from "./reading.ts";
 export type { McodeReadingOptions } from "./reading.ts";
@@ -24,7 +24,7 @@ export type {
   PermissionPolicy,
   PermissionRequest,
 } from "./control.ts";
-export type { McodeKindOptions, McodeOptions } from "./kind.ts";
+export type { McodeInstanceOptions, McodeOptions } from "./kind.ts";
 
 /** The sides an upstream MiniMax Code instance has by default. */
 export const mcodeSides: SideCapabilities = minimaxSides();
@@ -39,14 +39,12 @@ const MCODE_KIND: MinimaxKindSpec = {
   detect: { binary: "mcode", home: "~/.minimax" },
 };
 
-/** The kind "mcode", bound to the installation the options name. */
-export function mcodeKind(options: McodeKindOptions) {
-  return minimaxKind(MCODE_KIND, options);
-}
+/** The kind "mcode". */
+export const mcodeKind = minimaxKind(MCODE_KIND);
 
-/** The kind for the installation at `home` (default: the home of the profile, `~/.minimax`). */
-export function mcode(options: McodeOptions = {}) {
-  return minimaxInstance(MCODE_KIND, options);
+/** One installation of the published build: `mcode` at the home of its profile (`~/.minimax`) unless the options say otherwise. */
+export function mcode(options: McodeOptions = {}): HarnessBinding {
+  return mcodeKind.bind({ ...options, id: options.id ?? "mcode" });
 }
 
 export { mcodeSkills } from "./skills.ts";

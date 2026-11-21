@@ -63,7 +63,7 @@ test("closing the host stops the harness process a session started", async () =>
   await writeFile(binary, FAKE_PI.replaceAll("@PID@", pidFile));
   await chmod(binary, 0o755);
 
-  const kind = pi({ harness: HARNESS, sessionsRoot: dir, control: { mode: "full", binary, model: "test/model", home: dir } });
+  const kind = pi({ id: HARNESS, sessionsRoot: dir, home: dir, model: "test/model", control: { mode: "full", binary } });
   const instance: Harness = {
     id: HARNESS,
     kind: harnessKind("pi"),

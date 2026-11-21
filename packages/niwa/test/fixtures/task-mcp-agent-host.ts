@@ -39,15 +39,16 @@ const INSTALLATION_HOME = join(homedir(), ".minimax");
 
 /** The kind of the executor installation: the mcode kind, bound to this home. */
 const executorKind = mcode({
-  harness: EXECUTOR_HARNESS,
+  id: EXECUTOR_HARNESS,
   home: INSTALLATION_HOME,
-  control: { mode: "full", model: MODEL, turnTimeoutMs: 600_000 },
+  model: MODEL,
+  control: { mode: "full", turnTimeoutMs: 600_000 },
 });
 
 /** The installation the executor of the task addresses. */
 const executorInstance: Harness = {
   id: EXECUTOR_HARNESS,
-  kind: executorKind.kind,
+  kind: executorKind.instance.kind,
   machine: machineId("machine-1"),
   home: INSTALLATION_HOME,
   sides: mcodeSides,
@@ -55,15 +56,16 @@ const executorInstance: Harness = {
 
 /** The kind of the asker installation: the mcode kind, bound to this home. */
 const askerKind = mcode({
-  harness: ASKER_HARNESS,
+  id: ASKER_HARNESS,
   home: INSTALLATION_HOME,
-  control: { mode: "full", model: MODEL, turnTimeoutMs: 600_000 },
+  model: MODEL,
+  control: { mode: "full", turnTimeoutMs: 600_000 },
 });
 
 /** The installation the asker of the task talks through. */
 const askerInstance: Harness = {
   id: ASKER_HARNESS,
-  kind: askerKind.kind,
+  kind: askerKind.instance.kind,
   machine: machineId("machine-1"),
   home: INSTALLATION_HOME,
   sides: mcodeSides,

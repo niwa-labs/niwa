@@ -19,7 +19,7 @@ import type { Harness, SessionControl } from "@niwa-labs/harness";
 import { sessions } from "@niwa-labs/sessions";
 import { workflow } from "@niwa-labs/workflow";
 
-import { claudeCodeKind, claudeCodeSides } from "@niwa-labs/harness-claude";
+import { claudeCode, claudeCodeSides } from "@niwa-labs/harness-claude";
 import type { ClaudeCodeSessionControl } from "@niwa-labs/harness-claude";
 import { mcode, mcodeSides } from "@niwa-labs/harness-mcode";
 import type { McodeSessionControl } from "@niwa-labs/harness-mcode";
@@ -44,25 +44,26 @@ const CLAUDE_HOME = join(homedir(), ".claude");
 
 /** The MiniMax Code installation the studies run in. */
 const mcodeKind = mcode({
-  harness: MCODE_HARNESS,
+  id: MCODE_HARNESS,
   home: MCODE_HOME,
-  control: { mode: "full", model: MCODE_MODEL },
+  model: MCODE_MODEL,
+  control: { mode: "full" },
 });
 
 const mcodeInstance: Harness = {
   id: MCODE_HARNESS,
-  kind: mcodeKind.kind,
+  kind: mcodeKind.instance.kind,
   machine: machineId("machine-1"),
   home: MCODE_HOME,
   sides: mcodeSides,
 };
 
 /** The Claude Code installation the studies run in. */
-const claudeKind = claudeCodeKind({
-  harness: CLAUDE_HARNESS,
+const claudeKind = claudeCode({
+  id: CLAUDE_HARNESS,
   home: CLAUDE_HOME,
+  model: CLAUDE_MODEL,
   control: {
-    model: CLAUDE_MODEL,
     // The ACP adapter is a dependency of the package, not a program on the PATH.
     command: [join(import.meta.dir, "../../node_modules/.bin/claude-code-acp")],
   },
@@ -70,7 +71,7 @@ const claudeKind = claudeCodeKind({
 
 const claudeInstance: Harness = {
   id: CLAUDE_HARNESS,
-  kind: claudeKind.kind,
+  kind: claudeKind.instance.kind,
   machine: machineId("machine-1"),
   home: CLAUDE_HOME,
   sides: claudeCodeSides,

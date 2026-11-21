@@ -461,7 +461,7 @@ test("a start whose first turn Codex refused leaves no session behind", async ()
 });
 
 test("the home of a kind is the home of the processes it starts and resumes", async () => {
-  const kind = codexKind({ harness: HarnessIdSchema.parse("codex-fake"), home: join(dir, "other-home"), control: { binary: join(dir, "codex") } });
+  const kind = codexKind.bind({ id: HarnessIdSchema.parse("codex-fake"), home: join(dir, "other-home"), control: { binary: join(dir, "codex") } });
   const codex = kind.control as CodexSessionControl;
   controls.push(codex);
   const { session: id } = await codex.start({ prompt: promptFromText("") });
@@ -476,7 +476,7 @@ test("a kind without a home takes the one Codex itself would use, for reading an
   const before = process.env.CODEX_HOME;
   process.env.CODEX_HOME = named;
   try {
-    const kind = codex({ harness: HarnessIdSchema.parse("codex-fake"), control: { binary: join(dir, "codex") } });
+    const kind = codex({ id: HarnessIdSchema.parse("codex-fake"), control: { binary: join(dir, "codex") } });
     const live = kind.control as CodexSessionControl;
     controls.push(live);
     await live.start({ prompt: promptFromText("") });

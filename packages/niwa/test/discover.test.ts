@@ -21,9 +21,9 @@ import type { StoredRecord } from "@niwa-labs/core";
 import { discover } from "@niwa-labs/harness";
 import { HARNESS_DISCOVER_ACTION, HarnessProposed, harnessDiscovery } from "@niwa-labs/sessions";
 import type { HarnessDiscoverOutput } from "@niwa-labs/sessions";
-import { claudeCode, CLAUDE_CODE_ADAPTER, claudeSdkKind } from "@niwa-labs/harness-claude";
+import { claudeCodeKind, CLAUDE_CODE_ADAPTER, claudeSdkKind } from "@niwa-labs/harness-claude";
 
-import { mcode, ncode } from "@niwa-labs/harness-mcode";
+import { mcodeKind, ncodeKind } from "@niwa-labs/harness-mcode";
 import { tempDir, tempHome } from "@niwa-labs/testing";
 
 /** The version the fake binary says. */
@@ -40,10 +40,6 @@ async function fakeBinary(dir: string, name: string, version: string): Promise<s
   return path;
 }
 
-/** The mcode kind, with its home in a directory of the test's own. */
-function mcodeKind(root: string) {
-  return mcode({ home: join(root, ".minimax") });
-}
 
 test("a kind whose binary is on the PATH is proposed with the version it said", async () => {
   const root = await tempDir("discover");
@@ -52,12 +48,12 @@ test("a kind whose binary is on the PATH is proposed with the version it said", 
     const path = await fakeBinary(bin, "mcode", FAKE_VERSION);
     await mkdir(join(root, ".minimax"), { recursive: true });
 
-    const { proposals, missing } = await discover([mcodeKind(root)], { PATH: bin, HOME: root });
+    const { proposals, missing } = await discover([mcodeKind], { PATH: bin, HOME: root });
 
     expect(missing).toEqual([]);
     expect(proposals).toHaveLength(1);
     const proposal = proposals[0];
-    expect(proposal?.kind).toBe(mcodeKind(root).kind);
+    expect(proposal?.kind).toBe(mcodeKind.kind);
     expect(proposal?.binary?.path).toBe(path);
     expect(proposal?.binary?.version).toBe(FAKE_VERSION);
     expect(proposal?.home).toBe(join(root, ".minimax"));
@@ -71,14 +67,14 @@ test("a kind whose binary is nowhere is not proposed, and is named as missing", 
   try {
     await mkdir(join(root, ".minimax"), { recursive: true });
 
-    const { proposals, missing } = await discover([mcodeKind(root)], {
+    const { proposals, missing } = await discover([mcodeKind], {
       PATH: join(root, "no-such-dir"),
       HOME: root,
     });
 
     expect(proposals).toEqual([]);
     expect(missing).toHaveLength(1);
-    expect(missing[0]?.kind).toBe(mcodeKind(root).kind);
+    expect(missing[0]?.kind).toBe(mcodeKind.kind);
     expect(missing[0]?.reason).toContain("mcode");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -94,7 +90,7 @@ test("mcode and ncode both find `mcode` on the PATH, and each takes its own over
     await mkdir(join(root, ".minimax"), { recursive: true });
     const home = join(root, ".minimax");
 
-    const { proposals, missing } = await discover([mcode({ home }), ncode({ home })], { PATH: bin, HOME: root });
+    const { proposals, missing } = await discover([mcodeKind, ncodeKind], { PATH: bin, HOME: root });
 
     expect(missing).toEqual([]);
     const found = new Map(proposals.map((proposal) => [String(proposal.kind), proposal]));
@@ -102,7 +98,7 @@ test("mcode and ncode both find `mcode` on the PATH, and each takes its own over
     expect(found.get("mcode")?.binary?.path).toBe(shared);
     expect(found.get("ncode")?.binary?.path).toBe(shared);
 
-    const split = await discover([mcode({ home }), ncode({ home })], { PATH: bin, HOME: root, MCODE_BIN: other });
+    const split = await discover([mcodeKind, ncodeKind], { PATH: bin, HOME: root, MCODE_BIN: other });
     const byKind = new Map(split.proposals.map((proposal) => [String(proposal.kind), proposal]));
     expect(byKind.get("mcode")?.binary?.path).toBe(other);
     expect(byKind.get("mcode")?.binary?.version).toBe("0.7.4");
@@ -121,7 +117,7 @@ test("the environment override wins over the PATH", async () => {
     const path = await fakeBinary(override, "mcode", "2.0.0-override");
     await mkdir(join(root, ".minimax"), { recursive: true });
 
-    const { proposals } = await discover([mcodeKind(root)], {
+    const { proposals } = await discover([mcodeKind], {
       PATH: onPath,
       HOME: root,
       MCODE_BIN: path,
@@ -140,7 +136,7 @@ test("a kind with no binary is proposed on its home alone", async () => {
     const home = join(root, ".claude");
     await mkdir(home, { recursive: true });
 
-    const { proposals, missing } = await discover([claudeSdkKind({ home })], {
+    const { proposals, missing } = await discover([claudeSdkKind], {
       PATH: "",
       HOME: root,
     });
@@ -160,7 +156,7 @@ test("claude-code is found through niwa's own adapter, with nothing on the PATH"
     const home = join(root, ".claude");
     await mkdir(home, { recursive: true });
 
-    const { proposals, missing } = await discover([claudeCode({ home })], { PATH: "", HOME: root });
+    const { proposals, missing } = await discover([claudeCodeKind], { PATH: "", HOME: root });
 
     expect(missing).toEqual([]);
     expect(proposals).toHaveLength(1);
@@ -179,7 +175,7 @@ test("the environment override wins over the bundled adapter", async () => {
     await mkdir(home, { recursive: true });
     const path = await fakeBinary(join(root, "override"), "claude-code-acp", "3.0.0-override");
 
-    const { proposals } = await discover([claudeCode({ home })], { PATH: "", HOME: root, CLAUDE_CODE_BIN: path });
+    const { proposals } = await discover([claudeCodeKind], { PATH: "", HOME: root, CLAUDE_CODE_BIN: path });
 
     expect(proposals[0]?.binary?.path).toBe(path);
     expect(proposals[0]?.binary?.version).toBe("3.0.0-override");
@@ -199,7 +195,7 @@ test("the action writes a proposal, and a second run writes nothing new", async 
     const niwa = createNiwa({ home: home.path });
     niwa.use(
       harnessDiscovery({
-        kinds: [mcodeKind(root)],
+        kinds: [mcodeKind],
         env: { PATH: bin, HOME: root },
       }),
     );
@@ -258,7 +254,7 @@ test("a binary that never answers is stopped at the deadline", async () => {
   try {
     const { bin, pidFile } = await misbehaving(root, "/bin/sleep 60");
     const started = Date.now();
-    const { proposals } = await discover([mcodeKind(root)], { PATH: bin, HOME: root });
+    const { proposals } = await discover([mcodeKind], { PATH: bin, HOME: root });
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(proposals[0]?.binary?.version).toBe("unknown");
     const pid = Number((await readFile(pidFile, "utf8")).trim());
@@ -274,7 +270,7 @@ test("a binary that says too much is stopped at the cap", async () => {
   try {
     const { bin, pidFile } = await misbehaving(root, "/usr/bin/yes aaaaaaaa");
     const started = Date.now();
-    const { proposals } = await discover([mcodeKind(root)], { PATH: bin, HOME: root });
+    const { proposals } = await discover([mcodeKind], { PATH: bin, HOME: root });
     expect(Date.now() - started).toBeLessThan(1_500);
     expect(proposals[0]?.binary?.version).toBe("aaaaaaaa");
     const pid = Number((await readFile(pidFile, "utf8")).trim());

@@ -10,8 +10,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ADMITTED, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
-import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
+import { ADMITTED, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@niwa-labs/harness";
+import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CLAUDE_CODE_ADAPTER, claudeCodeControl } from "./control.ts";
 import { CLAUDE_CODE_LAUNCH } from "./launch.ts";
@@ -19,7 +19,6 @@ import type { ClaudeCodeControlOptions } from "./control.ts";
 import { installClaudeCodeInsert } from "./insert/index.ts";
 import { CLAUDE_OPTIONS } from "./options.ts";
 import { ClaudeCodeReading } from "./reading.ts";
-import type { ClaudeCodeReadingOptions } from "./reading.ts";
 
 export { ClaudeCodeReading } from "./reading.ts";
 export type { ClaudeCodeReadingOptions } from "./reading.ts";
@@ -73,51 +72,6 @@ export const CLAUDE_CODE_CAPABILITIES: KindCapabilities = {
   insert: { nested: ADMITTED, compaction: ADMITTED, manualOpen: ADMITTED, permission: ADMITTED, end: ADMITTED },
 };
 
-/** What the kind needs: the installation, and how its control side is set up. */
-export interface ClaudeCodeKindOptions extends ClaudeCodeReadingOptions {
-  /**
-   * How the control side is set up: the model it uses, what it does with a permission request,
-   * and the adapter it drives. Its own defaults are used when it is absent.
-   */
-  readonly control?: Omit<ClaudeCodeControlOptions, "harness" | "home">;
-}
-
-/** What the caller names of the kind: every part has a default. */
-export type ClaudeCodeOptions = Partial<ClaudeCodeKindOptions>;
-
-/** The kind "claude-code", bound to the installation the options name. */
-export function claudeCodeKind(options: ClaudeCodeKindOptions) {
-  return defineHarnessKind({
-    name: "claude-code",
-    reading: new ClaudeCodeReading(options),
-    control: claudeCodeControl({ harness: options.harness, ...(options.control ?? {}), home: options.home }),
-    insert: {
-      // The insert is put into the installation it belongs to: the plugin is written into the
-      // plugins directory of that installation, and the hooks report to the host at the home
-      // the caller names, through `niwa insert report`.
-      install: async (opts) => {
-        await installClaudeCodeInsert(join(options.home, "plugins"), {
-          home: opts.home,
-          harness: options.harness,
-          ...(opts.cli === undefined ? {} : { cli: opts.cli }),
-        });
-      },
-    },
-    capabilities: CLAUDE_CODE_CAPABILITIES,
-    detect: CLAUDE_CODE_DETECTION,
-    options: CLAUDE_OPTIONS,
-  });
-}
-
-/** The kind for the installation at `home` (default `~/.claude`). */
-export function claudeCode(options: ClaudeCodeOptions = {}) {
-  return claudeCodeKind({
-    ...options,
-    harness: options.harness ?? harnessId("claude-code"),
-    home: options.home ?? join(homedir(), ".claude"),
-  });
-}
-
 /**
  * How a Claude Code installation is found: the ACP adapter that drives it, and the directory it
  * keeps its sessions in.
@@ -126,5 +80,52 @@ const CLAUDE_CODE_DETECTION = {
   bundled: CLAUDE_CODE_ADAPTER,
   home: "~/.claude",
 } as const;
+
+/** What an installation of Claude Code is given: its id, home and model, and how its control side is set up. */
+export interface ClaudeCodeInstanceOptions extends InstanceOptions {
+  /**
+   * How the control side is set up: what it does with a permission request, the adapter it drives,
+   * the effort and the Claude options of its sessions. Its own defaults are used when it is absent.
+   */
+  readonly control?: Omit<ClaudeCodeControlOptions, "harness" | "home" | "model">;
+}
+
+/** What the caller names of one installation: every part has a default. */
+export type ClaudeCodeOptions = Partial<ClaudeCodeInstanceOptions>;
+
+/**
+ * The kind "claude-code". Each installation is bound to its own home (default `~/.claude`): its
+ * sessions are read from there, its processes write there, and its insert is put there.
+ */
+export const claudeCodeKind = defineHarnessKind<ClaudeCodeInstanceOptions>({
+  name: "claude-code",
+  capabilities: CLAUDE_CODE_CAPABILITIES,
+  implements: ["reading", "control", "insert"],
+  sides: claudeCodeSides,
+  detect: CLAUDE_CODE_DETECTION,
+  options: CLAUDE_OPTIONS,
+  home: () => join(homedir(), ".claude"),
+  bind: ({ id, home, model, control }) => ({
+    reading: new ClaudeCodeReading({ harness: id, home }),
+    control: claudeCodeControl({ harness: id, ...(control ?? {}), ...(model === undefined ? {} : { model }), home }),
+    insert: {
+      // The insert is put into the installation it belongs to: the plugin is written into the
+      // plugins directory of that installation, and the hooks report to the host at the home
+      // the caller names, through `niwa insert report`.
+      install: async (opts) => {
+        await installClaudeCodeInsert(join(home, "plugins"), {
+          home: opts.home,
+          harness: id,
+          ...(opts.cli === undefined ? {} : { cli: opts.cli }),
+        });
+      },
+    },
+  }),
+});
+
+/** One installation of Claude Code: `claude-code` at `~/.claude` unless the options say otherwise. */
+export function claudeCode(options: ClaudeCodeOptions = {}): HarnessBinding {
+  return claudeCodeKind.bind({ ...options, id: options.id ?? "claude-code" });
+}
 
 export { claudeCodeSkills } from "./skills.ts";

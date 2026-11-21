@@ -168,8 +168,8 @@ const CASES: Case[] = [
     newResult: MCODE_OPTIONS,
     loadResult: MCODE_OPTIONS,
     build: (fake, id) => {
-      const kind = mcode({ harness: id, home: fake.dir, control: { mode: "full", binary: fake.path, permissions: "deny" } });
-      return { kind: kind.kind, control: kind.control, capabilities: mcodeSides.control as ControlCapabilities };
+      const kind = mcode({ id: id, home: fake.dir, control: { mode: "full", binary: fake.path, permissions: "deny" } });
+      return { kind: kind.instance.kind, control: kind.control, capabilities: mcodeSides.control as ControlCapabilities };
     },
   },
   {
@@ -177,8 +177,8 @@ const CASES: Case[] = [
     newResult: CLAUDE_NEW,
     loadResult: `{ sessionId: "${NATIVE}" }`,
     build: (fake, id) => {
-      const kind = claudeCode({ harness: id, home: fake.dir, control: { command: [fake.path], permissions: "deny" } });
-      return { kind: kind.kind, control: kind.control, capabilities: claudeCodeSides.control as ControlCapabilities };
+      const kind = claudeCode({ id: id, home: fake.dir, control: { command: [fake.path], permissions: "deny" } });
+      return { kind: kind.instance.kind, control: kind.control, capabilities: claudeCodeSides.control as ControlCapabilities };
     },
   },
 ];

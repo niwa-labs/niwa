@@ -29,12 +29,12 @@ const MODEL = "gpt-6-luna";
 const HOME = join(homedir(), ".codex");
 
 /** The kind of the codex installation. */
-const kind = codex({ harness: HARNESS, home: HOME, control: { model: MODEL } });
+const kind = codex({ id: HARNESS, home: HOME, model: MODEL });
 
 /** The installation the sessions module serves. */
 const instance: Harness = {
   id: HARNESS,
-  kind: kind.kind,
+  kind: kind.instance.kind,
   machine: machineId("machine-1"),
   home: HOME,
   sides: codexSides,

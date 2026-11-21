@@ -10,7 +10,7 @@ import type { Plugin } from "@niwa-labs/plugin";
 import { messages } from "@niwa-labs/messages";
 import { requests } from "@niwa-labs/requests";
 import { sessions } from "@niwa-labs/sessions";
-import type { HarnessBinding } from "@niwa-labs/sessions";
+import type { HarnessBinding } from "@niwa-labs/harness";
 import { tasks } from "@niwa-labs/tasks";
 import { timers } from "@niwa-labs/timer";
 

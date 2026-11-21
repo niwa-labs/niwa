@@ -33,10 +33,10 @@ test("H1 H3 H8 H10 the ncode kind reads the same store: its reading side passes 
   const report = await readingConformance(
     "ncode",
     (home) => {
-      const kind = ncodeKind({ harness: FIXTURE_HARNESS, home });
+      const kind = ncodeKind.bind({ id: FIXTURE_HARNESS, home });
       const instance: Harness = {
         id: FIXTURE_HARNESS,
-        kind: kind.kind,
+        kind: kind.instance.kind,
         machine: machineId("machine-1"),
         home,
         sides: { reading: { list: true, read: true, watch: false } },

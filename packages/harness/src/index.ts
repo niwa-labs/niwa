@@ -3,65 +3,158 @@
  * A kind is code and is resolved by name; an instance is an installation and has the id.
  */
 
-import type { Harness, HarnessId, HarnessKind } from "./instance.ts";
-import { harnessKind } from "./instance.ts";
+import type { Harness, HarnessId, HarnessKind, HarnessBinary } from "./instance.ts";
+import { harnessId, harnessKind, machineId } from "./instance.ts";
 import type { HarnessInsert } from "./insert.ts";
 import type { SessionControl } from "./control.ts";
 import type { SessionReading } from "./reading.ts";
 import type { HarnessDetection } from "./discover.ts";
 import type { KindOptions } from "./options.ts";
-import { KindCapabilitiesSchema, excessOf, narrowSides, sidesOf } from "./declaration.ts";
+import type { HarnessSide, SideCapabilities } from "./capabilities.ts";
+import { CapabilityExceeded, KindCapabilitiesSchema, excessOf, narrowSides, sidesOf } from "./declaration.ts";
 import type { KindCapabilities } from "./declaration.ts";
 
 /**
- * A harness kind: a name, the sides its code implements, and what it declares those sides can
- * serve. A side may be absent; its abilities are then all declared unsupported.
+ * What every installation of a kind is given, whatever its kind. A kind's own options extend it with
+ * what only that kind takes (the binary it runs, a profile, the timeouts of its control side).
  */
-export interface HarnessKindDefinition {
-  readonly kind: HarnessKind;
+export interface InstanceOptions {
+  /** The id the owner gives the installation (`claude-haiku`): half of the identity of each of its sessions. */
+  readonly id: string;
+  /** The machine the installation is on. Default: `local`. */
+  readonly machine?: string;
+  /** The directory of its settings and sessions; where the kind itself looks when absent. */
+  readonly home?: string;
+  /**
+   * The model each session of the installation runs, unless its start names another. Absent, the
+   * harness's own default stands. A kind that cannot choose a model refuses one.
+   */
+  readonly model?: string;
+  /** The program of the installation, as it was found on the machine. */
+  readonly binary?: HarnessBinary;
+  /**
+   * What the installation claims: what was found on the machine, which may narrow what the kind
+   * declares and never widen it. Default: the kind's own sides.
+   */
+  readonly sides?: SideCapabilities;
+}
+
+/** The sides of one installation, as a kind's code makes them for it. */
+export interface InstanceSides {
   readonly reading?: SessionReading;
   readonly control?: SessionControl;
   readonly insert?: HarnessInsert;
+}
+
+/**
+ * One installation and the code that serves it: the instance, the sides bound to its id and its
+ * home, and the options block a session of it takes. `kind.bind(...)` makes one; a check may make
+ * one by hand.
+ */
+export interface HarnessBinding extends InstanceSides {
+  readonly instance: Harness;
+  /** The options block a session of this installation's kind takes at its start. */
+  readonly options?: KindOptions;
+}
+
+/**
+ * A harness kind: a name, what it declares its sides can serve, and the code that binds it to an
+ * installation. The kind is not bound to any installation: `bind` gives each one its own sides,
+ * read from and started in its own home, under its own id, with its own options.
+ */
+export interface HarnessKindDefinition<Options extends InstanceOptions = InstanceOptions> {
+  readonly kind: HarnessKind;
   /** Every ability of every side, supported or not; an installation may claim no more. */
   readonly capabilities: KindCapabilities;
+  /** The sides the kind has code for: the ones `bind` gives every installation. */
+  readonly implements: readonly HarnessSide[];
+  /** The sides an installation has when nothing narrows them. */
+  readonly sides: SideCapabilities;
   /** How an installation of this kind is found on a machine. */
   readonly detect?: HarnessDetection;
   /** The options block a session of this kind takes at its start: its name and its schema. */
   readonly options?: KindOptions;
+  /**
+   * One installation of the kind, with its sides. Refused when it claims what the kind cannot serve:
+   * an ability the kind does not support, or a model on a kind that cannot choose one.
+   */
+  bind(options: Options): HarnessBinding;
 }
 
-/** Which sides a kind has code for. */
-function implementedOf(kind: { reading?: unknown; control?: unknown; insert?: unknown }) {
-  return { reading: kind.reading !== undefined, control: kind.control !== undefined, insert: kind.insert !== undefined };
+/** What `defineHarnessKind` takes. */
+export interface HarnessKindSpec<Options extends InstanceOptions> {
+  readonly name: string;
+  readonly capabilities: KindCapabilities;
+  /** The sides the kind has code for: `bind` must give each installation exactly these. */
+  readonly implements: readonly HarnessSide[];
+  /** The sides an installation has when nothing narrows them. Default: every ability the kind supports. */
+  readonly sides?: SideCapabilities;
+  readonly detect?: HarnessDetection;
+  readonly options?: KindOptions;
+  /** The home of an installation that names none: where the harness itself looks. */
+  readonly home: (options: Options) => string;
+  /** The sides of one installation, from its options with the id and the home settled. */
+  readonly bind: (options: Options & { readonly id: HarnessId; readonly home: string }) => InstanceSides;
 }
+
+/** Which sides a kind has code for, as `narrowSides` takes them. */
+function implementedOf(sides: readonly HarnessSide[]) {
+  return { reading: sides.includes("reading"), control: sides.includes("control"), insert: sides.includes("insert") };
+}
+
+/** The machine an installation is on when it names none. */
+const LOCAL_MACHINE = "local";
 
 /**
  * A kind, once its declaration is whole and within its code: a declaration that leaves out an
- * ability, or supports one on a side the kind has no code for, does not register.
+ * ability, supports one on a side the kind has no code for, or gives installations sides beyond
+ * itself, does not register.
  */
-export function defineHarnessKind(spec: {
-  name: string;
-  reading?: SessionReading;
-  control?: SessionControl;
-  insert?: HarnessInsert;
-  capabilities: KindCapabilities;
-  detect?: HarnessDetection;
-  options?: KindOptions;
-}): HarnessKindDefinition {
+export function defineHarnessKind<Options extends InstanceOptions>(spec: HarnessKindSpec<Options>): HarnessKindDefinition<Options> {
   const kind = harnessKind(spec.name);
   const capabilities = KindCapabilitiesSchema.parse(spec.capabilities);
-  const beyond = excessOf(sidesOf(capabilities), capabilities, implementedOf(spec)).filter((line) => line.includes("has no"));
+  const implemented = implementedOf(spec.implements);
+  const beyond = excessOf(sidesOf(capabilities), capabilities, implemented).filter((line) => line.includes("has no"));
   if (beyond.length > 0) {
     throw new Error(`harness kind "${kind}" declares abilities of sides it has no code for: ${beyond.join(", ")}`);
   }
+  const sides = spec.sides ?? sidesOf(capabilities);
+  const wider = excessOf(sides, capabilities, implemented);
+  if (wider.length > 0) throw new Error(`harness kind "${kind}" gives its installations what it does not declare: ${wider.join(", ")}`);
   return {
     kind,
-    reading: spec.reading,
-    control: spec.control,
-    insert: spec.insert,
     capabilities,
-    detect: spec.detect,
-    options: spec.options,
+    implements: [...spec.implements],
+    sides,
+    ...(spec.detect === undefined ? {} : { detect: spec.detect }),
+    ...(spec.options === undefined ? {} : { options: spec.options }),
+    bind(options: Options): HarnessBinding {
+      const id = harnessId(options.id);
+      const claimed = narrowSides(id, kind, capabilities, options.sides ?? sides, implemented);
+      if (options.model !== undefined && !capabilities.control.launch.model.supported) {
+        throw new CapabilityExceeded(id, kind, [`control.launch.model (asked for "${options.model}")`]);
+      }
+      const home = options.home ?? spec.home(options);
+      const bound = spec.bind({ ...options, id, home });
+      const missing = spec.implements.filter((side) => bound[side] === undefined);
+      if (missing.length > 0) throw new Error(`harness kind "${kind}" bound "${id}" without its ${missing.join(", ")} side`);
+      const instance: Harness = {
+        id,
+        kind,
+        machine: machineId(options.machine ?? LOCAL_MACHINE),
+        ...(options.binary === undefined ? {} : { binary: options.binary }),
+        home,
+        ...(options.model === undefined ? {} : { model: options.model }),
+        sides: claimed,
+      };
+      return {
+        instance,
+        ...(bound.reading === undefined ? {} : { reading: bound.reading }),
+        ...(bound.control === undefined ? {} : { control: bound.control }),
+        ...(bound.insert === undefined ? {} : { insert: bound.insert }),
+        ...(spec.options === undefined ? {} : { options: spec.options }),
+      };
+    },
   };
 }
 
@@ -69,8 +162,11 @@ export function defineHarnessKind(spec: {
  * Refuse an installation that claims what its kind cannot serve: a side without code, an ability
  * the kind does not support, a model choice, an effort level or a working mode it does not declare.
  */
-export function admitInstance(instance: Harness, kind: HarnessKindDefinition): void {
-  narrowSides(instance.id, kind.kind, kind.capabilities, instance.sides, implementedOf(kind));
+export function admitInstance(instance: Harness, kind: Pick<HarnessKindDefinition, "kind" | "capabilities" | "implements">): void {
+  narrowSides(instance.id, kind.kind, kind.capabilities, instance.sides, implementedOf(kind.implements));
+  if (instance.model !== undefined && !kind.capabilities.control.launch.model.supported) {
+    throw new CapabilityExceeded(instance.id, kind.kind, [`control.launch.model (asked for "${instance.model}")`]);
+  }
 }
 
 /** The registry of kinds. A name is taken once. */
@@ -108,34 +204,42 @@ export class HarnessKindRegistry {
 }
 
 /**
- * The registry of instances. An id is taken once.
+ * The registry of installations, each with the code that serves it. An id is taken once: two
+ * installations of one kind are two entries, each with its own sides.
  *
  * Given the registry of kinds, it also refuses an installation whose kind is not registered, or
  * that claims what its kind cannot serve (`admitInstance`), before anything can ask it for that.
  */
 export class HarnessInstanceRegistry {
-  private readonly instances = new Map<HarnessId, Harness>();
+  private readonly entries = new Map<HarnessId, HarnessBinding>();
 
   constructor(private readonly kinds?: HarnessKindRegistry) {}
 
-  /** Returns the unregister. */
-  register(instance: Harness): () => void {
-    if (this.instances.has(instance.id)) {
+  /** Returns the unregister. An instance without its sides is taken too: it is known, and serves nothing. */
+  register(entry: HarnessBinding | Harness): () => void {
+    const binding: HarnessBinding = "instance" in entry ? entry : { instance: entry };
+    const { instance } = binding;
+    if (this.entries.has(instance.id)) {
       throw new Error(`harness instance "${instance.id}" is already registered`);
     }
     if (this.kinds !== undefined) admitInstance(instance, this.kinds.resolve(instance.kind));
-    this.instances.set(instance.id, instance);
+    this.entries.set(instance.id, binding);
     return () => {
-      if (this.instances.get(instance.id) === instance) this.instances.delete(instance.id);
+      if (this.entries.get(instance.id) === binding) this.entries.delete(instance.id);
     };
   }
 
   get(id: string): Harness | undefined {
-    return this.instances.get(id as HarnessId);
+    return this.entries.get(id as HarnessId)?.instance;
   }
 
   resolve(id: string): Harness {
-    const found = this.get(id);
+    return this.bindingOf(id).instance;
+  }
+
+  /** The installation and its sides. */
+  bindingOf(id: string): HarnessBinding {
+    const found = this.entries.get(id as HarnessId);
     if (found === undefined) {
       throw new Error(
         `harness instance "${id}" is not registered (registered: ${this.ids().join(", ") || "none"})`,
@@ -144,12 +248,18 @@ export class HarnessInstanceRegistry {
     return found;
   }
 
+  /** Every installation with its sides, by id. */
+  bindings(): HarnessBinding[] {
+    return this.ids().map((id) => this.bindingOf(id));
+  }
+
   ids(): string[] {
-    return [...this.instances.keys()].sort();
+    return [...this.entries.keys()].sort();
   }
 
   ofKind(kind: string): Harness[] {
-    return [...this.instances.values()]
+    return [...this.entries.values()]
+      .map((binding) => binding.instance)
       .filter((instance) => instance.kind === kind)
       .sort((a, b) => a.id.localeCompare(b.id));
   }

@@ -18,7 +18,7 @@ import type {
   SessionId,
   SessionState,
 } from "@niwa-labs/harness";
-import type { HarnessBinding } from "@niwa-labs/sessions";
+import type { HarnessBinding } from "@niwa-labs/harness";
 
 /** The id the fake harness installation has unless a check names another. */
 export const FAKE_HARNESS = "fake-harness";

@@ -11,7 +11,7 @@ import { agents as agentsModule } from "@niwa-labs/agent";
 import type { AgentOptions } from "@niwa-labs/agent";
 import { git } from "@niwa-labs/git";
 import type { GitOptions } from "@niwa-labs/git";
-import type { HarnessInstanceRegistry, HarnessKindRegistry } from "@niwa-labs/harness";
+import type { HarnessInstanceRegistry } from "@niwa-labs/harness";
 import { history } from "@niwa-labs/history";
 import { messages } from "@niwa-labs/messages";
 import type { CallerBinding, Plugin } from "@niwa-labs/plugin";
@@ -28,9 +28,11 @@ import { NIWA_CLI } from "./inserts.ts";
 export interface DefaultCompositionOptions {
   /** The home of the host: the niwa MCP server of a session connects to it. */
   readonly home: string;
-  /** The harness installations, and the kinds that serve them. */
+  /**
+   * The harness installations, each bound by its kind to its own options (`claudeCodeKind.bind({ id:
+   * "claude-haiku", model: "haiku" })`): sessions start on them and history reads each in its own home.
+   */
   readonly harnesses: HarnessInstanceRegistry;
-  readonly kinds: HarnessKindRegistry;
   /** The agents of the host, the harness of each role and the default agent of `niwa agent attach`. */
   readonly agents?: AgentOptions;
   readonly git?: GitOptions;
@@ -50,7 +52,6 @@ export interface DefaultCompositionOptions {
 export function defaultComposition(options: DefaultCompositionOptions): Plugin[] {
   const made = sessions({
     harnesses: options.harnesses,
-    kinds: options.kinds,
     niwaMcp: { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
   });
   const agents = agentsModule(options.agents);
@@ -62,7 +63,7 @@ export function defaultComposition(options: DefaultCompositionOptions): Plugin[]
     tasks({ messages: { bind } }),
     timers([]),
     git(options.git),
-    history({ harnesses: { harnesses: options.harnesses, kinds: options.kinds } }),
+    history({ harnesses: options.harnesses }),
     insertPlugin(),
     made,
     agents,

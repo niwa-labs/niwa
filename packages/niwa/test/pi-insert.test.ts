@@ -17,7 +17,7 @@ import { PermissionRouter, insertPlugin } from "@niwa-labs/sessions";
 import type { HarnessInsert, PermissionAskedEvent } from "@niwa-labs/harness";
 import { eventually, tempDir, tempHome, connectAsOwner } from "@niwa-labs/testing";
 
-import { PiInsert, niwaPiExtension, pi as piKind, piSession } from "@niwa-labs/harness-pi";
+import { PiInsert, niwaPiExtension, pi as piInstallation, piSession } from "@niwa-labs/harness-pi";
 import type { PiExtensionApi, PiExtensionContext } from "@niwa-labs/harness-pi";
 import { niwaCli } from "./fixtures/niwa-cli.ts";
 import { installInsert } from "../src/inserts.ts";
@@ -167,7 +167,7 @@ test("a permission answer goes only to the side that asked, once", async () => {
   await expect(router.answer(asked("claude-code").session, answer)).rejects.toThrow("req-1");
 
   // The pi kind's insert is put into pi and carries no answers.
-  const pi = piKind({ harness: harnessId("pi"), sessionsRoot: "/tmp/niwa-pi-insert" }).insert;
+  const pi = piInstallation({ id: harnessId("pi"), sessionsRoot: "/tmp/niwa-pi-insert" }).insert;
   if (pi === undefined) throw new Error("the pi kind has no insert side");
   router.ask(pi, asked("pi"));
   await expect(router.answer(asked("pi").session, answer)).rejects.toThrow("cannot carry answers");
@@ -184,7 +184,7 @@ test.skipIf(PI_BIN === "")(
     const niwa = createNiwa({ home: home.path });
     niwa.use(insertPlugin());
     await niwa.serve();
-    const kind = piKind({ harness: harnessId("pi-hand"), sessionsRoot: join(piHome, "sessions") });
+    const kind = piInstallation({ id: harnessId("pi-hand"), sessionsRoot: join(piHome, "sessions") });
     // Put into pi the way an installation is: through niwa, which names its own CLI to report through.
     await installInsert(kind, home.path);
 

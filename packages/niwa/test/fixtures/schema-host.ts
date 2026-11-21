@@ -51,24 +51,24 @@ const CODEX_HOME = join(homedir(), ".codex");
 const MCODE_HOME = join(homedir(), ".minimax");
 
 /** The kind of the codex installation. */
-const codexKind = codex({ harness: CODEX_HARNESS, home: CODEX_HOME, control: { mode: "full", model: CODEX_MODEL } });
+const codexKind = codex({ id: CODEX_HARNESS, home: CODEX_HOME, model: CODEX_MODEL, control: { mode: "full" } });
 
 /** The installation that answers natively. */
 const codexInstance: Harness = {
   id: CODEX_HARNESS,
-  kind: codexKind.kind,
+  kind: codexKind.instance.kind,
   machine: machineId("machine-1"),
   home: CODEX_HOME,
   sides: codexSides,
 };
 
 /** The kind of the MiniMax Code installation. */
-const mcodeKind = mcode({ harness: MCODE_HARNESS, home: MCODE_HOME, control: { mode: "full", model: MCODE_MODEL } });
+const mcodeKind = mcode({ id: MCODE_HARNESS, home: MCODE_HOME, model: MCODE_MODEL, control: { mode: "full" } });
 
 /** The installation that is asked the niwa way. */
 const mcodeInstance: Harness = {
   id: MCODE_HARNESS,
-  kind: mcodeKind.kind,
+  kind: mcodeKind.instance.kind,
   machine: machineId("machine-1"),
   home: MCODE_HOME,
   sides: {

@@ -9,7 +9,7 @@ export {
 } from "./code/index.ts";
 export type {
   ClaudeCodeControlOptions,
-  ClaudeCodeKindOptions,
+  ClaudeCodeInstanceOptions,
   ClaudeCodeOptions,
   ClaudeCodeReadingOptions,
   ClaudeCodeSessionControl,
@@ -37,12 +37,14 @@ export {
   CLAUDE_SDK_CAPABILITIES,
   ClaudeSdkControl,
   MessageStream,
+  claudeSdk,
   claudeSdkKind,
   claudeSdkSides,
   signsOf,
 } from "./sdk/index.ts";
 export type {
   ClaudeSdkControlOptions,
+  ClaudeSdkInstanceOptions,
   ClaudeSdkOptions,
   PermissionDecision as ClaudeSdkPermissionDecision,
   PermissionPolicy as ClaudeSdkPermissionPolicy,

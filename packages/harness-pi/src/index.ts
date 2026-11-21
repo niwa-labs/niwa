@@ -10,16 +10,16 @@
  * insert/; this file names the kind and says where pi's sessions are.
  */
 
-import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 
 import { ADMITTED, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
-import type { HarnessKindDefinition, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
+import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { installPiInsert } from "./insert/index.ts";
 import { PI_LAUNCH, PiControl } from "./control.ts";
 import type { PiControlOptions } from "./control.ts";
 import { piReading } from "./reading.ts";
-import type { PiReadingOptions } from "./reading.ts";
 
 /** The id of the pi harness kind. */
 export const PI_KIND = "pi";
@@ -77,44 +77,6 @@ export const PI_CAPABILITIES: KindCapabilities = {
 /** The block a pi session takes at its start: `pi`, with no option of its own yet. */
 export const PI_OPTIONS = kindOptions("pi", NoOptions);
 
-/** What the kind needs: the installation that is read, and how its sides are set up. */
-export interface PiKindOptions extends PiReadingOptions {
-  /**
-   * How the control side is set up: the pi it drives and the model it asks for.
-   *
-   * Its own defaults are used when it is absent: the `pi` on the PATH, and the model pi has of
-   * its own.
-   */
-  readonly control?: Omit<PiControlOptions, "harness">;
-}
-
-/**
- * The pi kind, with its reading side, its control side and its insert side.
- *
- * The options say which installation is being read: the id the owner gave it, and where pi keeps
- * its sessions. The insert is put into the agent directory of that installation, which is the
- * parent of its sessions root (`<home>/sessions`): the extension is written to `<home>/extensions`.
- */
-export function pi(options: PiKindOptions): HarnessKindDefinition {
-  return defineHarnessKind({
-    name: PI_KIND,
-    reading: piReading(options),
-    control: new PiControl({ harness: options.harness, ...(options.control ?? {}) }),
-    insert: {
-      install: async (opts) => {
-        await installPiInsert(dirname(resolve(options.sessionsRoot)), {
-          home: opts.home,
-          harness: options.harness,
-          ...(opts.cli === undefined ? {} : { cli: opts.cli }),
-        });
-      },
-    },
-    capabilities: PI_CAPABILITIES,
-    detect: PI_DETECTION,
-    options: PI_OPTIONS,
-  });
-}
-
 /**
  * How a pi installation is found.
  *
@@ -125,6 +87,57 @@ const PI_DETECTION = {
   binary: "pi",
   home: "~/.pi/agent",
 } as const;
+
+/** What an installation of pi is given: its id, its agent directory (`home`) and model, and how its control side is set up. */
+export interface PiInstanceOptions extends InstanceOptions {
+  /** Where pi keeps the sessions, when not in `<home>/sessions`. */
+  readonly sessionsRoot?: string;
+  /**
+   * How the control side is set up: the pi it drives, the thinking level and the environment it
+   * runs in. Its own defaults are used when it is absent. The model of the installation (`model`) is
+   * in pi's own words (`provider/model`).
+   */
+  readonly control?: Omit<PiControlOptions, "harness" | "home" | "model">;
+}
+
+/** What the caller names of one installation: every part has a default. */
+export type PiOptions = Partial<PiInstanceOptions>;
+
+/**
+ * The pi kind. Each installation is bound to its own agent directory (`home`, default
+ * `~/.pi/agent`): its sessions are read from `<home>/sessions`, its processes run with that home, and
+ * its insert is put into `<home>/extensions`.
+ */
+export const piKind = defineHarnessKind<PiInstanceOptions>({
+  name: PI_KIND,
+  capabilities: PI_CAPABILITIES,
+  implements: ["reading", "control", "insert"],
+  sides: piSides,
+  detect: PI_DETECTION,
+  options: PI_OPTIONS,
+  home: () => join(homedir(), ".pi", "agent"),
+  bind: ({ id, home, model, sessionsRoot, control }) => {
+    const root = sessionsRoot ?? join(home, "sessions");
+    return {
+      reading: piReading({ harness: id, sessionsRoot: root }),
+      control: new PiControl({ ...(control ?? {}), ...(model === undefined ? {} : { model }), harness: id, home }),
+      insert: {
+        install: async (opts) => {
+          await installPiInsert(dirname(resolve(root)), {
+            home: opts.home,
+            harness: id,
+            ...(opts.cli === undefined ? {} : { cli: opts.cli }),
+          });
+        },
+      },
+    };
+  },
+});
+
+/** One installation of pi: `pi` at `~/.pi/agent` unless the options say otherwise. */
+export function pi(options: PiOptions = {}): HarnessBinding {
+  return piKind.bind({ ...options, id: options.id ?? PI_KIND });
+}
 
 export { PI_RAW_SCHEMA, piReading } from "./reading.ts";
 export type { PiReadingOptions } from "./reading.ts";

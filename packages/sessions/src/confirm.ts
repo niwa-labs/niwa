@@ -24,10 +24,10 @@ import {
   HarnessKindSchema,
   HarnessProposalSchema,
   MachineIdSchema,
-  admitInstance,
 } from "@niwa-labs/harness";
 import type {
   Harness,
+  HarnessBinding,
   HarnessInstanceRegistry,
   HarnessKindRegistry,
   HarnessProposal,
@@ -115,8 +115,9 @@ export interface HarnessConfirmOptions {
    */
   readonly sides?: Readonly<Record<string, SideCapabilities>>;
   /**
-   * The kinds, when they are known: a confirmed installation may claim no more than its kind
-   * declares, so sides that would widen the declaration are refused instead of registered.
+   * The kinds, when they are known: a confirmed installation is bound by its kind, and may claim no
+   * more than the kind declares, so sides that would widen the declaration are refused instead of
+   * registered.
    */
   readonly kinds?: HarnessKindRegistry;
 }
@@ -125,11 +126,12 @@ export interface HarnessConfirmOptions {
 export function harnessConfirm(options: HarnessConfirmOptions): Plugin {
   const registry = options.registry;
   const sides = options.sides ?? {};
-  const instanceOf = (confirmed: ConfirmedInstallation): Harness => {
-    const instance = { ...confirmed, sides: sides[String(confirmed.kind)] ?? {} };
-    const kind = options.kinds?.get(instance.kind);
-    if (kind !== undefined) admitInstance(instance, kind);
-    return instance;
+  // With its kind known, a confirmed installation is bound by it: it gets its own sides, and claims no more than the kind declares.
+  const bindingOf = (confirmed: ConfirmedInstallation): HarnessBinding => {
+    const claimed = sides[String(confirmed.kind)] ?? {};
+    const kind = options.kinds?.get(confirmed.kind);
+    if (kind === undefined) return { instance: { ...confirmed, sides: claimed } };
+    return kind.bind({ ...confirmed, sides: claimed });
   };
   return plugin("harness-confirm", (api) => {
     api.declare(HarnessConfirmed);
@@ -138,7 +140,7 @@ export function harnessConfirm(options: HarnessConfirmOptions): Plugin {
     // host stopped is put back when it serves again.
     api.service(() => {
       for (const written of api.journal?.()?.since(seq(0), [HarnessConfirmed.name]) ?? []) {
-        register(registry, instanceOf(ConfirmedInstallationSchema.parse(written.data)));
+        register(registry, bindingOf(ConfirmedInstallationSchema.parse(written.data)));
       }
       return () => {};
     });
@@ -157,12 +159,12 @@ export function harnessConfirm(options: HarnessConfirmOptions): Plugin {
         home: data.home,
         ...(data.binary === undefined ? {} : { binary: data.binary }),
       };
-      const instance = instanceOf(confirmed);
+      const binding = bindingOf(confirmed);
       // Refused before anything is written: a confirmation the registry cannot take must not
       // reach the journal, where it would be put back at every start.
-      checkFree(registry, instance);
+      checkFree(registry, binding.instance);
       await step.emit(HarnessConfirmed, confirmed);
-      register(registry, instance);
+      register(registry, binding);
     });
   });
 }
@@ -201,8 +203,8 @@ async function askOwner(
  * and changes nothing. A different instance under the same id is refused — the owner's id names
  * one installation, and two of them cannot both be it.
  */
-function register(registry: HarnessInstanceRegistry, instance: Harness): void {
-  if (checkFree(registry, instance)) registry.register(instance);
+function register(registry: HarnessInstanceRegistry, binding: HarnessBinding): void {
+  if (checkFree(registry, binding.instance)) registry.register(binding);
 }
 
 /** True when the id is free; false when the very same instance is there; throws for another one. */

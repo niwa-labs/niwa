@@ -9,13 +9,12 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId, kindOptions } from "@niwa-labs/harness";
-import type { KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
+import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
+import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { ZCODE_LAUNCH, zcodeControl } from "./control.ts";
 import type { ZcodeControlOptions } from "./control.ts";
 import { ZcodeReading } from "./reading.ts";
-import type { ZcodeReadingOptions } from "./reading.ts";
 
 export { ZcodeReading } from "./reading.ts";
 export type { ZcodeReadingOptions } from "./reading.ts";
@@ -63,44 +62,46 @@ export const ZCODE_CAPABILITIES: KindCapabilities = {
 /** The block a ZCode session takes at its start: `zcode`, with no option of its own yet. */
 export const ZCODE_OPTIONS = kindOptions("zcode", NoOptions);
 
-/** What the kind needs: the installation, and how its control side is set up. */
-export interface ZcodeKindOptions extends ZcodeReadingOptions {
-  /**
-   * How the control side is set up: the model it uses (`providerId/modelId`), the reasoning
-   * level, what it does with a permission request and the binary it drives. Its own defaults are
-   * used when it is absent.
-   */
-  readonly control?: Omit<ZcodeControlOptions, "harness" | "home">;
-}
-
-/** What the caller names of the kind: every part has a default. */
-export type ZcodeOptions = Partial<ZcodeKindOptions>;
-
-/** The kind "zcode", bound to the installation the options name. */
-export function zcodeKind(options: ZcodeKindOptions) {
-  return defineHarnessKind({
-    name: "zcode",
-    reading: new ZcodeReading(options),
-    control: zcodeControl({ harness: options.harness, home: options.home, ...(options.control ?? {}) }),
-    capabilities: ZCODE_CAPABILITIES,
-    detect: ZCODE_DETECTION,
-    options: ZCODE_OPTIONS,
-  });
-}
-
-/** The kind for the installation at `home` (default `~/.zcode`). */
-export function zcode(options: ZcodeOptions = {}) {
-  return zcodeKind({
-    ...options,
-    harness: options.harness ?? harnessId("zcode"),
-    home: options.home ?? join(homedir(), ".zcode"),
-  });
-}
-
 /** How a ZCode installation is found: the program that runs it, and the directory it keeps its sessions in. */
 const ZCODE_DETECTION = {
   binary: "zcode",
   home: "~/.zcode",
 } as const;
+
+/** What an installation of ZCode is given: its id, home and model, and how its control side is set up. */
+export interface ZcodeInstanceOptions extends InstanceOptions {
+  /**
+   * How the control side is set up: the reasoning level, what it does with a permission request,
+   * the binary it drives and the ZCode fields of its MCP servers. Its own defaults are used when it
+   * is absent. The model of the installation (`model`) is a `providerId/modelId`.
+   */
+  readonly control?: Omit<ZcodeControlOptions, "harness" | "home" | "model">;
+}
+
+/** What the caller names of one installation: every part has a default. */
+export type ZcodeOptions = Partial<ZcodeInstanceOptions>;
+
+/**
+ * The kind "zcode". Each installation is bound to its own home (default `~/.zcode`): its sessions
+ * are read from the database there, and its processes keep their sessions there.
+ */
+export const zcodeKind = defineHarnessKind<ZcodeInstanceOptions>({
+  name: "zcode",
+  capabilities: ZCODE_CAPABILITIES,
+  implements: ["reading", "control"],
+  sides: zcodeSides,
+  detect: ZCODE_DETECTION,
+  options: ZCODE_OPTIONS,
+  home: () => join(homedir(), ".zcode"),
+  bind: ({ id, home, model, control }) => ({
+    reading: new ZcodeReading({ harness: id, home }),
+    control: zcodeControl({ harness: id, home, ...(control ?? {}), ...(model === undefined ? {} : { model }) }),
+  }),
+});
+
+/** One installation of ZCode: `zcode` at `~/.zcode` unless the options say otherwise. */
+export function zcode(options: ZcodeOptions = {}): HarnessBinding {
+  return zcodeKind.bind({ ...options, id: options.id ?? "zcode" });
+}
 
 export { zcodeSkills } from "./skills.ts";

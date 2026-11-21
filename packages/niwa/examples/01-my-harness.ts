@@ -12,11 +12,10 @@ import { join } from "node:path";
 
 import { createNiwa } from "@niwa-labs/host";
 import { git } from "@niwa-labs/git";
-import { HarnessKindRegistry, harnessId, machineId } from "@niwa-labs/harness";
-import type { Harness, HarnessKindDefinition, SideCapabilities } from "@niwa-labs/harness";
-import { claudeCode, claudeCodeSides } from "@niwa-labs/harness-claude";
-import { codex, codexSides } from "@niwa-labs/harness-codex";
-import { mcode, mcodeSides } from "@niwa-labs/harness-mcode";
+import { HarnessInstanceRegistry } from "@niwa-labs/harness";
+import { claudeCodeKind } from "@niwa-labs/harness-claude";
+import { codexKind } from "@niwa-labs/harness-codex";
+import { mcodeKind } from "@niwa-labs/harness-mcode";
 import { messages } from "@niwa-labs/messages";
 import { owner } from "@niwa-labs/core";
 import { requests } from "@niwa-labs/requests";
@@ -34,21 +33,17 @@ const niwa = createNiwa({ home: join(homedir(), ".niwa") });
 // plugin API declares, listens and registers.
 
 // What is installed on this machine. A kind is code (how Claude Code, Codex, MiniMax Code are
-// read and driven); an instance is one installation of it, with an id the owner gives.
-// `harness.discover` can propose the instances and `harnessConfirm` registers what the owner
-// confirms; here they are written out by hand.
-const kinds = new HarnessKindRegistry();
-const here = machineId("laptop");
-function instance(kind: HarnessKindDefinition, id: string, home: string, sides: SideCapabilities): Harness {
-  kinds.register(kind);
-  return { id: harnessId(id), kind: kind.kind, machine: here, home, sides };
-}
-const installed = [
-  instance(claudeCode({ harness: harnessId("claude-personal") }), "claude-personal", join(homedir(), ".claude"), claudeCodeSides),
-  instance(codex(), "codex", join(homedir(), ".codex"), codexSides),
-  instance(mcode({ harness: harnessId("mcode-work") }), "mcode-work", join(homedir(), ".mcode"), mcodeSides),
-];
-niwa.use(sessions({ harnesses: installed.map((one) => ({ instance: one })), kinds }));
+// read and driven); an instance is one installation of it, with an id the owner gives, its own home
+// and its own model. One kind may have several: two Claude Code installations that differ in the model
+// are two binds. `harness.discover` can propose the instances and `harnessConfirm` registers what the
+// owner confirms; here they are written out by hand.
+const machine = "laptop";
+const harnesses = new HarnessInstanceRegistry();
+harnesses.register(claudeCodeKind.bind({ id: "claude-haiku", machine, model: "haiku" }));
+harnesses.register(claudeCodeKind.bind({ id: "claude-sonnet", machine, model: "sonnet" }));
+harnesses.register(codexKind.bind({ id: "codex", machine, home: join(homedir(), ".codex") }));
+harnesses.register(mcodeKind.bind({ id: "mcode-work", machine, home: join(homedir(), ".mcode") }));
+niwa.use(sessions({ harnesses }));
 
 // Every base module is a factory: call it, `tasks()`, `timers([...])`.
 // Who a client speaks as is the composition's to say: here every client is the owner.
@@ -82,7 +77,7 @@ niwa.use(
 // Built-in workflows (git's cleanup, say) are scripts a plugin ships: the workflow module, installed
 // after the plugins that ship them, registers and installs them when the host starts. A host with a
 // plugin that ships one and no workflow module refuses to serve.
-niwa.use(workflow({ harnesses: ["claude-personal"] }));
+niwa.use(workflow({ harnesses: ["claude-haiku", "claude-sonnet"] }));
 
 // Your own plugins.
 niwa.use(nightDigest);

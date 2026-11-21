@@ -9,21 +9,21 @@
 import { fileURLToPath } from "node:url";
 
 import { NIWA_CLI_ENV, reportThroughCli } from "@niwa-labs/harness";
-import type { HarnessKindDefinition } from "@niwa-labs/harness";
+import type { InstanceSides } from "@niwa-labs/harness";
 import type { InsertReporter } from "@niwa-labs/harness-pi";
 
 /** The program that runs niwa's CLI: the bin of this package, by absolute path. It runs on its own. */
 export const NIWA_CLI = fileURLToPath(new URL("../bin/niwa.ts", import.meta.url));
 
 /**
- * Put the insert of a kind into its harness, reporting to the host at `home`.
+ * Put the insert of an installation into its harness, reporting to the host at `home`.
  *
  * What the installer writes carries `NIWA_CLI`, so the insert runs the bin it was installed from
- * whatever its PATH holds. A kind with no insert, or one that is not put into the harness, is left
- * as it is.
+ * whatever its PATH holds. An installation with no insert, or one that is not put into the harness,
+ * is left as it is.
  */
-export async function installInsert(kind: HarnessKindDefinition, home: string): Promise<void> {
-  await kind.insert?.install?.({ home, cli: NIWA_CLI });
+export async function installInsert(installation: InstanceSides, home: string): Promise<void> {
+  await installation.insert?.install?.({ home, cli: NIWA_CLI });
 }
 
 /**

@@ -7,11 +7,11 @@
  * signs of life.
  */
 
-import type { SideCapabilities } from "@niwa-labs/harness";
-import { minimaxInstance, minimaxKind, minimaxSides } from "../mcode/kind.ts";
-import type { McodeKindOptions, McodeOptions, MinimaxKindSpec } from "../mcode/kind.ts";
+import type { HarnessBinding, SideCapabilities } from "@niwa-labs/harness";
+import { minimaxKind, minimaxSides } from "../mcode/kind.ts";
+import type { McodeOptions, MinimaxKindSpec } from "../mcode/kind.ts";
 
-export type { McodeKindOptions as NcodeKindOptions, McodeOptions as NcodeOptions } from "../mcode/kind.ts";
+export type { McodeInstanceOptions as NcodeInstanceOptions, McodeOptions as NcodeOptions } from "../mcode/kind.ts";
 
 /** The sides a fork instance has by default. */
 export const ncodeSides: SideCapabilities = minimaxSides();
@@ -23,14 +23,12 @@ const NCODE_KIND: MinimaxKindSpec = {
   detect: { binary: "mcode", home: "~/.minimax" },
 };
 
-/** The kind "ncode", bound to the installation the options name. */
-export function ncodeKind(options: McodeKindOptions) {
-  return minimaxKind(NCODE_KIND, options);
-}
+/** The kind "ncode". */
+export const ncodeKind = minimaxKind(NCODE_KIND);
 
-/** The kind for the installation at `home` (default: the home of the profile, `~/.minimax`). */
-export function ncode(options: McodeOptions = {}) {
-  return minimaxInstance(NCODE_KIND, options);
+/** One installation of the fork: `ncode` at the home of its profile (`~/.minimax`) unless the options say otherwise. */
+export function ncode(options: McodeOptions = {}): HarnessBinding {
+  return ncodeKind.bind({ ...options, id: options.id ?? "ncode" });
 }
 
 export { ncodeSkills } from "./skills.ts";

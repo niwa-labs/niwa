@@ -13,8 +13,8 @@ import { action, recordTypeName, seq } from "@niwa-labs/core";
 import type { JournalReader, Seq, StoredRecord } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin, PluginApi, Subscriber } from "@niwa-labs/plugin";
-import { harnessId, requireAbility, sessionId } from "@niwa-labs/harness";
-import type { HarnessInstanceRegistry, HarnessKindRegistry, Locator, SessionId } from "@niwa-labs/harness";
+import { HarnessInstanceRegistry, harnessId, requireAbility, sessionId } from "@niwa-labs/harness";
+import type { Locator, SessionId } from "@niwa-labs/harness";
 
 import { listSessions, readTranscript, searchSession } from "./read.ts";
 import type { ReadingBinding } from "./read.ts";
@@ -38,19 +38,18 @@ import { DEFAULT_WATCH_TIMING, SYSTEM_CLOCK, watchSession } from "./watch.ts";
 import type { Progress, WatchClock, WatchTiming } from "./watch.ts";
 
 export interface HistoryOptions {
-  /** The installations whose sessions can be watched: bound, or the registries they are bound from. */
-  readonly harnesses: readonly ReadingBinding[] | { readonly harnesses: HarnessInstanceRegistry; readonly kinds: HarnessKindRegistry };
+  /**
+   * The installations whose sessions can be read and watched, each with its own reading side: the
+   * bindings, or the registry they are kept in. Each installation is read in its own home.
+   */
+  readonly harnesses: readonly ReadingBinding[] | HarnessInstanceRegistry;
   readonly timing?: WatchTiming;
   readonly clock?: WatchClock;
 }
 
 function bindingsOf(options: HistoryOptions): ReadingBinding[] {
   const { harnesses } = options;
-  if (!("kinds" in harnesses)) return [...harnesses];
-  return harnesses.harnesses.ids().map((id) => {
-    const instance = harnesses.harnesses.resolve(id);
-    return { instance, ...(harnesses.kinds.get(instance.kind)?.reading === undefined ? {} : { reading: harnesses.kinds.get(instance.kind)!.reading! }) };
-  });
+  return harnesses instanceof HarnessInstanceRegistry ? harnesses.bindings() : [...harnesses];
 }
 
 const keyOf = (id: SessionId): string => `${id.harness}\u0000${id.native}`;

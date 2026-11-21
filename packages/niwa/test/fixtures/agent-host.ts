@@ -7,7 +7,7 @@ import { messages } from "@niwa-labs/messages";
 import type { CallerBinding, Plugin } from "@niwa-labs/plugin";
 import { requests } from "@niwa-labs/requests";
 import { sessions } from "@niwa-labs/sessions";
-import type { HarnessBinding } from "@niwa-labs/sessions";
+import type { HarnessBinding } from "@niwa-labs/harness";
 import { tasks } from "@niwa-labs/tasks";
 import { createNiwa, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";

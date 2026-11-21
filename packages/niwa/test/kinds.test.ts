@@ -32,6 +32,7 @@ import {
 import type {
   ControlCapabilities,
   Harness,
+  HarnessBinding,
   HarnessId,
   HarnessKind,
   HarnessKindDefinition,
@@ -55,13 +56,15 @@ import {
 } from "@niwa-labs/harness-claude";
 import {
   mcode,
+  mcodeKind,
   mcodeSides,
   ncode,
+  ncodeKind,
   ncodeSides,
 } from "@niwa-labs/harness-mcode";
-import { CODEX_HARNESS, codex, codexSides, writeCodexFixtures } from "@niwa-labs/harness-codex";
-import { zcode, zcodeSides } from "@niwa-labs/harness-zcode";
-import { PI_EXTENSION_FILE, PiControl, pi, piSides } from "@niwa-labs/harness-pi";
+import { CODEX_HARNESS, codex, codexKind, codexSides, writeCodexFixtures } from "@niwa-labs/harness-codex";
+import { zcode, zcodeKind, zcodeSides } from "@niwa-labs/harness-zcode";
+import { PI_EXTENSION_FILE, PiControl, pi, piKind, piSides } from "@niwa-labs/harness-pi";
 
 /** The id the claude-code fixtures are written for. */
 const CLAUDE_CODE_HARNESS = harnessId(CLAUDE_CODE_NAME);
@@ -89,7 +92,7 @@ function controlOf(sides: SideCapabilities): ControlCapabilities {
  * none.
  */
 function checkSides(
-  kind: HarnessKindDefinition,
+  kind: HarnessBinding,
   control: ControlCapabilities,
   insert?: "install" | "events",
 ): void {
@@ -103,9 +106,9 @@ function checkSides(
     expect(typeof side[insert]).toBe("function");
   }
 
-  const instance = installation(kind.kind, control, HARNESS, "/tmp/niwa-kinds", insert !== undefined);
+  const instance = installation(kind.instance.kind, control, HARNESS, "/tmp/niwa-kinds", insert !== undefined);
   // The sides the installation claims are within what the kind declares and has code for.
-  expect(() => admitInstance(instance, kind)).not.toThrow();
+  expect(() => admitInstance(instance, definitionOf(kind))).not.toThrow();
 
   const reading = kind.reading;
   if (reading === undefined) return;
@@ -113,6 +116,13 @@ function checkSides(
     const declared = instance.sides.reading?.[ability] === true;
     expect(typeof reading[ability] === "function").toBe(declared);
   }
+}
+
+/** The kind that bound an installation. */
+function definitionOf(binding: HarnessBinding): HarnessKindDefinition {
+  const found = [claudeCodeKind, claudeSdkKind, codexKind, mcodeKind, ncodeKind, piKind, zcodeKind].find((kind) => kind.kind === binding.instance.kind);
+  if (found === undefined) throw new Error(`no kind "${binding.instance.kind}"`);
+  return found;
 }
 
 /** The installation of a kind, with the sides it claims. */
@@ -174,19 +184,19 @@ function insertInstallation(kind: HarnessKind, home = "/tmp/niwa-kinds-pi"): Har
 
 test("the claude-code kind serves the reading side, the control side and the insert side", () => {
   const kind = claudeCode();
-  expect(String(kind.kind)).toBe("claude-code");
+  expect(String(kind.instance.kind)).toBe("claude-code");
   checkSides(kind, controlOf(claudeCodeSides), "install");
 });
 
 test("the codex kind serves the reading side and the control side", () => {
   const kind = codex();
-  expect(String(kind.kind)).toBe("codex");
+  expect(String(kind.instance.kind)).toBe("codex");
   checkSides(kind, controlOf(codexSides));
 });
 
 test("the pi kind serves the reading side, the control side and the insert side", () => {
-  const kind = pi({ harness: HARNESS, sessionsRoot: "/tmp/niwa-kinds-pi" });
-  expect(String(kind.kind)).toBe("pi");
+  const kind = pi({ id: HARNESS, sessionsRoot: "/tmp/niwa-kinds-pi" });
+  expect(String(kind.instance.kind)).toBe("pi");
   expect(kind.reading).toBeDefined();
   expect(kind.control).toBeDefined();
   checkSides(kind, controlOf(piSides), "install");
@@ -201,7 +211,7 @@ test("the pi kind serves the reading side, the control side and the insert side"
 test("installing the pi insert writes the extension into the agent directory of the installation, told where the host is", async () => {
   const dir = await tempDir("kinds-pi-install");
   try {
-    const kind = pi({ harness: HARNESS, sessionsRoot: join(dir, "sessions") });
+    const kind = pi({ id: HARNESS, sessionsRoot: join(dir, "sessions") });
     await kind.insert?.install?.({ home: "/tmp/niwa-host-home", cli: "/opt/niwa/bin/niwa.ts" });
     const file = await Bun.file(join(dir, "extensions", PI_EXTENSION_FILE)).text();
     expect(file).toContain('process.env.NIWA_HOME ??= "/tmp/niwa-host-home";');
@@ -229,7 +239,7 @@ test("the pi control side declares what pi's RPC mode really supports", () => {
 test("the claude-code insert installs the plugin into the plugins directory of its home", async () => {
   const home = await tempDir("kinds-cc");
   try {
-    const kind = claudeCodeKind({ harness: HARNESS, home });
+    const kind = claudeCode({ id: HARNESS, home });
     await kind.insert?.install?.({ home: "/tmp/niwa-host-home" });
     const hooks = await Bun.file(join(home, "plugins", "niwa-insert", "hooks", "hooks.json")).text();
     expect(hooks).toContain("NIWA_HOME='/tmp/niwa-host-home'");
@@ -240,14 +250,14 @@ test("the claude-code insert installs the plugin into the plugins directory of i
 
 test("the mcode kind serves the reading side and the control side", () => {
   const kind = mcode();
-  expect(String(kind.kind)).toBe("mcode");
+  expect(String(kind.instance.kind)).toBe("mcode");
   checkSides(kind, controlOf(mcodeSides));
 });
 
 test("the ncode kind serves the reading side and the control side, as its own kind", () => {
   const kind = ncode();
-  expect(String(kind.kind)).toBe("ncode");
-  expect(String(kind.kind)).not.toBe(String(mcode().kind));
+  expect(String(kind.instance.kind)).toBe("ncode");
+  expect(String(kind.instance.kind)).not.toBe(String(mcode().instance.kind));
   checkSides(kind, controlOf(ncodeSides));
   expect(ncodeSides).toEqual(mcodeSides);
   expect(ncodeSides).not.toBe(mcodeSides);
@@ -255,7 +265,7 @@ test("the ncode kind serves the reading side and the control side, as its own ki
 
 test("the zcode kind serves the reading side and the control side", () => {
   const kind = zcode();
-  expect(String(kind.kind)).toBe("zcode");
+  expect(String(kind.instance.kind)).toBe("zcode");
   checkSides(kind, controlOf(zcodeSides));
 });
 
@@ -268,7 +278,7 @@ test("every kind whose control side validates the answer declares structured out
 
 test("an ability the installation does not declare is refused by name", () => {
   const kind = claudeCode();
-  const instance = installation(kind.kind, {
+  const instance = installation(kind.instance.kind, {
     start: true,
     resume: false,
     send: false,
@@ -292,11 +302,11 @@ test("the reading side of the claude-code kind passes the conformance suite", as
   const report = await readingConformance(
     "claude-code",
     (home) => {
-      const kind = claudeCode({ harness: CLAUDE_CODE_HARNESS, home });
+      const kind = claudeCode({ id: CLAUDE_CODE_HARNESS, home });
       const reading = kind.reading;
       if (reading === undefined) throw new Error("the kind has no reading side");
       return {
-        instance: installation(kind.kind, controlOf(claudeCodeSides), CLAUDE_CODE_HARNESS, home),
+        instance: installation(kind.instance.kind, controlOf(claudeCodeSides), CLAUDE_CODE_HARNESS, home),
         reading,
       };
     },
@@ -311,11 +321,11 @@ test("the reading side of the codex kind passes the conformance suite", async ()
   const report = await readingConformance(
     "codex",
     (home) => {
-      const kind = codex({ harness: CODEX_HARNESS, home });
+      const kind = codex({ id: CODEX_HARNESS, home });
       const reading = kind.reading;
       if (reading === undefined) throw new Error("the kind has no reading side");
       return {
-        instance: installation(kind.kind, controlOf(codexSides), CODEX_HARNESS, home),
+        instance: installation(kind.instance.kind, controlOf(codexSides), CODEX_HARNESS, home),
         reading,
       };
     },
@@ -329,9 +339,10 @@ test("the reading side of the codex kind passes the conformance suite", async ()
 test("the control side of the claude-code kind implements what is declared", async () => {
   const fake = await fakeAgent(FAKE_CLAUDE_ACP);
   const kind = claudeCode({
-    harness: HARNESS,
+    id: HARNESS,
     home: fake.dir,
-    control: { command: [fake.path], model: "haiku", permissions: "deny" },
+    model: "haiku",
+    control: { command: [fake.path], permissions: "deny" },
   });
   const control = kind.control;
   if (control === undefined) throw new Error("the kind has no control side");
@@ -356,9 +367,10 @@ test("the control side of the claude-code kind implements what is declared", asy
 test("the control side of the codex kind implements what is declared", async () => {
   const fake = await fakeAgent(FAKE_CODEX);
   const kind = codex({
-    harness: HARNESS,
+    id: HARNESS,
     home: fake.dir,
-    control: { binary: fake.path, model: "gpt-test" },
+    model: "gpt-test",
+    control: { binary: fake.path },
   });
   const control = kind.control;
   if (control === undefined) throw new Error("the kind has no control side");
@@ -379,18 +391,19 @@ test("the control side of the codex kind implements what is declared", async () 
 test("the control side of the claude-code kind passes the conformance suite", async () => {
   const fake = await fakeAgent(FAKE_CLAUDE_ACP);
   const kind = claudeCode({
-    harness: HARNESS,
+    id: HARNESS,
     home: fake.dir,
-    control: { command: [fake.path], model: "haiku", permissions: "deny" },
+    model: "haiku",
+    control: { command: [fake.path], permissions: "deny" },
   });
   const control = kind.control;
   if (control === undefined) throw new Error("the kind has no control side");
 
   try {
     const report = await controlConformance("claude-code", {
-      instance: installation(kind.kind, controlOf(claudeCodeSides), HARNESS, fake.dir),
+      instance: installation(kind.instance.kind, controlOf(claudeCodeSides), HARNESS, fake.dir),
       control,
-      declared: kind.capabilities,
+      declared: definitionOf(kind).capabilities,
       dispatched: async () => (await framesOf(fake.log)).length,
     })();
     const failed = report.results.filter((result) => !result.passed);
@@ -404,18 +417,19 @@ test("the control side of the claude-code kind passes the conformance suite", as
 test("the control side of the codex kind passes the conformance suite", async () => {
   const fake = await fakeAgent(FAKE_CODEX);
   const kind = codex({
-    harness: HARNESS,
+    id: HARNESS,
     home: fake.dir,
-    control: { binary: fake.path, model: "gpt-test" },
+    model: "gpt-test",
+    control: { binary: fake.path },
   });
   const control = kind.control;
   if (control === undefined) throw new Error("the kind has no control side");
 
   try {
     const report = await controlConformance("codex", {
-      instance: installation(kind.kind, controlOf(codexSides), HARNESS, fake.dir),
+      instance: installation(kind.instance.kind, controlOf(codexSides), HARNESS, fake.dir),
       control,
-      declared: kind.capabilities,
+      declared: definitionOf(kind).capabilities,
       dispatched: async () => (await framesOf(fake.log)).length,
     })();
     const failed = report.results.filter((result) => !result.passed);
@@ -429,18 +443,19 @@ test("the control side of the codex kind passes the conformance suite", async ()
 test("the control side of the pi kind passes the conformance suite", async () => {
   const fake = await fakeAgent(FAKE_PI);
   const kind = pi({
-    harness: HARNESS,
+    id: HARNESS,
     sessionsRoot: fake.dir,
-    control: { mode: "full", binary: fake.path, model: "test/model" },
+    model: "test/model",
+    control: { mode: "full", binary: fake.path },
   });
   const control = kind.control;
   if (control === undefined) throw new Error("the kind has no control side");
 
   try {
     const report = await controlConformance("pi", {
-      instance: installation(kind.kind, controlOf(piSides), HARNESS, fake.dir),
+      instance: installation(kind.instance.kind, controlOf(piSides), HARNESS, fake.dir),
       control,
-      declared: kind.capabilities,
+      declared: definitionOf(kind).capabilities,
       dispatched: async () => (await framesOf(fake.log)).length,
     })();
     const failed = report.results.filter((result) => !result.passed);
@@ -454,9 +469,10 @@ test("the control side of the pi kind passes the conformance suite", async () =>
 test("the control side of the pi kind speaks pi's own dialect", async () => {
   const fake = await fakeAgent(FAKE_PI);
   const kind = pi({
-    harness: HARNESS,
+    id: HARNESS,
     sessionsRoot: fake.dir,
-    control: { mode: "full", binary: fake.path, model: "test/model" },
+    model: "test/model",
+    control: { mode: "full", binary: fake.path },
   });
   const control = kind.control;
   if (control === undefined) throw new Error("the kind has no control side");
@@ -483,9 +499,10 @@ test("a pi session started with no mode chosen runs in the one mode pi has", asy
   const fake = await fakeAgent(FAKE_PI);
   // Neither the instance nor the call names a mode.
   const kind = pi({
-    harness: HARNESS,
+    id: HARNESS,
     sessionsRoot: fake.dir,
-    control: { binary: fake.path, model: "test/model" },
+    model: "test/model",
+    control: { binary: fake.path },
   });
   const control = kind.control;
   if (control === undefined) throw new Error("the kind has no control side");
@@ -501,9 +518,11 @@ test("a pi session started with no mode chosen runs in the one mode pi has", asy
 test("the pi control side queues a busy send through prompt, and refuses to resume a turn-less session", async () => {
   const fake = await fakeAgent(FAKE_PI);
   const kind = pi({
-    harness: HARNESS,
+    id: HARNESS,
     sessionsRoot: fake.dir,
-    control: { mode: "full", binary: fake.path, model: "test/model", home: fake.dir },
+    model: "test/model",
+    home: fake.dir,
+    control: { mode: "full", binary: fake.path },
   });
   const control = kind.control;
   if (control === undefined) throw new Error("the kind has no control side");
@@ -545,12 +564,12 @@ for (const [name, make, sides] of [
   test(`the control side of the ${name} kind implements what is declared`, async () => {
     const fake = await fakeAgent(FAKE_MCODE, { "@METHODS@": JSON.stringify(name === "ncode" ? ["mcode/session/turn_status", "session/history"] : ["mcode/session/steer"]) });
     const kind = make({
-      harness: HARNESS,
+      id: HARNESS,
       home: fake.dir,
+      model: "minimax/MiniMax-M3.1-Flash",
       control: {
         mode: "full",
         binary: fake.path,
-        model: "minimax/MiniMax-M3.1-Flash",
         permissions: "deny",
       },
     });
@@ -581,12 +600,12 @@ for (const [name, make, sides] of [
   test(`the control side of the ${name} kind passes the conformance suite`, async () => {
     const fake = await fakeAgent(FAKE_MCODE, { "@METHODS@": JSON.stringify(name === "ncode" ? ["mcode/session/turn_status", "session/history"] : ["mcode/session/steer"]) });
     const kind = make({
-      harness: HARNESS,
+      id: HARNESS,
       home: fake.dir,
+      model: "minimax/MiniMax-M3.1-Flash",
       control: {
         mode: "full",
         binary: fake.path,
-        model: "minimax/MiniMax-M3.1-Flash",
         permissions: "deny",
       },
     });
@@ -595,9 +614,9 @@ for (const [name, make, sides] of [
 
     try {
       const report = await controlConformance(name, {
-        instance: installation(kind.kind, controlOf(sides), HARNESS, fake.dir),
+        instance: installation(kind.instance.kind, controlOf(sides), HARNESS, fake.dir),
         control,
-        declared: kind.capabilities,
+        declared: definitionOf(kind).capabilities,
         dispatched: async () => (await framesOf(fake.log)).length,
       })();
       const failed = report.results.filter((result) => !result.passed);
@@ -621,7 +640,7 @@ test("the control side of the claude-sdk kind passes the conformance suite", asy
 
   try {
     const report = await controlConformance("claude-sdk", {
-      instance: installation(claudeSdkKind().kind, controlOf(claudeSdkSides), HARNESS),
+      instance: installation(claudeSdkKind.kind, controlOf(claudeSdkSides), HARNESS),
       control,
     })();
     const failed = report.results.filter((result) => !result.passed);
@@ -644,10 +663,10 @@ test("the control side of the claude-sdk kind passes the conformance suite", asy
 test("the insert side of the pi kind passes the conformance suite", async () => {
   // The pi insert is put into pi: it is installed, and it has no stream to read, so the suite
   // takes the install branch.
-  const kind = pi({ harness: HARNESS, sessionsRoot: "/tmp/niwa-kinds-pi" });
+  const kind = pi({ id: HARNESS, sessionsRoot: "/tmp/niwa-kinds-pi" });
   const insert = kind.insert;
   if (insert === undefined) throw new Error("the kind has no insert side");
-  const report = await insertConformance("pi", { instance: insertInstallation(kind.kind), insert })();
+  const report = await insertConformance("pi", { instance: insertInstallation(kind.instance.kind), insert })();
   const failed = report.results.filter((result) => !result.passed);
   expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
   expect(report.passed).toBe(true);
@@ -658,14 +677,14 @@ test("the insert side of the claude-code kind passes the conformance suite", asy
   // read, so the suite takes the install branch.
   const home = await tempDir("kinds-cc");
   try {
-    const kind = claudeCodeKind({ harness: HARNESS, home });
+    const kind = claudeCode({ id: HARNESS, home });
     const insert = kind.insert;
     if (insert === undefined) throw new Error("the kind has no insert side");
     expect(insert.events).toBeUndefined();
     expect(typeof insert.install).toBe("function");
 
     const report = await insertConformance("claude-code", {
-      instance: installation(kind.kind, controlOf(claudeCodeSides), HARNESS, home, true),
+      instance: installation(kind.instance.kind, controlOf(claudeCodeSides), HARNESS, home, true),
       insert,
     })();
     const failed = report.results.filter((result) => !result.passed);

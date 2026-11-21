@@ -38,10 +38,10 @@ test.skipIf(!(live && Bun.which("claude") !== null))(
   async () => {
     const home = await tempHome();
     homes.push(home);
-    const kind = claudeCode({ harness: HARNESS, home: join(home.path, "claude"), control: { model: "haiku" } });
+    const kind = claudeCode({ id: HARNESS, home: join(home.path, "claude"), model: "haiku" });
     const instance: Harness = {
       id: HARNESS,
-      kind: kind.kind,
+      kind: kind.instance.kind,
       machine: machineId("machine-1"),
       home: join(home.path, "claude"),
       sides: claudeCodeSides,

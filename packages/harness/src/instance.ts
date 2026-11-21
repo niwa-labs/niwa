@@ -47,6 +47,8 @@ export const HarnessSchema = z.object({
   binary: HarnessBinarySchema.optional(),
   /** The directory of its settings and sessions. */
   home: z.string().min(1),
+  /** The model each of its sessions runs unless the start names another; absent, the harness's own. */
+  model: z.string().min(1).optional(),
   sides: HarnessSidesSchema,
 });
 export type Harness = z.output<typeof HarnessSchema>;
