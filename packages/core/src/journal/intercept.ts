@@ -11,7 +11,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { Standing } from "../access.ts";
 import { NOT_ANSWERED, REFUSED_BY_OWNER } from "../denied.ts";
-import { OWNER_GRANT_ID, match, ruleText } from "../grant.ts";
+import { OWNER_GRANT_ID, isCallTarget, match, ruleText } from "../grant.ts";
 import type {
   Action,
   ActionName,
@@ -61,6 +61,10 @@ export function permit(standing: Standing, verb: Verb, name: string, target?: st
     case "closed":
       return { allowed: false, reason: `its grant was closed: ${standing.reason}`, grant: standing.id, missing: wanted };
     case "limited": {
+      // Data cannot widen a rule: a target with a wildcard or an empty segment is not one place.
+      if (target !== undefined && !isCallTarget(target)) {
+        return { allowed: false, reason: `${JSON.stringify(target)} is not the target of a call`, grant: standing.id, missing: wanted };
+      }
       // The owner's `*` is the owner's own: for anyone else a mask does not grant an irreversible action.
       const irreversible = effect === "irreversible" && standing.id !== OWNER_GRANT_ID;
       const found = match(standing.grant, verb, name, target, { irreversible });

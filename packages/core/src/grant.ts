@@ -33,6 +33,45 @@ export function mask(text: string): Mask {
   return text as Mask;
 }
 
+/** One segment of a target: not empty, no wildcard, no whitespace, no `@` or `:`. */
+const SEGMENT = "[^\\s*@:/]+";
+
+/**
+ * A target mask: segments between `/`, the last of which may be `*`. `*` alone is every target.
+ * So `git.example.com/acme/billing/pr/*` is a mask and `acme/billing#*` is not: a wildcard
+ * stands only for whole segments. A leading `/` makes it an absolute path, the target of a local
+ * file or directory as the action that owns it normalizes it.
+ */
+const TARGET_MASK = new RegExp(`^(\\*|/\\*|/?${SEGMENT}(/${SEGMENT})*(/\\*)?)$`);
+
+/** The target of one call: segments between `/`, none empty, none a wildcard, with an optional leading `/`. */
+const TARGET = new RegExp(`^/?${SEGMENT}(/${SEGMENT})*$`);
+
+/** A target mask, from the text after the `@` of a rule. */
+export function targetMask(text: string): Mask {
+  if (!TARGET_MASK.test(text)) {
+    throw new TypeError(`not a target (segments between "/", "<prefix>/*" or "*"): ${JSON.stringify(text)}`);
+  }
+  return text as Mask;
+}
+
+/**
+ * The target of a call, as an action computes it from its input: one place, which a rule's
+ * target mask is matched against. Data cannot add a wildcard: a target with `*` or an empty
+ * segment is refused.
+ */
+export function callTarget(text: string): string {
+  if (typeof text !== "string" || !TARGET.test(text)) {
+    throw new TypeError(`not the target of a call (segments between "/", none empty, no "*"): ${JSON.stringify(text)}`);
+  }
+  return text;
+}
+
+/** Is this text the target of one call? */
+export function isCallTarget(text: string): boolean {
+  return TARGET.test(text);
+}
+
 /** The prefix a mask like `group.*` stands for; undefined for an exact mask. `*` is the empty prefix. */
 function prefixOf(name: Mask): string | undefined {
   return name.endsWith("*") ? name.slice(0, -1) : undefined;
@@ -76,7 +115,7 @@ export function rule(spec: RuleSpec): Rule {
   const at = rest.indexOf("@");
   const name = mask(at === -1 ? rest : rest.slice(0, at));
   if (at === -1) return { verb, name, ask };
-  return { verb, name, target: mask(rest.slice(at + 1)), ask };
+  return { verb, name, target: targetMask(rest.slice(at + 1)), ask };
 }
 
 /** The text of a rule, with its verb: what a refusal says is missing. */

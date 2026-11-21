@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 
-import { grant, match, narrow, narrowed, rule, ruleText, specsOf } from "../src/index.ts";
+import { callTarget, grant, match, narrow, narrowed, rule, ruleText, specsOf } from "../src/index.ts";
 import type { Grant, RuleSpec } from "../src/index.ts";
 
 test("a rule is verb:name[@target], with call as the default verb and an optional ask", () => {
@@ -234,4 +234,23 @@ test("a child cannot name an irreversible action its parent holds only by a mask
   expect("rules" in masked && specsOf(masked.rules)).toEqual(["call:forge.*"]);
   // An action that is not irreversible is held by a mask as before.
   expect("rules" in narrow(grant(["forge.*"]), ["forge.pr.read"], { irreversible })).toBe(true);
+});
+
+test("a target is segments between slashes, with a trailing `*` only after a slash", () => {
+  expect(rule("forge.pr.merge@git.example.com/acme/billing/pr/*")).toMatchObject({ target: "git.example.com/acme/billing/pr/*" });
+  expect(rule("forge.pr.merge@git.example.com/acme/billing/pr/7")).toMatchObject({ target: "git.example.com/acme/billing/pr/7" });
+  expect(rule("a.b@*")).toMatchObject({ target: "*" });
+  // A local place is an absolute path.
+  expect(rule("proc.run@/home/me/work/*")).toMatchObject({ target: "/home/me/work/*" });
+  for (const bad of ["acme/billing#*", "acme.*", "acme/bil*", "acme//billing", "//acme", "acme/", "acme/*/pr", "*/x"]) {
+    expect(() => rule(`a.b@${bad}`)).toThrow("not a target");
+  }
+  // A name keeps its own masks.
+  expect(rule("forge.*@acme/*")).toMatchObject({ name: "forge.*", target: "acme/*" });
+});
+
+test("the target of a call is one place: no wildcard and no empty segment", () => {
+  expect(callTarget("git.example.com/acme/billing/pr/7")).toBe("git.example.com/acme/billing/pr/7");
+  expect(callTarget("/home/me/work")).toBe("/home/me/work");
+  for (const bad of ["acme/*", "*", "acme//billing", "", "acme/", "a b", "/", "//home"]) expect(() => callTarget(bad)).toThrow("not the target of a call");
 });
