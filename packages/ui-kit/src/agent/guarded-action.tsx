@@ -93,7 +93,9 @@ export function useGuardedAction({ onConfirm, timing: timingOverride, disabled }
       if (!firesOnUnmount(stateRef.current)) return;
       // Hidden and shown again with its state kept, the control must not fire a second time.
       stateRef.current = IDLE;
+      // Back to idle from either: a pending control, or one whose firing had not run yet.
       dispatch({ type: "cancel" });
+      dispatch({ type: "reset" });
       onConfirmRef.current();
     },
     [],
