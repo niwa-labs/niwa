@@ -11,10 +11,10 @@ import { join } from "node:path";
 
 import { seq } from "@niwa-labs/core";
 import type { ActionName, StoredRecord } from "@niwa-labs/core";
-import { gitWorktreeCreate, gitWorktreeGet, gitWorktreeList, gitWorktreeRemove } from "@niwa-labs/git/records";
+import { gitHeadObserve, gitWorktreeCreate, gitWorktreeGet, gitWorktreeList, gitWorktreeRemove } from "@niwa-labs/git/records";
 import { KIND_OPTIONS, harnessId, machineId, sessionId } from "@niwa-labs/harness";
 import type { AskAnswer, AskOptions, Harness, SessionControl, SessionId, StartOptions, StartedSession } from "@niwa-labs/harness";
-import { sessionStart } from "@niwa-labs/sessions/records";
+import { SessionTurnEnded, sessionStart } from "@niwa-labs/sessions/records";
 import { createNiwa, CLEANUP_TIMER, WorktreeRefusal, git, sessions, timer, timerList, timers, eventually, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 import { workflow, workflowInstallationList } from "../src/index.ts";
@@ -340,3 +340,70 @@ test("git({ cleanup: false }) offers no cleanup: nothing is registered or instal
   expect(await ofType(host, "workflow.registered")).toEqual([]);
   expect((await host.call(timerList, {})).timers).toEqual([]);
 }, 20_000);
+
+test("the list shows each worktree's head and the remote its base pushes to, when fetch and push name the same project", async () => {
+  const repo = await makeRepo();
+  gitIn(repo, "remote", "add", "origin", "git@GitLab.Example.com:acme/billing.git");
+  gitIn(repo, "config", "branch.main.remote", "origin");
+  gitIn(repo, "config", "branch.main.merge", "refs/heads/main");
+  const other = await makeRepo();
+  gitIn(other, "remote", "add", "upstream", "https://token@gitlab.example.com:8443/acme/tools/cli.git/");
+  gitIn(other, "config", "branch.main.remote", "upstream");
+  const split = await makeRepo();
+  gitIn(split, "remote", "add", "origin", "https://gitlab.example.com/acme/billing.git");
+  gitIn(split, "remote", "set-url", "--push", "origin", "https://gitlab.example.com/acme/fork.git");
+  const local = await makeRepo();
+  gitIn(local, "remote", "add", "origin", "/srv/git/billing.git");
+  const bare = await makeRepo();
+  const { host } = await served();
+
+  const made = await host.call(gitWorktreeCreate, { repo, description: "with a remote" });
+  const tools = await host.call(gitWorktreeCreate, { repo: other, description: "tracks upstream" });
+  const forked = await host.call(gitWorktreeCreate, { repo: split, description: "pushes elsewhere" });
+  const onDisk = await host.call(gitWorktreeCreate, { repo: local, description: "a local remote" });
+  const none = await host.call(gitWorktreeCreate, { repo: bare, description: "no remote" });
+  writeFileSync(join(made.path, "next.txt"), "next\n");
+  gitIn(made.path, "add", "next.txt");
+  gitIn(made.path, "commit", "-q", "-m", "next");
+
+  const byId = new Map((await host.call(gitWorktreeList, {})).items.map((item) => [item.id, item]));
+  expect(byId.get(made.id)).toMatchObject({ head: gitIn(made.path, "rev-parse", "HEAD"), remote: { name: "origin", host: "gitlab.example.com", path: "acme/billing" } });
+  expect(byId.get(tools.id)?.remote).toEqual({ name: "upstream", host: "gitlab.example.com", path: "acme/tools/cli" });
+  expect(byId.get(none.id)?.head).toBe(none.baseSha);
+  for (const unverified of [forked, onDisk, none]) expect(byId.get(unverified.id)?.remote).toBeUndefined();
+  expect(await host.call(gitWorktreeGet, { id: made.id })).toMatchObject({ remote: { host: "gitlab.example.com", path: "acme/billing" } });
+});
+
+test("a head that moved in a worktree is recorded once, for the session whose turn ended there or the caller that looked", async () => {
+  const repo = await makeRepo();
+  const { host } = await served(true);
+  const started = await host.call(sessionStart, { harness: HARNESS, prompt: "", cwd: repo, worktree: true });
+  const made = started.worktree;
+  if (made === undefined) throw new Error("no worktree");
+  const commit = (file: string): string => {
+    writeFileSync(join(made.path, file), `${file}\n`);
+    gitIn(made.path, "add", file);
+    gitIn(made.path, "commit", "-q", "-m", file);
+    return gitIn(made.path, "rev-parse", "HEAD");
+  };
+
+  // A turn that moved nothing writes nothing.
+  await host.emit(SessionTurnEnded, { session: started.ref as never, turn: 1 });
+  const first = commit("one.txt");
+  await host.emit(SessionTurnEnded, { session: started.ref as never, turn: 2 });
+  await eventually(async () => (await ofType(host, "git.head.moved")).length > 0);
+  expect((await ofType(host, "git.head.moved")).map((row) => row.data)).toEqual([
+    { worktree: made.id, repo, path: made.path, branch: made.branch, head: first, previous: gitIn(repo, "rev-parse", "main"), session: started.ref },
+  ]);
+  // Looked at again, a head that stayed is not written again.
+  expect(await host.call(gitHeadObserve, {})).toEqual({ moved: [] });
+
+  // A caller that looks itself is who the record is of: no session is named.
+  const second = commit("two.txt");
+  expect(await host.call(gitHeadObserve, { worktree: made.id })).toEqual({ moved: [{ worktree: made.id, head: second }] });
+  const rows = await ofType(host, "git.head.moved");
+  expect(rows.map((row) => row.data)).toEqual([
+    expect.objectContaining({ head: first, session: started.ref }),
+    { worktree: made.id, repo, path: made.path, branch: made.branch, head: second, previous: first },
+  ]);
+});

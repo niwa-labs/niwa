@@ -11,6 +11,12 @@
  *   live niwa sessions in it.
  * - **git.worktree.remove** removes the directory and the branch. It refuses a worktree that is
  *   dirty, ahead of its base or has a live session in it, unless forced.
+ * - **git.head.observe** records `git.head.moved` for each worktree whose head is on another commit
+ *   than the last one recorded for it. The module looks by itself when a session's turn ends in a
+ *   worktree, and names that session in the record; a run that looks is who its record is of.
+ *
+ * The list and a get show each worktree's head and the remote its base pushes to, verified from the
+ * repository's configuration, so what happens on a forge can be tied to the worktrees of its project.
  *
  * The cleanup of old worktrees is a built-in workflow of the module (`workflows/worktree-cleanup.ts`), on a timer
  * the module offers: every day it reads the list and removes what is older than `cleanup.days`, clean, merged and
@@ -25,20 +31,21 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CatchableError, EntityDescription, IdIndex, action, idSchema, recordId, seq, stableJson } from "@niwa-labs/core";
-import type { ActionContext, IssuedId, JournalReader, RecordId, RecordTypeName, StoredRecord } from "@niwa-labs/core";
+import type { ActionContext, IssuedId, JournalReader, RecordId, RecordTypeName, SessionRef, StoredRecord } from "@niwa-labs/core";
 import { BUILTIN_WORKFLOW, TIMER_OFFER, plugin } from "@niwa-labs/plugin";
-import type { Plugin } from "@niwa-labs/plugin";
+import type { Plugin, Subscriber } from "@niwa-labs/plugin";
 
 import {
   gitCleanupConfig,
+  gitHeadObserve,
   gitWorktreeCreate,
   gitWorktreeGet,
   gitWorktreeList,
   gitWorktreeRemove,
 } from "./actions.ts";
 import type { WorktreeEntity, WorktreeState } from "./actions.ts";
-import { aheadOf, commitOf, copyIncluded, currentBase, gitOut, gitRun, isDirty, topOf } from "./git.ts";
-import { WorktreeCreated, WorktreeRemoved } from "./record-types.ts";
+import { aheadOf, branchOf, commitOf, copyIncluded, currentBase, gitOut, gitRun, headOf, isDirty, topOf, verifiedRemote } from "./git.ts";
+import { HeadMoved, WorktreeCreated, WorktreeRemoved } from "./record-types.ts";
 import type { Worktree, WorktreeId } from "./record-types.ts";
 
 const DAY_MS = 86_400_000;
@@ -162,8 +169,11 @@ interface Place {
   readonly bootedAt: number;
 }
 
-/** How a worktree stands now: dirty, ahead of its base, the sessions alive in it. */
-async function standing(place: Place, worktree: Worktree): Promise<Pick<WorktreeEntity, "dirty" | "aheadOfBase" | "sessions">> {
+/** How a worktree stands now: dirty, ahead of its base, the sessions alive in it, its head and the remote of its base. */
+async function standing(
+  place: Place,
+  worktree: Worktree,
+): Promise<Pick<WorktreeEntity, "dirty" | "aheadOfBase" | "sessions" | "head" | "remote">> {
   const present = existsSync(worktree.path);
   const dirty = present ? await isDirty(worktree.path) : false;
   const branch = await commitOf(worktree.repo, `refs/heads/${worktree.branch}`);
@@ -171,7 +181,29 @@ async function standing(place: Place, worktree: Worktree): Promise<Pick<Worktree
   const base = (await commitOf(worktree.repo, worktree.base)) === undefined ? worktree.baseSha : worktree.base;
   const aheadOfBase = branch === undefined ? 0 : await aheadOf(worktree.repo, base, worktree.branch);
   const sessions = present ? liveSessionsIn(place.journal(), real(worktree.path), place.bootedAt) : [];
-  return { dirty, aheadOfBase, sessions };
+  const head = present ? await headOf(worktree.path) : undefined;
+  const remote = existsSync(worktree.repo) ? await verifiedRemote(worktree.repo, worktree.base) : undefined;
+  return { dirty, aheadOfBase, sessions, ...(head === undefined ? {} : { head }), ...(remote === undefined ? {} : { remote }) };
+}
+
+/** The last head recorded for each worktree: the one its last `git.head.moved` names, else none. */
+function recordedHeads(journal: JournalReader | undefined): Map<string, string> {
+  const heads = new Map<string, string>();
+  for (const stored of journal?.since(seq(0), [HeadMoved.name]) ?? []) {
+    const parsed = HeadMoved.schema.safeParse(stored.data);
+    if (parsed.success) heads.set(parsed.data.worktree, parsed.data.head);
+  }
+  return heads;
+}
+
+/** The directory a session was started in, by its ref, from the sessions module's records read by name. */
+function cwdOfSession(journal: JournalReader | undefined, session: string): string | undefined {
+  let cwd: string | undefined;
+  for (const stored of journal?.since(seq(0), ["session.started" as RecordTypeName]) ?? []) {
+    const data = stored.data as { session?: unknown; cwd?: unknown };
+    if (data.session === session && typeof data.cwd === "string") cwd = data.cwd;
+  }
+  return cwd;
 }
 
 /** Why a worktree may not be removed, or undefined when it may. */
@@ -259,7 +291,7 @@ export function git(options: GitOptions = {}): Plugin {
     const place: Place = { journal, store: () => join(api.home(), "worktrees"), bootedAt };
     const entries = () => fold(journal());
 
-    api.declare(WorktreeCreated, WorktreeRemoved);
+    api.declare(WorktreeCreated, WorktreeRemoved, HeadMoved);
 
     api.action(
       action(gitWorktreeCreate, {
@@ -335,6 +367,64 @@ export function git(options: GitOptions = {}): Plugin {
       }),
     );
 
+    api.action(
+      action(gitHeadObserve, {
+        // A head recorded once is the last one known: looking again writes nothing for it.
+        recovery: "repeat",
+        effect: "record",
+        world: "niwa",
+        async run(input, ctx) {
+          const only = input.worktree === undefined ? undefined : ids.require(input.worktree);
+          const heads = recordedHeads(journal());
+          const moved: Array<{ worktree: WorktreeId; head: string }> = [];
+          for (const { worktree, removed } of entries().values()) {
+            if (removed || (only !== undefined && worktree.id !== only) || !existsSync(worktree.path)) continue;
+            const head = await headOf(worktree.path);
+            const previous = heads.get(worktree.id) ?? worktree.baseSha;
+            if (head === undefined || head === previous) continue;
+            const branch = await branchOf(worktree.path);
+            await ctx.emit(HeadMoved, {
+              worktree: worktree.id,
+              repo: worktree.repo,
+              path: worktree.path,
+              ...(branch === undefined ? {} : { branch }),
+              head,
+              previous,
+              ...(input.session === undefined ? {} : { session: input.session }),
+            });
+            moved.push({ worktree: worktree.id, head });
+          }
+          return { moved };
+        },
+      }),
+    );
+
+    // The end of a session's turn is when its commits are seen: the worktrees it was started in are looked at, and a
+    // head that moved is recorded for it. The sessions module is read by name, from when the module first serves.
+    let firstServed: number | undefined;
+    api.subscribers(() => {
+      const reader = journal();
+      if (reader === undefined) return [];
+      firstServed ??= reader.last();
+      const turns: Subscriber = {
+        id: "head-on-turn-end",
+        queries: [{ types: ["session.turn-ended"] }],
+        from: firstServed,
+        handler: async (data, step) => {
+          const session = (data as { session?: unknown }).session;
+          if (typeof session !== "string") return;
+          const cwd = cwdOfSession(journal(), session);
+          if (cwd === undefined) return;
+          const at = real(cwd);
+          for (const { worktree, removed } of entries().values()) {
+            if (removed || !within(at, real(worktree.path))) continue;
+            await step(gitHeadObserve, { worktree: worktree.id, session: session as SessionRef }, { key: `observe:${worktree.id}` });
+          }
+        },
+      };
+      return [turns];
+    });
+
     /** Remove a recorded worktree: refused unless it may go or it is forced, then written. */
     const removeEntry = async (
       entry: Entry,
@@ -396,6 +486,8 @@ function orphanDirs(store: string): string[] {
 export {
   SessionWorktree,
   gitCleanupConfig,
+  gitHeadObserve,
+  WorktreeRemote,
   WorktreeEntity,
   WorktreeOption,
   WorktreeState,
@@ -405,4 +497,4 @@ export {
   gitWorktreeRemove,
 } from "./actions.ts";
 export type { WorktreeOptionGiven } from "./actions.ts";
-export { GIT_TYPES, Worktree, WorktreeCreated, WorktreeId, WorktreeRemoved } from "./record-types.ts";
+export { CommitId, GIT_TYPES, HeadMoved, Worktree, WorktreeCreated, WorktreeId, WorktreeRemoved } from "./record-types.ts";

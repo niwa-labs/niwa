@@ -71,6 +71,77 @@ export async function aheadOf(dir: string, base: string, branch: string): Promis
   return Number((await gitOut(dir, ["rev-list", "--count", `${base}..${branch}`])).trim());
 }
 
+/** The commit the head of a checkout is on, or undefined when it has none. */
+export async function headOf(dir: string): Promise<string | undefined> {
+  const result = await gitRun(dir, ["rev-parse", "--verify", "-q", "HEAD^{commit}"]);
+  return result.code === 0 ? result.stdout.trim() : undefined;
+}
+
+/** The branch the head of a checkout is on, or undefined when it is detached. */
+export async function branchOf(dir: string): Promise<string | undefined> {
+  const result = await gitRun(dir, ["symbolic-ref", "--short", "-q", "HEAD"]);
+  const branch = result.stdout.trim();
+  return result.code === 0 && branch !== "" ? branch : undefined;
+}
+
+/** A host name as a forge names its server: lower case, no port, no scheme. */
+const HOST = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
+/** One group or the name of a project in its path. */
+const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/;
+
+/**
+ * The server and the project path a remote URL names: `https://host/group/name.git`, `ssh://user@host:22/group/name`,
+ * `user@host:group/name.git`. A user, a token, a port and the `.git` ending are not part of it. A path on this machine
+ * (`/srv/git/x.git`, `file://`), or a URL that names no group and name on a host, names none.
+ */
+export function remoteProject(url: string): { host: string; path: string } | undefined {
+  let host: string;
+  let path: string;
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(url);
+  if (scheme !== null) {
+    if (!["https", "http", "ssh", "git", "git+ssh", "ssh+git"].includes(scheme[1]!.toLowerCase())) return undefined;
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return undefined;
+    }
+    host = parsed.hostname;
+    path = decodeURIComponent(parsed.pathname);
+  } else {
+    // The scp-like form: [user@]host:path. A colon after a slash is a local path.
+    const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(url);
+    if (scp === null) return undefined;
+    host = scp[1]!;
+    path = scp[2]!;
+  }
+  host = host.toLowerCase();
+  path = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
+  const segments = path.split("/");
+  if (!HOST.test(host) || segments.length < 2 || !segments.every((segment) => SEGMENT.test(segment))) return undefined;
+  return { host, path };
+}
+
+/**
+ * The remote the work on `base` goes to, verified from the repository's configuration: the remote `base` tracks,
+ * else `origin`. It is undefined when that remote is not configured, its URL names no project on a server, or its
+ * push URL names another project than its fetch URL.
+ */
+export async function verifiedRemote(repo: string, base: string): Promise<{ name: string; host: string; path: string } | undefined> {
+  const tracked = (await gitRun(repo, ["config", "--get", `branch.${base}.remote`])).stdout.trim();
+  // "." is the repository itself: a branch that tracks a local branch goes to no remote.
+  const name = tracked === "" ? "origin" : tracked;
+  if (name === ".") return undefined;
+  const fetch = await gitRun(repo, ["remote", "get-url", name]);
+  if (fetch.code !== 0) return undefined;
+  const project = remoteProject(fetch.stdout.trim());
+  if (project === undefined) return undefined;
+  const push = await gitRun(repo, ["remote", "get-url", "--push", name]);
+  const pushed = push.code === 0 ? remoteProject(push.stdout.trim()) : undefined;
+  if (pushed === undefined || pushed.host !== project.host || pushed.path !== project.path) return undefined;
+  return { name, ...project };
+}
+
 /** The paths, relative to the top, that a NUL-separated git listing gives. */
 function paths(listing: string): string[] {
   return listing.split("\0").filter((path) => path !== "");

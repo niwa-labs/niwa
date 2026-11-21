@@ -8,9 +8,9 @@
 
 import { z } from "zod";
 
-import { EntityDescription, actionRef, getRef, listRef } from "@niwa-labs/core";
+import { EntityDescription, SessionRefSchema, actionRef, getRef, listRef } from "@niwa-labs/core";
 
-import { Worktree } from "./record-types.ts";
+import { CommitId, Worktree, WorktreeId } from "./record-types.ts";
 
 /** What a worktree is made from, as `session.start` and `agent()` take it: `true`, or the parts to choose. */
 export const WorktreeOption = z.union([
@@ -43,6 +43,20 @@ export const gitWorktreeCreate = actionRef("git.worktree.create", {
   output: Worktree,
 });
 
+/**
+ * The remote a worktree's work goes to, as the repository's own configuration says it now: the remote its base
+ * branch tracks, else `origin`. It is shown only when it is verified: the remote is configured, its fetch and push
+ * URLs name the same project, and that project is on a server (`host`, lower case, no port) at a path of at least a
+ * group and a name, without `.git`. A remote on this machine, or one that pushes elsewhere, is not shown.
+ */
+export const WorktreeRemote = z.object({
+  /** The name of the remote in the repository. */
+  name: z.string().min(1),
+  host: z.string().min(1),
+  path: z.string().min(1),
+});
+export type WorktreeRemote = z.infer<typeof WorktreeRemote>;
+
 /** Where a worktree in the list stands: as recorded, its directory gone, or a directory with no record. */
 export const WorktreeState = z.enum(["ok", "missing", "orphan"]);
 export type WorktreeState = z.infer<typeof WorktreeState>;
@@ -51,7 +65,8 @@ export const gitWorktreeList = listRef("git.worktree.list", {
   kind: "worktree",
   noun: "git worktree",
   detail:
-    "Each recorded one shows its age in days and how it stands now (dirty, commits ahead of its base, live sessions), which is what a cleanup reads. " +
+    "Each recorded one shows its age in days and how it stands now (dirty, commits ahead of its base, live sessions), which is what a cleanup reads, " +
+    "its head commit, and the remote its base pushes to (`host` and `path` of the project) when the repository's configuration verifies one. " +
     "`state` flags the odd ones: `missing` is a worktree whose directory is gone, `orphan` a directory in niwa's store that no record names.",
   item: {
     state: WorktreeState,
@@ -65,6 +80,10 @@ export const gitWorktreeList = listRef("git.worktree.list", {
     dirty: z.boolean().optional(),
     aheadOfBase: z.number().int().nonnegative().optional(),
     sessions: z.array(z.string()).optional(),
+    /** The commit its head is on now; absent for an orphan and a worktree whose directory is gone. */
+    head: CommitId.optional(),
+    /** The verified remote of its base; absent when none is. */
+    remote: WorktreeRemote.optional(),
   },
 });
 
@@ -76,13 +95,17 @@ export const WorktreeEntity = Worktree.extend({
   aheadOfBase: z.number().int().nonnegative(),
   /** The niwa sessions alive in it now. */
   sessions: z.array(z.string()),
+  /** The commit its head is on now; absent when its directory is gone. */
+  head: CommitId.optional(),
+  /** The verified remote of its base; absent when none is. */
+  remote: WorktreeRemote.optional(),
 });
 export type WorktreeEntity = z.infer<typeof WorktreeEntity>;
 
 export const gitWorktreeGet = getRef("git.worktree.get", {
   kind: "worktree",
   noun: "git worktree",
-  detail: "It shows what the worktree was made from and how it stands: dirty, commits ahead of its base, the live sessions in it.",
+  detail: "It shows what the worktree was made from and how it stands: dirty, commits ahead of its base, the live sessions in it, its head and the verified remote of its base.",
   entity: WorktreeEntity,
 });
 
@@ -92,6 +115,15 @@ export const gitWorktreeRemove = actionRef("git.worktree.remove", {
     "or a live niwa session runs in it, unless `force`. An orphan directory (no record) is removed only with `force`. A worktree that is gone already is a no-op.",
   input: z.strictObject({ id: z.string().min(1), force: z.boolean().optional() }),
   output: z.object({ id: z.string().min(1), removed: z.boolean() }),
+});
+
+export const gitHeadObserve = actionRef("git.head.observe", {
+  description:
+    "Look at the heads of the worktrees niwa keeps (or of `worktree` alone) and record `git.head.moved` for each that is on another commit than " +
+    "the last one recorded for it. `session` names the session, as `<harness> <native>`, that moved them; without it the record is of the caller. " +
+    "A head that has not moved is not recorded again. The module looks by itself when a session's turn ends in a worktree.",
+  input: z.strictObject({ worktree: z.string().min(1).optional(), session: SessionRefSchema.optional() }),
+  output: z.object({ moved: z.array(z.object({ worktree: WorktreeId, head: CommitId })) }),
 });
 
 export const gitCleanupConfig = actionRef("git.cleanup.config", {
