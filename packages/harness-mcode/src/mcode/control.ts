@@ -1137,14 +1137,15 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       // Whatever the agent started may outlive it; the group is the unit of cleanup, and the MCP
       // servers it was given, which are in no group of its own, go by their mark.
       signalGroup(session, "SIGKILL");
-      void stopMarked(session.mark);
+      // A stop that is under way reaps them itself.
+      if (!session.stopping) void stopMarked(session.mark);
       session.end(
         `${binary} exited with code ${String(code)}${stderr.trim() === "" ? "" : `: ${stderr.trim()}`}`,
       );
     });
     child.once("error", (error: Error) => {
       owned.delete(session);
-      void stopMarked(session.mark);
+      if (!session.stopping) void stopMarked(session.mark);
       session.end(`${binary} could not be run: ${error.message}`);
     });
 
