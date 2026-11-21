@@ -33,7 +33,13 @@ function resolveLocal(from: string, specifier: string): string | undefined {
 function localImports(file: string, source: string): string[] {
   const loader = LOADERS[extname(file) as keyof typeof LOADERS];
   if (loader === undefined) return [];
-  const found = new Bun.Transpiler({ loader }).scanImports(source);
+  let found: ReturnType<Bun.Transpiler["scanImports"]>;
+  try {
+    found = new Bun.Transpiler({ loader }).scanImports(source);
+  } catch {
+    // A file that does not parse is part of the module and imports nothing here: the build says what is wrong with it.
+    return [];
+  }
   return found
     .map((entry) => entry.path)
     .filter((path) => path.startsWith("."))

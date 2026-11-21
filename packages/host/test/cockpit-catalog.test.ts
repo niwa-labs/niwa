@@ -71,6 +71,18 @@ test("the hash of a module follows the files it imports and no others", () =>
     },
   ));
 
+test("a module with a file that does not parse is still listed, so the others are", () =>
+  withHost(
+    (dir) => [{ id: "demo", entry: join(dir, "index.tsx") }],
+    async (catalog, dir) => {
+      const before = (await catalog()).modules[0]!;
+      await writeFile(join(dir, "page.tsx"), `export const page = (;\n`);
+      const after = (await catalog()).modules[0]!;
+      expect(after.id).toBe("demo");
+      expect(after.hash).not.toBe(before.hash);
+    },
+  ));
+
 test("an offer that names no file or a bad id is refused when the catalogue is read", async () => {
   await withHost(
     (dir) => [{ id: "demo", entry: join(dir, "missing.tsx") }],
