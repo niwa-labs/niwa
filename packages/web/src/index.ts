@@ -112,7 +112,7 @@ export interface OwnerAction {
   readonly ref: OwnerActionRef;
   /** Refuse an input the schema alone does not: the answer is the reason, undefined when the input stands. */
   readonly refuse?: (input: Record<string, unknown>) => string | undefined;
-  /** Shape what the action answered, before it is checked against the output schema. */
+  /** Shape what the action answered, then check it against the output schema. */
   readonly shape?: (answer: unknown) => Promise<unknown>;
 }
 
@@ -276,7 +276,10 @@ async function route(context: Context, request: Request): Promise<Response> {
             const refusal = hooked.refuse?.(input);
             if (refusal !== undefined) return text(400, refusal);
             const called = await api.call(ref.name, parsed.data);
-            const result = ref.output.safeParse(hooked.shape === undefined ? called : await hooked.shape(called));
+            // What the host answered has passed the output schema there: it goes on as it is, not through the schema
+            // again. A shaped answer is the page's own, and is checked once.
+            if (hooked.shape === undefined) return json(200, called);
+            const result = ref.output.safeParse(await hooked.shape(called));
             return result.success ? json(200, result.data) : text(502, "invalid cockpit action response");
           }
           return json(200, await api.call(actionName(action), input));

@@ -63,6 +63,7 @@ export {
   type HostInfo,
   type HttpHostClientOptions,
   type TypedSchema,
+  type Wire,
 } from "./host-client.ts";
 export {
   createRecordStream,

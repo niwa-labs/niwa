@@ -11,15 +11,28 @@
 import { serverEvents, textChunks } from "./sse.ts";
 import type { StoredRecord } from "./records.ts";
 
-type ValidationResult = { readonly value?: unknown; readonly issues?: ReadonlyArray<{ readonly message: string }> | undefined };
-
-/** The part of a Standard Schema the cockpit uses: its types, and its validation when present. */
+/** The part of a Standard Schema the cockpit uses: its types. */
 export type TypedSchema<In, Out> = {
   readonly "~standard": {
     readonly types?: { readonly input: In; readonly output: Out } | undefined;
-    readonly validate?: ((value: unknown) => ValidationResult | Promise<ValidationResult>) | undefined;
   };
 };
+
+/**
+ * A value as it travels in JSON: what `JSON.stringify` makes of it. A date is its text, a field
+ * that is undefined or a function is absent.
+ */
+export type Wire<T> = T extends { toJSON(): infer J }
+  ? J
+  : T extends string | number | boolean | null
+    ? T
+    : T extends bigint | symbol | undefined | ((...args: never[]) => unknown)
+      ? never
+      : T extends readonly unknown[]
+        ? { [K in keyof T]: Wire<T[K]> }
+        : T extends object
+          ? { [K in keyof T as [Wire<T[K]>] extends [never] ? never : K]: Wire<T[K]> }
+          : T;
 
 /** An action reference: its name and the schemas of its input and output. */
 export type ActionRefLike<I, O, In = I> = {
@@ -46,8 +59,12 @@ export type HostInfo = {
 };
 
 export interface HostClient {
-  /** Call an action by reference: the input and the result have the reference's types. */
-  call<I, O, In = I>(action: ActionRefLike<I, O, In>, input: NoInfer<In>, opts?: CallOptions): Promise<O>;
+  /**
+   * Call an action by reference: the input has the reference's type. The result is what the
+   * host returned, as it travelled: the host has already applied the output schema, so it is
+   * not applied again here, and a date arrives as its text.
+   */
+  call<I, O, In = I>(action: ActionRefLike<I, O, In>, input: NoInfer<In>, opts?: CallOptions): Promise<Wire<O>>;
   /** Call an action by name: nothing is known about its types. */
   call(action: string, input: unknown, opts?: CallOptions): Promise<unknown>;
   info(opts?: CallOptions): Promise<HostInfo>;
@@ -134,15 +151,7 @@ export function httpHostClient(options: HttpHostClientOptions = {}): HostClient 
       },
       name,
     );
-    const body: unknown = await response.json();
-    // A result is what the output schema makes of the wire value: dates, defaults, brands.
-    const validate = typeof action === "string" ? undefined : action.output["~standard"].validate;
-    if (validate === undefined) return body;
-    const result = await validate(body);
-    if (result.issues !== undefined) {
-      throw new HostCallError(502, `the result of ${name} does not fit its schema: ${result.issues.map((i) => i.message).join("; ")}`, name);
-    }
-    return result.value;
+    return response.json();
   }
 
   async function read(after: number, opts?: CallOptions): Promise<StoredRecord[]> {

@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient, type UseMutationResult, type Use
 import { useEffect, useRef } from "react";
 import { useStore } from "zustand";
 
-import type { ActionRefLike } from "./host-client.ts";
+import type { ActionRefLike, Wire } from "./host-client.ts";
 import { matchRecord, type RecordMatch } from "./records.ts";
 import type { Projection, StreamState } from "./record-stream.ts";
 import { useCockpit } from "./runtime.tsx";
@@ -49,7 +49,7 @@ export function useCall<I, O, In = I>(
   action: ActionRefLike<I, O, In>,
   input: NoInfer<In>,
   options: UseCallOptions = {},
-): UseQueryResult<O> {
+): UseQueryResult<Wire<O>> {
   const { host, records } = useCockpit();
   const queryClient = useQueryClient();
   const queryKey = callKey(action, input);
@@ -97,7 +97,7 @@ export function useCall<I, O, In = I>(
 }
 
 /** An action to call on demand, such as from a button. */
-export function useAction<I, O, In = I>(action: ActionRefLike<I, O, In>): UseMutationResult<O, Error, In> {
+export function useAction<I, O, In = I>(action: ActionRefLike<I, O, In>): UseMutationResult<Wire<O>, Error, In> {
   const { host } = useCockpit();
   return useMutation({ mutationFn: (input: In) => host.call(action, input) });
 }

@@ -8,9 +8,9 @@
 
 import { afterEach, expect, test } from "bun:test";
 
-import { action, record } from "@niwa-labs/core";
+import { action, actionName, record } from "@niwa-labs/core";
 import { connectAsOwner, createNiwa, loginWeb, plugin, tempHome, webFetch } from "@niwa-labs/testing";
-import type { WebServer } from "../src/index.ts";
+import type { WebOptions, WebServer } from "../src/index.ts";
 import { z } from "zod";
 
 import { serveWebPages } from "./fixtures/serve-web.ts";
@@ -22,11 +22,16 @@ afterEach(async () => {
 
 const Empty = z.object({});
 const Ok = z.object({ ok: z.boolean() });
+// An output schema that does something to what it checks: running it twice is not running it once.
+const Next = z.number().transform((n) => n + 1);
+const When = z.object({ at: z.date() });
 
 const Note = record("demo.note", z.object({ n: z.number() }), { open: true });
 
 const demo = plugin("demo", (api) => {
   api.declare(Note);
+  api.action(action("demo.next", { description: "Counts.", input: Empty, output: Next, recovery: "repeat", effect: "read", run: () => 1 }));
+  api.action(action("demo.when", { description: "Dates.", input: Empty, output: When, recovery: "repeat", effect: "read", run: () => ({ at: new Date("2026-11-21T10:00:00Z") }) }));
   api.action(action("demo.read", { description: "Reads.", input: Empty, output: Ok, recovery: "repeat", effect: "read", run: () => ({ ok: true }) }));
   api.action(action("demo.write", { description: "Writes.", input: Empty, output: Ok, recovery: "do-not-repeat", effect: "write", run: () => ({ ok: true }) }));
 });
@@ -43,8 +48,8 @@ async function hosted(): Promise<string> {
   return home.path;
 }
 
-async function served(home: string, speaksFor?: "owner"): Promise<WebServer> {
-  const web = await serveWebPages({ home, port: 0, ...(speaksFor === undefined ? {} : { speaksFor }) });
+async function served(home: string, speaksFor?: "owner", ownerActions?: NonNullable<WebOptions["ownerActions"]>): Promise<WebServer> {
+  const web = await serveWebPages({ home, port: 0, ...(speaksFor === undefined ? {} : { speaksFor }), ...(ownerActions === undefined ? {} : { ownerActions }) });
   cleanups.push(() => web.close());
   await loginWeb(web);
   return web;
@@ -159,4 +164,18 @@ test("the journal feed starts after the position the page names, and the info sa
   expect(history.map((record) => record.seq)).toEqual([end - 1, end]);
   expect((await webFetch(`${web.url}/api/events?after=-1`)).status).toBe(400);
   expect((await webFetch(`${web.url}/api/events?after=x`)).status).toBe(400);
+});
+test("a call answers with the result the host returned, whether or not the page has a hook for the action", async () => {
+  const home = await hosted();
+  const hooked = (name: string, output: z.ZodType) => ({ ref: { name: actionName(name), input: Empty, output } });
+  const hooks = await served(home, "owner", [hooked("demo.next", Next), hooked("demo.when", When)]);
+  const plain = await served(home, "owner");
+  for (const web of [hooks, plain]) {
+    // The host's result is 2; the transform is not run again on its way to the page.
+    expect(await (await call(web, "demo.next")).json()).toBe(2);
+    // A date is its text on the wire; a hook's schema, which wants a date, does not refuse what the host made of it.
+    const when = await call(web, "demo.when");
+    expect(when.status).toBe(200);
+    expect(await when.json()).toEqual({ at: "2026-11-21T10:00:00.000Z" });
+  }
 });

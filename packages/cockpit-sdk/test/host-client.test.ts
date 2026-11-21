@@ -40,17 +40,25 @@ describe("calls", () => {
     expect(error).toMatchObject({ status: 409, message: "the run is not running", action: "run.stop" });
   });
 
-  test("a call by reference answers with what the output schema makes of the result", async () => {
-    const ref = {
-      name: "run.get",
-      input: z.object({ run: z.string() }),
-      output: z.object({ started: z.iso.datetime().transform((s) => new Date(s)) }),
-    };
-    const good = httpHostClient({ fetch: fakeFetch(() => Response.json({ started: "2026-11-21T10:00:00Z" })).fetch });
-    const out = await good.call(ref, { run: "run-1" });
-    expect(out.started).toBeInstanceOf(Date);
-    const bad = httpHostClient({ fetch: fakeFetch(() => Response.json({ started: 42 })).fetch });
-    expect(bad.call(ref, { run: "run-1" })).rejects.toMatchObject({ status: 502, action: "run.get" });
+  // The host applies the output schema and sends the result as JSON; the page gets what was sent.
+  const serving = (ref: { input: z.ZodType; output: z.ZodType }, produced: unknown) =>
+    fakeFetch(() => Response.json(ref.output.parse(produced)));
+
+  test("a call by reference answers with the result the host sent, not with the schema applied again", async () => {
+    const ref = { name: "count.next", input: z.object({}), output: z.number().transform((n) => n + 1) };
+    const { fetch } = serving(ref, 1);
+    const client = httpHostClient({ fetch });
+    // The host's result is 2; running the transform on it again would make it 3.
+    expect(await client.call(ref, {})).toBe(2);
+  });
+
+  test("a type that changes shape in JSON arrives as it travelled", async () => {
+    const ref = { name: "run.get", input: z.object({}), output: z.object({ started: z.date() }) };
+    const { fetch } = serving(ref, { started: new Date("2026-11-21T10:00:00Z") });
+    const client = httpHostClient({ fetch });
+    const out = await client.call(ref, {});
+    const text: string = out.started;
+    expect(text).toBe("2026-11-21T10:00:00.000Z");
   });
 
   test("a history read must be a list of records", async () => {
