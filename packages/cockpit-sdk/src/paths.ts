@@ -31,6 +31,33 @@ export function pathProblem(pattern: string): string | undefined {
 }
 
 /**
+ * The first segments of the addresses that are not a module's to give: the cockpit's own page, the endpoints of the web server
+ * that serves it (`/api`, `/feed`, `/trace/<id>` and the rest) and the files it serves (`/assets`, `/modules`). A page of a
+ * module at one of them would work when the cockpit navigates to it and fail when the address is opened directly, where the
+ * server answers with the endpoint or the file. The home page, `/`, is the cockpit's too.
+ */
+export const RESERVED_SEGMENTS: readonly string[] = [
+  "journal",
+  "api",
+  "assets",
+  "modules",
+  "login",
+  "events",
+  "feed",
+  "resolve",
+  "answer",
+  "trace",
+  "trace-data",
+];
+
+/** Whether the cockpit or its server owns the address a pattern names; letters are compared as a router would, lowered. */
+export function isReserved(pattern: string): boolean {
+  if (pattern === "/") return true;
+  const first = pattern.split("/")[1]?.toLowerCase() ?? "";
+  return RESERVED_SEGMENTS.includes(first);
+}
+
+/**
  * The shape of a pattern with parameter names erased and letters lowered: two patterns that a
  * router matching without regard to case would confuse share it.
  */

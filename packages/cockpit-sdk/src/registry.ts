@@ -26,7 +26,7 @@ import {
   type SlotName,
   type SlotPropsOf,
 } from "./contract.ts";
-import { pathProblem, pathShape } from "./paths.ts";
+import { isReserved, pathProblem, pathShape } from "./paths.ts";
 
 export type RegisteredPage = {
   plugin: string;
@@ -227,6 +227,7 @@ function build(base: Owned, drafts: readonly PluginDraft[]): Built {
       const shape = pathShape(page.path);
       const owner = shapes.get(shape) ?? (ownShapes.has(shape) ? draft.plugin : undefined);
       if (owner !== undefined) reject(page.path, `the path ${page.path} is already taken by ${owner}`, owner);
+      else if (isReserved(page.path)) reject(page.path, `the path ${page.path} belongs to the cockpit`, "cockpit");
       else ownShapes.set(shape, page.path);
     }
     if (!ok) {

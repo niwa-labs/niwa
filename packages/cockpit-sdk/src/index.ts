@@ -26,7 +26,7 @@ export {
   type SlotSpec,
   type Viewer,
 } from "./contract.ts";
-export { matchPath, pathFor, pathProblem, pathShape, type PathParams, type SearchParams } from "./paths.ts";
+export { isReserved, matchPath, pathFor, pathProblem, pathShape, RESERVED_SEGMENTS, type PathParams, type SearchParams } from "./paths.ts";
 export {
   assembleRegistry,
   draftContext,

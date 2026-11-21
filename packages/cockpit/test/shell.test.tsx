@@ -150,3 +150,17 @@ test("a start that fails after the record feed was opened closes the feed", asyn
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(saw.feedsClosed).toBe(1);
 });
+
+test("a module that asks for the home page is reported, and the cockpit still opens with the home page and the other pages", async () => {
+  const saw = seen();
+  const plugins: Plugins = {
+    greedy: definePlugin({ id: "greedy", setup: (ctx) => ctx.pages.add({ path: "/", title: "Mine", component: () => <p>greedy</p> }) }),
+    fine: definePlugin({ id: "fine", setup: (ctx) => ctx.pages.add({ path: "/fine", title: "Fine", nav: {}, component: Fine }) }),
+  };
+  const home = await open("/", stubs(plugins, saw));
+  expect(home.container.querySelector('[data-slot="home"]')).not.toBeNull();
+  expect([...home.container.querySelectorAll("p")].map((p) => p.textContent)).not.toContain("greedy");
+  expect(home.cockpit.faults.snapshot().map((fault) => [fault.plugin, fault.phase, fault.place])).toEqual([["greedy", "register", "/"]]);
+  const page = await open("/fine", stubs(plugins, saw));
+  expect(page.container.textContent).toContain("a page");
+});

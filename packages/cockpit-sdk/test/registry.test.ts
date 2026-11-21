@@ -291,11 +291,11 @@ describe("pages and entities", () => {
         ctx.pages.add({ path: "/runs/$runId", title: "Run", component: Part });
       }),
       source("other", (ctx) => ctx.pages.add({ path: "/runs/$id", title: "Also a run", component: Part })),
-      source("home", (ctx) => ctx.pages.add({ path: "/", title: "Home", component: Part, nav: { label: "Start", order: 0 } })),
+      source("start", (ctx) => ctx.pages.add({ path: "/start", title: "Start", component: Part, nav: { label: "Start", order: 0 } })),
     );
     expect(faults.map((f) => [f.plugin, f.place])).toEqual([["other", "/runs/$id"]]);
     expect(registry.nav.map((n) => [n.label, n.path])).toEqual([
-      ["Start", "/"],
+      ["Start", "/start"],
       ["Runs", "/runs"],
     ]);
   });
@@ -315,5 +315,30 @@ describe("pages and entities", () => {
     expect(registry.entities.href({ kind: "pr", id: "owner/repo#12" })).toBe("/prs/owner%2Frepo%2312");
     // Each kind declares the slot of tabs on its pages.
     expect(registry.slotKind("entity.run.tab")).toBe("list");
+  });
+});
+
+describe("paths the cockpit keeps for itself", () => {
+  test("a module that asks for the home page, the journal or an endpoint of the server is left out, and the others stay", async () => {
+    const { registry, faults } = await load(
+      source("home", (ctx) => ctx.pages.add({ path: "/", title: "Mine", component: Part })),
+      source("fine", (ctx) => ctx.pages.add({ path: "/fine", title: "Fine", component: Part })),
+      source("feeds", (ctx) => ctx.pages.add({ path: "/Feed", title: "Feed", component: Part })),
+      source("traces", (ctx) => ctx.pages.add({ path: "/trace/$id", title: "Trace", component: Part })),
+      source("log", (ctx) => ctx.pages.add({ path: "/journal", title: "Journal", component: Part })),
+    );
+    expect(registry.pages.map((page) => page.path)).toEqual(["/fine"]);
+    expect(faults.map((fault) => [fault.plugin, fault.phase, fault.place, fault.message])).toEqual([
+      ["home", "register", "/", "the path / belongs to the cockpit"],
+      ["feeds", "register", "/Feed", "the path /Feed belongs to the cockpit"],
+      ["traces", "register", "/trace/$id", "the path /trace/$id belongs to the cockpit"],
+      ["log", "register", "/journal", "the path /journal belongs to the cockpit"],
+    ]);
+  });
+
+  test("a path that only starts with a reserved word is a module's", async () => {
+    const { registry, faults } = await load(source("docs", (ctx) => ctx.pages.add({ path: "/apidocs/$page", title: "Docs", component: Part })));
+    expect(faults).toEqual([]);
+    expect(registry.pages.map((page) => page.path)).toEqual(["/apidocs/$page"]);
   });
 });
