@@ -216,3 +216,31 @@ test("an answer too large for a record is kept as an artifact and given again fr
   expect(settled.outcome.value).toBeUndefined();
   expect(settled.outcome.artifact).toBeDefined();
 });
+
+test("an operation id from a client without a token is refused before the action runs", async () => {
+  const home = await tempHome();
+  homes.push(home);
+  const host = createNiwa({ home: home.path });
+  let tallied = 0;
+  const TALLY = actionName("task.tally");
+  host.use(plugin("tally", (api) => {
+    api.action(action(TALLY, {
+      description: "Counts a call; the default profile allows it.",
+      input: z.object({}),
+      output: z.number(),
+      recovery: "do-not-repeat",
+      effect: "write",
+      world: "external",
+      run: () => (tallied += 1),
+    }));
+  }));
+  await host.serve();
+  hosts.push(host);
+  // Without a token a client is told apart only by its connection, which a reconnect changes: a
+  // retry under the same id would be another caller and run the action again.
+  const plain = await connect({ home: home.path, id: "plain" });
+  clients.push(plain);
+  expect(await plain.call(TALLY, {})).toBe(1);
+  await expect(plain.call(TALLY, {}, { operation: "op-1" })).rejects.toMatchObject({ code: "operation-unnamed" });
+  expect(tallied).toBe(1);
+});

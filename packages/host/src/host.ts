@@ -472,6 +472,7 @@ class Connection {
   private id: ClientId;
   /** Who the token of the connection says it is; a connection with none is a plain client. */
   private who: Principal;
+  private named = false;
 
   constructor(
     private readonly socket: Bun.Socket<Connection>,
@@ -496,6 +497,11 @@ class Connection {
     return this.who;
   }
 
+  /** Does the principal come from a token? A plain client is told apart only by its connection, which a reconnect changes. */
+  get isNamed(): boolean {
+    return this.named;
+  }
+
   /**
    * Take the label the client gives itself, and the principal its token gave it; only once.
    * Returns false when it was said before. The label is only a name: it decides nothing.
@@ -505,6 +511,7 @@ class Connection {
     this.greeted = true;
     this.id = clientIdOf(`${label}#${this.number}`);
     this.who = principal ?? principalOf("client", this.id);
+    this.named = principal !== undefined;
     return true;
   }
 
@@ -2906,6 +2913,7 @@ class Niwa implements Host {
         const { action: target, input, operation } = message;
         return reply(connection, message.id, async () => {
           if (operation === undefined) return this.runAction(caller, target, input, true, message.reason);
+          this.operations.requireNamed(connection.isNamed, operation);
           const recovery = this.actionOf(target)?.recovery;
           return await this.operations.once(caller, operation, target, input, recovery, (id, began) =>
             this.runAction(caller, target, input, true, message.reason, { operation: id, began }),

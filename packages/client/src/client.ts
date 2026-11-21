@@ -790,6 +790,9 @@ class Client implements NiwaApi {
    *
    * The input is what the action's schema accepts, not what it produces: a branded or transformed
    * field is sent as it is written down, and the host's schema does the rest.
+   *
+   * An `operation` id names the call for a retry after a lost connection. The host knows the caller
+   * again only by its token, so a client without one is refused an operation id before the action runs.
    */
   async call<I, O, In = I>(action: ActionTarget<I, O, In>, input: NoInfer<In>, opts?: CallOptions): Promise<O> {
     const name = targetName(action);

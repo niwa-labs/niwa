@@ -23,7 +23,7 @@ import { CORE_TYPES, effectPossibleAfter, keptOutcome, newRecordId, stableJson, 
 /** A retry under an operation id the journal cannot answer as asked. */
 export class OperationRefusal extends Error {
   constructor(
-    readonly code: "operation-conflict" | "operation-unknown",
+    readonly code: "operation-conflict" | "operation-unknown" | "operation-unnamed",
     message: string,
   ) {
     super(message);
@@ -69,6 +69,16 @@ export class CallOperations {
   private readonly running = new Map<OperationId, { digest: string; answer: Promise<unknown> }>();
 
   constructor(private readonly host: OperationsHost) {}
+
+  /**
+   * An operation id is kept for the caller that gave it, and a retry comes on a new connection: it
+   * finds its first call only when the caller is the same after the reconnect, which only a token
+   * says. A plain client is refused before anything runs, instead of being run again as a stranger.
+   */
+  requireNamed(named: boolean, given: string): void {
+    if (named) return;
+    throw new OperationRefusal("operation-unnamed", `operation "${given}" needs a client that shows a token: without one a retry on a new connection is another caller and would run again`);
+  }
 
   /**
    * Make a call under the caller's operation id once. `run` makes the call under the id, and says
