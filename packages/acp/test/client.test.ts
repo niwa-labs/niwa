@@ -300,3 +300,29 @@ test("an error answer keeps its code, message and data, and is a refusal only wh
     expect(await answered(code, { why: "late" })).toEqual({ ok: false, error: "no", code, data: { why: "late" }, dispatch: "uncertain" });
   }
 });
+
+test("a call whose settle throws does not keep the others from being settled by the close", () => {
+  const { acp } = client();
+  const seen: RpcOutcome[] = [];
+  acp.send("a", {}, () => {
+    throw new Error("boom");
+  });
+  acp.send("b", {}, (outcome) => seen.push(outcome));
+  acp.send("c", {}, () => {
+    throw new Error("bang");
+  });
+  acp.send("d", {}, (outcome) => seen.push(outcome));
+  // The handlers' errors are reported once every call has its outcome.
+  expect(() => acp.close("the agent exited")).toThrow(AggregateError);
+  expect(seen).toEqual([
+    { ok: false, error: "the agent exited", dispatch: "uncertain" },
+    { ok: false, error: "the agent exited", dispatch: "uncertain" },
+  ]);
+  expect(acp.waiting).toBe(0);
+
+  const single = client().acp;
+  single.send("a", {}, () => {
+    throw new Error("boom");
+  });
+  expect(() => single.close("the agent exited")).toThrow("boom");
+});

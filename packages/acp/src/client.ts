@@ -341,6 +341,17 @@ export class AcpClient {
     this.#fragmentBytes = 0;
     const pending = [...this.#pending.values()];
     this.#pending.clear();
-    for (const settle of pending) settle({ ok: false, error: reason, dispatch: "uncertain" });
+    // Every call gets its outcome before a handler's failure is reported: one that throws must not
+    // leave the calls after it unsettled, for nothing would settle them any more.
+    const failures: unknown[] = [];
+    for (const settle of pending) {
+      try {
+        settle({ ok: false, error: reason, dispatch: "uncertain" });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "calls that were settled by the close failed");
   }
 }
