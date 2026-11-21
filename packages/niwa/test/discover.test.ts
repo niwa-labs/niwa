@@ -81,28 +81,26 @@ test("a kind whose binary is nowhere is not proposed, and is named as missing", 
   }
 });
 
-test("mcode and ncode both find `mcode` on the PATH, and each takes its own override", async () => {
+test("mcode and ncode find their own launchers and take independent overrides", async () => {
   const root = await tempDir("discover");
   try {
     const bin = join(root, "bin");
-    const shared = await fakeBinary(bin, "mcode", "0.8.0");
+    const upstream = await fakeBinary(bin, "mcode", "0.7.1");
+    const fork = await fakeBinary(bin, "ncode", "0.8.0");
     const other = await fakeBinary(join(root, "other"), "mcode", "0.7.4");
     await mkdir(join(root, ".minimax"), { recursive: true });
-    const home = join(root, ".minimax");
-
     const { proposals, missing } = await discover([mcodeKind, ncodeKind], { PATH: bin, HOME: root });
 
     expect(missing).toEqual([]);
     const found = new Map(proposals.map((proposal) => [String(proposal.kind), proposal]));
-    // Both kinds launch the program `mcode`: detection by name alone cannot tell the lineages apart.
-    expect(found.get("mcode")?.binary?.path).toBe(shared);
-    expect(found.get("ncode")?.binary?.path).toBe(shared);
+    expect(found.get("mcode")?.binary?.path).toBe(upstream);
+    expect(found.get("ncode")?.binary?.path).toBe(fork);
 
     const split = await discover([mcodeKind, ncodeKind], { PATH: bin, HOME: root, MCODE_BIN: other });
     const byKind = new Map(split.proposals.map((proposal) => [String(proposal.kind), proposal]));
     expect(byKind.get("mcode")?.binary?.path).toBe(other);
     expect(byKind.get("mcode")?.binary?.version).toBe("0.7.4");
-    expect(byKind.get("ncode")?.binary?.path).toBe(shared);
+    expect(byKind.get("ncode")?.binary?.path).toBe(fork);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

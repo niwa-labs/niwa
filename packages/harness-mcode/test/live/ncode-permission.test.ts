@@ -43,7 +43,7 @@ function controlOfKind(): SessionControl {
   return side;
 }
 
-test.skipIf(!(live && Bun.which("mcode")))(
+test.skipIf(!(live && Bun.which("ncode")))(
   "ncode in mode auto answers the NIWA_ID of its session, and a resume in a new process takes the mode again",
   async () => {
     const first = controlOfKind();

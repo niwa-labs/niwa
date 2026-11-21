@@ -111,7 +111,10 @@ function groupMembers(pgid: number): number[] {
   return found;
 }
 
-test.skipIf(!(live && Bun.which("mcode")))(
+const liveLineage = process.env["NIWA_MCODE_LINEAGE"] === "fork" ? "fork" : "upstream";
+const liveProgram = liveLineage === "fork" ? "ncode" : "mcode";
+
+test.skipIf(!(live && Bun.which(liveProgram)))(
   "the real agent starts, names the session, ends a turn, sends, resumes, answers by schema and leaves no process",
   async () => {
     dir = await tempDir("mcode-control");
@@ -120,7 +123,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       mode: "full",
       harness: harnessId("mcode-proof"),
       // The handshake refuses a binary of the other lineage: say which one is on the path.
-      lineage: process.env["NIWA_MCODE_LINEAGE"] === "fork" ? "fork" : "upstream",
+      lineage: liveLineage,
       model: "minimax/MiniMax-M3.1-Flash",
       turnTimeoutMs: 120_000,
     });

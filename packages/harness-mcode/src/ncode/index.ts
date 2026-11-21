@@ -2,7 +2,7 @@
  * The `ncode` harness kind: the owner's fork of MiniMax Code.
  *
  * It reads the files and speaks the protocol of `mcode` and shares its code. It differs in the
- * program (`mcode`, the launcher of the fork), in taking the working mode in `session/new` too,
+ * program (`ncode`, the launcher of the fork), in taking the working mode in `session/new` too,
  * and in marking tool calls with the permission decision, which its control side reports in the
  * signs of life.
  */
@@ -16,11 +16,11 @@ export type { McodeInstanceOptions as NcodeInstanceOptions, McodeOptions as Ncod
 /** The sides a fork instance has by default. */
 export const ncodeSides: SideCapabilities = minimaxSides();
 
-/** How the fork is found: its launcher (`mcode`), and the directory it keeps its sessions in. */
+/** How the fork is found: its launcher (`ncode`), and the directory it keeps its sessions in. */
 const NCODE_KIND: MinimaxKindSpec = {
   name: "ncode",
   lineage: "fork",
-  detect: { binary: "mcode", home: "~/.minimax" },
+  detect: { binary: "ncode", home: "~/.minimax" },
 };
 
 /** The kind "ncode". */

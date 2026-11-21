@@ -12,6 +12,7 @@ import type { HarnessDetection, InstanceOptions, KindCapabilities, SideCapabilit
 
 import { DEFAULT_BINARIES, MCODE_LAUNCH, mcodeControl } from "./control.ts";
 import type { McodeControlOptions, MinimaxLineage } from "./control.ts";
+import { versionedPrograms } from "../ncode/launcher.ts";
 import { durablePathOf } from "./durable.ts";
 import { DEFAULT_PROFILE, homeOfProfile } from "./paths.ts";
 import { McodeReading } from "./reading.ts";
@@ -106,17 +107,18 @@ export function minimaxKind(spec: MinimaxKindSpec) {
     home: (options) => homeOfProfile(profileNamed(options)),
     // Its program, the runtime the program runs on, and the home of its profile (sign-in, sessions,
     // logs, configuration). Its model endpoint depends on the profile: the installation names it (`net`).
-    // The published build ran a turn in a box closed to reading with this profile alone; the fork
-    // has not been run so yet.
     profile: {
-      status: spec.lineage === "upstream" ? "verified" : "admitted",
-      of: (options) => ({ bin }) => ({
-        read: [...bin(options.control?.binary ?? DEFAULT_BINARIES[spec.lineage]), ...bin("node")],
-        write: [options.home],
-      }),
+      status: spec.lineage === "fork" ? "verified" : "admitted",
+      of: (options) => (context) => {
+        const launcher = context.bin(options.control?.binary ?? DEFAULT_BINARIES[spec.lineage]);
+        const versioned = spec.lineage === "fork" && launcher[0] !== undefined
+          ? versionedPrograms(launcher[0], context)
+          : undefined;
+        return { read: [...launcher, ...(versioned ?? context.bin("node"))], write: [options.home] };
+      },
     },
     bind: (options) => ({
-      reading: new McodeReading({ harness: options.id, home: options.home }),
+      reading: new McodeReading({ harness: options.id, home: options.home, perSessionHistory: spec.lineage === "fork" }),
       control: mcodeControl({
         harness: options.id,
         ...(options.control ?? {}),

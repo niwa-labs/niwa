@@ -117,7 +117,7 @@ export type MinimaxLineage = "upstream" | "fork";
 /** The program of each lineage when the caller names none: a bare name, resolved through PATH. */
 export const DEFAULT_BINARIES: Readonly<Record<MinimaxLineage, string>> = {
   upstream: "mcode",
-  fork: "mcode",
+  fork: "ncode",
 };
 
 /**
@@ -1203,8 +1203,8 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       },
       "the initialize handshake",
     );
-    // The binary on the path is whichever `mcode` comes first, and both lineages are called that: the
-    // dialect niwa speaks is the one this side was set up for, so a binary of the other is refused.
+    // Executables can be overridden or installed under aliases. Refuse a binary that answers
+    // with the other lineage before sending it a session request.
     const answered = lineageOfReply(initialized);
     if (lineage === "fork" ? answered !== "fork" : answered === "fork") {
       throw unavailable(
