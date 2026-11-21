@@ -37,7 +37,7 @@ import {
   answeredBy,
   question,
   requestAsk,
-} from "@niwa-labs/requests";
+} from "@niwa-labs/requests/records";
 
 import {
   chatSchema,
