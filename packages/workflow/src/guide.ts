@@ -13,7 +13,9 @@ import { scriptTyping } from "./script-types.ts";
 export const HOW_TO_WRITE = `A workflow script is a file that exports, by default, the call workflow({ ... }, fn): what it declares, and
 the async function that is the script. It runs in a process of its own; every call it makes goes to the host and
 is a step of the run. The names below are globals: do not import them (z is zod). The generated declarations give
-their types.
+their types. A script may import packages: the record types, query builders and helpers plugins give scripts.
+
+  import { taskDone } from "@niwa-labs/tasks/records";
 
   export default workflow({
     name: "build",
@@ -23,7 +25,7 @@ their types.
     uses: ["task.*", "niwa.records.read"],
   }, async ({ text, minutes }) => {
     const task = await niwa.task.create({ ... }, { label: "create" });
-    const done = await wait("task.done", { filter: { task: task.id }, timeout: minutes + "m" });
+    const done = await wait(taskDone(task.id), { timeout: minutes + "m" });
     if ("timedOut" in done && !(await ask.confirm("Keep waiting?", { timeout: "10m" }))) return { task: "gave up" };
     await sleep("5m");
     return { task: task.id };
@@ -116,7 +118,7 @@ Time and the outside:
   does not know and a reference to another version of it.
 - The records entry of a plugin also gives query builders: taskDone(task.id) from "@niwa-labs/tasks/records" is the
   type and the filter of the end of one task. wait(taskDone(task.id), { from, timeout }) and
-  read.records(taskDone(task.id)) take it as they take a type. The flow entry of a plugin gives helpers that wait
+  read.records(taskDone(task.id)) take it as they take a type, and the check follows it to its type. The flow entry of a plugin gives helpers that wait
   as a step of the script: untilSessionEnded("end", { session, timeout }) from "@niwa-labs/history/flow".
 - sleep(ms | "5m") records its wake-up moment: a replay does not sleep from the start.
 - ask.choice(text, options, opts), ask.multi, ask.confirm(text, opts), ask.text(text, opts) and ask.form(text, zodObject, opts) ask the owner and give a typed value (the id picked, the ids, a boolean, a string, what the schema parses); opts is { timeout, label }. A cancel or no answer in time throws an error named AskCancelled or AskExpired, which the script may catch (it is never a false answer); uncaught, the run waits for a revision or a cancel, since a retry would get the same error.
