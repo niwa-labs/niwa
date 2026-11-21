@@ -336,6 +336,10 @@ interface Scheduled {
   due: Timestamp;
   /** True when the timer has fired and will not fire again. */
   done: boolean;
+  /** True while the firing of the due is being written. */
+  firing: boolean;
+  /** A failed write is not tried again before this moment. */
+  retryAt: number;
 }
 
 /**
@@ -509,8 +513,10 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
         if (stopped) return;
         let next: number | undefined;
         for (const entry of running) {
-          if (entry.done) continue;
-          if (next === undefined || entry.due < next) next = entry.due;
+          // A timer whose firing is being written is armed again when the write is over.
+          if (entry.done || entry.firing) continue;
+          const at = Math.max(entry.due, entry.retryAt);
+          if (next === undefined || at < next) next = at;
         }
         if (next === undefined) return;
         cancel = ctx.schedule(next, () => {
@@ -524,31 +530,49 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
        * The firings are written in parallel: a slow write must not hold up the other timers.
        * The promise it returns settles when those writes are done, so a clock that moves by
        * hand waits for them instead of running past them.
+       *
+       * A timer goes on to its next due only when its firing is confirmed in the journal: a write
+       * that failed leaves the due where it was, and it is tried again after a delay.
        */
       const tick = (): Promise<void> => {
         const now = ctx.now();
         const written: Array<Promise<void>> = [];
         for (const entry of running) {
-          if (entry.done || entry.due > now) continue;
+          if (entry.done || entry.firing || entry.due > now || entry.retryAt > now) continue;
           const due = entry.due;
           // The next due is computed from now, so a timer that was late does not queue up the
           // dues it missed: it fires once and continues from there.
           const following = nextDue(entry, now);
-          entry.due = following ?? due;
-          // A timer that fires once is done when it has fired. Its due stays a real moment:
-          // a state that holds "no due" would have to be written as null, and the journal
-          // would not read it back as the number it was.
-          entry.done = following === undefined;
-          // The rule of the timer decides about the dues that passed while the host was down.
-          if (first && entry.missed === "skip") {
+          const advance = (): void => {
+            entry.due = following ?? due;
+            // A timer that fires once is done when it has fired. Its due stays a real moment:
+            // a state that holds "no due" would have to be written as null, and the journal
+            // would not read it back as the number it was.
+            entry.done = following === undefined;
+            entry.retryAt = 0;
             remember(memory, [entry]);
+          };
+          // The rule of the timer decides about the dues that passed while the host was down; a
+          // due that is the moment of the start has not passed.
+          if (first && entry.missed === "skip" && due < now) {
+            advance();
             continue;
           }
           // The schedule is remembered after the firing is written: a host that dies in between
           // fires the same due again on its next start, with the same id, and that is one record.
+          entry.firing = true;
           written.push(
-            fire(ctx, entry, due, now, journal, firingIds, () => stopped).then(() => {
-              if (!stopped) remember(memory, [entry]);
+            fire(ctx, entry, due, now, journal, firingIds, () => stopped).then((confirmed) => {
+              entry.firing = false;
+              if (stopped) return;
+              // The timer is armed again whatever happens to its state: a timer that is not armed
+              // is a timer that is gone.
+              try {
+                if (confirmed) advance();
+                else entry.retryAt = ctx.now() + RETRY_MS;
+              } finally {
+                arm();
+              }
             }),
           );
         }
@@ -745,7 +769,7 @@ function build(def: TimerDef): Scheduled {
   if (missed !== "once" && missed !== "skip") {
     throw new Error(`timer "${id}" has an unknown missed rule "${String(missed)}"`);
   }
-  return { id, def, description: description.data, missed, due: timestamp(0), done: false };
+  return { id, def, description: description.data, missed, due: timestamp(0), done: false, firing: false, retryAt: 0 };
 }
 
 /** A period is a positive whole number of milliseconds: the moments it makes are timestamps. */
@@ -860,8 +884,8 @@ function remember(memory: StateHandle<Schedule>, running: readonly Scheduled[]):
 /**
  * Write the firing of one timer.
  *
- * The id is the one of the timer and the due, so a firing written twice is the same record. The scheduler
- * does not wait for the write: a slow write must not hold up the other timers.
+ * The id is the one of the timer and the due, so a firing written twice is the same record. The
+ * answer is whether the firing is in the journal: only then may the timer go on to its next due.
  */
 async function fire(
   ctx: ServiceContext,
@@ -871,19 +895,22 @@ async function fire(
   journal: JournalReader | undefined,
   ids: IdIndex<"firing">,
   stopped: () => boolean,
-): Promise<void> {
+): Promise<boolean> {
   const id = recordId(firingId(ids, entry.id, due));
   // The firing carries the moment it was written, so a second write of it is not the same
   // content: the one that is already in the journal is the firing, and it is not written again.
-  if (journal?.get(id) !== undefined) return;
+  if (journal?.get(id) !== undefined) return true;
   try {
     await ctx.emit(TimerFired, { timer: entry.id, due, at }, { id });
+    return true;
   } catch (error) {
-    if (error instanceof IntegrityError || stopped()) return; // written in the meantime, or the host is closing
+    if (error instanceof IntegrityError) return true; // written in the meantime
+    if (stopped()) return false; // the host is closing
     console.error(
-      `niwa: the timer "${entry.id}" could not write its firing: ${
+      `niwa: the timer "${entry.id}" could not write its firing, it is tried again: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
+    return false;
   }
 }
