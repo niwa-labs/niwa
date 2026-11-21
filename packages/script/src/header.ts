@@ -48,16 +48,67 @@ export function declarationOf(ts: typeof Ts, source: Ts.SourceFile): Declaration
   return undefined;
 }
 
-/** The value of one key of the declaration of a script, read from the text; absent when there is none. */
-export function declarationField(ts: typeof Ts, source: Ts.SourceFile, field: string): Ts.Expression | undefined {
-  const declaration = declarationOf(ts, source);
-  if (declaration === undefined || !("object" in declaration)) return undefined;
-  for (const property of declaration.object.properties) {
-    if (!ts.isPropertyAssignment(property)) continue;
-    const key = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) ? property.name.text : undefined;
-    if (key === field) return property.initializer;
+/** What the declaration of a script says about one of its keys, read in the order the keys are written. */
+export interface DeclaredField {
+  /** The value of the last key written under that name, when there is one. */
+  value?: Ts.Expression;
+  /**
+   * What may decide the key where the text does not: a spread, or a key computed at run time, written
+   * after the last key of that name. The expression is what the declaration takes it from.
+   */
+  unknown?: Ts.Expression;
+}
+
+/** The name a property is written under, when the text says it. */
+function keyOf(ts: typeof Ts, name: Ts.PropertyName): string | undefined {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  if (ts.isComputedPropertyName(name)) {
+    const written = bare(ts, name.expression);
+    return ts.isStringLiteral(written) || ts.isNoSubstitutionTemplateLiteral(written) ? written.text : undefined;
   }
   return undefined;
+}
+
+/**
+ * One key of the declaration of a script, read from the text. The last key of the name wins, as it does when the
+ * object is built; a spread or a computed key after it may replace it, so the text does not settle the value then.
+ */
+export function declaredField(ts: typeof Ts, source: Ts.SourceFile, field: string): DeclaredField | undefined {
+  const declaration = declarationOf(ts, source);
+  if (declaration === undefined || !("object" in declaration)) return undefined;
+  const declared: DeclaredField = {};
+  for (const property of declaration.object.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      declared.unknown = property.expression;
+    } else if (ts.isShorthandPropertyAssignment(property)) {
+      if (property.name.text === field) {
+        declared.value = property.name;
+        delete declared.unknown;
+      }
+    } else if (ts.isPropertyAssignment(property)) {
+      const key = keyOf(ts, property.name);
+      if (key === field) {
+        declared.value = property.initializer;
+        delete declared.unknown;
+      } else if (key === undefined && ts.isComputedPropertyName(property.name)) {
+        declared.unknown = property.name.expression;
+      }
+    }
+  }
+  return declared.value === undefined && declared.unknown === undefined ? undefined : declared;
+}
+
+/**
+ * The value of one key of the declaration of a script, read from the text; absent when there is none.
+ *
+ * A key that a later spread or computed key may replace is not the text of its value any more: what is
+ * returned then is the expression that may replace it, which is not a literal, so the readers refuse it.
+ * A key that is only shorthand (`{ on }`) is its name, an identifier.
+ */
+export function declarationField(ts: typeof Ts, source: Ts.SourceFile, field: string): Ts.Expression | undefined {
+  const declared = declaredField(ts, source, field);
+  if (declared === undefined) return undefined;
+  return declared.value === undefined ? undefined : (declared.unknown ?? declared.value);
 }
 
 /** A value written as a literal in the text: text, a number, a boolean, null, a list or an object of them. */
@@ -104,10 +155,14 @@ export type On = { subscriptions: Array<Subscription & { line: number; column: n
  * running the script.
  */
 export function onOf(ts: typeof Ts, source: Ts.SourceFile): On | undefined {
-  const field = declarationField(ts, source, "on");
-  if (field === undefined) return undefined;
-  const list = bare(ts, field);
+  const declared = declaredField(ts, source, "on");
+  if (declared === undefined) return undefined;
   const shape = "on must be a list of record types, or of { type, filter } with the filter written as a literal";
+  // Something the text does not settle may decide `on`: report that, never a trigger the script may not have.
+  if (declared.unknown !== undefined) {
+    return { bad: { ...placeOf(ts, source, declared.unknown), message: "on is not settled by the declaration: a spread or a computed key may decide it. " + shape } };
+  }
+  const list = bare(ts, declared.value as Ts.Expression);
   if (!ts.isArrayLiteralExpression(list)) return { bad: { ...placeOf(ts, source, list), message: shape } };
   const subscriptions: Array<Subscription & { line: number; column: number }> = [];
   for (const element of list.elements) {
