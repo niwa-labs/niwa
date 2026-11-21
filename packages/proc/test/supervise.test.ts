@@ -102,3 +102,26 @@ test("a command whose whole output was read says nothing was cut off", async () 
   expect(ended.exit).toBe(0);
   expect(ended.outputCut).toBe(false);
 });
+
+test("the end of a command is when its process ends, not when the box has cleaned up after it", async () => {
+  const dir = workDir();
+  const options = { timeout: 300, killGraceMs: 100, drainMs: 150 };
+  for (const cleanup of ["slow", "failing"] as const) {
+    const kept = store(() => {});
+    const capture = new OutputCapture({ artifacts: kept.store, secrets: [], limit: 1 << 20, tailBytes: 16 });
+    const real = launchPlain(["/bin/sh", "-c", "echo hi"], dir, ENV);
+    const child = {
+      ...real,
+      ended: real.exited,
+      // The clean-up of the box comes after the process is gone, and takes longer than the command had.
+      exited: real.exited.then(async (code) => {
+        await Bun.sleep(600);
+        if (cleanup === "failing") throw new Error("the settings could not be removed");
+        return code;
+      }),
+    };
+    const ended = await supervise(child, capture, options);
+    expect(ended.outcome).toBe("exited");
+    expect(ended.exit).toBe(0);
+  }
+});

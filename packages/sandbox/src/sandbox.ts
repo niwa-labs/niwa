@@ -30,6 +30,11 @@ export interface LaunchedBox {
    * when the clean-up fails: the process is gone all the same, and the caller must not take it for running.
    */
   readonly exited: Promise<number>;
+  /**
+   * The exit code as soon as the process is gone, before the sandbox has cleaned up after it. Absent
+   * where the sandbox has no step of its own after the process: `exited` is then the same moment.
+   */
+  readonly ended?: Promise<number>;
   /** Signals the wrapper's process (SIGTERM by default), as a child process's `kill` does. */
   kill(signal?: NodeJS.Signals | number): void;
 }

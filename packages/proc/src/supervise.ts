@@ -98,8 +98,9 @@ export async function supervise(child: LaunchedBox, capture: OutputCapture, opti
     killer = setTimeout(() => signalGroup(child.pid, "SIGKILL"), options.killGraceMs);
   }, options.timeout);
 
-  // A box whose clean-up failed has still ended the process: the output is what it was.
-  const code = await child.exited.then(
+  // The command ends with its process. A box that is slow to clean up, or fails to, after the
+  // process is gone has not changed how the command ended: the clean-up is waited for apart.
+  const code = await (child.ended ?? child.exited).then(
     (value) => value,
     () => null,
   );
@@ -115,6 +116,7 @@ export async function supervise(child: LaunchedBox, capture: OutputCapture, opti
   ]);
   clearTimeout(drain);
   for (const reader of readers) void reader.cancel().catch(() => {});
+  await child.exited.catch(() => undefined);
   if (state.failure !== undefined) throw state.failure.error;
 
   return { outcome: timedOut ? "timed-out" : "exited", exit: timedOut ? null : code, durationMs: Date.now() - started, outputCut: !drained || state.broken };

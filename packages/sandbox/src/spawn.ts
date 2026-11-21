@@ -60,7 +60,8 @@ export function spawnBox(
     }
     throw error;
   }
-  const exited = child.exited.then(async (code) => {
+  const ended = child.exited;
+  const exited = ended.then(async (code) => {
     await cleanup();
     return code;
   });
@@ -70,6 +71,7 @@ export function spawnBox(
     stdout: child.stdout,
     stderr: child.stderr,
     exited,
+    ended,
     kill: (signal) => child.kill(signal),
   };
 }
