@@ -117,11 +117,17 @@ async function exists(path: string): Promise<boolean> {
  * addressed by that hash, beside the file so that its relative imports still resolve; Bun keeps a
  * module under its whole specifier, so the same path would also give the code it loaded the first
  * time. A relative path is taken from the working directory of the host.
+ *
+ * When a hash is expected, the bytes are checked against it first: a file that is not the approved
+ * one is refused before a copy of it is written and before any of its code runs.
  */
-export async function loadPluginModule(module: string): Promise<LoadedPlugin> {
+export async function loadPluginModule(module: string, expected?: string): Promise<LoadedPlugin> {
   const path = isAbsolute(module) ? module : resolve(process.cwd(), module);
   const bytes = await readFile(path);
   const hash = createHash("sha256").update(bytes).digest("hex");
+  if (expected !== undefined && hash !== expected) {
+    throw new Error(`${module} is not the file that was approved: it is ${hash}, the call has ${expected}`);
+  }
   const copy = copyPathOf(path, hash);
   if (!(await exists(copy))) {
     // Written aside and renamed in: a load at the same time never imports half a file.
@@ -170,12 +176,9 @@ export function pluginInstallAction(deps: PluginInstallDeps): Action<z.infer<typ
     target: (input) => input.plugin,
     async run(input, ctx) {
       const named = pluginName(input.plugin);
-      const loaded = await loadPluginModule(input.module);
+      const loaded = await loadPluginModule(input.module, input.hash);
       if (loaded.plugin.name !== named) {
         throw new Error(`${input.module} exports the plugin "${loaded.plugin.name}", not "${named}"`);
-      }
-      if (input.hash !== undefined && loaded.hash !== input.hash) {
-        throw new Error(`${input.module} is not the file that was approved: it is ${loaded.hash}, the call has ${input.hash}`);
       }
       deps.install(loaded.plugin);
       const module = isAbsolute(input.module) ? input.module : resolve(process.cwd(), input.module);
