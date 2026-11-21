@@ -15,6 +15,8 @@ export type WorkState =
   | "waiting"
   | "done"
   | "failed"
+  /** The call ended without a confirmed result. */
+  | "unknown"
   /** Stopped by someone before it finished. */
   | "stopped"
   /** Will not run: a condition or the plan left it out. */
@@ -28,6 +30,7 @@ export const WORK_STATE_LABEL: Readonly<Record<WorkState, string>> = {
   waiting: "Waiting",
   done: "Done",
   failed: "Failed",
+  unknown: "Outcome unknown",
   stopped: "Stopped",
   skipped: "Skipped",
   reused: "Reused",
@@ -35,7 +38,7 @@ export const WORK_STATE_LABEL: Readonly<Record<WorkState, string>> = {
 
 /** Whether the work can still change by itself. */
 export function isSettled(state: WorkState): boolean {
-  return state === "done" || state === "failed" || state === "stopped" || state === "skipped" || state === "reused";
+  return state === "done" || state === "failed" || state === "unknown" || state === "stopped" || state === "skipped" || state === "reused";
 }
 
 const RING: Readonly<Record<WorkState, string>> = {
@@ -44,6 +47,7 @@ const RING: Readonly<Record<WorkState, string>> = {
   waiting: "border-state-waiting bg-state-waiting/30",
   done: "border-state-done bg-state-done",
   failed: "border-state-failed bg-state-failed",
+  unknown: "border-state-waiting border-dashed",
   stopped: "border-state-idle bg-state-idle",
   skipped: "border-state-idle opacity-50",
   reused: "border-state-done",

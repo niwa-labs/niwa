@@ -10,14 +10,14 @@ const STEP_STATE: Readonly<Record<Step["status"], WorkState>> = {
   paused: "waiting",
   completed: "done",
   failed: "failed",
-  unknown: "pending",
+  unknown: "unknown",
   skipped: "skipped",
   cancelled: "stopped",
 };
 
 export function stepState(step: Step): WorkState {
-  // A step a later start of the run took is shown as taken from the run before, whatever it ended as.
-  return step.reused === true ? "reused" : STEP_STATE[step.status];
+  // Reusing an unconfirmed outcome leaves its effect uncertain.
+  return step.reused === true && step.status !== "unknown" ? "reused" : STEP_STATE[step.status];
 }
 
 /** How long a step took, in milliseconds; undefined while it has not ended. */

@@ -50,10 +50,14 @@ function inside(f: Flat, target: PlanTarget): boolean {
   return f.phase === target.phase && (target.step === undefined || f.step.id === target.step);
 }
 
+function selectedSteps(phases: readonly PlanPhase[], target: PlanTarget): readonly PlanStep[] {
+  const phase = phases.find((one) => one.id === target.phase);
+  return phase?.steps.filter((step) => target.step === undefined || step.id === target.step) ?? [];
+}
+
 /** Display order gives no information about which calls a workflow can reuse in another branch. */
 export function recomputeImpact(phases: readonly PlanPhase[], target: PlanTarget): RecomputeImpact {
-  const phase = phases.find((one) => one.id === target.phase);
-  const selected = phase?.steps.filter((step) => target.step === undefined || step.id === target.step) ?? [];
+  const selected = selectedSteps(phases, target);
   return { selected: selected.length, flagged: selected.filter((step) => step.effect).length };
 }
 
@@ -87,7 +91,8 @@ export function describeRecompute(phases: readonly PlanPhase[], target: PlanTarg
   const title = targetTitle(phases, target);
   const selection = target.step === undefined ? `Recompute “${title}” (${steps(selected)} in this phase).` : `Recompute “${title}”.`;
   const effects = flagged > 0 ? ` ${steps(flagged)} in this selection ${flagged === 1 ? "is" : "are"} marked as having an effect.` : "";
-  return `${selection}${effects} Previously sent messages or other external changes may be repeated.`;
+  const uncertainty = selectedSteps(phases, target).some((step) => step.state === "unknown") ? " A selected step has an unknown outcome." : "";
+  return `${selection}${effects}${uncertainty} Previously sent messages or other external changes may be repeated.`;
 }
 
 export function describeStop(phases: readonly PlanPhase[], target: PlanTarget): string {

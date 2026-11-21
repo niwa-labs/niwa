@@ -3,6 +3,7 @@
 import { expect, test } from "bun:test";
 
 import { describeRecompute } from "@niwa-labs/ui-kit";
+import { decide } from "../src/revise.ts";
 import type { Inspection, Step } from "../src/cockpit/actions.ts";
 import { planOf, recomputeOf, stepDuration, stepState, STEPS_PHASE, stopOf } from "../src/cockpit/plan.ts";
 
@@ -27,16 +28,27 @@ test("a step status is shown as the state of a ring", () => {
   expect(stepState(step("a", "paused"))).toBe("waiting");
   expect(stepState(step("a", "completed"))).toBe("done");
   expect(stepState(step("a", "cancelled"))).toBe("stopped");
-  expect(stepState(step("a", "unknown"))).toBe("pending");
+  expect(stepState(step("a", "unknown"))).toBe("unknown");
+  expect(stepState(step("a", "unknown", { reused: true }))).toBe("unknown");
 });
 
 test("selecting a send with an unknown outcome warns about repeating its effect", () => {
   const send = step("Send", "unknown", { effect: true });
-  const inspected = inspection({ steps: [send] });
+  const later = step("Later", "completed", { effect: true, key: "left/after" });
+  const sibling = step("Sibling", "completed", { key: "right/other" });
+  const inspected = inspection({ steps: [send, later, sibling] });
   const target = { phase: "steps", step: send.id };
   const phases = planOf(inspected, (one) => ({ ...plain(one), effect: one.effect }));
-  expect(recomputeOf(inspected, target)).toEqual({ run: inspected.run, from: send.key });
-  expect(describeRecompute(phases, target)).toContain("Previously sent messages or other external changes may be repeated.");
+  const resume = recomputeOf(inspected, target);
+  expect(resume).toEqual({ run: inspected.run, from: send.key });
+  const confirmation = describeRecompute(phases, target);
+  expect(confirmation).toContain("unknown outcome");
+  expect(confirmation).toContain("Previously sent messages or other external changes may be repeated.");
+  for (const [one, after, expected] of [[send, false, false], [later, true, true], [sibling, false, true]] as const) {
+    const call = { key: one.key, action: one.action, input: {} };
+    const previous = { ...call, finished: one.status === "completed", recovery: one.effect ? "do-not-repeat" as const : "repeat" as const, invocation: "previous" };
+    expect(decide(previous, call, { after, recompute: resume.from === one.key }).taken).toBe(expected);
+  }
 });
 
 test("how long a step took is known once it ended", () => {
