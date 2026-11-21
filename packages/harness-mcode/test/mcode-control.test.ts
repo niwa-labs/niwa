@@ -1402,3 +1402,22 @@ for (const [label, make, expected] of [
     }
   });
 }
+
+test("a start that is still launching its process when the control side is disposed does not complete", async () => {
+  control = await fakeControl();
+  const before = directChildren();
+  const started = control.start({ prompt: promptFromText(""), cwd: dir });
+  const outcome = started.then(
+    () => "started",
+    (error: unknown) => error,
+  );
+  await control.dispose();
+  const result = await outcome;
+  expect(result).not.toBe("started");
+  expect(result).toMatchObject({ code: "Unavailable" });
+  // Nothing it launched is left running.
+  const deadline = Date.now() + 5_000;
+  const leftover = () => directChildren().filter((child) => !before.some((old) => old.pid === child.pid));
+  while (leftover().length > 0 && Date.now() < deadline) await Bun.sleep(50);
+  expect(leftover()).toEqual([]);
+});

@@ -682,6 +682,8 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   const sessions = new Map<string, AcpSession>();
   /** Every child this side started and has not seen close, so none can be forgotten. */
   const owned = new Set<AcpSession>();
+  /** The processes being started: not owned yet, so a dispose waits for them. */
+  const launching = new Set<Promise<AcpSession>>();
   let disposed = false;
 
   /**
@@ -983,13 +985,17 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
 
   /** Signal the child's process group: the child leads it, so the signal reaches what it started. */
   function signalGroup(session: AcpSession, signal: NodeJS.Signals): void {
-    const pid = session.child.pid;
+    signalChild(session.child, signal);
+  }
+
+  function signalChild(child: AgentProcess, signal: NodeJS.Signals): void {
+    const pid = child.pid;
     if (pid === undefined) return;
     try {
       process.kill(-pid, signal);
     } catch {
       try {
-        session.child.kill(signal);
+        child.kill(signal);
       } catch {
         // The group is already gone.
       }
@@ -1003,6 +1009,16 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
    * another's.
    */
   async function startProcess(cwd: string, plan: Pick<StartOptions, "env" | "box">): Promise<AcpSession> {
+    const launch = launchProcess(cwd, plan);
+    launching.add(launch);
+    try {
+      return await launch;
+    } finally {
+      launching.delete(launch);
+    }
+  }
+
+  async function launchProcess(cwd: string, plan: Pick<StartOptions, "env" | "box">): Promise<AcpSession> {
     const args = ["acp"];
     if (options.profile !== undefined) args.push("--profile", options.profile);
     const child = await spawnAgent({
@@ -1015,6 +1031,13 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       box: plan.box,
       needs: mcodeNeeds(home),
     });
+    if (disposed) {
+      // The control side was closed while the process was being started: nothing owns it yet, so it goes here.
+      const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+      signalChild(child, "SIGKILL");
+      await Promise.race([closed, sleep(stopGraceMs)]);
+      throw unavailable("start", "the control side is closed");
+    }
     const session = new AcpSession(child, cwd, turnTimeoutMs, cancelGraceMs);
     owned.add(session);
 
@@ -1576,6 +1599,8 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
 
     async dispose(): Promise<void> {
       disposed = true;
+      // A start that is still launching its process reaps it itself once the process exists.
+      await Promise.allSettled([...launching]);
       await Promise.all([...owned].map((session) => stopSession(session)));
       owned.clear();
       sessions.clear();
