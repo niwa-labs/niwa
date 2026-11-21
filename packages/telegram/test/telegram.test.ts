@@ -11,7 +11,7 @@
 
 import { expect, test } from "bun:test";
 
-import { Address, record, seq } from "@niwa-labs/core";
+import { Address, NotSent, action, record, seq } from "@niwa-labs/core";
 import type { Caller, HandlerId, InvocationId, StoredRecord } from "@niwa-labs/core";
 import { messageSend, messages } from "@niwa-labs/messages";
 import { messageSendRef } from "@niwa-labs/messages/records";
@@ -479,7 +479,7 @@ test("telegram: the hook steps an action as the owner, so what it sends is the o
   try {
     const surface = telegram(options(fake.base), {
       toAgent: async (text, ctx) => {
-        await ctx.step(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text } });
+        return ctx.step.outcome(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text } });
       },
     });
     host.use(messages({ bind: surface.bind() }));
@@ -847,7 +847,7 @@ test("telegram: a delivery that throws asks the owner, and retry delivers exactl
     const surface = telegram(options(fake.base), {
       toAgent: async (text) => {
         calls += 1;
-        if (calls === 1) throw new Error("the agent is down");
+        if (calls === 1) throw new NotSent("the agent is down");
         delivered.push(text);
       },
     });
@@ -901,12 +901,94 @@ test("telegram: a delivery cut off by a restart asks the owner and is not resent
     second.use(resumed);
     await second.serve();
     await eventually(() => fake.sent.length === 1, 5_000, "the owner should be asked");
-    expect(fake.sent[0]?.text).toContain("NOT delivered");
+    // The agent may have the message already: the owner is not told that it was not delivered.
+    expect(fake.sent[0]?.text).not.toContain("NOT delivered");
+    expect(fake.sent[0]?.text).toContain("may already have reached the agent");
     expect(fake.sent[0]?.text).toContain("old message");
+    expect(fake.sent[0]?.text).toContain("repeats");
     await Bun.sleep(300);
     expect(delivered).toEqual([]);
     await second.close();
   } finally {
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+/** An action that fails the way the one a hook calls can: sure that nothing went, or not. */
+function failing(name: string, sure: boolean): ReturnType<typeof plugin> {
+  return plugin(`test-${name}`, (api) => {
+    api.action(
+      action(`test.${name}`, {
+        description: "Fails.",
+        input: z.object({ text: z.string() }),
+        output: z.object({}),
+        recovery: "do-not-repeat",
+        effect: "write",
+        world: "local",
+        run: async () => {
+          throw sure ? new NotSent("the agent is down") : new Error("the connection broke");
+        },
+      }),
+    );
+  });
+}
+
+test("telegram: a call of the hook that fails reaches the owner, who is told whether the agent may have it", async () => {
+  for (const sure of [true, false]) {
+    const home = await tempHome();
+    const fake = fakeTelegram();
+    const host = createNiwa({ home: home.path });
+    const name = sure ? "tell-sure" : "tell-unsure";
+
+    try {
+      const surface = telegram(options(fake.base), {
+        toAgent: async (text, ctx) => ctx.step.outcome(`test.${name}`, { text }),
+      });
+      host.use(requests({ bind: surface.bind() }));
+      host.use(failing(name, sure));
+      host.use(surface);
+      await host.serve();
+      fake.push(messageUpdate(850, OWNER, "tell Rin to deploy"));
+      await eventually(() => fake.sent.length === 1, 5_000, "the owner should be asked");
+      const text = fake.sent[0]?.text ?? "";
+      expect(text).toContain("tell Rin to deploy");
+      if (sure) {
+        expect(text).toContain("NOT delivered");
+        expect(fake.sent[0]?.reply_markup?.inline_keyboard.flat().map((b) => b.text)).toEqual(["retry", "cancel"]);
+      } else {
+        expect(text).not.toContain("NOT delivered");
+        expect(text).toContain("may already have reached the agent");
+        expect(fake.sent[0]?.reply_markup?.inline_keyboard.flat().map((b) => b.text)).toEqual(["send again", "cancel"]);
+      }
+    } finally {
+      await host.close();
+      fake.stop();
+      await home.cleanup();
+    }
+  }
+}, 30_000);
+
+test("telegram: a hook that throws a plain error may have delivered, and the owner is told so", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    const surface = telegram(options(fake.base), {
+      toAgent: async () => {
+        throw new Error("the connection broke");
+      },
+    });
+    host.use(requests({ bind: surface.bind() }));
+    host.use(surface);
+    await host.serve();
+    fake.push(messageUpdate(860, OWNER, "restart the server"));
+    await eventually(() => fake.sent.length === 1, 5_000, "the owner should be asked");
+    expect(fake.sent[0]?.text).toContain("may already have reached the agent");
+    expect(fake.sent[0]?.text).not.toContain("NOT delivered");
+  } finally {
+    await host.close();
     fake.stop();
     await home.cleanup();
   }

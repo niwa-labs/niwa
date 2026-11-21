@@ -47,7 +47,7 @@ test("a message of the owner's chat is said to the agent as the owner", async ()
     { token: "test-token", owner: OWNER, speaksFor: "owner", bot: fake.bot, retryDelay: 20 },
     {
       toAgent: async (text, ctx) => {
-        await ctx.step(agentTell, { agent: "rin", text });
+        return ctx.step.outcome(agentTell, { agent: "rin", text });
       },
     },
   );

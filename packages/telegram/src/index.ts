@@ -21,7 +21,7 @@
  */
 
 import { NotSent, OptionIdSchema, action, client, optionsOf, owner, questionLines, record } from "@niwa-labs/core";
-import type { Action, ActionContext, Answer, Caller, JournalReader, RecordType, SpeaksFor } from "@niwa-labs/core";
+import type { Action, ActionContext, Answer, Caller, JournalReader, Outcome, RecordType, SpeaksFor } from "@niwa-labs/core";
 import { bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi, ServiceContext } from "@niwa-labs/plugin";
 import { z } from "zod";
@@ -65,13 +65,18 @@ export const TELEGRAM_POST_REQUEST = "telegram.post-request";
 const RETRY = OptionIdSchema.parse("retry");
 const CANCEL = OptionIdSchema.parse("cancel");
 
-/** What the owner is asked when his message did not reach the agent. */
-function undelivered(text: string) {
+/**
+ * What the owner is asked when his message did not reach the agent, or may not have.
+ *
+ * `mayHaveArrived` says whether the agent may already have taken the message: a delivery that was
+ * cut off, or that failed after it began, leaves that open, and a retry then repeats the command.
+ */
+function undelivered(text: string, mayHaveArrived: boolean) {
   return question("telegram.undelivered", {
     kind: "choice",
-    title: undeliveredText(text),
+    title: undeliveredText(text, mayHaveArrived),
     options: [
-      { id: RETRY, label: "retry", flavor: "plain" },
+      { id: RETRY, label: mayHaveArrived ? "send again" : "retry", flavor: "plain" },
       { id: CANCEL, label: "cancel", flavor: "plain" },
     ],
   });
@@ -80,13 +85,29 @@ function undelivered(text: string) {
 /** How much of the message the question quotes. */
 const QUOTE_LENGTH = 80;
 
-/** The words that tell the owner his message was not delivered, with the beginning of it. */
-function undeliveredText(text: string): string {
+/** The words that tell the owner what became of his message, with the beginning of it. */
+function undeliveredText(text: string, mayHaveArrived: boolean): string {
   const flat = text.replace(/\s+/g, " ").trim();
   // By code points, so an emoji is never cut in half.
   const points = Array.from(flat);
   const quote = points.length > QUOTE_LENGTH ? `${points.slice(0, QUOTE_LENGTH).join("")}...` : flat;
-  return `Your message was NOT delivered to the agent: "${quote}". Retry the delivery or cancel it.`;
+  return mayHaveArrived
+    ? `Your message may already have reached the agent: "${quote}". Sending it again repeats it, and the agent may act on it twice. Send it again only if you know it did not arrive, or cancel.`
+    : `Your message was NOT delivered to the agent: "${quote}". Retry the delivery or cancel it.`;
+}
+
+/** Whether a delivery that ended so may nevertheless have reached the agent. */
+function mayHaveArrived(outcome: Outcome<unknown>): boolean {
+  switch (outcome.status) {
+    case "completed":
+    case "unknown":
+      return true;
+    case "failed":
+      return outcome.effectPossible;
+    case "denied":
+    case "cancelled":
+      return false;
+  }
 }
 
 /** The name of the plugin: the handlers of the surface are the calls the owner makes here. */
@@ -181,12 +202,18 @@ export interface TelegramHooks {
    * Send a message to the owner's main agent, when the messages plugin is present.
    *
    * The hook runs inside the action that delivers the message, with its context. A call it makes
-   * with `ctx.step` is made by this surface, so with `speaksFor` it is the owner's, as long as the
-   * composition gives the modules that bind callers the binding of this instance.
+   * with `ctx.step.outcome` is made by this surface, so with `speaksFor` it is the owner's, as long
+   * as the composition gives the modules that bind callers the binding of this instance.
+   *
+   * It returns what became of the delivery, the outcome of its last call: a call that failed, was
+   * denied or was cut short is reported to the owner, who is asked whether to send again. A hook
+   * that calls with `ctx.step` instead pauses the invocation on any outcome but success, and the
+   * owner is never told. A hook that returns nothing delivered; one that throws did not, though it
+   * may have got part of the way.
    *
    * Without it the message stays in the journal and the agent reads it there.
    */
-  toAgent?: (text: string, ctx: ActionContext) => Promise<void>;
+  toAgent?: (text: string, ctx: ActionContext) => Promise<Outcome<unknown> | void>;
 }
 
 /** The id of the record of an incoming message: the update id, so a repeat is harmless. */
@@ -468,8 +495,19 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     effect: "write",
     world: "local",
     run: async (input, ctx) => {
-      await toAgent?.(input.text, ctx);
-      return {};
+      const outcome = await toAgent?.(input.text, ctx);
+      if (outcome === undefined || outcome.status === "completed") return {};
+      // The outcome of the call says whether the agent may have the message, and so does the
+      // outcome of this action: it is what the owner is told.
+      switch (outcome.status) {
+        case "denied":
+        case "cancelled":
+          throw new NotSent(outcome.reason);
+        case "failed":
+          throw outcome.effectPossible ? new Error(outcome.error) : new NotSent(outcome.error);
+        case "unknown":
+          throw new Error("it is not known whether the agent took the message");
+      }
     },
   });
 
@@ -526,7 +564,9 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
         if (outcome.status === "completed") return;
         let answer: Answer;
         try {
-          ({ answer } = answeredBy(await step(requestAsk, { to: { kind: "owner" }, ...undelivered(data.text) })));
+          ({ answer } = answeredBy(
+            await step(requestAsk, { to: { kind: "owner" }, ...undelivered(data.text, mayHaveArrived(outcome)) }),
+          ));
         } catch (error) {
           if (error instanceof RequestCancelled) return;
           throw error;
