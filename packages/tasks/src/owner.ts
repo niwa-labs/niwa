@@ -10,6 +10,7 @@
 
 import { z } from "zod";
 
+import { CatchableError } from "@niwa-labs/core";
 import type { Address } from "@niwa-labs/core";
 import type { ResultSchema } from "@niwa-labs/messages/records";
 
@@ -42,13 +43,29 @@ export type TaskState =
       readonly outcome: TaskOutcome;
     };
 
-/** A refusal: a command that breaks a rule. */
-export class TaskRefusal extends Error {
+/** Why a command was refused. */
+export type TaskRefusalCode =
+  | "unbound"
+  | "not-asker"
+  | "exists"
+  | "unknown"
+  | "done"
+  | "not-responsible"
+  | "result-schema"
+  | "result-invalid"
+  | "no-task"
+  | "not-an-executor";
+
+/**
+ * A refusal: a command that breaks a rule. Nothing was written, so it is the caller's to catch
+ * (a result that does not fit is corrected and sent again), not a failed step.
+ */
+export class TaskRefusal extends CatchableError {
   override name = "TaskRefusal";
   /** The code of the refusal, so a caller can tell one from another. */
-  readonly code: string;
+  override readonly code: TaskRefusalCode;
 
-  constructor(code: string, message: string) {
+  constructor(code: TaskRefusalCode, message: string) {
     super(message);
     this.code = code;
   }
