@@ -7,13 +7,16 @@
 //   1. a process writes inside `write` and fails outside it
 //   2. a process reaches a host in `net` and does not reach one that is not listed (GitLab)
 //   3. the process gets the listed environment and not the host's
+//   4. a relative `write` is read from the cwd, where the wrapper runs
+//   5. a detached box leads its own process group, and a group signal ends what it started
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { boxSpec, nono, srt } from "@niwa-labs/sandbox";
 import type { Sandbox } from "@niwa-labs/sandbox";
@@ -24,6 +27,15 @@ async function run(sandbox: Sandbox, spec: Parameters<Sandbox["launch"]>[0], scr
   const box = await sandbox.launch(spec, ["/bin/sh", "-c", script]);
   const [stdout, stderr, code] = await Promise.all([new Response(box.stdout).text(), new Response(box.stderr).text(), box.exited]);
   return { stdout, stderr, code };
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const CURL = (url: string) => `curl -sS -m 10 -o /dev/null -w '%{http_code}' ${url}`;
@@ -74,6 +86,41 @@ for (const sandbox of [srt(), nono()]) {
         expect(out.stdout.trim()).toBe("k3f9:none");
       } finally {
         delete process.env.NIWA_HOST_ONLY;
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    test.skipIf(!present)("a relative `write` is read from the cwd", async () => {
+      // Not under tmpdir: nono leaves the temp area writable on its own.
+      const cwd = await realpath(await mkdtemp(join(homedir(), ".niwa-box-rel-")));
+      try {
+        await mkdir(join(cwd, "out"));
+        const spec = boxSpec({ cwd, write: ["out"], env: { PATH: "/usr/bin:/bin", HOME: homedir() } });
+        expect((await run(sandbox, spec, "echo x > out/a")).code).toBe(0);
+        expect(await readFile(join(cwd, "out", "a"), "utf8")).toBe("x\n");
+        expect((await run(sandbox, spec, "echo x > b")).code).not.toBe(0);
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    test.skipIf(!present)("a detached box leads its own group, and a group signal ends what it started", async () => {
+      const cwd = await realpath(await tempDir("box-group"));
+      let grandchild = 0;
+      try {
+        const spec = boxSpec({ cwd, env: { PATH: "/usr/bin:/bin", HOME: homedir() } });
+        const box = await sandbox.launch(spec, ["/bin/sh", "-c", "sleep 30 & echo $!; wait"], { detached: true });
+        const group = await Bun.$`ps -o pgid= -p ${box.pid}`.text();
+        expect(Number(group.trim())).toBe(box.pid);
+        const reader = box.stdout.getReader();
+        grandchild = Number(new TextDecoder().decode((await reader.read()).value).trim());
+        expect(grandchild).toBeGreaterThan(0);
+        process.kill(-box.pid, "SIGKILL");
+        await box.exited;
+        for (let tries = 0; tries < 100 && alive(grandchild); tries++) await sleep(20);
+        expect(alive(grandchild)).toBe(false);
+      } finally {
+        if (grandchild > 0 && alive(grandchild)) process.kill(grandchild, "SIGKILL");
         await rm(cwd, { recursive: true, force: true });
       }
     });

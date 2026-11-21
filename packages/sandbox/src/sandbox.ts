@@ -25,9 +25,19 @@ export interface LaunchedBox {
   readonly stdin: { write(data: string | Uint8Array): unknown; end(): unknown };
   readonly stdout: ReadableStream<Uint8Array>;
   readonly stderr: ReadableStream<Uint8Array>;
-  /** The exit code; resolves once the process is gone and the sandbox has cleaned up after it. */
+  /**
+   * The exit code; resolves once the process is gone and the sandbox has cleaned up after it. Rejects
+   * when the clean-up fails: the process is gone all the same, and the caller must not take it for running.
+   */
   readonly exited: Promise<number>;
-  kill(): void;
+  /** Signals the wrapper's process (SIGTERM by default), as a child process's `kill` does. */
+  kill(signal?: NodeJS.Signals | number): void;
+}
+
+/** How a box's process is started, besides what the spec says. */
+export interface LaunchOptions {
+  /** The process leads its own process group, so a signal to the group reaches everything it started. */
+  readonly detached?: boolean;
 }
 
 export interface Sandbox<M extends SandboxManifest = SandboxManifest> {
@@ -38,7 +48,7 @@ export interface Sandbox<M extends SandboxManifest = SandboxManifest> {
   /** Pure and deterministic: the same spec gives the same manifest. Recorded in the journal before launch. */
   manifest(spec: BoxSpec): M;
   /** Starts `argv` inside the box. Throws SandboxUnavailable when the sandbox cannot run here. */
-  launch(spec: BoxSpec, argv: readonly string[]): Promise<LaunchedBox>;
+  launch(spec: BoxSpec, argv: readonly string[], options?: LaunchOptions): Promise<LaunchedBox>;
 }
 
 /** A session that needs a sandbox and has none available must not start. */

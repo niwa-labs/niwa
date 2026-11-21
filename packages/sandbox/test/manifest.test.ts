@@ -111,6 +111,6 @@ test("a sandbox that is not available stops the session before it starts", async
   for (const sandbox of missing) {
     expect(await sandbox.available()).toBe(false);
     await expect(requireSandbox(sandbox)).rejects.toBeInstanceOf(SandboxUnavailable);
-    await expect(sandbox.launch(spec, ["true"])).rejects.toThrow();
+    await expect(sandbox.launch(spec, ["true"])).rejects.toBeInstanceOf(SandboxUnavailable);
   }
 });

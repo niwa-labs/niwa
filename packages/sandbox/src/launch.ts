@@ -186,7 +186,22 @@ function boxedSpec(launch: AgentLaunch, box: BoxRequest): BoxSpec {
   });
 }
 
-/** The process of a boxed launch, in the shape of a child process: streams, an exit, a kill. */
+/** How a boxed process ended, as it is told to those who listen. */
+interface Outcome {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
+type EndListener = (code: number | null, signal: NodeJS.Signals | null) => void;
+type Listener = Parameters<EventEmitter["on"]>[1];
+
+/**
+ * The process of a boxed launch, in the shape of a child process: streams, an exit, a kill.
+ *
+ * The end of a box can come before the one who started it holds the process. Such a late listener
+ * for `exit`, `close` or the `error` of a failed clean-up is told what happened, as soon as it is registered, rather than waiting for an
+ * event that will not come again.
+ */
 class BoxedProcess extends EventEmitter implements AgentProcess {
   readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
@@ -195,29 +210,77 @@ class BoxedProcess extends EventEmitter implements AgentProcess {
   signalCode: NodeJS.Signals | null = null;
   killed = false;
   #box: LaunchedBox | undefined;
+  /** A signal sent before the box was there: it is delivered the moment the box is. */
+  #unsent: NodeJS.Signals | number | undefined;
+  #exited: Outcome | undefined;
+  #closed: Outcome | undefined;
+  #failure: Error | undefined;
 
   get pid(): number | undefined {
     return this.#box?.pid;
   }
 
-  kill(): boolean {
+  kill(signal?: NodeJS.Signals | number): boolean {
     this.killed = true;
-    this.#box?.kill();
+    if (this.#box === undefined) this.#unsent = signal ?? "SIGTERM";
+    else this.#box.kill(signal);
+    return true;
+  }
+
+  override on(event: "close" | "exit", listener: EndListener): this;
+  override on(event: "error", listener: (error: Error) => void): this;
+  override on(event: string | symbol, listener: Listener): this;
+  override on(event: string | symbol, listener: Listener): this {
+    return this.#told(event, listener) ? this : super.on(event, listener);
+  }
+
+  override once(event: "close" | "exit", listener: EndListener): this;
+  override once(event: "error", listener: (error: Error) => void): this;
+  override once(event: string | symbol, listener: Listener): this;
+  override once(event: string | symbol, listener: Listener): this {
+    return this.#told(event, listener) ? this : super.once(event, listener);
+  }
+
+  /** Tells a listener of an end that has happened already; false when the end is still to come. */
+  #told(event: string | symbol, listener: Listener): boolean {
+    const failure = this.#failure;
+    if (event === "error" && failure !== undefined) {
+      setImmediate(() => (listener as (error: Error) => void)(failure));
+      return true;
+    }
+    const outcome = event === "exit" ? this.#exited : event === "close" ? this.#closed : undefined;
+    if (outcome === undefined) return false;
+    setImmediate(() => (listener as EndListener)(outcome.code, outcome.signal));
     return true;
   }
 
   attach(box: LaunchedBox): void {
     this.#box = box;
-    if (this.killed) box.kill();
+    if (this.#unsent !== undefined) box.kill(this.#unsent);
     this.stdin.on("data", (chunk: Buffer) => box.stdin.write(chunk));
     this.stdin.on("end", () => box.stdin.end());
-    const drained = Promise.all([pump(box.stdout, this.stdout), pump(box.stderr, this.stderr)]);
-    void box.exited.then(async (code) => {
-      this.exitCode = code;
-      this.emit("exit", code, null);
-      await drained;
-      this.emit("close", code, null);
-    });
+    const drained = Promise.all([pump(box.stdout, this.stdout), pump(box.stderr, this.stderr)]).then(() => undefined, () => undefined);
+    void box.exited.then(
+      (code) => this.#end(code, undefined, drained),
+      (error: unknown) => this.#end(null, error, drained),
+    );
+  }
+
+  /**
+   * The box is gone. A clean-up that failed leaves the process ended without a code: the exit is
+   * told with `null`, and the failure goes to whoever listens for `error`. An error nobody is
+   * listening for is not thrown.
+   */
+  async #end(code: number | null, failure: unknown, drained: Promise<void>): Promise<void> {
+    const outcome: Outcome = { code, signal: null };
+    this.exitCode = code;
+    this.#exited = outcome;
+    if (failure !== undefined) this.#failure = failure instanceof Error ? failure : new Error(String(failure));
+    this.emit("exit", outcome.code, outcome.signal);
+    if (this.#failure !== undefined && this.listenerCount("error") > 0) this.emit("error", this.#failure);
+    await drained;
+    this.#closed = outcome;
+    this.emit("close", outcome.code, outcome.signal);
   }
 
   /** The launch failed after the process was handed out; whoever holds it hears of it once it can listen. */
@@ -231,13 +294,33 @@ class BoxedProcess extends EventEmitter implements AgentProcess {
   }
 }
 
+/** Resolves when the stream can take more, or can take nothing more. */
+function drained(stream: PassThrough): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      stream.off("drain", done);
+      stream.off("close", done);
+      stream.off("error", done);
+      resolve();
+    };
+    stream.once("drain", done);
+    stream.once("close", done);
+    stream.once("error", done);
+  });
+}
+
+/** Copies a box's output to a stream at the pace of its reader: nothing is read while the stream is full. */
 async function pump(from: ReadableStream<Uint8Array>, to: PassThrough): Promise<void> {
   const reader = from.getReader();
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      to.write(value);
+      if (!to.write(value)) await drained(to);
+      if (to.destroyed) {
+        await reader.cancel();
+        break;
+      }
     }
   } finally {
     to.end();
@@ -299,7 +382,7 @@ export async function spawnAgent(launch: AgentLaunch): Promise<AgentProcess> {
   const { sandbox, spec } = await admitBox(launch, launch.box);
   announce(launch, argvOf(launch), sandbox.name);
   const child = new BoxedProcess();
-  child.attach(await sandbox.launch(spec, argvOf(launch)));
+  child.attach(await sandbox.launch(spec, argvOf(launch), { detached: launch.detached ?? false }));
   return child;
 }
 
@@ -316,7 +399,7 @@ export function spawnAgentNow(launch: AgentLaunch): AgentProcess {
   void admitBox(launch, request)
     .then(({ sandbox, spec }) => {
       announce(launch, argvOf(launch), sandbox.name);
-      return sandbox.launch(spec, argvOf(launch));
+      return sandbox.launch(spec, argvOf(launch), { detached: launch.detached ?? false });
     })
     .then((box) => child.attach(box), (error: unknown) => child.fail(error));
   return child;

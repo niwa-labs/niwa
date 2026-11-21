@@ -14,6 +14,7 @@ import type { Sandbox, SandboxManifest } from "./sandbox.ts";
 import { SandboxUnavailable } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
+import { anchoredSpec } from "./paths.ts";
 import { probe, spawnBox } from "./spawn.ts";
 
 /** The part of srt's settings file this adapter writes. */
@@ -60,15 +61,19 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
   const command = options.command ?? packagedCommand();
   let probed: Promise<boolean> | undefined;
 
-  const manifest = (spec: BoxSpec): SrtManifest => ({
-    sandbox: "srt",
-    cwd: spec.cwd,
-    env: withPath(spec.env),
-    settings: {
-      network: { allowedDomains: spec.net, deniedDomains: [], allowUnixSockets: spec.sockets },
-      filesystem: { denyRead: spec.denyRead, allowWrite: spec.write, denyWrite: [] },
-    },
-  });
+  // Relative paths are read from the box's working directory, where srt is run, not from the host's.
+  const manifest = (given: BoxSpec): SrtManifest => {
+    const spec = anchoredSpec(given);
+    return {
+      sandbox: "srt",
+      cwd: spec.cwd,
+      env: withPath(spec.env),
+      settings: {
+        network: { allowedDomains: spec.net, deniedDomains: [], allowUnixSockets: spec.sockets },
+        filesystem: { denyRead: spec.denyRead, allowWrite: spec.write, denyWrite: [] },
+      },
+    };
+  };
 
   const wrapped = (settingsPath: string, argv: readonly string[]) => {
     if (!command) throw new SandboxUnavailable("srt", "@anthropic-ai/sandbox-runtime is not installed");
@@ -93,14 +98,14 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
       })();
       return probed;
     },
-    async launch(spec, argv) {
+    async launch(spec, argv, options) {
       const config = manifest(spec);
       const dir = await mkdtemp(join(tmpdir(), "niwa-srt-"));
       const cleanup = () => rm(dir, { recursive: true, force: true });
       try {
         const path = join(dir, "settings.json");
         await writeFile(path, JSON.stringify(config.settings), { mode: 0o600 });
-        return spawnBox(wrapped(path, argv), spec.cwd, config.env, cleanup);
+        return spawnBox("srt", wrapped(path, argv), config.cwd, config.env, cleanup, options);
       } catch (error) {
         await cleanup();
         throw error;

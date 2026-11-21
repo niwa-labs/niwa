@@ -18,6 +18,7 @@ import type { Sandbox, SandboxManifest } from "./sandbox.ts";
 import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
+import { anchoredSpec } from "./paths.ts";
 import { probe, spawnBox } from "./spawn.ts";
 
 /** A path as the sandbox sees it: `~` expanded, and the links of its longest existing part resolved. */
@@ -56,7 +57,10 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
   const binary = options.binary ?? Bun.which("nono") ?? undefined;
   let probed: Promise<boolean> | undefined;
 
-  const manifest = (spec: BoxSpec): NonoManifest => {
+  const manifest = (given: BoxSpec): NonoManifest => {
+    // Relative paths are read from the box's working directory, which is where nono is run: the same
+    // place for the flags and for the check below.
+    const spec = anchoredSpec(given);
     const granted = [spec.cwd, ...spec.read, ...spec.write].map(expanded);
     const carved = spec.denyRead.find((denied) => granted.some((place) => overlap(expanded(denied), place)));
     if (carved !== undefined) {
@@ -100,9 +104,9 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
       })();
       return probed;
     },
-    async launch(spec, argv) {
+    async launch(spec, argv, options) {
       const config = manifest(spec);
-      return spawnBox(wrapped(config.flags, argv), spec.cwd, config.env, async () => {});
+      return spawnBox("nono", wrapped(config.flags, argv), config.cwd, config.env, async () => {}, options);
     },
   };
 }
