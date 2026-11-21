@@ -39,6 +39,7 @@ import { agentMessageCompleted, commandApprovalParams, serverRequest, turnComple
 const THREAD = "${THREAD}";
 const dir = process.env.FAKE_DIR;
 const mode = process.env.FAKE_MODE;
+appendFileSync(dir + "/spawns.log", JSON.stringify({ argv: process.argv.slice(2), home: process.env.CODEX_HOME ?? null }) + "\\n");
 const grandchild = spawn("sleep", ["300"], { stdio: "ignore" });
 writeFileSync(dir + "/grandchild.pid", String(grandchild.pid));
 const send = (frame) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...frame }) + "\\n");
@@ -165,6 +166,11 @@ async function requests(): Promise<{ method: string; params: Record<string, unkn
   return (await lines("requests.log")).map(
     (line) => JSON.parse(line) as { method: string; params: Record<string, unknown> },
   );
+}
+
+/** The processes the fake server was started as, in the order they came: their arguments and the home they were given. */
+async function spawns(): Promise<{ argv: string[]; home: string | null }[]> {
+  return (await lines("spawns.log")).map((line) => JSON.parse(line) as { argv: string[]; home: string | null });
 }
 
 /** The notifications the fake server sent, in the order they went out. */
@@ -565,6 +571,17 @@ test("a tool Codex cannot switch off is refused by name", async () => {
   // Nothing was started: the refusal came before the thread was asked for.
   expect((await requests()).filter((frame) => frame.method === "thread/start")).toEqual([]);
 
+  await codex.dispose();
+});
+
+test("an allow-list switches off both implementations of the agents Codex spawns", async () => {
+  process.env.FAKE_MODE = "hold";
+  const codex = control();
+  await codex.start({ prompt: promptFromText(""), tools: { allow: ["apply_patch"] } });
+
+  const [spawned] = await spawns();
+  expect(spawned?.argv).toContain("features.multi_agent=false");
+  expect(spawned?.argv).toContain("features.multi_agent_v2=false");
   await codex.dispose();
 });
 

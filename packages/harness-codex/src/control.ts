@@ -1074,7 +1074,8 @@ const CODEX_SWITCHES: ReadonlyArray<{ tool: string; flag: readonly string[] }> =
   { tool: "view_image", flag: ["-c", "features.view_image=false"] },
   { tool: "sleep", flag: ["-c", "features.sleep_tool=false"] },
   { tool: "image_generation", flag: ["-c", "features.image_generation=false"] },
-  { tool: "spawn_agent", flag: ["-c", "features.multi_agent=false"] },
+  // Codex has two implementations of the agents it spawns; each has its own switch, and either one alone leaves the other's tools registered.
+  { tool: "spawn_agent", flag: ["-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false"] },
   { tool: "tool_suggest", flag: ["-c", "features.tool_suggest=false"] },
 ];
 

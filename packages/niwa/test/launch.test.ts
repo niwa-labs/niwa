@@ -278,6 +278,7 @@ test("codex's launch switches off what an allow-list leaves out, and refuses a m
     "-c", "features.sleep_tool=false",
     "-c", "features.image_generation=false",
     "-c", "features.multi_agent=false",
+    "-c", "features.multi_agent_v2=false",
     "-c", "features.tool_suggest=false",
   ];
   expect(codexToolFlags([])).toEqual(["-c", "features.shell_tool=false", "-c", 'web_search="disabled"', ...everyOther]);
