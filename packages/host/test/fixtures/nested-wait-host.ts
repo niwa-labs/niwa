@@ -39,7 +39,7 @@ export function makePlugin(home: string) {
     output: Output,
     recovery: "do-not-repeat",
     async run(input, ctx) {
-      return ctx.wait(Answer, (answer) => answer.n === input.n);
+      return (await ctx.wait(Answer, { filter: { n: input.n } })).data;
     },
   });
 

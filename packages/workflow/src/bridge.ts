@@ -82,37 +82,24 @@ const StateChange = z.object({ name: z.string(), value: z.unknown() });
 /**
  * The wait as an action: it waits for the record, or for the wake of its timeout.
  *
- * The two kinds of record are told apart by what their schemas make of them, because the match
- * of a wait sees the data and not the type: a wake that belongs to another sleep must not end
- * this wait.
+ * A wake that belongs to another sleep must not end this wait: the wake is waited for with the
+ * key of this wait's sleeping place, and the answer names the type that arrived.
  */
 export const WAIT = action("workflow.script.wait", {
   description: "Wait for a record of a type whose data holds the filter, or for the end of the timeout.",
   input: WaitInput,
-  output: z.unknown(),
+  output: z.union([z.object({ data: z.unknown(), at: z.number() }), z.object({ timedOut: z.literal(true) })]),
   // The wait reads and waits: it may be entered again.
   recovery: "repeat",
   run: async (input, ctx) => {
-    const wanted = record(
-      input.type,
-      z.unknown().transform((data) => ({ kind: "record" as const, data })),
-    );
-    const since = input.since === undefined ? undefined : seq(input.since);
+    const wanted = { type: record(input.type, z.unknown()), ...(input.filter === undefined ? {} : { filter: input.filter }) };
+    const from = input.since === undefined ? {} : { from: seq(input.since) };
     if (input.place === undefined) {
-      const got = await ctx.wait(wanted, (found) => holds(found.data, input.filter), since);
-      return got.data;
+      const got = await ctx.wait(wanted.type, { ...wanted, ...from });
+      return { data: got.data, at: got.at };
     }
-    const place = input.place;
-    const woken = record(
-      TimerSlept.name,
-      TimerSlept.schema.transform((data) => ({ kind: "timeout" as const, key: data.key })),
-    );
-    const got = await ctx.waitAnyOf(
-      [wanted, woken] as const,
-      (found) => (found.kind === "timeout" ? found.key === place : holds(found.data, input.filter)),
-      since,
-    );
-    return got.data.kind === "timeout" ? { timedOut: true } : got.data.data;
+    const got = await ctx.waitAnyOf([wanted, { type: TimerSlept, filter: { key: input.place } }] as const, from);
+    return got.type === TimerSlept.name && input.type !== TimerSlept.name ? { timedOut: true as const } : { data: got.data, at: got.at };
   },
 });
 
@@ -315,7 +302,7 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
     const at = endOf(await clock(`${key}~now`), ms);
     // The wait begins before the request is written: a wake that is written at once, for a
     // moment that has passed, must not be missed.
-    const waiting = step.wait(TimerSlept, (data) => data.key === place, { key });
+    const waiting = step.wait(TimerSlept, { filter: { key: place }, key });
     const settled = waiting.then(
       () => ({ refused: false as const }),
       (error: unknown) => ({ refused: true as const, error }),
@@ -330,14 +317,15 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
     // A wait reads the journal: it is held to the same right as a read of records.
     await authorized(key, "call", RECORDS_READ);
     const filter = request.filter === undefined ? {} : { filter: request.filter };
+    const dataOf = (got: { data: unknown } | { timedOut: true }): unknown => ("timedOut" in got ? got : got.data);
     if (request.timeoutMs === undefined) {
-      return guarded(() => step(WAIT, { type: request.type, ...filter }, { key }));
+      return dataOf(await guarded(() => step(WAIT, { type: request.type, ...filter }, { key })));
     }
     // The wait looks after the position the journal had when it began, so a record that arrives
     // while the wake is being armed is not missed.
     const { seq } = await guarded(() => step(own.mark, {}, { key: `${key}~mark` }));
     const place = await arm(key, request.timeoutMs);
-    return guarded(() => step(WAIT, { type: request.type, ...filter, place, since: seq }, { key }));
+    return dataOf(await guarded(() => step(WAIT, { type: request.type, ...filter, place, since: seq }, { key })));
   };
 
   const ask = async (key: string, request: Extract<ScriptRequest, { op: "ask" }>): Promise<unknown> => {

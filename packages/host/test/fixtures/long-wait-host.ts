@@ -50,7 +50,7 @@ export function makePlugin(home: string) {
     // The long wait: the invocation suspends here and waits for its answer. Each question waits for
     // its own answer, so the subscription runs them all at once.
     api.on(Ask, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
-      await step.wait(Answer, (answer) => answer.n === data.n);
+      await step.wait(Answer, { filter: { n: data.n } });
     });
 
     // The work that goes on while the other invocation waits.

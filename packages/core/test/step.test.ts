@@ -255,8 +255,8 @@ test("a replayed wait gives back the record as its type reads it", async () => {
   const b = await bench();
   const kinds: string[] = [];
   const handler: Handle = async (_data, step) => {
-    const got = await step.wait(Note, () => true);
-    kinds.push(got.at instanceof Date ? "date" : typeof got.at);
+    const got = await step.wait(Note);
+    kinds.push(got.data.at instanceof Date ? "date" : typeof got.data.at);
   };
   expect(await b.run(handler)).toBe("waiting");
   b.journal.append({

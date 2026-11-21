@@ -4,7 +4,7 @@
 // Answer { q, text } is what the handler waits for. Its handler has three steps:
 //
 //   await step(ask, { q })                        // the question: counted, and its outcome recorded
-//   await step.wait(Answer, (d) => d.q === q)     // the wait: the invocation suspends
+//   await step.wait(Answer, { filter: { q: q } })     // the wait: the invocation suspends
 //   await step(after, { text: answer.text })      // what happens once the answer arrives
 //
 // The test kills the host while the invocation is waiting, so the answer never
@@ -56,7 +56,7 @@ export function makePlugin(home: string) {
     api.on(Start, async (data, step) => {
       await step(ask, { q: data.q });
 
-      const answer = await step.wait(Answer, (d) => d.q === data.q);
+      const { data: answer } = await step.wait(Answer, { filter: { q: data.q } });
 
       await step(after, { text: answer.text });
     });

@@ -84,7 +84,7 @@ export function executor() {
         // A held handler waits after the request ended, so the test can restart the host between
         // the end of the request and the end of the handler: the ask is then replayed.
         const hold = async (): Promise<void> => {
-          if (data.gate === true) await step.wait(Proceed, (proceed) => proceed.release === data.release);
+          if (data.gate === true) await step.wait(Proceed, { filter: { release: data.release } });
         };
         if (error instanceof RequestCancelled) {
           await hold();

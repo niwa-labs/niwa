@@ -181,7 +181,7 @@ test("no subscription is woken by the records of a position", async () => {
 function waiter(began: number[]): Handler<{ n: number }> {
   return async (data, step) => {
     if (!began.includes(data.n)) began.push(data.n);
-    await step.wait(Answer, (answer) => answer.n === data.n);
+    await step.wait(Answer, { filter: { n: data.n } });
   };
 }
 

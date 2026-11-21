@@ -279,7 +279,7 @@ export async function sleep(step: Step, ms: number, key?: string): Promise<void>
   // after the request is, and a wait looks for the records that came after it began: a wait
   // that began after the request could miss a wake that was written in between, and the handler
   // would wait for ever.
-  const waiting = step.wait(TimerSlept, (data) => data.key === place, { key: waitKey });
+  const waiting = step.wait(TimerSlept, { filter: { key: place }, key: waitKey });
   // The wait refuses when no wake has come, and the refusal is the suspension of the invocation.
   // It is caught here, so the request can be written, and it is raised again below.
   const settled = waiting.then(

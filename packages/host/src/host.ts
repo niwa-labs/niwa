@@ -103,7 +103,10 @@ import type {
   Token,
   TracedRecord,
   Verb,
+  WaitEntry,
   WaitKey,
+  WaitQuery,
+  Waited,
 } from "@niwa-labs/core";
 import { describe as buildDescription } from "./describe.ts";
 import {
@@ -113,6 +116,7 @@ import {
   permit,
   settleAsk,
   admits,
+  findWaited,
   invocationId,
   runInvocation,
   stepKey,
@@ -2591,41 +2595,21 @@ class Niwa implements Host {
       // A call outside an invocation has no invocation to suspend, so it cannot wait. The
       // answer is looked for and its absence is reported: the caller asked for something that
       // is not there, and that is said rather than waited for.
-      wait: async <T>(type: RecordType<T>, match: (data: T) => boolean, since?: Seq, key?: WaitKey): Promise<T> => {
-        const journal = this.requireJournal();
-        for (const candidate of journal.find({ type: type.name, ...(since === undefined ? {} : { after: since }) })) {
-          const parsed = type.schema.safeParse(candidate.data);
-          if (!parsed.success) continue;
-          if (!admits(key, parsed.data)) continue;
-          if (!match(parsed.data)) continue;
-          return parsed.data;
-        }
-        throw new Error(`no record of "${type.name}" has arrived`);
+      wait: async <T>(type: RecordType<T>, query?: WaitQuery<T>): Promise<Waited<T>> => {
+        const entry = { type, ...(query?.filter === undefined ? {} : { filter: query.filter }) };
+        const found = findWaited(this.requireJournal(), [entry], query?.from ?? seq(0));
+        if (found === undefined) throw new Error(`no record of "${type.name}" has arrived`);
+        return { data: found.data as T, at: found.at };
       },
       // A call outside an invocation cannot wait either: the answer is looked for and its
       // absence is reported. The oldest record of the types that matches is the answer.
-      waitAnyOf: async <Types extends readonly RecordType<any>[]>(
-        types: Types,
-        match: (data: Types[number] extends RecordType<infer Data> ? Data : never) => boolean,
-        since?: Seq,
-        key?: WaitKey,
-      ): Promise<AnyWaited<Types[number]>> => {
-        const journal = this.requireJournal();
-        let found: AnyWaited<Types[number]> | undefined;
-        let foundSeq: number | undefined;
-        for (const type of types) {
-          for (const candidate of journal.find({ type: type.name, ...(since === undefined ? {} : { after: since }) })) {
-            const parsed = type.schema.safeParse(candidate.data);
-            if (!parsed.success) continue;
-            if (!admits(key, parsed.data)) continue;
-            if (!match(parsed.data)) continue;
-            if (foundSeq !== undefined && candidate.seq >= foundSeq) continue;
-            found = { type: type.name, data: parsed.data } as AnyWaited<Types[number]>;
-            foundSeq = candidate.seq;
-          }
-        }
-        if (found !== undefined) return found;
-        throw new Error(`no record of ${types.map((type) => `"${type.name}"`).join(" or ")} has arrived`);
+      waitAnyOf: async <Entries extends readonly WaitEntry<any>[]>(
+        entries: Entries,
+        opts?: { readonly from?: Seq },
+      ): Promise<AnyWaited<Entries[number]["type"]>> => {
+        const found = findWaited(this.requireJournal(), entries, opts?.from ?? seq(0));
+        if (found !== undefined) return found as AnyWaited<Entries[number]["type"]>;
+        throw new Error(`no record of ${entries.map((entry) => `"${entry.type.name}"`).join(" or ")} has arrived`);
       },
       // A call made inside a call outside an invocation is a call outside an invocation too:
       // there is no invocation to record it in, so it goes through the same point as any other

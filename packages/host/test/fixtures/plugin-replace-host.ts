@@ -127,7 +127,7 @@ function buildPlugins(home: string): { v1: Plugin; v2: Plugin } {
   const v1 = plugin("p", (api) => {
     api.action(v1Finish);
     api.on(Start, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
-      await step.wait(Answer, (answer) => answer.n === data.n);
+      await step.wait(Answer, { filter: { n: data.n } });
       await step(v1Finish, { n: data.n });
     });
   });
@@ -138,7 +138,7 @@ function buildPlugins(home: string): { v1: Plugin; v2: Plugin } {
     api.action(v2Finish);
     api.on(Start, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       await step(v2Run, { n: data.n });
-      await step.wait(Answer, (answer) => answer.n === data.n);
+      await step.wait(Answer, { filter: { n: data.n } });
       await step(v2Finish, { n: data.n });
     });
   });

@@ -30,8 +30,6 @@ import {
 import { eventually, tempHome, connectAsOwner } from "@niwa-labs/testing";
 import { z } from "zod";
 
-/** The key a wait may name: the type is not exported by the package, so it is read off the wait. */
-type WaitKey = NonNullable<Parameters<ActionContext["wait"]>[3]>;
 
 const Start = record("wait-key.start", z.object({ n: z.number() }));
 const Answer = record("wait-key.answer", z.object({ id: z.string() }));
@@ -39,16 +37,9 @@ const Done = record("wait-key.done", z.object({ n: z.number() }));
 
 const Input = z.object({ n: z.number() });
 
-/** The key a waiter names: none, the right one, or one that does not parse as a key. */
-function keyOf(keyed: boolean | "malformed" | "text", id: string): WaitKey | undefined {
-  if (keyed === false) return undefined;
-  if (keyed === "malformed") return { field: "id", equals: 5 } as unknown as WaitKey;
-  if (keyed === "text") return "id" as unknown as WaitKey;
-  return { field: "id", equals: id };
-}
 
 /** The host of one run; `runs` counts how many times a handler body ran, a wake included. */
-function build(home: string, keyed: boolean | "malformed" | "text") {
+function build(home: string, keyed: boolean) {
   const state = { runs: 0 };
   const waiter = action("waiter", {
     description: "Waits for the answer of its own id.",
@@ -57,8 +48,14 @@ function build(home: string, keyed: boolean | "malformed" | "text") {
     recovery: "repeat",
     async run(input, ctx) {
       const id = `k${String(input.n)}`;
-      const answered = await ctx.wait(Answer, (data) => data.id === id, undefined, keyOf(keyed, id));
-      return answered.id;
+      // A filter on the id keys the wait by it. Without one the wait is woken by every answer, and
+      // waits on from the answer it saw until its own comes.
+      if (keyed) return (await ctx.wait(Answer, { filter: { id } })).data.id;
+      for (let from = seq(0); ; ) {
+        const answered = await ctx.wait(Answer, { from });
+        if (answered.data.id === id) return answered.data.id;
+        from = answered.at;
+      }
     },
   });
   const niwa = createNiwa({ home });
@@ -213,8 +210,8 @@ function buildParallel(home: string) {
     recovery: "repeat",
     async run(input, ctx) {
       if (input.delay > 0) await new Promise((resolve) => setTimeout(resolve, input.delay));
-      const answered = await ctx.wait(Answer, (data) => data.id === input.id, undefined, { field: "id", equals: input.id });
-      return answered.id;
+      const answered = await ctx.wait(Answer, { filter: { id: input.id } });
+      return answered.data.id;
     },
   });
   const niwa = createNiwa({ home });
@@ -310,27 +307,6 @@ test("a wait a parallel branch begins after the invocation was suspended is woke
   }
 }, 60_000);
 
-for (const bad of ["malformed", "text"] as const) {
-  test(`a key that does not parse (${bad}) indexes the wait by its type alone: it is woken, not lost`, async () => {
-    const home = await tempHome();
-    const { niwa, state } = build(home.path, bad);
-    try {
-      await niwa.serve();
-      for (let n = 0; n < 10; n += 1) await niwa.emit(Start, { n });
-      await parked(niwa, 10);
-      expect(state.runs).toBe(10);
-
-      await niwa.emit(Answer, { id: "k4" });
-      await quiet();
-      // Every waiter was woken, as for a wait without a key: none of them was dropped from the index.
-      expect(state.runs).toBe(20);
-    } finally {
-      await niwa.close();
-      await home.cleanup();
-    }
-  }, 60_000);
-}
-
 const Asked = record("wait-key.asked", z.object({ n: z.number() }));
 const Reply = record("wait-key.reply", z.object({ n: z.number() }));
 const Who = question("wait-key.who", { kind: "text", title: "Which one?" });
@@ -398,8 +374,8 @@ function buildSlowEnd(home: string) {
     output: z.string(),
     recovery: "repeat",
     async run(input, ctx) {
-      const answered = await ctx.wait(Answer, (data) => data.id === input.id, undefined, { field: "id", equals: input.id });
-      return answered.id;
+      const answered = await ctx.wait(Answer, { filter: { id: input.id } });
+      return answered.data.id;
     },
   });
   const niwa = createNiwa({ home });

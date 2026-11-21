@@ -66,11 +66,11 @@ test("an explicit version is kept whatever the code is", async () => {
 
 /** The handlers of the two versions of one plugin: the setup text is the same, the code is not. */
 const finishOld: Handler<z.infer<typeof Start.schema>> = async (data, step) => {
-  await step.wait(Answer, (answer) => answer.n === data.n, { key: "answer" });
+  await step.wait(Answer, { filter: { n: data.n }, key: "answer" });
   await step.emit(Done, { n: data.n, by: "old" });
 };
 const finishNew: Handler<z.infer<typeof Start.schema>> = async (data, step) => {
-  await step.wait(Answer, (answer) => answer.n === data.n, { key: "answer" });
+  await step.wait(Answer, { filter: { n: data.n }, key: "answer" });
   await step.emit(Done, { n: data.n, by: "new" });
 };
 

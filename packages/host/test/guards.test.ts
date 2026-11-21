@@ -131,8 +131,8 @@ test("a wait step cannot be retried, only cancelled", async () => {
     api.declare(Start, Note, Other);
     api.on(Start, async (_data, step) => {
       run += 1;
-      if (run === 1) await step.wait(Note, () => true, { key: "k" });
-      else await step.wait(Other, () => true, { key: "k" });
+      if (run === 1) await step.wait(Note, { key: "k" });
+      else await step.wait(Other, { key: "k" });
     });
   });
   try {
@@ -187,8 +187,8 @@ test("the answer to a paused invocation is written by the caller who gave it", a
     api.declare(Start, Note, Other);
     api.on(Start, async (_data, step) => {
       run += 1;
-      if (run === 1) await step.wait(Note, () => true, { key: "k" });
-      else await step.wait(Other, () => true, { key: "k" });
+      if (run === 1) await step.wait(Note, { key: "k" });
+      else await step.wait(Other, { key: "k" });
     });
   });
   try {
@@ -225,7 +225,7 @@ test("a wake of a call waiting inside an action asks no guard again and writes n
     recovery: "do-not-repeat",
     async run(input, ctx) {
       ran.push(input.text);
-      await ctx.wait(Reply, (reply) => reply.ok);
+      await ctx.wait(Reply, { filter: { ok: true } });
       return input;
     },
   });
@@ -266,7 +266,7 @@ test("a waiting call whose adjust now decides otherwise is decided again, and a 
     output: z.object({ text: z.string() }),
     recovery: "do-not-repeat",
     async run(input, ctx) {
-      await ctx.wait(Reply, (reply) => reply.ok);
+      await ctx.wait(Reply, { filter: { ok: true } });
       return input;
     },
   });
@@ -301,7 +301,7 @@ function waitingAsk(entered: { count: number }, again: (ctx: ActionContext) => v
     async run(input, ctx) {
       entered.count += 1;
       if (entered.count === 2) await again(ctx);
-      await ctx.wait(Reply, (reply) => reply.ok);
+      await ctx.wait(Reply, { filter: { ok: true } });
       return input;
     },
   });
@@ -417,7 +417,7 @@ test("a plain wake of a call that emitted before finds its record and writes not
     async run(input, ctx) {
       entered.count += 1;
       await ctx.emit(Note, {});
-      await ctx.wait(Reply, (reply) => reply.ok);
+      await ctx.wait(Reply, { filter: { ok: true } });
       return input;
     },
   });

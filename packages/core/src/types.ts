@@ -4,7 +4,7 @@
 import type { z } from "zod";
 
 import type { JsonSchemaValue } from "./question.ts";
-import type { ResolvedQuery } from "./record-query.ts";
+import type { PathFilter, ResolvedQuery } from "./record-query.ts";
 
 /** Domain identifiers. Branded: a bare string is not accepted where one of these is expected. */
 type Brand<T, B extends string> = T & { readonly __brand: B };
@@ -118,9 +118,9 @@ export interface RecordType<T> {
 export type JsonSchema = JsonSchemaValue;
 
 /**
- * What a wait may name to be woken only by the records it can match: a field of the record data
- * and the value that field must have. The key is recorded with the wait, so a restart rebuilds
- * the host's index of waiters from the journal. A record whose field differs is never the answer.
+ * What wakes a wait, as the host indexes it: a field of the record data and the value that field
+ * must have, taken from the wait's filter. It is recorded with the wait, so a restart rebuilds the
+ * host's index of waiters from the journal. A record whose field differs is never the answer.
  */
 export interface WaitKey {
   readonly field: string;
@@ -128,7 +128,32 @@ export interface WaitKey {
 }
 
 /**
- * The answer of a wait for the first of several record types: which type arrived, and its data.
+ * What a wait is for: equality on paths of the data, and the position to look after. Without a
+ * position the answer is a record committed after the wait began.
+ */
+export interface WaitQuery<T> {
+  readonly filter?: PathFilter<T>;
+  readonly from?: Seq;
+}
+
+/**
+ * The answer of a wait: the data of the record, and its position. A wait that goes on from that
+ * position finds the next record and misses none in between.
+ */
+export interface Waited<T> {
+  readonly data: T;
+  readonly at: Seq;
+}
+
+/** One of the types a wait for the first of several is for, with the filter on its data. */
+export interface WaitEntry<T> {
+  readonly type: RecordType<T>;
+  readonly filter?: PathFilter<T>;
+}
+
+/**
+ * The answer of a wait for the first of several record types: which type arrived, its data, and
+ * its position.
  *
  * The type is a union of the types waited for, so the caller reads the data of the one it
  * expects without a cast, and the type of the answer tells it which one arrived.
@@ -137,6 +162,7 @@ export type AnyWaited<Type extends RecordType<any>> = Type extends RecordType<an
   ? {
       readonly type: Type["name"];
       readonly data: Type extends RecordType<infer Data> ? Data : never;
+      readonly at: Seq;
     }
   : never;
 
@@ -216,33 +242,28 @@ export interface ActionContext {
    */
   emit<T>(type: RecordType<T>, data: T): Promise<StoredRecord>;
   /**
-   * Wait for a record of a declared type.
+   * Wait for a record of a declared type, of its version, whose data holds the filter.
    *
    * The wait suspends the invocation the call runs in: it ends as "waiting", and it is
-   * resumed when a record of that type arrives whose data matches. The wait survives a
-   * restart, and it does not miss a record that arrived while it was looking.
+   * resumed when such a record arrives. The wait survives a restart, and it does not miss a
+   * record that arrived while it was looking.
    *
-   * The answer is looked for after `since` when it is given, and after the wait began when not.
-   * A call outside an invocation cannot wait: there is no invocation to suspend, so the
-   * answer is looked for and its absence is reported.
-   *
-   * With a `key` the wait is woken only by records whose `key.field` equals `key.equals`, and only
-   * such a record can be its answer; without one every record of the type wakes it. `match` must
-   * accept only records the key admits.
+   * The answer is looked for after `from` when it is given, and after the wait began when not;
+   * it carries the record's position, to wait or read on from. A call outside an invocation
+   * cannot wait: there is no invocation to suspend, so the answer is looked for and its absence
+   * is reported.
    */
-  wait<T>(type: RecordType<T>, match: (data: T) => boolean, since?: Seq, key?: WaitKey): Promise<T>;
+  wait<T>(type: RecordType<T>, query?: WaitQuery<NoInfer<T>>): Promise<Waited<T>>;
   /**
-   * Wait for the first of several record types to arrive, each with its own data.
+   * Wait for the first of several record types to arrive, each with its own filter.
    *
-   * The answer carries the type and the data of the record that arrived, so the caller knows
-   * what happened without a cast.
+   * The answer carries the type, the data and the position of the record that arrived, so the
+   * caller knows what happened without a cast.
    */
-  waitAnyOf<Types extends readonly RecordType<any>[]>(
-    types: Types,
-    match: (data: Types[number] extends RecordType<infer D> ? D : never) => boolean,
-    since?: Seq,
-    key?: WaitKey,
-  ): Promise<AnyWaited<Types[number]>>;
+  waitAnyOf<Entries extends readonly WaitEntry<any>[]>(
+    entries: Entries,
+    opts?: { readonly from?: Seq },
+  ): Promise<AnyWaited<Entries[number]["type"]>>;
   /**
    * Call another action as a step of this one.
    *
@@ -398,10 +419,11 @@ export interface Step {
     opts?: StepOptions,
   ): Promise<Outcome<O>>;
   /**
-   * Waits for a record of `type`, committed after this step's intent, whose data satisfies `match`.
-   * The invocation is "waiting" until then; the wait survives a restart.
+   * Waits for a record of `type`, of its version, whose data holds the filter: committed after
+   * `from` when it is given, after this step's intent when not. The invocation is "waiting" until
+   * then; the wait survives a restart, and a replay answers with the same record and position.
    */
-  wait<T>(type: RecordType<T>, match: (data: T) => boolean, opts?: StepOptions): Promise<T>;
+  wait<T>(type: RecordType<T>, opts?: StepOptions & WaitQuery<NoInfer<T>>): Promise<Waited<T>>;
   /**
    * Write a record from inside the handler: the waking record is its cause, the root of the
    * waking record is its root, and the handler is its actor.

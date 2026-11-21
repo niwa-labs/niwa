@@ -1486,7 +1486,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         const key = pauseKey(pause);
         let waiting = pauseWaits.get(key);
         if (waiting === undefined) {
-          waiting = step.wait(RunContinued, (data) => data.run === run && data.pause === pause.id, { key });
+          waiting = step.wait(RunContinued, { filter: { run, pause: pause.id }, key });
           pauseWaits.set(key, waiting);
         }
         return waiting;

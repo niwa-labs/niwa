@@ -52,7 +52,11 @@ import type {
   StepOptions,
   StoredRecord,
   StreamId,
+  JournalReader,
+  WaitEntry,
   WaitKey,
+  WaitQuery,
+  Waited,
 } from "../types.ts";
 
 /** One invocation of one handler, as the host hands it over. */
@@ -391,11 +395,10 @@ function makeStep(ctx: RunContext, scope: KeyScope = handlerScope): Step {
       }
       return result.outcome;
     },
-    wait: async <T>(
-      type: RecordType<T>,
-      match: (data: T) => boolean,
-      opts?: StepOptions,
-    ): Promise<T> => stepWait(ctx, type, match, scope(opts)),
+    wait: async <T>(type: RecordType<T>, opts?: StepOptions & WaitQuery<T>): Promise<Waited<T>> =>
+      awaitRecords(ctx, nextKey(ctx, scope(opts)), [{ type, ...(opts?.filter === undefined ? {} : { filter: opts.filter }) }], opts?.from).then(
+        (found) => ({ data: found.data as T, at: found.at }),
+      ),
     emit: async <T>(
       type: RecordType<T>,
       data: T,
@@ -925,9 +928,11 @@ function emitFor(ctx: RunContext, action: ActionName, operation: OperationId): A
  */
 function waitFor(ctx: RunContext, key: StepKey, attempt: number): ActionContext["wait"] {
   let ordinal = 0;
-  return async <T>(type: RecordType<T>, match: (data: T) => boolean, since?: Seq, waitKey?: WaitKey): Promise<T> => {
+  return async <T>(type: RecordType<T>, query?: WaitQuery<T>): Promise<Waited<T>> => {
     ordinal += 1;
-    return awaitRecord(ctx, actionWaitKey(key, attempt, ordinal), type, match, since, waitKey);
+    const entry = { type, ...(query?.filter === undefined ? {} : { filter: query.filter }) };
+    const found = await awaitRecords(ctx, actionWaitKey(key, attempt, ordinal), [entry], query?.from);
+    return { data: found.data as T, at: found.at };
   };
 }
 
@@ -940,14 +945,13 @@ function waitFor(ctx: RunContext, key: StepKey, attempt: number): ActionContext[
  */
 function waitAnyFor(ctx: RunContext, key: StepKey, attempt: number): ActionContext["waitAnyOf"] {
   let ordinal = 0;
-  return async <Types extends readonly RecordType<any>[]>(
-    types: Types,
-    match: (data: Types[number] extends RecordType<infer Data> ? Data : never) => boolean,
-    since?: Seq,
-    waitKey?: WaitKey,
-  ): Promise<AnyWaited<Types[number]>> => {
+  return async <Entries extends readonly WaitEntry<any>[]>(
+    entries: Entries,
+    opts?: { readonly from?: Seq },
+  ): Promise<AnyWaited<Entries[number]["type"]>> => {
     ordinal += 1;
-    return awaitAnyRecord(ctx, actionWaitKey(key, attempt, ordinal), types, match, since, waitKey);
+    const found = await awaitRecords(ctx, actionWaitKey(key, attempt, ordinal), entries, opts?.from);
+    return found as AnyWaited<Entries[number]["type"]>;
   };
 }
 
@@ -1042,145 +1046,106 @@ function stepFor(
 }
 
 /**
- * Wait for a record.
- *
- * The wait is a step: it has a key, an intent that says what is waited for, and an outcome that
- * is written only when the answer arrives. The answer is a record of the waited-for type,
- * committed after the intent; the first one whose data fits the type and matches is the answer.
- * No answer yet means the invocation waits: it is suspended, not failed.
+ * The key the host indexes a wait under, from its filter: the first field at the top of the data
+ * whose value is a text. A wait with no such field is indexed by its type alone.
  */
-async function stepWait<T>(
-  ctx: RunContext,
-  type: RecordType<T>,
-  match: (data: T) => boolean,
-  opts?: StepOptions,
-): Promise<T> {
-  return awaitRecord(ctx, nextKey(ctx, opts), type, match);
+export function waitKeyOf(filter: Readonly<Record<string, unknown>> | undefined): WaitKey | undefined {
+  for (const [field, equals] of Object.entries(filter ?? {})) {
+    if (!field.includes(".") && typeof equals === "string") return { field, equals };
+  }
+  return undefined;
+}
+
+/** What one wait found: the type of the record, its data as the type reads it, and its position. */
+export interface FoundRecord {
+  readonly type: RecordTypeName;
+  readonly data: unknown;
+  readonly at: Seq;
 }
 
 /**
- * The wait itself, under a key: intent, answer from the journal, or suspend.
- *
- * The answer is looked for after `since`, or after the intent when there is no `since`.
+ * The earliest record after a position that answers a wait: of one of the types, at its version,
+ * with data its schema reads and its filter holds. Undefined when there is none yet.
  */
-async function awaitRecord<T>(
+export function findWaited(
+  journal: JournalReader,
+  entries: readonly WaitEntry<any>[],
+  after: Seq,
+): FoundRecord | undefined {
+  let found: FoundRecord | undefined;
+  for (const entry of entries) {
+    const filter = entry.filter as Readonly<Record<string, unknown>> | undefined;
+    for (const candidate of journal.query({ types: [entry.type.name], ...(filter === undefined ? {} : { filter }), from: after })) {
+      if (found !== undefined && candidate.seq >= found.at) break;
+      // A record of another version is another shape: it is not read through this one.
+      if (candidate.schema !== entry.type.version) continue;
+      const parsed = entry.type.schema.safeParse(candidate.data);
+      if (!parsed.success) continue;
+      found = { type: entry.type.name, data: parsed.data, at: candidate.seq };
+      break;
+    }
+  }
+  return found;
+}
+
+/**
+ * Wait for the first record of several types, under a key: intent, answer from the journal, or
+ * suspend.
+ *
+ * The wait is a step: it has a key, an intent that says what is waited for — the types, their
+ * filters and the position — and an outcome that is written only when the answer arrives: the
+ * type, the data and the position of the record. A replay that waits for something else is a
+ * replay mismatch; one that waits for the same reads the recorded answer through the type's
+ * schema, at the same position. The answer is looked for after `from`, or after the intent.
+ */
+async function awaitRecords(
   ctx: RunContext,
   key: StepKey,
-  type: RecordType<T>,
-  match: (data: T) => boolean,
-  since?: Seq,
-  waitKey?: WaitKey,
-): Promise<T> {
+  entries: readonly WaitEntry<any>[],
+  from?: Seq,
+): Promise<FoundRecord> {
   const operation = operationId(ctx.invocation, key);
   const intentId = attemptRecordId(ctx.invocation, key, 0, "intent");
   const outcomeId = attemptRecordId(ctx.invocation, key, 0, "outcome");
-  const waited = waitKey === undefined ? { type: type.name } : { type: type.name, key: waitKey };
+  const filters = entries.map((entry) => (entry.filter ?? {}) as Readonly<Record<string, unknown>>);
+  // The host wakes the wait by one field: the one every filter names with the same value, if any.
+  const keys = filters.map((filter) => waitKeyOf(filter));
+  const shared = keys[0] !== undefined && keys.every((one) => stableJson(one) === stableJson(keys[0])) ? keys[0] : undefined;
+  const names = entries.map((entry) => entry.type.name);
+  const waited = {
+    ...(entries.length === 1 ? { type: names[0], filter: filters[0] } : { types: names, filters }),
+    ...(from === undefined ? {} : { from }),
+    ...(shared === undefined ? {} : { key: shared }),
+  };
 
   // The same key must wait for the same thing. This is checked before the recorded outcome is
-  // read: a key that now waits for something else is a different call, and the answer that was
-  // recorded for the old one is not the answer to this one.
-  let intent = ctx.deps.journal.get(intentId);
-  if (intent !== undefined && isMismatch(intent, WAIT_ACTION, waited)) {
-    pause(ctx, `replay mismatch at step ${key}`, key);
-  }
-
-  // The answer is already there: the recorded outcome is the answer.
-  const recorded = ctx.deps.journal.get(outcomeId);
-  if (recorded !== undefined) {
-    const outcome = readOutcome<T>(recorded.data);
-    if (outcome.status !== "completed") pause(ctx, `step ${key}: ${outcome.status}`, key);
-    // The answer was recorded as JSON: it is read through the schema of the type, as it was when
-    // it arrived.
-    const value = type.schema.safeParse(outcome.value);
-    if (!value.success) pause(ctx, `replay mismatch at step ${key}: the recorded answer does not fit ${type.name} now`, key);
-    return value.data;
-  }
-
-  if (intent === undefined) {
-    intent = first(commitAll(ctx, [intentRecord(ctx, key, WAIT_ACTION, waited, operation, 0)]));
-  }
-
-  for (const candidate of ctx.deps.journal.find({ type: type.name, after: since ?? intent.seq })) {
-    const parsed = type.schema.safeParse(candidate.data);
-    if (!parsed.success) continue;
-    if (!admits(waitKey, parsed.data)) continue;
-    if (!match(parsed.data)) continue;
-    settle<T>(ctx, key, { status: "completed", value: parsed.data }, 0);
-    return parsed.data;
-  }
-
-  // Nothing yet: the invocation waits, and the wait survives a restart.
-  suspend(ctx);
-}
-
-/**
- * Wait for the first of several record types.
- *
- * The wait is a step like any other: it has a key, an intent that says what is waited for, and
- * an outcome that is written only when the answer arrives. The intent names every type, so a
- * replay that waits for another set of types is a replay mismatch.
- *
- * The answer is the earliest record of the types that matches, and the outcome says which type
- * it was. No answer yet means the invocation waits: it is suspended, not failed.
- */
-async function awaitAnyRecord<Types extends readonly RecordType<any>[]>(
-  ctx: RunContext,
-  key: StepKey,
-  types: Types,
-  match: (data: Types[number] extends RecordType<infer Data> ? Data : never) => boolean,
-  since?: Seq,
-  waitKey?: WaitKey,
-): Promise<AnyWaited<Types[number]>> {
-  const operation = operationId(ctx.invocation, key);
-  const intentId = attemptRecordId(ctx.invocation, key, 0, "intent");
-  const outcomeId = attemptRecordId(ctx.invocation, key, 0, "outcome");
-  const names = types.map((type) => type.name);
-  const waited = waitKey === undefined ? { types: names } : { types: names, key: waitKey };
-
-  // The same key must wait for the same things. This is checked before the recorded outcome is
   // read: a key that now waits for something else is a different call.
   let intent = ctx.deps.journal.get(intentId);
   if (intent !== undefined && isMismatch(intent, WAIT_ACTION, waited)) {
     pause(ctx, `replay mismatch at step ${key}`, key);
   }
 
-  // The answer is already there: the recorded outcome is the answer.
+  // The answer is already there: the recorded outcome is the answer, read through the schema of
+  // the type it names, at the position it was found at.
   const recorded = ctx.deps.journal.get(outcomeId);
   if (recorded !== undefined) {
-    const outcome = readOutcome<AnyWaited<Types[number]>>(recorded.data);
+    const outcome = readOutcome<{ type: string; data: unknown; at: number }>(recorded.data);
     if (outcome.status !== "completed") pause(ctx, `step ${key}: ${outcome.status}`, key);
-    // The answer was recorded as JSON: its data is read through the schema of the type it names.
-    const answered = types.find((type) => type.name === outcome.value.type);
-    const value = answered?.schema.safeParse(outcome.value.data);
+    const answered = entries.find((entry) => entry.type.name === outcome.value.type);
+    const value = answered?.type.schema.safeParse(outcome.value.data);
     if (answered === undefined || value === undefined || !value.success) {
       pause(ctx, `replay mismatch at step ${key}: the recorded answer does not fit the types waited for now`, key);
     }
-    return { type: answered.name, data: value.data } as AnyWaited<Types[number]>;
+    return { type: answered.type.name, data: value.data, at: outcome.value.at as Seq };
   }
 
   if (intent === undefined) {
     intent = first(commitAll(ctx, [intentRecord(ctx, key, WAIT_ACTION, waited, operation, 0)]));
   }
 
-  // The answer is looked for after `since`, or after the intent when there is no `since`. The
-  // oldest record of the types that matches is the answer: the first of them is the first one
-  // that happened.
-  const after = since ?? intent.seq;
-  let found: AnyWaited<Types[number]> | undefined;
-  let foundSeq: number | undefined;
-  for (const type of types) {
-    for (const candidate of ctx.deps.journal.find({ type: type.name, after })) {
-      const parsed = type.schema.safeParse(candidate.data);
-      if (!parsed.success) continue;
-      if (!admits(waitKey, parsed.data)) continue;
-      if (!match(parsed.data)) continue;
-      if (foundSeq !== undefined && candidate.seq >= foundSeq) continue;
-      found = { type: type.name, data: parsed.data } as AnyWaited<Types[number]>;
-      foundSeq = candidate.seq;
-    }
-  }
+  const found = findWaited(ctx.deps.journal, entries, from ?? intent.seq);
   if (found !== undefined) {
-    settle<AnyWaited<Types[number]>>(ctx, key, { status: "completed", value: found }, 0);
+    settle(ctx, key, { status: "completed", value: found }, 0);
     return found;
   }
 

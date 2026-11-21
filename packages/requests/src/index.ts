@@ -147,10 +147,12 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
         // the caller reads the answer later by the id.
         if (!waits) return { id, status: "open" as const };
         ended = await ctx.waitAnyOf(
-          [RequestAnswered, RequestCancelledRecord, RequestExpiredRecord] as const,
-          (data) => data.id === id,
-          created.seq,
-          { field: "id", equals: id },
+          [
+            { type: RequestAnswered, filter: { id } },
+            { type: RequestCancelledRecord, filter: { id } },
+            { type: RequestExpiredRecord, filter: { id } },
+          ] as const,
+          { from: created.seq },
         );
       } catch (error) {
         // A wait that suspends the invocation throws, and the schema stays held for the run that
