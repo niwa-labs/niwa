@@ -83,16 +83,18 @@ export async function reviewFix(
 
 /**
  * Reviewers look at the changes of a worktree through each lens and list what they find. The
- * findings are gathered once each (by title and severity), and by lens.
+ * findings are gathered once each (by title and severity), and by lens. A reviewer that could not
+ * look through a lens is in `failures` with its error: no findings from it is not a clean review, so
+ * a panel is complete only when `failures` is empty.
  */
 export async function reviewPanel(
   key: string,
   opts: { wt: Worktree; base: string; reviewers: readonly Seat[]; lenses: readonly string[] },
-): Promise<{ findings: Finding[]; byLens: Record<string, Finding[]> }> {
+): Promise<{ findings: Finding[]; byLens: Record<string, Finding[]>; failures: { reviewer: string; lens: string; error: string }[] }> {
   checkKey(key, "the key of a review");
   const keys = seatKeys(opts.reviewers, "the key of a reviewer");
   const { z } = script();
-  const legs = opts.reviewers.flatMap((seat, at) => opts.lenses.map((lens, index) => ({ seat, lens, key: `${keys[at] as string}-l${String(index + 1)}` })));
+  const legs = opts.reviewers.flatMap((seat, at) => opts.lenses.map((lens, index) => ({ seat, reviewer: keys[at] as string, lens, key: `${keys[at] as string}-l${String(index + 1)}` })));
   const answers = await script().scope(key, undefined, async () => {
     const { sha } = await stateOf(opts.wt, "head");
     return map("legs", legs, { key: (leg) => leg.key }, (leg) =>
@@ -106,9 +108,13 @@ export async function reviewPanel(
   const byLens: Record<string, Finding[]> = Object.fromEntries(opts.lenses.map((lens) => [lens, [] as Finding[]]));
   const findings: Finding[] = [];
   const seen = new Set<string>();
+  const failures: { reviewer: string; lens: string; error: string }[] = [];
   answers.forEach((answer, index) => {
-    if (!answer.ok) return;
-    const leg = legs[index] as { seat: Seat; lens: string };
+    const leg = legs[index] as { reviewer: string; lens: string };
+    if (!answer.ok) {
+      failures.push({ reviewer: leg.reviewer, lens: leg.lens, error: answer.error.message });
+      return;
+    }
     for (const finding of answer.value.findings) {
       (byLens[leg.lens] as Finding[]).push(finding);
       const id = `${finding.severity}\0${finding.title}`;
@@ -116,5 +122,5 @@ export async function reviewPanel(
       seen.add(id);
     }
   });
-  return { findings, byLens };
+  return { findings, byLens, failures };
 }

@@ -166,6 +166,23 @@ test("a fix left uncommitted is sent back to the author without being reviewed",
   expect(reviews).toBe(2);
 }, 30_000);
 
+test("a review panel names the reviewer that could not look, apart from a clean review", async () => {
+  const flow = await host({
+    author: () => ({ summary: "unused" }),
+    careful: () => ({ findings: [{ title: "unchecked input", evidence: "main.ts:9", severity: "blocks" }] }),
+    // An answer that is not what was asked for.
+    absent: () => ({ findings: "none" }),
+  });
+  const ended = await flow.run(`
+    import { inWorktree, reviewPanel } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, (wt) => reviewPanel("panel", { wt, base: "main", reviewers: ["careful", "absent"], lenses: ["security", "style"] })));`);
+  const out = resultOf(ended) as { findings: Array<{ title: string }>; byLens: Record<string, unknown[]>; failures: Array<{ reviewer: string; lens: string; error: string }> };
+  expect(out.findings.map((one) => one.title)).toEqual(["unchecked input"]);
+  expect(out.failures.map((one) => `${one.reviewer}/${one.lens}`)).toEqual(["absent/security", "absent/style"]);
+  expect(out.failures[0]?.error).not.toBe("");
+}, 30_000);
+
 test("test first takes a test that fails before the change, then a change that makes it pass", async () => {
   let reds = 0;
   const flow = await host({
