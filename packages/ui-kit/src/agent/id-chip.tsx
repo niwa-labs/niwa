@@ -88,7 +88,10 @@ export function IdChip({ id, href, onNavigate, label, short = false, copyable = 
           aria-label={`Copy ${id}`}
           className="hidden shrink-0 text-muted-foreground group-hover/id-chip:inline-flex hover:text-foreground focus-visible:inline-flex [&_svg]:size-3"
           onClick={() => {
-            void navigator.clipboard?.writeText(id).then(() => setCopied(true));
+            void navigator.clipboard?.writeText(id).then(
+              () => setCopied(true),
+              () => {},
+            );
           }}
         >
           {copied ? <CheckIcon /> : <CopyIcon />}

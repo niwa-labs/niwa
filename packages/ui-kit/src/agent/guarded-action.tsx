@@ -40,7 +40,7 @@ export type GuardedAction = {
     onPointerLeave: () => void;
     onPointerCancel: () => void;
     onClick: (event: { detail: number }) => void;
-    onKeyDown: (event: { key: string }) => void;
+    onKeyDown: (event: { key: string; repeat: boolean; preventDefault(): void }) => void;
     onBlur: () => void;
   };
   /** Back to idle without firing: the undo of a confirmed press. */
@@ -67,7 +67,11 @@ export function useGuardedAction({ onConfirm, timing: timingOverride, disabled }
   const deadline = nextDeadline(state, timing);
   useEffect(() => {
     if (deadline === null) return;
-    const wake = setTimeout(() => dispatch({ type: "tick", now: Date.now() }), Math.max(0, deadline - Date.now()));
+    // A timer may fire a little early; the tick counts as the deadline so the phase always moves on.
+    const wake = setTimeout(
+      () => dispatch({ type: "tick", now: Math.max(Date.now(), deadline) }),
+      Math.max(0, deadline - Date.now()),
+    );
     const refresh = setInterval(() => setNow(Date.now()), 250);
     setNow(Date.now());
     return () => {
@@ -86,7 +90,11 @@ export function useGuardedAction({ onConfirm, timing: timingOverride, disabled }
   // A confirmed action whose control goes away is still the owner's decision: fire it.
   useEffect(
     () => () => {
-      if (firesOnUnmount(stateRef.current)) onConfirmRef.current();
+      if (!firesOnUnmount(stateRef.current)) return;
+      // Hidden and shown again with its state kept, the control must not fire a second time.
+      stateRef.current = IDLE;
+      dispatch({ type: "cancel" });
+      onConfirmRef.current();
     },
     [],
   );
@@ -112,6 +120,8 @@ export function useGuardedAction({ onConfirm, timing: timingOverride, disabled }
       },
       onKeyDown: (event) => {
         if (event.key === "Escape") dispatch({ type: "cancel" });
+        // A held Enter repeats clicks; it must not arm and confirm without a second press.
+        else if (event.repeat) event.preventDefault();
       },
       onBlur: () => {
         if (stateRef.current.phase === "armed" || stateRef.current.phase === "holding") dispatch({ type: "cancel" });
