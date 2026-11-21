@@ -410,6 +410,10 @@
       "dependencies": {
         "@niwa-labs/client": "workspace:*",
         "@niwa-labs/core": "workspace:*",
+        "zod": "^4.6.7",
+      },
+      "devDependencies": {
+        "@niwa-labs/testing": "workspace:*",
       },
     },
     "packages/workflow": {
