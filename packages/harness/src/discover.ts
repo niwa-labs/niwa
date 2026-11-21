@@ -27,7 +27,7 @@ import { delimiter, join } from "node:path";
 
 import { z } from "zod";
 
-import { BundledProgramSchema, bundledPath, bundledVersion } from "./bundled.ts";
+import { BundledProgramSchema } from "./bundled.ts";
 import { HarnessBinarySchema, HarnessKindSchema } from "./instance.ts";
 import type { HarnessBinary, HarnessKind } from "./instance.ts";
 import type { HarnessKindDefinition } from "./index.ts";
@@ -50,8 +50,9 @@ export const HarnessDetectionSchema = z.object({
   /** The program that runs the kind. Absent when the kind is a library and not a program. */
   binary: z.string().min(1).optional(),
   /**
-   * The program niwa ships for the kind, run by the runtime that runs niwa. It stands where the
-   * binary does when the environment does not point elsewhere: it is not looked for on the PATH.
+   * The program niwa ships for the kind, run by the runtime that runs niwa, as the kind found it
+   * (`findBundled`). It stands where the binary does when the environment does not point
+   * elsewhere: it is not looked for on the PATH.
    */
   bundled: BundledProgramSchema.optional(),
   /**
@@ -155,13 +156,10 @@ async function discoverKind(kind: HarnessKindDefinition, env: DiscoverEnv): Prom
   let binary: HarnessBinary;
   if (override === undefined && detection.bundled !== undefined) {
     const program = detection.bundled;
-    let path: string;
-    try {
-      path = bundledPath(program);
-    } catch {
-      return { reason: `the bundled program "${program.package}/${program.entry}" is not installed and ${envVar} points at nothing that is there` };
+    if (program.path === undefined) {
+      return { reason: `the bundled program "${program.package}" is not installed and ${envVar} points at nothing that is there` };
     }
-    binary = { path, version: bundledVersion(program) ?? UNKNOWN_VERSION };
+    binary = { path: program.path, version: program.version ?? UNKNOWN_VERSION };
   } else {
     const path = override ?? (detection.binary === undefined ? undefined : await findOnPath(detection.binary, env));
     if (path === undefined) {

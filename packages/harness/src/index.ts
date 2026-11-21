@@ -230,7 +230,7 @@ export {
   rawJson,
   unknownVariantSigns,
 } from "./control.ts";
-export { BundledProgramSchema, bundledPath, manifestVersion } from "./bundled.ts";
+export { BundledProgramSchema, findBundled, manifestVersion } from "./bundled.ts";
 export type { BundledProgram } from "./bundled.ts";
 export type {
   AskAnswer,
