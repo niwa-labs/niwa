@@ -1,6 +1,6 @@
 // Records and a scripted host client for the tests.
 
-import type { FollowOptions, HostClient, StoredRecord } from "../src/index.ts";
+import type { FollowOptions, HostClient, RecordQuery, StoredRecord } from "../src/index.ts";
 
 export function rec(seq: number, type = "demo.event", stream = "main", data: unknown = {}): StoredRecord {
   return {
@@ -34,8 +34,8 @@ export function scriptedClient(): {
     info: async () => ({ actions: [] }),
     records: {
       read: async () => [],
-      async *since(after: number, opts?: FollowOptions) {
-        opened.push(after);
+      async *since(query: RecordQuery | undefined, opts?: FollowOptions) {
+        opened.push(query?.from ?? 0);
         opts?.onOpen?.();
         const queue: StoredRecord[] = [];
         let failure: Error | undefined;

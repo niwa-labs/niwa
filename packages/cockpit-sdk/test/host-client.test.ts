@@ -63,9 +63,25 @@ describe("calls", () => {
 
   test("a history read must be a list of records", async () => {
     const good = httpHostClient({ fetch: fakeFetch(() => Response.json([rec(1)])).fetch });
-    expect((await good.records.read(0)).map((r) => Number(r.seq))).toEqual([1]);
+    expect((await good.records.read({ from: 0 })).map((r) => Number(r.seq))).toEqual([1]);
     const bad = httpHostClient({ fetch: fakeFetch(() => Response.json([{ nope: 1 }])).fetch });
-    expect(bad.records.read(0)).rejects.toBeInstanceOf(HostCallError);
+    expect(bad.records.read({ from: 0 })).rejects.toBeInstanceOf(HostCallError);
+    // The four fields a first check looked at are not all a record has.
+    const { actor: _actor, ...noActor } = rec(1);
+    const thin = httpHostClient({ fetch: fakeFetch(() => Response.json([noActor])).fetch });
+    expect(thin.records.read({ from: 0 })).rejects.toMatchObject({ status: 502 });
+  });
+
+  test("a read sends the position and the rest of the query", async () => {
+    const { fetch, seen } = fakeFetch(() => Response.json([rec(8)]));
+    const client = httpHostClient({ fetch });
+    await client.records.read({ from: 7, types: ["run.*"], filter: { "run.id": "run-1" }, stream: "main" });
+    const url = new URL(seen[0]!.url, "http://x");
+    expect(url.pathname).toBe("/api/history");
+    expect(url.searchParams.get("after")).toBe("7");
+    expect(JSON.parse(url.searchParams.get("query")!)).toEqual({ types: ["run.*"], filter: { "run.id": "run-1" }, stream: "main" });
+    await client.records.read();
+    expect(new URL(seen[1]!.url, "http://x").searchParams.has("query")).toBe(false);
   });
 });
 
@@ -76,7 +92,7 @@ describe("the record feed", () => {
     const abort = new AbortController();
     const got: number[] = [];
     const retries: unknown[] = [];
-    for await (const r of client.records.since(0, { signal: abort.signal, onRetry: (e) => retries.push(e) })) {
+    for await (const r of client.records.since({ from: 0 }, { signal: abort.signal, onRetry: (e) => retries.push(e) })) {
       got.push(r.seq);
       if (got.length === 3) abort.abort();
     }
@@ -89,10 +105,81 @@ describe("the record feed", () => {
     const { fetch, seen } = fakeFetch(() => new Response("log in", { status: 401 }));
     const client = httpHostClient({ fetch, retryDelay: () => 0 });
     const read = async () => {
-      for await (const _ of client.records.since(0)) void _;
+      for await (const _ of client.records.since({ from: 0 })) void _;
     };
     expect(read()).rejects.toMatchObject({ status: 401 });
     await Bun.sleep(5);
+    expect(seen).toHaveLength(1);
+  });
+
+  test("a broken feed reopens with the same query after the last record", async () => {
+    const { fetch, seen } = fakeFetch((_url, _init, n) => (n === 1 ? sse(rec(4), rec(5)) : sse(rec(6))));
+    const client = httpHostClient({ fetch, retryDelay: () => 0 });
+    const abort = new AbortController();
+    const got: number[] = [];
+    for await (const r of client.records.since({ from: 3, types: ["demo.*"] }, { signal: abort.signal })) {
+      got.push(r.seq);
+      if (got.length === 3) abort.abort();
+    }
+    const urls = seen.map((s) => new URL(s.url, "http://x"));
+    expect(urls.map((u) => u.searchParams.get("after"))).toEqual(["3", "5"]);
+    expect(urls.map((u) => u.searchParams.get("query"))).toEqual([JSON.stringify({ types: ["demo.*"] }), JSON.stringify({ types: ["demo.*"] })]);
+  });
+
+  // A regression must fail the test, not hang it: the feed is cut off after a few requests.
+  const bounded = (answer: (url: string, init: RequestInit | undefined, n: number) => Response) => {
+    const abort = new AbortController();
+    const served = fakeFetch((url, init, n) => {
+      if (n >= 3) abort.abort();
+      return answer(url, init, n);
+    });
+    return { ...served, signal: abort.signal };
+  };
+
+  test("a position that is not a position is an error at once, not a request repeated for ever", async () => {
+    const { fetch, seen, signal } = bounded(() => new Response("invalid journal cursor", { status: 400 }));
+    const client = httpHostClient({ fetch, retryDelay: () => 0 });
+    const read = async () => {
+      for await (const _ of client.records.since({ from: -1 }, { signal })) void _;
+    };
+    await expect(read()).rejects.toBeInstanceOf(TypeError);
+    await expect(client.records.read({ from: 1.5 })).rejects.toBeInstanceOf(TypeError);
+    expect(seen).toHaveLength(0);
+  });
+
+  test("a request the server refuses for good ends the feed; a failing server is retried", async () => {
+    const refused = bounded(() => new Response("invalid record query", { status: 400 }));
+    const client = httpHostClient({ fetch: refused.fetch, retryDelay: () => 0 });
+    const read = async () => {
+      for await (const _ of client.records.since({ from: 0 }, { signal: refused.signal })) void _;
+    };
+    await expect(read()).rejects.toMatchObject({ status: 400 });
+    expect(refused.seen).toHaveLength(1);
+
+    const failing = fakeFetch((_url, _init, n) => (n < 3 ? new Response("busy", { status: 503 }) : sse(rec(1))));
+    const retried = httpHostClient({ fetch: failing.fetch, retryDelay: () => 0 });
+    const abort = new AbortController();
+    for await (const r of retried.records.since({ from: 0 }, { signal: abort.signal })) {
+      expect(r.seq).toBe(1);
+      abort.abort();
+    }
+    expect(failing.seen).toHaveLength(3);
+  });
+
+  test("a record the feed sends malformed is an error that names where the feed was, not a gap", async () => {
+    const { fetch, seen, signal } = bounded(() => {
+      const { actor: _actor, ...broken } = rec(3);
+      return new Response(`id: 2\ndata: ${JSON.stringify(rec(2))}\n\nid: 3\ndata: ${JSON.stringify(broken)}\n\nid: 4\ndata: ${JSON.stringify(rec(4))}\n\n`, {
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    const client = httpHostClient({ fetch, retryDelay: () => 0 });
+    const got: number[] = [];
+    const read = async () => {
+      for await (const r of client.records.since({ from: 1 }, { signal })) got.push(r.seq);
+    };
+    await expect(read()).rejects.toMatchObject({ status: 502, message: expect.stringContaining("after position 2") });
+    expect(got).toEqual([2]);
     expect(seen).toHaveLength(1);
   });
 });

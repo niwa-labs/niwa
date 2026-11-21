@@ -169,7 +169,7 @@ export function createRecordStream(client: HostClient, options: RecordStreamOpti
         onRetry: (error: unknown) => store.setState({ status: "retrying", error: describe(error) }),
       };
       try {
-        for await (const record of client.records.since(after, feed)) {
+        for await (const record of client.records.since({ from: after }, feed)) {
           batch.push(record);
           timer ??= setTimeout(flush, 0);
         }

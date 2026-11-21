@@ -26,8 +26,9 @@ export default definePlugin({
 - **Catalogue**: `CockpitModuleSchema` and `parseCatalogue` for the list of modules the host
   serves; `catalogueSources` imports them by their content-addressed entries. A module that
   takes too long to import or set up is left out like one that fails.
-- **Host**: `httpHostClient` calls actions and follows the record feed through the web server;
-  action references are typed through their schemas.
+- **Host**: `httpHostClient` calls actions and reads or follows records through the web server.
+  Action references are typed through their schemas; a result is what the host sent, as JSON
+  (`Wire<O>`), not decoded again. History and its live continuation take one `RecordQuery`.
 - **Live records**: `createRecordStream` keeps one feed in a store; pages read projections
   (`defineProjection`, `recordList`) with `useProjection`. A projection's fold is cached by the
   projection object, so define projections at module scope. Modules see the stream read-only.

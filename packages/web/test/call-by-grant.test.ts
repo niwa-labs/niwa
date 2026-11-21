@@ -27,9 +27,11 @@ const Next = z.number().transform((n) => n + 1);
 const When = z.object({ at: z.date() });
 
 const Note = record("demo.note", z.object({ n: z.number() }), { open: true });
+const Other = record("demo.other", z.object({ n: z.number() }), { open: true });
 
 const demo = plugin("demo", (api) => {
   api.declare(Note);
+  api.declare(Other);
   api.action(action("demo.next", { description: "Counts.", input: Empty, output: Next, recovery: "repeat", effect: "read", run: () => 1 }));
   api.action(action("demo.when", { description: "Dates.", input: Empty, output: When, recovery: "repeat", effect: "read", run: () => ({ at: new Date("2026-11-21T10:00:00Z") }) }));
   api.action(action("demo.read", { description: "Reads.", input: Empty, output: Ok, recovery: "repeat", effect: "read", run: () => ({ ok: true }) }));
@@ -165,6 +167,35 @@ test("the journal feed starts after the position the page names, and the info sa
   expect((await webFetch(`${web.url}/api/events?after=-1`)).status).toBe(400);
   expect((await webFetch(`${web.url}/api/events?after=x`)).status).toBe(400);
 });
+
+test("a page asks for history and its live continuation with one query", async () => {
+  const home = await hosted();
+  const web = await served(home, "owner");
+  const owner = await connectAsOwner(home);
+  cleanups.push(() => owner.close());
+  await owner.emit(Note, { n: 1 });
+  await owner.emit(Other, { n: 2 });
+  await owner.emit(Note, { n: 3 });
+
+  const ask = (params: Record<string, string>): string => `?${new URLSearchParams(params).toString()}`;
+  const notes = JSON.stringify({ types: ["demo.note"] });
+  const history = (await (await webFetch(`${web.url}/api/history${ask({ after: "0", query: notes })}`)).json()) as Array<{ type: string; data: { n: number } }>;
+  expect(history.map((record) => [record.type, record.data.n])).toEqual([["demo.note", 1], ["demo.note", 3]]);
+
+  const byData = JSON.stringify({ types: ["demo.*"], filter: { n: 2 } });
+  const filtered = (await (await webFetch(`${web.url}/api/history${ask({ after: "0", query: byData })}`)).json()) as Array<{ type: string }>;
+  expect(filtered.map((record) => record.type)).toEqual(["demo.other"]);
+
+  // The live continuation answers the same query: the other type never arrives.
+  const feed = await eventsOf(`${web.url}/api/events${ask({ after: "0", query: notes })}`, 2);
+  expect(feed.map((record) => record.type)).toEqual(["demo.note", "demo.note"]);
+
+  for (const bad of ["{", JSON.stringify({ types: ["!demo.note"] }), JSON.stringify({ from: 3 }), JSON.stringify({ nope: 1 })]) {
+    expect((await webFetch(`${web.url}/api/history${ask({ after: "0", query: bad })}`)).status).toBe(400);
+    expect((await webFetch(`${web.url}/api/events${ask({ after: "0", query: bad })}`)).status).toBe(400);
+  }
+});
+
 test("a call answers with the result the host returned, whether or not the page has a hook for the action", async () => {
   const home = await hosted();
   const hooked = (name: string, output: z.ZodType) => ({ ref: { name: actionName(name), input: Empty, output } });

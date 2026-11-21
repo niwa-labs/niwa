@@ -9,7 +9,7 @@
  */
 
 import { serverEvents, textChunks } from "./sse.ts";
-import type { StoredRecord } from "./records.ts";
+import { isStoredRecord, type RecordQuery, type StoredRecord } from "./records.ts";
 
 /** The part of a Standard Schema the cockpit uses: its types. */
 export type TypedSchema<In, Out> = {
@@ -69,13 +69,17 @@ export interface HostClient {
   call(action: string, input: unknown, opts?: CallOptions): Promise<unknown>;
   info(opts?: CallOptions): Promise<HostInfo>;
   records: {
-    /** The records after a position that are committed now, as many as the server sends at once. */
-    read(after: number, opts?: CallOptions): Promise<StoredRecord[]>;
     /**
-     * The records after a position: history, then live, without a gap or a duplicate. A broken
-     * connection is reopened after the last record received. Ends only when the signal aborts.
+     * The records that answer a query and are committed now, after its `from` position, as many
+     * as the server sends at once.
      */
-    since(after: number, opts?: FollowOptions): AsyncIterable<StoredRecord>;
+    read(query?: RecordQuery, opts?: CallOptions): Promise<StoredRecord[]>;
+    /**
+     * The records that answer a query: history, then live, without a gap or a duplicate. A
+     * broken connection is reopened with the same query after the last record received. Ends
+     * only when the signal aborts, or when the server refuses the query for good.
+     */
+    since(query?: RecordQuery, opts?: FollowOptions): AsyncIterable<StoredRecord>;
   };
 }
 
@@ -93,6 +97,9 @@ export class HostCallError extends Error {
   }
 }
 
+/** The feed sent something that is not a record: it would send it again, so it is not retried. */
+class FeedProtocolError extends HostCallError {}
+
 export type HttpHostClientOptions = {
   /** The origin and path prefix of the web server; the page's own origin by default. */
   base?: string | undefined;
@@ -105,10 +112,25 @@ function defaultRetryDelay(attempt: number): number {
   return Math.min(10_000, 250 * 2 ** Math.min(attempt, 6));
 }
 
-function isRecord(value: unknown): value is StoredRecord {
-  if (value === null || typeof value !== "object") return false;
-  const r = value as Record<string, unknown>;
-  return typeof r.id === "string" && typeof r.seq === "number" && typeof r.type === "string" && typeof r.stream === "string";
+/** The position of a query: a whole number from 0, as the server reads it. */
+function positionOf(query: RecordQuery | undefined): number {
+  const from = query?.from ?? 0;
+  if (!Number.isSafeInteger(from) || from < 0) throw new TypeError(`the position of a record query is a whole number from 0, got ${String(from)}`);
+  return from;
+}
+
+/** The address of a record route: the position, and the rest of the query as one JSON parameter. */
+function recordsPath(route: string, after: number, query: RecordQuery | undefined): string {
+  const { from: _from, ...rest } = query ?? {};
+  const given = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
+  const params = new URLSearchParams({ after: String(after) });
+  if (Object.keys(given).length > 0) params.set("query", JSON.stringify(given));
+  return `${route}?${params.toString()}`;
+}
+
+/** A request the server refused for good: the same request would be refused again. */
+function persistent(error: unknown): boolean {
+  return error instanceof HostCallError && error.status >= 400 && error.status < 500 && ![408, 425, 429].includes(error.status);
 }
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
@@ -154,30 +176,41 @@ export function httpHostClient(options: HttpHostClientOptions = {}): HostClient 
     return response.json();
   }
 
-  async function read(after: number, opts?: CallOptions): Promise<StoredRecord[]> {
-    const response = await request(`/api/history?after=${after}`, { signal: opts?.signal });
+  async function read(query?: RecordQuery, opts?: CallOptions): Promise<StoredRecord[]> {
+    const response = await request(recordsPath("/api/history", positionOf(query), query), { signal: opts?.signal });
     const body: unknown = await response.json();
-    if (!Array.isArray(body) || !body.every(isRecord)) throw new HostCallError(502, "the history is not a list of records");
-    return body;
+    if (!Array.isArray(body)) throw new HostCallError(502, "the history is not a list of records");
+    for (const record of body) {
+      if (!isStoredRecord(record)) throw new HostCallError(502, "the history has a record that is not a stored record");
+    }
+    return body as StoredRecord[];
   }
 
-  async function* since(after: number, opts?: FollowOptions): AsyncGenerator<StoredRecord, void, undefined> {
+  async function* since(query?: RecordQuery, opts?: FollowOptions): AsyncGenerator<StoredRecord, void, undefined> {
     const signal = opts?.signal;
     const aborted = (): boolean => signal?.aborted === true;
-    let last = after;
+    let last = positionOf(query);
     let attempt = 0;
     while (!aborted()) {
       let broken: unknown = new HostCallError(502, "the record feed ended");
       try {
-        const response = await request(`/api/events?after=${last}`, {
+        const response = await request(recordsPath("/api/events", last, query), {
           headers: { accept: "text/event-stream" },
           signal,
         });
         if (response.body === null) throw new HostCallError(502, "the record feed has no body");
         opts?.onOpen?.();
         for await (const event of serverEvents(textChunks(response.body))) {
-          const record: unknown = JSON.parse(event.data);
-          if (!isRecord(record)) continue;
+          let record: unknown;
+          try {
+            record = JSON.parse(event.data);
+          } catch {
+            record = undefined;
+          }
+          // Skipping a record would move the position past it for good: say so instead.
+          if (!isStoredRecord(record)) {
+            throw new FeedProtocolError(502, `the record feed sent something that is not a stored record after position ${last}`);
+          }
           // A reopened feed resumes after `last`; anything at or before it was delivered already.
           if (record.seq <= last) continue;
           last = record.seq;
@@ -186,8 +219,9 @@ export function httpHostClient(options: HttpHostClientOptions = {}): HostClient 
         }
       } catch (error) {
         if (aborted()) return;
-        // Not logged in or not allowed: retrying cannot help.
-        if (error instanceof HostCallError && (error.status === 401 || error.status === 403)) throw error;
+        // Not logged in, not allowed, a query the server refuses, or a feed that sends what is not a record:
+        // retrying cannot help.
+        if (persistent(error) || error instanceof FeedProtocolError) throw error;
         broken = error;
       }
       if (aborted()) return;

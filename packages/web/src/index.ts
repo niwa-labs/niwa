@@ -23,9 +23,10 @@
  * - `GET /api/catalogue` — the client modules the host lists, with the addresses they are served at;
  * - `GET /api/info` — the actions the viewer may call, the position of the journal, journal field names, the harnesses
  *   with an agent action and the input schema of `session.start`;
- * - `GET /api/history?after=` — up to 128 records after a journal position;
- * - `GET /api/events?after=` — journal records over SSE from a position (the journal's end is `seq` of `/api/info`),
- *   resuming from `Last-Event-ID` when present;
+ * - `GET /api/history?after=&query=` — up to 128 records after a journal position that answer the record query in
+ *   `query` (JSON: `types`, `filter`, `stream`; every record when absent);
+ * - `GET /api/events?after=&query=` — the records that answer the same query over SSE from a position (the journal's
+ *   end is `seq` of `/api/info`), resuming from `Last-Event-ID` when present;
  * - `GET /api/source?seq=` — the verified script of a workflow start, for the owner;
  * - `POST /api/call` — call an action with `{action, input}`;
  *
@@ -41,9 +42,9 @@
 
 import { z } from "zod";
 
-import { actionName, RESOLVE_ACTION, recordId, seq } from "@niwa-labs/core";
+import { actionName, RESOLVE_ACTION, RecordQuerySchema, recordId, seq } from "@niwa-labs/core";
 import { readOwnerToken, connect, HostError, RECORDS_READ_ACTION } from "@niwa-labs/client";
-import type { ActionName, Description, SpeaksFor } from "@niwa-labs/core";
+import type { ActionName, Description, RecordQuery, SpeaksFor } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
 
 import { ASSETS_PREFIX, assetFile, catalogueOf, MODULES_PREFIX, ModuleBuilds, pageOf, typeOf } from "./app.ts";
@@ -294,8 +295,10 @@ async function route(context: Context, request: Request): Promise<Response> {
       const lastEventId = path === "/api/events" ? request.headers.get("last-event-id") : null;
       const after = position(lastEventId ?? url.searchParams.get("after") ?? "0");
       if (after === undefined) return text(400, "invalid journal cursor");
-      if (path === "/api/history") return json(200, await api.records.read({ from: after, limit: 128 }));
-      return journalEvents(api, after, streams);
+      const query = recordQuery(url.searchParams.get("query"));
+      if (query === undefined) return text(400, "invalid record query");
+      if (path === "/api/history") return json(200, await api.records.read({ ...query, from: after, limit: 128 }));
+      return journalEvents(api, { ...query, from: after }, streams);
     }
     case "/events":
       return events(api, streams);
@@ -333,6 +336,22 @@ async function route(context: Context, request: Request): Promise<Response> {
         }
       });
   }
+}
+
+/**
+ * The query a page sends with its position: which records it wants, as JSON in `query`. The
+ * position is not part of it, it is `after`; undefined for a query that is not one.
+ */
+function recordQuery(text: string | null): Omit<RecordQuery, "from"> | undefined {
+  if (text === null) return {};
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  const parsed = RecordQuerySchema.omit({ from: true }).safeParse(value);
+  return parsed.success ? (parsed.data as Omit<RecordQuery, "from">) : undefined;
 }
 
 function position(value: string): ReturnType<typeof seq> | undefined {
@@ -454,8 +473,8 @@ function schemaFields(properties: unknown): string[] {
 const SSE_TYPE = "text/event-stream; charset=utf-8";
 
 /** Each SSE id is a committed journal position. Reconnecting resumes after it. */
-function journalEvents(api: NiwaApi, after: ReturnType<typeof seq>, streams: Set<() => void>): Response {
-  const iterator = api.records.since({ from: after })[Symbol.asyncIterator]();
+function journalEvents(api: NiwaApi, query: RecordQuery, streams: Set<() => void>): Response {
+  const iterator = api.records.since(query)[Symbol.asyncIterator]();
   const encoder = new TextEncoder();
   let end = (_close = true): void => undefined;
   let closed = false;

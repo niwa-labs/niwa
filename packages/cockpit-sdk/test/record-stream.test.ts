@@ -16,6 +16,8 @@ describe("matching", () => {
     expect(matchRecord({ types: ["run.*"] }, r)).toBe(true);
     expect(matchRecord({ types: ["run.step.done"] }, r)).toBe(true);
     expect(matchRecord({ types: ["runx.*", "run"] }, r)).toBe(false);
+    // As in a query to the host, no types means every type.
+    expect(matchRecord({ types: [] }, r)).toBe(true);
     expect(matchRecord({ types: ["run.*"], stream: "run-2" }, r)).toBe(false);
     expect(matchRecord({ where: (x) => x.seq > 1 }, r)).toBe(false);
   });
