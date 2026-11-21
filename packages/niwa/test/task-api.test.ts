@@ -168,17 +168,22 @@ test("a result schema must describe an object and be readable, or the task is no
   });
 }, 30_000);
 
-test("task.assigned shows the caller the open tasks that declared a schema", async () => {
+test("task.assigned shows the caller the open tasks, with the schema of the ones that declared one", async () => {
   await withHost(async (client) => {
     const declared = (await client.call(taskCreate, contract("Count the files", SHAPE))).id;
-    await client.call(taskCreate, contract("Say anything"));
+    const open = (await client.call(taskCreate, contract("Say anything"))).id;
     // Somebody else's task is not the caller's.
     await client.call(taskCreate, { ...contract("Count for them", SHAPE), responsible: ASKER });
 
     expect<unknown>(await client.call(taskAssigned, {})).toEqual({
-      tasks: [{ task: declared, description: "Count the files", result: SHAPE }],
+      tasks: [
+        { task: declared, description: "Count the files", result: SHAPE },
+        { task: open, description: "Say anything" },
+      ],
     });
     await client.call(taskFinish, { task: declared, result: { files: 1 } });
+    expect<unknown>(await client.call(taskAssigned, {})).toEqual({ tasks: [{ task: open, description: "Say anything" }] });
+    await client.call(taskFinish, { task: open, result: "done" });
     expect(await client.call(taskAssigned, {})).toEqual({ tasks: [] });
   });
 }, 30_000);

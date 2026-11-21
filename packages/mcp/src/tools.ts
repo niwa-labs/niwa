@@ -120,24 +120,24 @@ export function withOpenQuestions(tool: Tool, questions: readonly OpenQuestion[]
 export const TASK_FINISH = "task.finish";
 export const TASK_ASSIGNED = "task.assigned";
 
-/** One open task the caller is responsible for: its id, what it is, and the schema its result must fit. */
+/** One open task the caller is responsible for: its id, what it is, and the schema its result must fit, when it has one. */
 export interface AssignedTask {
   readonly task: string;
   readonly description: string;
-  readonly result: JsonSchema;
+  readonly result?: JsonSchema;
 }
 
 /**
  * The tool that finishes a task, with the exact schema of the results the caller owes.
  *
- * `task` is one of the ids of the open tasks the caller is responsible for that declared a result
- * schema, and `result` is the schema of that result — of the one task, or any of them when there
- * are several. With no such task the tool is as the action declares it.
+ * `task` is one of the ids of the open tasks the caller is responsible for, and `result` is the schema
+ * of that result — of the one task, or any of them when there are several; a task that declared no
+ * schema takes any result. With no open task the tool is as the action declares it.
  */
 export function withAssignedTasks(tool: Tool, tasks: readonly AssignedTask[]): Tool {
   const shown = withChoices(
     tool,
-    tasks.map((task) => ({ id: task.task, schema: task.result })),
+    tasks.map((task) => ({ id: task.task, schema: task.result ?? {} })),
     {
       key: "task",
       keyDescription: "The id of the task you finish, as it was given with the assignment.",

@@ -252,7 +252,7 @@ async function exactFinishTool(
 /** What `task.assigned` answers, as this surface reads it. */
 const AssignedTasksOutput = z.object({
   tasks: z.array(
-    z.object({ task: z.string().min(1), description: z.string(), result: JsonSchemaValue }),
+    z.object({ task: z.string().min(1), description: z.string(), result: JsonSchemaValue.optional() }),
   ),
 });
 

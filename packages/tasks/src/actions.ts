@@ -98,12 +98,12 @@ export const taskGet = getRef("task.get", {
   entity: TaskEntity,
 });
 
-/** The open tasks that declared a result schema and that the caller is responsible for. */
+/** The open tasks that the caller is responsible for, each with the schema its result must fit when it declared one. */
 export const taskAssigned = actionRef("task.assigned", {
   description:
-    "The open tasks the caller is responsible for that declare a result schema: the id, the description and the schema each result must fit.",
+    "The open tasks the caller is responsible for: the id, the description and, for a task that declares one, the schema its result must fit.",
   input: z.object({}),
   output: z.object({
-    tasks: z.array(z.object({ task: TaskId, description: TaskContract.shape.description, result: ResultSchema })),
+    tasks: z.array(z.object({ task: TaskId, description: TaskContract.shape.description, result: ResultSchema.optional() })),
   }),
 });

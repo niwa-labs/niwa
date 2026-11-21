@@ -10,7 +10,7 @@
  *   refused, and the task stays open.
  * - **task.result** gives the result, and waits for it when the task is not done yet.
  * - **task.list** and **task.get** show the tasks; **task.assigned** shows the caller the open tasks
- *   it is responsible for that declared a result schema.
+ *   it is responsible for, with the result schema of the ones that declared one.
  *
  * Where a task says to report, that is where the updates and the end go: the Update on every
  * report, the Result or the Failure when the task is done. Both go from the responsible party
@@ -351,7 +351,7 @@ function entityOf(state: TaskState): TaskEntity {
   return { ...state.contract, status: state.status, ...(state.status === "done" ? { outcome: state.outcome } : {}) };
 }
 
-/** The actions that read tasks: the list, one task, and the open tasks of the caller that declared a result schema. */
+/** The actions that read tasks: the list, one task, and the open tasks of the caller. */
 function taskReads(ledger: TaskLedger, ids: IdIndex<"task">, bind: CallerBinding) {
   const list = action(taskList, {
     recovery: "repeat",
@@ -391,8 +391,14 @@ function taskReads(ledger: TaskLedger, ids: IdIndex<"task">, bind: CallerBinding
       if (me === undefined) return { tasks: [] };
       return {
         tasks: [...ledger.states().values()].flatMap((state) =>
-          state.status === "open" && state.contract.result !== undefined && sameAddress(state.contract.responsible, me)
-            ? [{ task: state.contract.id, description: state.contract.description, result: state.contract.result }]
+          state.status === "open" && sameAddress(state.contract.responsible, me)
+            ? [
+                {
+                  task: state.contract.id,
+                  description: state.contract.description,
+                  ...(state.contract.result === undefined ? {} : { result: state.contract.result }),
+                },
+              ]
             : [],
         ),
       };

@@ -250,3 +250,20 @@ test("the schemas of several choices keep their own references and definitions",
   expect(accepts(shown, { task: "task-2", result: { label: 1 } })).toBe(false);
   expect(accepts(shown, { task: "task-2", result: {} })).toBe(false);
 });
+
+test("a task that declared no result schema can be finished next to one that did", () => {
+  const shown = withAssignedTasks(FINISH, [
+    { task: "task-1", description: "count", result: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] } },
+    { task: "task-2", description: "say anything" },
+  ]);
+  expect(accepts(shown.inputSchema, { task: "task-1", result: { n: 3 } })).toBe(true);
+  expect(accepts(shown.inputSchema, { task: "task-1", result: "done" })).toBe(false);
+  expect(accepts(shown.inputSchema, { task: "task-2", result: "done" })).toBe(true);
+  expect(accepts(shown.inputSchema, { task: "task-2", result: { n: "x" } })).toBe(true);
+  expect(shown.description).toContain("task-2 (say anything)");
+
+  // Alone, such a task takes any result.
+  const alone = withAssignedTasks(FINISH, [{ task: "task-2", description: "say anything" }]);
+  expect(accepts(alone.inputSchema, { task: "task-2", result: [1, "x"] })).toBe(true);
+  expect(accepts(alone.inputSchema, { task: "task-1", result: 1 })).toBe(false);
+});
