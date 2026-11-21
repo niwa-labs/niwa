@@ -295,3 +295,27 @@ test("an interrupted turn resumes from its start receipt after a new session was
   expect(host.control.resumes).toHaveLength(0);
   expect(dataOf(rows, "agent.turn.delivered")).toEqual([{ agent: "rin", session, turn, receipt: { status: "started", turn: 1 } }]);
 });
+
+test("one agent waiting for a start does not hold another agent's mailbox", async () => {
+  const blocked = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  const control = new (class extends ScriptedControl {
+    override async start(options: Parameters<ScriptedControl["start"]>[0]) {
+      if (options.prompt.sections.some((section) => section.text.includes("wait for release"))) {
+        entered.resolve();
+        await blocked.promise;
+      }
+      return super.start(options);
+    }
+  })();
+  const host = await served({ agents: [RIN, { ...RIN, name: "bob" }] }, { control });
+  await asOwner(host, "agent.tell", { agent: "rin", text: "wait for release" });
+  await entered.promise;
+  try {
+    await asOwner(host, "agent.tell", { agent: "bob", text: "independent" });
+    const records = await until(host.records, "agent.turn.delivered", 1, 1500);
+    expect(dataOf(records, "agent.turn.delivered")[0]).toMatchObject({ agent: "bob" });
+  } finally {
+    blocked.resolve();
+  }
+});

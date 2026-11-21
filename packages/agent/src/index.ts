@@ -300,7 +300,7 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
      * be resumed is followed by a new one, seeded from it. A turn that cannot be delivered is written as
      * failed, saying whether it may have gone; it never holds up the turns after it.
      */
-    api.on(AgentTurnQueued, async (turn, step) => {
+    const deliver = async (turn: ReturnType<typeof AgentTurnQueued.schema.parse>, step: Step) => {
       const found = defined().get(turn.agent);
       const failed = (status: "unsent" | "possibly-sent", reason: string) => step.emit(AgentTurnFailed, { agent: turn.agent, turn: turn.turn, status, reason }, { key: "failed" });
       if (found === undefined) return void (await failed("unsent", `there is no agent "${turn.agent}"`));
@@ -396,7 +396,17 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
         { key: "session" },
       );
       await finishStart(started.value.ref, started.value.receipt);
-    });
+    };
+
+    api.subscribers(() => [...defined().keys()].map((name) => ({
+      id: `mailbox:${name}`,
+      from: 0,
+      queries: [{ types: [AgentTurnQueued.name], filter: { agent: name } }],
+      handler: async (data, step) => {
+        const turn = AgentTurnQueued.schema.parse(data);
+        if (waitingOf(name).some((queued) => queued.turn === turn.turn)) await deliver(turn, step);
+      },
+    })));
 
     /**
      * The sections plugins offer for the prompt of a new session of an agent, as their actions write them now: each a
