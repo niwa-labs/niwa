@@ -11,7 +11,7 @@ import type { PluginApi } from "@niwa-labs/plugin";
 
 import { history } from "../src/index.ts";
 import type { HistoryOptions } from "../src/index.ts";
-import { HistorySessionSeen } from "../src/records.ts";
+import { HistorySessionSeen, SessionProgress } from "../src/records.ts";
 
 const H = harnessId("h");
 const ID = sessionId(H, "s1");
@@ -55,6 +55,18 @@ function host(options: HistoryOptions, preset: ReadonlyArray<{ type: RecordType<
     return stored;
   };
   for (const { type, data } of preset) journal.push({ id: `p${String(journal.length)}`, seq: seq(journal.length + 1), type: recordTypeName(type.name), data } as unknown as StoredRecord);
+  /** How many records the plugin has been given by `since`, in all. */
+  const scanned = { records: 0 };
+  const reader = {
+    since: (from: number, types?: string[]) => {
+      const found = journal.filter((stored) => stored.seq > from && (types === undefined || types.includes(stored.type)));
+      scanned.records += found.length;
+      return found;
+    },
+    find: (query: { type: string; field: string; equals: unknown }) =>
+      journal.filter((stored) => stored.type === query.type && (stored.data as Record<string, unknown>)[query.field] === query.equals),
+    last: () => seq(journal.length),
+  };
   const actions = new Map<string, Run>();
   let stopService: (() => void) | undefined;
   const api = {
@@ -66,17 +78,13 @@ function host(options: HistoryOptions, preset: ReadonlyArray<{ type: RecordType<
     service(start: () => () => void) {
       stopService = start();
     },
-    journal: () => ({
-      since: (from: number, types?: string[]) => journal.filter((stored) => stored.seq > from && (types === undefined || types.includes(stored.type))),
-      find: (query: { type: string; field: string; equals: unknown }) =>
-        journal.filter((stored) => stored.type === query.type && (stored.data as Record<string, unknown>)[query.field] === query.equals),
-      last: () => seq(journal.length),
-    }),
+    journal: () => reader,
     emit: append,
   };
   history(options).setup(api as unknown as PluginApi);
   return {
     journal,
+    scanned,
     gate,
     call: (name: string, input: unknown) => actions.get(name)!(input, { emit: append }),
     types: () => journal.map((stored) => stored.type as string).filter((type) => type !== "history.session.seen"),
@@ -137,4 +145,20 @@ test("a watch the journal says is on, whose task is gone, is stopped by unwatch"
   expect(await h.call("history.unwatch", { session: ID })).toEqual({ stopped: true });
   expect(h.types()).toEqual(["history.session.unwatched"]);
   expect(await h.call("history.unwatch", { session: ID })).toEqual({ stopped: false });
+});
+
+test("what the journal says of the watches is read once, and afterwards only what is new", async () => {
+  // A host that has written a long history of other sessions' progress.
+  const others = Array.from({ length: 200 }, (_, n) => ({
+    type: SessionProgress as RecordType<any>,
+    data: { session: sessionId(H, `other-${String(n)}`), done: n, total: 300 },
+  }));
+  const h = host({ harnesses: [{ instance, reading: reading([checklist(1, 1, 2)]) }], timing }, others);
+  open.push(h.stop);
+  for (let n = 0; n < 30; n += 1) await h.call("history.signal", { session: ID, signal: "end-hook" });
+  await h.call("history.watch", { session: ID });
+  await until(() => h.types().includes("session.progress"));
+  expect(await h.call("history.unwatch", { session: ID })).toEqual({ stopped: true });
+  // Not the whole history again for each call: the history once, then the few records of this session.
+  expect(h.scanned.records).toBeLessThan(260);
 });

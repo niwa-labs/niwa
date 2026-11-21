@@ -10,7 +10,7 @@
  */
 
 import { action, recordTypeName, seq } from "@niwa-labs/core";
-import type { JournalReader, StoredRecord } from "@niwa-labs/core";
+import type { JournalReader, Seq, StoredRecord } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin, PluginApi, Subscriber } from "@niwa-labs/plugin";
 import { harnessId, requireAbility, sessionId } from "@niwa-labs/harness";
@@ -94,8 +94,10 @@ interface Standing {
   pid?: number;
 }
 
-function standingOf(records: readonly StoredRecord[]): Map<string, Standing & { session: SessionId }> {
-  const standing = new Map<string, Standing & { session: SessionId }>();
+type Standings = Map<string, Standing & { session: SessionId }>;
+
+/** Fold records, in the order the journal holds them, into where each watch stands. */
+function foldStanding(standing: Standings, records: readonly StoredRecord[]): void {
   for (const stored of records) {
     const session = (stored.data as { session?: SessionId }).session;
     if (session === undefined) continue;
@@ -119,7 +121,6 @@ function standingOf(records: readonly StoredRecord[]): Map<string, Standing & { 
     }
     standing.set(key, now);
   }
-  return standing;
 }
 
 /** Does a process live? A process that exists but is not ours to signal lives too. */
@@ -141,8 +142,21 @@ export function history(options: HistoryOptions): Plugin {
     const clock = options.clock ?? SYSTEM_CLOCK;
     const timing = options.timing ?? DEFAULT_WATCH_TIMING;
 
-    /** Where each watch stands, from the journal. */
-    const standingNow = () => standingOf(api.journal?.()?.since(seq(0), HISTORY_TYPES.map((type) => type.name)) ?? []);
+    /**
+     * Where each watch stands, from the journal: all of it is read the first time, and afterwards only
+     * the records written since, so the cost does not grow with the history of the host.
+     */
+    let known: { journal: JournalReader; upto: Seq; standing: Standings } | undefined;
+    const standingNow = (): Standings => {
+      const journal = api.journal?.();
+      if (journal === undefined) return new Map();
+      if (known?.journal !== journal) known = { journal, upto: seq(0), standing: new Map() };
+      const written = journal.since(known.upto, HISTORY_TYPES.map((type) => type.name));
+      foldStanding(known.standing, written);
+      const last = written[written.length - 1];
+      if (last !== undefined) known.upto = last.seq;
+      return known.standing;
+    };
 
     const readingOf = (id: SessionId) => {
       const binding = bindings.find((candidate) => candidate.instance.id === id.harness);
@@ -274,7 +288,7 @@ export function history(options: HistoryOptions): Plugin {
             let cwd: string | undefined;
             for await (const info of reading.list({ natives: [id.native] })) cwd = info.cwd ?? cwd;
             // A session watched before goes on from where that watch left it, saying no progress twice.
-            const before = standingNow().get(keyOf(id));
+            const before = { ...standingNow().get(keyOf(id)) };
             await ctx.emit(HistorySessionSeen, {
               session: id,
               harness: id.harness,
@@ -283,9 +297,9 @@ export function history(options: HistoryOptions): Plugin {
             });
             // Only where the earlier watch got to is carried over: the process is the one this call names, if any.
             follow(id, {
-              ...(before?.from === undefined ? {} : { from: before.from }),
-              ...(before?.progress === undefined ? {} : { progress: before.progress }),
-              paused: before?.paused === true,
+              ...(before.from === undefined ? {} : { from: before.from }),
+              ...(before.progress === undefined ? {} : { progress: before.progress }),
+              paused: before.paused === true,
               ...(input.pid === undefined ? {} : { pid: input.pid }),
             });
           });
