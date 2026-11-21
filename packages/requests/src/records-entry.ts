@@ -17,8 +17,11 @@ export {
   expiryId,
 } from "./records.ts";
 export {
+  AskAnswered,
   AskInput,
+  AskOpen,
   AskOutput,
+  answeredBy,
   REQUEST_ANSWER,
   REQUEST_ASK,
   REQUEST_CANCEL,

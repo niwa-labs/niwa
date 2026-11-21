@@ -769,6 +769,7 @@ async function callAction<I, O, In = I>(
     value = await action.run(input, {
       operationId: operation,
       caller: callerAs(ctx, as),
+      invocation: ctx.invocation,
       emit: emitFor(ctx, action.name, operation),
       wait: waitFor(ctx, key, attempt),
       waitAnyOf: waitAnyFor(ctx, key, attempt),

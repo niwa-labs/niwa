@@ -1,8 +1,9 @@
 /**
  * The requests module: someone waits for a typed answer from someone.
  *
- * - **request.ask** creates the request and waits for the answer in one call, so an answer
- *   cannot arrive between the two and be missed. The wait survives a restart.
+ * - **request.ask** creates the request and, as a step, waits for the answer in one call, so an
+ *   answer cannot arrive between the two and be missed. The wait survives a restart. Called
+ *   directly it cannot wait: it returns the id of the open request.
  * - **request.answer** answers a request. The caller is bound to an address by the transport,
  *   never by the payload, and only the addressee may answer. The first answer stands.
  * - **request.cancel** cancels an open request; only its asker or addressee may.
@@ -105,7 +106,8 @@ function createdRecordOf(operation: OperationId): RecordId {
  *
  * The id of the request is issued from the record the ask writes, which follows the operation, so
  * a step made again is the same request. The answer is looked for after the request was written,
- * so one that arrives at once is not missed.
+ * so one that arrives at once is not missed. A call outside an invocation has nothing to suspend:
+ * it returns the request as open.
  *
  * The wait ends with the first of three things: an answer, a cancellation or an expiry. The
  * two latter end the wait with an error the caller catches — `RequestCancelled` or
@@ -127,7 +129,9 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
           : (bind(ctx.caller) ?? (ctx.caller.kind === "client" ? undefined : input.from));
       // While this process waits, the zod schema of the value of a form checks it whole: JSON
       // Schema cannot say a refinement, and an answer that fails one must be refused, not written.
-      if (input.check !== undefined) holdAnswerCheck(id, input.check);
+      // Outside an invocation nothing waits, so there is nothing to hold it for.
+      const waits = ctx.invocation !== undefined;
+      if (waits && input.check !== undefined) holdAnswerCheck(id, input.check);
       let ended;
       try {
         const created = await ctx.emit(RequestCreated, {
@@ -138,6 +142,9 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
           ...(from === undefined ? {} : { from }),
           ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
         });
+        // A call outside an invocation cannot wait: it leaves the request open and says so, and
+        // the caller reads the answer later by the id.
+        if (!waits) return { id, status: "open" as const };
         ended = await ctx.waitAnyOf(
           [RequestAnswered, RequestCancelledRecord, RequestExpiredRecord] as const,
           (data) => data.id === id,
@@ -450,8 +457,11 @@ export function requests(opts: RequestsOptions = {}): Plugin {
   });
 }
 export {
+  AskAnswered,
   AskInput,
+  AskOpen,
   AskOutput,
+  answeredBy,
   REQUEST_ANSWER,
   REQUEST_ASK,
   REQUEST_CANCEL,

@@ -23,7 +23,7 @@ import type { Answer, Grant, Question, QuestionOption, Step } from "@niwa-labs/c
 import type { PluginApi } from "@niwa-labs/plugin";
 import type { RequestId } from "@niwa-labs/requests/records";
 import type { ReverseHandler } from "@niwa-labs/harness";
-import { QuestionName, RequestCreated, requestAsk, requestCancel, requestFind } from "@niwa-labs/requests/records";
+import { QuestionName, RequestCreated, answeredBy, requestAsk, requestCancel, requestFind } from "@niwa-labs/requests/records";
 
 import { SessionRefSchema, sessionRef } from "./identity.ts";
 import type { SessionRef } from "./identity.ts";
@@ -180,10 +180,8 @@ export function installReverse(api: PluginApi): ReverseRouting {
       return;
     }
     try {
-      const { answer: answered } = await step(
-        requestAsk,
-        { to: data.starter, question: QUESTION_NAME, input: data.question },
-        { key: "ask" },
+      const { answer: answered } = answeredBy(
+        await step(requestAsk, { to: data.starter, question: QUESTION_NAME, input: data.question }, { key: "ask" }),
       );
       const given = settled(data.question, answered);
       await step.emit(SessionReverseAnswered, {

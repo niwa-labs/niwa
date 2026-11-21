@@ -18,7 +18,7 @@ import { AnswerSchema, FormSchemaSchema, action, answerOfValue, toJsonSchema } f
 import type { Action, ActionContext, Answer, JournalReader, Question, Address } from "@niwa-labs/core";
 
 import { PromptSchema } from "@niwa-labs/harness";
-import { QuestionName, RequestCreated, RequestId, requestAsk, requestResolve } from "@niwa-labs/requests/records";
+import { QuestionName, RequestCreated, RequestId, answeredBy, requestAsk, requestResolve } from "@niwa-labs/requests/records";
 
 
 /** The name of the action a session calls when the harness cannot answer natively. */
@@ -124,7 +124,7 @@ export async function askNonNative(
     readonly schema: z.ZodType<unknown>;
   },
 ): Promise<unknown> {
-  const { answer } = await ctx.step(requestAsk, {
+  const { answer } = answeredBy(await ctx.step(requestAsk, {
     to: args.to,
     question: SESSION_QUESTION,
     input: {
@@ -134,7 +134,7 @@ export async function askNonNative(
       schema: FormSchemaSchema.parse(toJsonSchema(args.schema, "input")),
     },
     check: args.schema,
-  });
+  }));
   if (!("form" in answer)) throw new Error("the session answered a form with something else");
   return answer.form;
 }

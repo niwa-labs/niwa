@@ -11,7 +11,7 @@ import { expect, test } from "bun:test";
 
 import { owner, record } from "@niwa-labs/core";
 import type { StoredRecord } from "@niwa-labs/core";
-import { createNiwa, eventually, tempHome, loginWeb, plugin, watch, webFetch, connectAsOwner, opt, requestAsk, question, requests } from "@niwa-labs/testing";
+import { createNiwa, eventually, tempHome, loginWeb, plugin, watch, webFetch, connectAsOwner, opt, answeredBy, requestAsk, question, requests } from "@niwa-labs/testing";
 import { z } from "zod";
 
 import type { WebServer } from "../src/index.ts";
@@ -26,7 +26,7 @@ function executor() {
   return plugin("web-login-executor", (api) => {
     api.declare(Start, Done);
     api.on(Start, async (_data, step) => {
-      const { answer } = await step(requestAsk, { to: owner, ...Pick });
+      const { answer } = answeredBy(await step(requestAsk, { to: owner, ...Pick }));
       await step.emit(Done, { answer: JSON.stringify(answer) });
     });
   });

@@ -15,9 +15,11 @@ import type { NiwaApi } from "@niwa-labs/client";
 import type { StoredRecord, Timestamp } from "@niwa-labs/core";
 import {
   REQUEST_ANSWER,
+  REQUEST_ASK,
   REQUEST_CANCEL,
   REQUEST_OPEN,
   REQUEST_FIND,
+  REQUEST_GET,
   REQUEST_RESOLVE,
   RequestAnswered,
   RequestCancelledRecord,
@@ -188,6 +190,27 @@ async function serve(resolvers?: ResolverRegistry) {
 function plainClient(host: Host, home: string, id: string): Promise<NiwaApi> {
   return connect({ home, id, token: host.issueToken(principalOf("client", id)) });
 }
+
+test("requests: request.ask called directly returns the open request at once and does not fail", async () => {
+  const world = await serve();
+  try {
+    // Outside a step nothing can wait: the request is made and its id comes back, still open.
+    const asked = await world.ownerClient.call<unknown, { id: string; status: string }>(REQUEST_ASK, { to: owner, ...ReleaseBranch });
+    expect(asked.status).toBe("open");
+    expect(asked.id.startsWith("req-")).toBe(true);
+    expect(await openIds(world.ownerClient)).toContain(asked.id);
+
+    // The caller reads it later by the id, and finds the answer there once the owner gave it.
+    const open = await world.ownerClient.call<unknown, { status: string }>(REQUEST_GET, { id: asked.id });
+    expect(open.status).toBe("open");
+    await world.ownerClient.call(REQUEST_ANSWER, { id: asked.id, answer: pick("next") });
+    const answered = await world.ownerClient.call<unknown, { status: string; answer?: unknown }>(REQUEST_GET, { id: asked.id });
+    expect(answered.status).toBe("answered");
+    expect(answered.answer).toEqual(pick("next"));
+  } finally {
+    await world.close();
+  }
+});
 
 test("requests: a cancelled request is never answered, and only a party to it may cancel", async () => {
   const world = await serve();

@@ -126,7 +126,7 @@ export const ResumeOutput = RunOutput.extend({ revision: Revision.optional() });
 
 export const workflowStart = actionRef("workflow.start", {
   description:
-    "Start a run: a registered workflow by its id (its latest version), or a script file run once, and the arguments it gets. Answers the id of the run (run-…). A broken workflow does not start.",
+    "Run a script now: a registered workflow by its id (its latest version), or a script file run once, and the arguments it gets. It starts one run and subscribes to nothing (workflow.install does that). Answers the id of the run (run-…). A broken workflow does not start.",
   input: StartInput,
   output: StartOutput,
 });
@@ -221,7 +221,7 @@ export const Installation = ScriptContract.omit({ description: true }).extend({
 
 export const workflowInstall = actionRef("workflow.install", {
   description:
-    "Install a workflow that niwa starts by itself: one run per record that matches its `on`. A registered workflow by its id, or a script file. Answers the id of the installation (sub-…). The runs are held to the profile wf:<sub-…> (the id of the installation), which is narrow(the caller's grant, uses). Records from before the installation start nothing.",
+    "Subscribe a workflow: niwa starts it by itself, one run per record that matches its `on`; nothing runs now (workflow.start runs a script once). A registered workflow by its id, or a script file. Answers the id of the installation (sub-…). The runs are held to the profile wf:<sub-…> (the id of the installation), which is narrow(the caller's grant, uses). Records from before the installation start nothing.",
   input: InstallInput,
   output: z.object({ id: InstallationId, profile: z.string(), on: z.array(Subscription) }),
 });

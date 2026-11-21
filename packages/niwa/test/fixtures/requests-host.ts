@@ -13,6 +13,7 @@ import {
   Deadline,
   RequestCancelled,
   RequestExpired,
+  answeredBy,
   requestAsk,
   question,
   requests,
@@ -70,12 +71,14 @@ export function executor() {
     api.on(Start, async (data, step) => {
       const deadline = data.deadline;
       try {
-        const { answer: raw } = await step(requestAsk, {
-          to: owner,
-          ...ReleaseBranch,
-          input: { ...ReleaseBranch.input, detail: data.release },
-          ...(deadline === undefined ? {} : { deadline }),
-        });
+        const { answer: raw } = answeredBy(
+          await step(requestAsk, {
+            to: owner,
+            ...ReleaseBranch,
+            input: { ...ReleaseBranch.input, detail: data.release },
+            ...(deadline === undefined ? {} : { deadline }),
+          }),
+        );
         await step.emit(Answered, { release: data.release, branch: "ids" in raw && raw.ids[0] === "next" ? "next" : "main" });
       } catch (error) {
         // A held handler waits after the request ended, so the test can restart the host between

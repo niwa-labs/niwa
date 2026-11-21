@@ -34,6 +34,7 @@ import {
   RequestCreated,
   RequestExpiredRecord,
   RequestId,
+  answeredBy,
   question,
   requestAsk,
 } from "@niwa-labs/requests";
@@ -466,7 +467,7 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
         if (outcome.status === "completed") return;
         let answer: Answer;
         try {
-          ({ answer } = await step(requestAsk, { to: { kind: "owner" }, ...undelivered(data.text) }));
+          ({ answer } = answeredBy(await step(requestAsk, { to: { kind: "owner" }, ...undelivered(data.text) })));
         } catch (error) {
           if (error instanceof RequestCancelled) return;
           throw error;

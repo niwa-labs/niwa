@@ -6,7 +6,7 @@
 import { OptionIdSchema, actionRef, record } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import { owner } from "@niwa-labs/core";
-import { question, requestAsk } from "@niwa-labs/requests";
+import { answeredBy, question, requestAsk } from "@niwa-labs/requests";
 import { z } from "zod";
 
 // A question is a name and a question in the one format of the system: a kind (choice, multi,
@@ -34,12 +34,15 @@ export default plugin("branching", (api) => {
   api.on(ReleaseRequested, async (release, step) => {
     // `requestAsk` is the typed reference of the requests module. One action serves every
     // question; it gives back the id of the request and the answer, an `Answer`, and the kind of the
-    // question says which one it is.
-    const { answer: answered } = await step(requestAsk, {
-      to: owner,
-      ...ReleaseBranch,
-      input: { ...ReleaseBranch.input, detail: `Release ${release.name}` },
-    });
+    // question says which one it is. As a step it waits for the answer; `answeredBy` says so to the
+    // type (called directly, outside a step, the action answers at once with the open request).
+    const { answer: answered } = answeredBy(
+      await step(requestAsk, {
+        to: owner,
+        ...ReleaseBranch,
+        input: { ...ReleaseBranch.input, detail: `Release ${release.name}` },
+      }),
+    );
     const base = "ids" in answered && answered.ids[0] === "next" ? "next" : "main";
 
     // Execution continues here when the answer arrives:

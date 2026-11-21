@@ -15,6 +15,7 @@ import {
   REQUEST_ASK,
   REQUEST_CANCEL,
   RequestCreated,
+  answeredBy,
   requestAsk,
   requests,
 } from "@niwa-labs/requests";
@@ -90,7 +91,7 @@ test("a step that asks is told the id of its request together with the answer", 
     plugin("ids-asker", (api) => {
       api.declare(Ask, Told);
       api.on(Ask, async (_data, step) => {
-        const { id, answer } = await step(requestAsk, { to: owner, ...ReleaseBranch });
+        const { id, answer } = answeredBy(await step(requestAsk, { to: owner, ...ReleaseBranch }));
         await step.emit(Told, { id, answer });
       });
     }),

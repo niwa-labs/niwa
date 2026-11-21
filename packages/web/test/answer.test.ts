@@ -23,7 +23,7 @@ import { expect, test } from "bun:test";
 
 import { owner, record } from "@niwa-labs/core";
 import type { StoredRecord, Timestamp } from "@niwa-labs/core";
-import { createNiwa, Deadline, eventually, tempHome, loginWeb, plugin, watch, webFetch, connectAsOwner, opt, pick, requestAsk, question, requests } from "@niwa-labs/testing";
+import { createNiwa, Deadline, eventually, tempHome, loginWeb, plugin, watch, webFetch, connectAsOwner, opt, pick, answeredBy, requestAsk, question, requests } from "@niwa-labs/testing";
 import { z } from "zod";
 
 import type { WebServer } from "../src/index.ts";
@@ -47,12 +47,14 @@ function executor() {
   return plugin("answer-executor", (api) => {
     api.declare(Start, Answered);
     api.on(Start, async (data, step) => {
-      const { answer: raw } = await step(requestAsk, {
-        to: data.other === true ? { kind: "client", id: "someone-else" } : owner,
-        ...ReleaseBranch,
-        input: { ...ReleaseBranch.input, detail: data.release },
-        ...(data.deadline === undefined ? {} : { deadline: data.deadline }),
-      });
+      const { answer: raw } = answeredBy(
+        await step(requestAsk, {
+          to: data.other === true ? { kind: "client", id: "someone-else" } : owner,
+          ...ReleaseBranch,
+          input: { ...ReleaseBranch.input, detail: data.release },
+          ...(data.deadline === undefined ? {} : { deadline: data.deadline }),
+        }),
+      );
       await step.emit(Answered, { release: data.release, branch: "ids" in raw && raw.ids[0] === "next" ? "next" : "main" });
     });
   });

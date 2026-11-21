@@ -15,7 +15,7 @@ import { Address, record, seq } from "@niwa-labs/core";
 import type { Caller, HandlerId, InvocationId, StoredRecord } from "@niwa-labs/core";
 import { messageSend, messages } from "@niwa-labs/messages";
 import type { CallerBinding } from "@niwa-labs/plugin";
-import { RequestAnswered, RequestCreated, requestAsk, question, requests } from "@niwa-labs/requests";
+import { answeredBy, RequestAnswered, RequestCreated, requestAsk, question, requests } from "@niwa-labs/requests";
 import { z } from "zod";
 
 import {
@@ -63,7 +63,7 @@ function asker(): ReturnType<typeof plugin> {
   return plugin("test-asker", (api) => {
     api.declare(Start, Continued);
     api.on(Start, async (data, step) => {
-      const { answer } = await step(requestAsk, { to: data.to, ...Choice });
+      const { answer } = answeredBy(await step(requestAsk, { to: data.to, ...Choice }));
       await step.emit(Continued, { answer: JSON.stringify(answer) });
     });
   });

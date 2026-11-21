@@ -91,11 +91,24 @@ export const OpenPaused = z.object({
 
 export const OpenOutput = z.object({ requests: z.array(z.union([OpenRequest, OpenPaused])) });
 
-/** What asking returns: the answer, with the id of the request that was asked, so a caller can find it again. */
-export const AskOutput = z.object({ id: RequestId, answer: AnswerSchema });
+/** What asking returns once the request is answered: the answer, with the id of the request, so a caller can find it again. */
+export const AskAnswered = z.object({ id: RequestId, answer: AnswerSchema });
+
+/** What asking returns outside a step: the request is made and still open; the caller reads or waits for the answer by its id. */
+export const AskOpen = z.object({ id: RequestId, status: z.literal("open") });
+
+/** What asking returns: the answer inside a step, the open request outside one. */
+export const AskOutput = z.union([AskAnswered, AskOpen]);
+
+/** The answer of an ask a step made: a step waits, so what it gets is always the answer. */
+export function answeredBy(output: z.infer<typeof AskOutput>): z.infer<typeof AskAnswered> {
+  if (!("answer" in output)) throw new Error(`the request "${output.id}" is still open`);
+  return output;
+}
 
 export const requestAsk = actionRef("request.ask", {
-  description: "Ask a question and wait for the answer. The wait survives a restart. Returns the answer with the id of the request.",
+  description:
+    "Ask a question. As a step of a workflow or of a handler it waits for the answer (the wait survives a restart) and returns the answer with the id of the request. Called directly, from the CLI or MCP, it cannot wait: it creates the request and returns at once {id, status: \"open\"}; poll request.get with that id until its status is no longer open, and read the answer there.",
   input: AskInput,
   output: AskOutput,
 });

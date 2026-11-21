@@ -211,6 +211,11 @@ export interface ActionContext {
   operationId: OperationId;
   caller: Caller;
   /**
+   * The invocation this call runs in, as a step of it. Absent for a call made outside an
+   * invocation, which cannot wait: an action that waits for a record may answer at once instead.
+   */
+  invocation?: InvocationId;
+  /**
    * The owner's answer that let this very call through at the door, when the call asked and was
    * answered. Absent for a call that did not ask, and for any call made inside an action.
    */

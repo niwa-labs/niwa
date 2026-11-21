@@ -22,6 +22,7 @@ import {
   REQUEST_ANSWER,
   RequestAnswered,
   RequestCreated,
+  answeredBy,
   requestAsk,
   question,
   requests,
@@ -344,7 +345,7 @@ test("request.ask names its request id as the key: one answer among many open as
       api.declare(Asked, Reply);
       api.on(Asked, async (data, step) => {
         state.runs += 1;
-        const { answer } = await step(requestAsk, { to: owner, ...Who, input: { ...Who.input, detail: String(data.n) } });
+        const { answer } = answeredBy(await step(requestAsk, { to: owner, ...Who, input: { ...Who.input, detail: String(data.n) } }));
         await step.emit(Reply, { n: "text" in answer ? Number(answer.text) : -1 });
       });
     }),

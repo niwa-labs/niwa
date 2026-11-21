@@ -11,7 +11,7 @@
 import { CORE_TYPES, CatchableError, DeniedError, NOW_ACTION, RANDOM_ACTION, WAIT_ACTION, action, actionName, currentInvocation, grantId, jsonOf, record, recordId, seq, stableJson, timestamp } from "@niwa-labs/core";
 import type { Action, ActionTarget, AuthorizeHow, JournalReader, Principal, RecordType, Step, Verb } from "@niwa-labs/core";
 import { owner } from "@niwa-labs/core";
-import { AskOutput, QuestionName, RequestCancelled, RequestExpired, requestAsk } from "@niwa-labs/requests/records";
+import { AskAnswered, answeredBy, QuestionName, RequestCancelled, RequestExpired, requestAsk } from "@niwa-labs/requests/records";
 import { SleepRequested, TimerSlept, sleepKey } from "@niwa-labs/timer/records";
 import { z } from "zod";
 
@@ -343,7 +343,7 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
   const ask = async (key: string, request: Extract<ScriptRequest, { op: "ask" }>): Promise<unknown> => {
     // An answer the owner gave in an earlier start is the answer: the owner is not asked again.
     const answered = finishedBefore(key, requestAsk.name);
-    if (answered !== undefined) return valueOf(request.question, AskOutput.parse(answered.outcome).answer);
+    if (answered !== undefined) return valueOf(request.question, AskAnswered.parse(answered.outcome).answer);
     // An ask that ended with no answer in an earlier start ends the same way: the owner is not asked again.
     const noAnswer = finishedBefore(`${key}~ended`, ASK_ENDED.name);
     if (noAnswer !== undefined) throw askError(AskEnd.parse(noAnswer.outcome).ended);
@@ -353,8 +353,10 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
         ? {}
         : { deadline: timestamp(endOf(await clock(`${key}~now`), request.timeoutMs)) };
     try {
-      const { answer } = await guarded(() =>
-        step(requestAsk, { to: owner, question: SCRIPT_QUESTION, input: request.question, ...deadline }, { key, as: deps.run }),
+      const { answer } = answeredBy(
+        await guarded(() =>
+          step(requestAsk, { to: owner, question: SCRIPT_QUESTION, input: request.question, ...deadline }, { key, as: deps.run }),
+        ),
       );
       return valueOf(request.question, answer);
     } catch (error) {
