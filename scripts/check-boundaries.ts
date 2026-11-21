@@ -235,8 +235,8 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
     ),
     optionalEntries: [COCKPIT_ENTRY],
   },
-  // pstack's scripts are built on the flow libraries; its compositions install forge, watch, evidence and plan; it
-  // starts the author's boxed sessions through the typed reference of session.start.
+  // pstack's playbooks use the workflow session SDK and flow libraries. Its fixtures use session record contracts.
+  // The composition installs forge, watch, evidence and plan.
   "@niwa-labs/pstack": leaf(
     "composition",
     {
