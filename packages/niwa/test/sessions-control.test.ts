@@ -715,6 +715,20 @@ test("signs of life become session records, once per session, saying only that t
   expect(turn?.data).toEqual({ session: SESSION, turn: 1 });
 });
 
+test("a turn that the harness says failed is recorded as failed, one it says nothing of as completed", async () => {
+  const control = new FakeControl();
+  const { niwa, records } = await serve(control, installation());
+  await call(niwa, "session.start", { harness: HARNESS, prompt: "go" });
+
+  for (const [turn, outcome] of [[1, "failed"], [2, undefined], [3, "unknown"], [4, "completed"]] as const) {
+    control.pushLife({ kind: "turn-started", turn });
+    control.pushLife({ kind: "turn-ended", turn, ...(outcome === undefined ? {} : { outcome }) });
+  }
+  await eventually(() => turnNumbers(records, "session.turn-ended").length === 4);
+
+  expect(endings(records)).toEqual(["failed", "completed", "unknown", "completed"]);
+});
+
 test("a burst of signs of life is one activity record, and a new turn says it again", async () => {
   const control = new FakeControl();
   const { niwa, records } = await serve(control, installation());

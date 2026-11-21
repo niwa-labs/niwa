@@ -34,6 +34,7 @@ import type {
   SessionId,
   ReverseHandler,
   ToolsMode,
+  TurnOutcome,
   Dispatch,
 } from "@niwa-labs/harness";
 import {
@@ -143,6 +144,19 @@ interface TurnWait {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+/** How a turn ended, in the words every harness shares: a turn Codex stopped or failed did not complete, and a status this build does not know proves nothing. */
+function outcomeOfTurn(turn: EndedTurn): TurnOutcome {
+  switch (turn.status) {
+    case "completed":
+      return "completed";
+    case "failed":
+    case "interrupted":
+      return "failed";
+    default:
+      return "unknown";
+  }
 }
 
 function idOf(value: unknown): string | undefined {
@@ -530,7 +544,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         session.activeTurnId = undefined;
         session.busy = false;
         session.cancelAsking();
-        session.emit({ kind: "turn-ended", turn: session.turn, at });
+        session.emit({ kind: "turn-ended", turn: session.turn, at, outcome: outcomeOfTurn(incoming.turn) });
         session.settleTurn(incoming.turn);
         // A message that waited for this turn becomes a turn of its own.
         drainQueue(session);

@@ -417,6 +417,24 @@ test("a first turn that fails is a failed turn of a session that was started, no
   await codex.dispose();
 });
 
+/** What the first turn of a session that runs `mode` says of how it ended. */
+async function endingOf(mode: string): Promise<string | undefined> {
+  process.env.FAKE_MODE = mode;
+  const codex = control();
+  const { session: id } = await codex.start({ prompt: promptFromText("go") });
+  for await (const event of codex.life(id)) {
+    if (event.kind === "turn-ended") return event.outcome;
+  }
+  return undefined;
+}
+
+test("the end of a turn says how Codex ended it", async () => {
+  expect(await endingOf("ok")).toBe("completed");
+  expect(await endingOf("fail")).toBe("failed");
+  // A status this build does not know proves nothing about how the turn went.
+  expect(await endingOf("drift")).toBe("unknown");
+});
+
 test("the start returns before the first turn ends: a first turn that never ends does not block it", async () => {
   process.env.FAKE_MODE = "hold";
   const codex = control();

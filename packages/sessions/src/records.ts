@@ -107,8 +107,11 @@ export const SessionTurnStarted = record(
   }),
 );
 
-/** How a turn ended. */
-export const TurnEnding = z.enum(["completed", "interrupted"]);
+/**
+ * How a turn ended: `interrupted` when niwa interrupted it on request; otherwise what the harness
+ * said of it, `completed`, `failed` or `unknown` (nobody knows what became of it).
+ */
+export const TurnEnding = z.enum(["completed", "interrupted", "failed", "unknown"]);
 export type TurnEnding = z.infer<typeof TurnEnding>;
 
 /** A turn ended: the session is not working on that turn any more. */
@@ -120,8 +123,9 @@ export const SessionTurnEnded = record(
     /** The number of the turn. */
     turn: z.number().int().positive(),
     /**
-     * How it ended: `interrupted` when niwa interrupted it on request, otherwise `completed`. A
-     * record written before niwa said how has none: it reads as completed.
+     * How it ended: `interrupted` when niwa interrupted it on request, otherwise what the harness
+     * said of the turn, and `completed` when it said nothing. A record written before niwa said
+     * how has none: it reads as completed.
      */
     how: TurnEnding.optional(),
   }),

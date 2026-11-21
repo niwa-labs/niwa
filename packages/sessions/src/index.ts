@@ -526,13 +526,16 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
                 interrupting.delete(ref);
                 await api.emit(SessionTurnStarted, { session: ref, turn: beginning(ref, event.turn) });
                 break;
-              case "turn-ended":
+              case "turn-ended": {
+                // An interrupt niwa asked for says how the turn ended; otherwise the harness does.
+                const interrupted = interrupting.delete(ref);
                 await api.emit(SessionTurnEnded, {
                   session: ref,
                   turn: numbered(ref, event.turn),
-                  how: interrupting.delete(ref) ? "interrupted" : "completed",
+                  how: interrupted ? "interrupted" : (event.outcome ?? "completed"),
                 });
                 break;
+              }
               case "activity":
                 if (event.permission !== undefined) pending = event.permission;
                 if (event.tool !== undefined) {
