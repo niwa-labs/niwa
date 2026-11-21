@@ -127,7 +127,7 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
         canStop={(target: PlanTarget) => status.state !== "finished" && (target.step !== undefined || target.phase === current)}
         explainRecompute={(target: PlanTarget) =>
           recomputeOf(inspection.data, target).from === undefined
-            ? "Starts the run again from the top: the steps that did not change are taken from this run, and the first changed step and everything after it run again."
+            ? "Restart the run from the top. The workflow reuses recorded results where it can. Calls that run again may repeat a message or another external change."
             : undefined
         }
         explainStop={(target: PlanTarget) =>

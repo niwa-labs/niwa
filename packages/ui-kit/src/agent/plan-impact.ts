@@ -1,13 +1,4 @@
-/**
- * What recomputing or stopping part of a plan affects, worked out from the plan itself so the
- * owner sees it before confirming.
- *
- * Recomputing from a step keeps every result before it and runs that step and everything after
- * it again. A step with an outside effect that already happened is among them: nothing here knows
- * whether the host will repeat that effect, so the explanation warns that it may, and a caller that
- * does know passes its own explanation to the plan. Stopping a phase or a step stops what runs inside it; within the plan, the steps
- * after it that have not started will not start.
- */
+/** Consequences shown by the plan before the owner confirms a recompute or stop. */
 
 import type { WorkState } from "./state.tsx";
 
@@ -30,12 +21,10 @@ export type PlanPhase<S extends PlanStep = PlanStep> = {
 export type PlanTarget = { phase: string; step?: string | undefined };
 
 export type RecomputeImpact = {
-  /** The steps that will run again, those that already acted outside included. */
-  rerun: number;
-  /** The steps before the target whose results are kept. */
-  kept: number;
-  /** Of those, the steps that already acted outside the run and may act again. */
-  effectsRepeated: number;
+  /** Recorded steps in the selected phase, or the selected step itself. */
+  selected: number;
+  /** Selected steps the plan marks as having an effect, regardless of their last outcome. */
+  flagged: number;
 };
 
 export type StopImpact = {
@@ -61,21 +50,11 @@ function inside(f: Flat, target: PlanTarget): boolean {
   return f.phase === target.phase && (target.step === undefined || f.step.id === target.step);
 }
 
-const RAN: ReadonlySet<WorkState> = new Set(["done", "failed", "stopped", "reused", "running", "waiting"]);
-
+/** Display order gives no information about which calls a workflow can reuse in another branch. */
 export function recomputeImpact(phases: readonly PlanPhase[], target: PlanTarget): RecomputeImpact {
-  const flat = flatten(phases);
-  const start = startOf(flat, target);
-  if (start < 0) return { rerun: 0, kept: 0, effectsRepeated: 0 };
-  let rerun = 0;
-  let effectsRepeated = 0;
-  for (const f of flat.slice(start)) {
-    if (f.step.state === "skipped") continue;
-    rerun += 1;
-    if (f.step.effect === true && RAN.has(f.step.state) && f.step.state !== "failed") effectsRepeated += 1;
-  }
-  const kept = flat.slice(0, start).filter((f) => f.step.state !== "skipped").length;
-  return { rerun, kept, effectsRepeated };
+  const phase = phases.find((one) => one.id === target.phase);
+  const selected = phase?.steps.filter((step) => target.step === undefined || step.id === target.step) ?? [];
+  return { selected: selected.length, flagged: selected.filter((step) => step.effect).length };
 }
 
 export function stopImpact(phases: readonly PlanPhase[], target: PlanTarget): StopImpact {
@@ -104,14 +83,11 @@ export function targetTitle(phases: readonly PlanPhase[], target: PlanTarget): s
 }
 
 export function describeRecompute(phases: readonly PlanPhase[], target: PlanTarget): string {
-  const impact = recomputeImpact(phases, target);
-  const parts = [`Recompute from “${targetTitle(phases, target)}”: ${steps(impact.rerun)} run again`];
-  if (impact.kept > 0) parts.push(`${impact.kept} earlier kept`);
-  let text = parts.join(", ") + ".";
-  if (impact.effectsRepeated > 0) {
-    text += ` ${impact.effectsRepeated === 1 ? "1 step that already acted outside may" : `${impact.effectsRepeated} steps that already acted outside may`} act again.`;
-  }
-  return text;
+  const { selected, flagged } = recomputeImpact(phases, target);
+  const title = targetTitle(phases, target);
+  const selection = target.step === undefined ? `Recompute “${title}” (${steps(selected)} in this phase).` : `Recompute “${title}”.`;
+  const effects = flagged > 0 ? ` ${steps(flagged)} in this selection ${flagged === 1 ? "is" : "are"} marked as having an effect.` : "";
+  return `${selection}${effects} Previously sent messages or other external changes may be repeated.`;
 }
 
 export function describeStop(phases: readonly PlanPhase[], target: PlanTarget): string {

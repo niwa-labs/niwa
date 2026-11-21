@@ -119,3 +119,28 @@ test("an explanation is worked out only for the control that shows it", async ()
   expect(host.textContent).toContain("explained");
   await act(async () => root.unmount());
 });
+
+test("arming a completed action warns before an external change can be repeated", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  let confirmed = false;
+  try {
+    await act(async () => root.render(
+      <TooltipProvider>
+        <PhasePlan phases={[{ id: "ship", title: "Ship", state: "running", steps: [
+          { id: "publish", title: "Publish", state: "done" },
+        ] }]} onRecompute={() => { confirmed = true; }} />
+      </TooltipProvider>,
+    ));
+    const control = host.querySelector<HTMLElement>('[data-slot="plan-step"] [data-slot="guard-button"]')!;
+    await act(async () => {
+      control.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+    });
+    expect(host.querySelector('[data-slot="guard-notice"]')?.textContent).toContain("external changes may be repeated");
+    expect(confirmed).toBe(false);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});

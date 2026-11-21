@@ -34,32 +34,27 @@ const plan: PlanPhase[] = [
 ];
 
 describe("recompute impact", () => {
-  test("a step and everything after it run again; earlier results are kept", () => {
-    expect(recomputeImpact(plan, { phase: "build", step: "compile" })).toEqual({ rerun: 5, kept: 1, effectsRepeated: 1 });
-    expect(describeRecompute(plan, { phase: "build", step: "compile" })).toBe(
-      "Recompute from “Compile”: 5 steps run again, 1 earlier kept. 1 step that already acted outside may act again.",
-    );
+  test("selecting a completed send warns about redelivery", () => {
+    const target = { phase: "build", step: "notify" };
+    expect(recomputeImpact(plan, target)).toEqual({ selected: 1, flagged: 1 });
+    expect(describeRecompute(plan, target)).toContain("Previously sent messages or other external changes may be repeated.");
   });
 
-  test("choosing a step that already acted outside never promises it is kept", () => {
-    expect(recomputeImpact(plan, { phase: "build", step: "notify" })).toEqual({ rerun: 4, kept: 2, effectsRepeated: 1 });
-    expect(describeRecompute(plan, { phase: "build", step: "notify" })).toBe(
-      "Recompute from “Notify the channel”: 4 steps run again, 2 earlier kept. 1 step that already acted outside may act again.",
-    );
+  test("a phase counts its recorded steps without forecasting later branches", () => {
+    expect(recomputeImpact(plan, { phase: "build" })).toEqual({ selected: 3, flagged: 1 });
+    expect(describeRecompute(plan, { phase: "build" })).toContain("3 steps in this phase");
+    expect(recomputeImpact(plan, { phase: "build", step: "compile" })).toEqual({ selected: 1, flagged: 0 });
   });
 
-  test("a plan without outside effects carries no warning", () => {
-    expect(describeRecompute(plan, { phase: "ship" })).toBe("Recompute from “Ship”: 2 steps run again, 4 earlier kept.");
+  test("missing effect metadata and a failed send both retain the external-effect warning", () => {
+    for (const effect of [true, undefined]) {
+      const phases: PlanPhase[] = [{ id: "p", title: "Send", state: "failed", steps: [{ id: "send", title: "Send", state: "failed", effect }] }];
+      expect(describeRecompute(phases, { phase: "p", step: "send" })).toContain("external changes may be repeated");
+    }
   });
 
-  test("a phase starts at its first step; skipped steps count on neither side", () => {
-    expect(recomputeImpact(plan, { phase: "prepare" })).toEqual({ rerun: 6, kept: 0, effectsRepeated: 1 });
-    expect(recomputeImpact(plan, { phase: "ship" })).toEqual({ rerun: 2, kept: 4, effectsRepeated: 0 });
-  });
-
-  test("an unknown target affects nothing", () => {
-    expect(recomputeImpact(plan, { phase: "nope" })).toEqual({ rerun: 0, kept: 0, effectsRepeated: 0 });
-    expect(recomputeImpact(plan, { phase: "build", step: "nope" })).toEqual({ rerun: 0, kept: 0, effectsRepeated: 0 });
+  test("an unknown selection has no recorded steps", () => {
+    expect(recomputeImpact(plan, { phase: "nope" })).toEqual({ selected: 0, flagged: 0 });
   });
 });
 
