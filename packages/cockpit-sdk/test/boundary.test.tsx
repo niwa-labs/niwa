@@ -61,7 +61,17 @@ async function runtime(): Promise<{ runtime: CockpitRuntime; faults: PluginFault
           }),
         }),
       },
-      { id: "second", load: async () => ({ default: definePlugin({ id: "second", setup: (ctx) => ctx.slots.register("home.tile", { key: "broken", component: Broken }) }) }) },
+      { id: "second", load: async () => ({ default: definePlugin({ id: "second", setup: (ctx) => {
+        ctx.slots.register("home.tile", { key: "broken", component: Broken });
+        ctx.entities.register("boom", {
+          label: "Boom",
+          prefix: "boom",
+          href: (id) => {
+            if (id === "boom-bad") throw new Error("no address for this id");
+            return `/booms/${id}`;
+          },
+        });
+      } }) }) },
     ],
     services,
   );
@@ -157,6 +167,34 @@ describe("rendering modules", () => {
     await act(async () => links[0]!.click());
     expect(visited).toEqual(["/runs/run-1f3a9c"]);
     expect(host.textContent).toContain("task-77aa00");
+    await act(async () => root.unmount());
+  });
+
+  test("an entity of another module whose address cannot be built is shown without a link", async () => {
+    const { runtime: rt, faults } = await runtime();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const original = console.error;
+    console.error = () => {};
+    try {
+      await act(async () =>
+        root.render(
+          <CockpitProvider runtime={rt}>
+            <p>before</p>
+            <EntityLink entity="boom-bad" />
+            <EntityLink entity="boom-good" />
+          </CockpitProvider>,
+        ),
+      );
+    } finally {
+      console.error = original;
+    }
+    expect(host.textContent).toContain("before");
+    expect(host.textContent).toContain("boom-bad");
+    expect(faults).toEqual([]);
+    const links = [...host.querySelectorAll("a")].map((a) => a.getAttribute("href"));
+    expect(links).toEqual(["/booms/boom-good"]);
     await act(async () => root.unmount());
   });
 });

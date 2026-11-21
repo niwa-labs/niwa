@@ -92,7 +92,8 @@ export function EntityLink({ entity, label, short, className }: EntityLinkProps)
   const ref = typeof entity === "string" ? registry.entities.resolve(entity) : entity;
   const id = typeof entity === "string" ? entity : entity.id;
   const kind = ref === undefined ? undefined : registry.entities.get(ref.kind);
-  const href = ref === undefined ? undefined : kind?.href(ref.id);
+  // The kind's own code builds the address; the registry survives it failing for one id.
+  const href = ref === undefined ? undefined : registry.entities.href(ref);
   if (kind?.chip !== undefined && href !== undefined) {
     const Chip = kind.chip;
     return (
