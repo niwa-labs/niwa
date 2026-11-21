@@ -371,6 +371,18 @@ test("a message whose answer never came keeps the session busy, so a later turn 
   expect((await requestsOf("session/send")).map((params) => params["content"])).toEqual(["mute slow", "next"]);
 });
 
+test("an answer to a send that is no acceptance of it is a message that may have gone", async () => {
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText(""), cwd: dir });
+  const ended = turnsEnded(c, session);
+  await expect(c.send(session, "bad ack")).rejects.toMatchObject({ code: "InputPossiblySent" });
+  await ended;
+  const bare = turnsEnded(c, session);
+  await expect(c.send(session, "bare ack")).rejects.toMatchObject({ code: "InputPossiblySent" });
+  await bare;
+  expect(await c.state(session)).toBe("idle");
+});
+
 test("a resume of a held session with a prompt waits behind the running turn", async () => {
   const c = control();
   const { session } = await c.start({ prompt: promptFromText("slow"), cwd: dir });

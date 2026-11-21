@@ -157,6 +157,9 @@ const CommandAckSchema = z.looseObject({
 /** JSON-RPC's code for a method the server does not have. */
 const METHOD_NOT_FOUND = -32601;
 
+/** What ZCode answers a `session/send` with when it takes the message. */
+const SendAckSchema = z.looseObject({ accepted: z.literal(true), sessionId: z.string() });
+
 /** What a `session/messages` result is made of; each message is read by the snapshot's schema on its own, so one it does not know costs only itself. */
 const MessagesResultSchema = z.object({ messages: z.array(z.unknown()) });
 
@@ -808,9 +811,16 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     const params: Record<string, unknown> = { sessionId: session.nativeId, content: text };
     if (session.selection !== undefined) params["modelSelection"] = session.selection;
     const sent = await call(session, "session/send", params);
-    if (!sent.ok) {
-      const dispatch = sent.dispatch ?? "uncertain";
-      const failure = inputFailure(harnessId, "send", dispatch, sent.error ?? "the CLI refused the message");
+    // An answer that is no acceptance of this session's message, after the message was written, may
+    // be an acceptance that was garbled: the message may be running.
+    const accepted = sent.ok ? SendAckSchema.safeParse(sent.result) : undefined;
+    const answer: Outcome =
+      accepted === undefined || (accepted.success && accepted.data.sessionId === session.nativeId)
+        ? sent
+        : { ok: false, error: "the CLI's answer to the send was not an acceptance of it", dispatch: "uncertain" };
+    if (!answer.ok) {
+      const dispatch = answer.dispatch ?? "uncertain";
+      const failure = inputFailure(harnessId, "send", dispatch, answer.error ?? "the CLI refused the message");
       if (dispatch === "uncertain") {
         // The message may be a turn that is running: the session stays busy, so a later turn is not
         // taken for it and what is queued waits. Its end releases the session; if none comes, the
