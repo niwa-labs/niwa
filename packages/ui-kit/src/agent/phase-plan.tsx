@@ -5,7 +5,7 @@
  */
 
 import { RotateCcwIcon, SquareIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import { cn } from "../lib/cn.ts";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible.tsx";
@@ -123,11 +123,14 @@ function StepRow({ phase, step, controls }: { phase: string; step: PhasePlanStep
 
 function PhaseRow({ phase, controls }: { phase: PhasePlanPhase; controls: Controls }) {
   const done = phase.steps.filter((s) => s.state === "done" || s.state === "reused").length;
+  // Open while the phase is not settled, and when it failed; whoever opened or closed it decides from then on.
+  const [chosen, choose] = useState<boolean | undefined>(undefined);
   return (
     <Collapsible
       data-slot="plan-phase"
       data-state={phase.state}
-      defaultOpen={!isSettled(phase.state) || phase.state === "failed"}
+      open={chosen ?? (!isSettled(phase.state) || phase.state === "failed")}
+      onOpenChange={choose}
       className="flex min-w-0 flex-col gap-1.5"
     >
       <RowControls target={{ phase: phase.id }} state={phase.state} controls={controls}>
