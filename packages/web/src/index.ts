@@ -8,7 +8,8 @@
  * `speaksFor: "owner"`; then it holds the owner's token, and a request is let in only with the
  * cookie that the login link gives. Without that cookie a
  * request is refused with 401 and reaches nothing.
- * It listens on the loopback only and refuses a request that names another host or origin.
+ * It listens on the loopback only, under a host name of its own (`niwa-<random>.localhost`) so that its cookie is not shared with
+ * another instance or another service, and refuses a request that names another host or origin.
  *
  * What a page may call is not a list kept here: a call goes to the host as it is, and the grant of the connection decides
  * it. A call the grant refuses is answered 403.
@@ -39,6 +40,8 @@
  * - `POST /resolve` — answer a paused invocation;
  * - `POST /answer` — answer an open request.
  */
+
+import { randomBytes } from "node:crypto";
 
 import { z } from "zod";
 
@@ -134,6 +137,8 @@ interface Context {
   readonly app: WebApp | undefined;
   readonly builds: ModuleBuilds;
   readonly speaksForOwner: boolean;
+  /** The only host name this instance answers to: the one its cookie is kept under. */
+  readonly hostname: string;
 }
 
 /** A running web surface. */
@@ -162,38 +167,45 @@ export async function serveWeb(options: WebOptions): Promise<WebServer> {
     app: options.app,
     builds: new ModuleBuilds(),
     speaksForOwner: options.speaksFor === "owner",
+    hostname: instanceHostname(),
   };
   const { login, streams } = context;
-  let server: ReturnType<typeof Bun.serve>;
+  const handle = async (request: Request, listener: Bun.Server<undefined>): Promise<Response> => {
+    try {
+      const response = await route(context, request);
+      if (response.headers.get("content-type") === SSE_TYPE) listener.timeout(request, 0);
+      return response;
+    } catch (error) {
+      // A refusal by the grant is a refusal wherever it surfaces; anything else is the surface's own failure.
+      return isDenied(error) ? text(403, errorText(error)) : text(500, `the web surface failed: ${errorText(error)}`);
+    }
+  };
+  let server: Bun.Server<undefined>;
   try {
-    server = Bun.serve({
-      hostname: "127.0.0.1",
-      port: options.port ?? 0,
-      async fetch(request, listener) {
-        try {
-          const response = await route(context, request);
-          if (response.headers.get("content-type") === SSE_TYPE) listener.timeout(request, 0);
-          return response;
-        } catch (error) {
-          // A refusal by the grant is a refusal wherever it surfaces; anything else is the surface's own failure.
-          return isDenied(error) ? text(403, errorText(error)) : text(500, `the web surface failed: ${errorText(error)}`);
-        }
-      },
-    });
+    server = Bun.serve({ hostname: "127.0.0.1", port: options.port ?? 0, fetch: handle });
   } catch (error) {
     await api.close();
     throw error;
   }
+  const port = server.port ?? 0;
+  // A browser may reach the name of this instance by `::1` first: hold that address of the port too, where there is one,
+  // so no other process is the one that answers a browser that has this instance's cookie.
+  let other: Bun.Server<undefined> | undefined;
+  try {
+    other = Bun.serve({ hostname: "::1", port, fetch: handle });
+  } catch {
+    // No IPv6 loopback here, or the port is taken on it: the browser falls back to the address that is served.
+  }
   let closing: Promise<void> | undefined;
   return {
-    port: server.port ?? 0,
-    url: `http://127.0.0.1:${server.port ?? 0}`,
-    loginUrl: `http://127.0.0.1:${server.port ?? 0}${LOGIN_PATH}?secret=${login.secret}`,
+    port,
+    url: `http://${context.hostname}:${port}`,
+    loginUrl: `http://${context.hostname}:${port}${LOGIN_PATH}?secret=${login.secret}`,
     close(): Promise<void> {
       closing ??= (async () => {
         for (const end of [...streams]) end();
         try {
-          await server.stop(true);
+          await Promise.all([server.stop(true), other?.stop(true)]);
         } finally {
           await api.close();
         }
@@ -203,7 +215,16 @@ export async function serveWeb(options: WebOptions): Promise<WebServer> {
   };
 }
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/**
+ * The host name of one instance. A cookie is kept per host name and is not told apart by port, so instances that shared a name
+ * would replace one another's session and would hand it to any other service on that name. Each instance gets a name of its
+ * own under `.localhost`, which a browser resolves to the loopback, and answers to no other: the cookie it gives has no
+ * `Domain`, so it belongs to this name alone. A request that names another host is refused, which is also what keeps a
+ * rebound name away from the surface.
+ */
+function instanceHostname(): string {
+  return `niwa-${randomBytes(8).toString("hex")}.localhost`;
+}
 
 /** The method each exact path takes. */
 const METHODS: Readonly<Record<string, string>> = {
@@ -227,7 +248,7 @@ async function route(context: Context, request: Request): Promise<Response> {
   const { api, login, streams, calls, pages, app, speaksForOwner } = context;
   const url = new URL(request.url);
   const path = url.pathname;
-  if (!LOCAL_HOSTS.has(url.hostname)) return text(403, "this host name is not served");
+  if (url.hostname !== context.hostname) return text(403, "this host name is not served");
   if (path !== LOGIN_PATH && !login.allows(request.headers.get("cookie"))) {
     return text(401, "log in with the link the server printed when it started");
   }
