@@ -174,7 +174,7 @@ function blocksTyping(own: OptionsBlock | undefined): string {
  * is taken; a host that serves some holds a script to the ones it may call, and a script that may call none names none.
  */
 function agentTyping(description: readonly ActionDescription[], callable: ReadonlySet<string>, blocks: ReadonlyMap<string, OptionsBlock>): string {
-  const common = `{ label?: string; visible?: string[]; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption }`;
+  const common = `{ label?: string; visible?: string[]; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption; stuckAfter?: NiwaDuration }`;
   const hosted = description.filter((action) => harnessOfAction(action.name) !== undefined);
   const served = hosted.filter((action) => callable.has(action.name));
   const variants =

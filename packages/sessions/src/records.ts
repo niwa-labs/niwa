@@ -73,6 +73,8 @@ export const SessionStarted = record(
     options: OptionBlocks.optional(),
     /** The tools the session was started with, so a resume launches it with the same; absent for the harness's own. */
     tools: ToolsModeSchema.optional(),
+    /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck; absent when none was set. */
+    stuckAfter: z.number().int().positive().optional(),
   }),
 );
 

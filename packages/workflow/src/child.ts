@@ -229,7 +229,9 @@ globals.agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
   let schema: JsonSchemaValue | undefined;
   let blocks: OptionBlocks;
   let worktree: WorktreeOption | undefined;
+  let stuckAfter: number | undefined;
   try {
+    stuckAfter = opts.stuckAfter === undefined ? undefined : durationMs(opts.stuckAfter);
     schema = opts.schema === undefined ? undefined : answerSchema(opts.schema);
     blocks = blocksOf(opts);
     worktree = opts.worktree === undefined ? undefined : WorktreeOption.parse(opts.worktree);
@@ -249,6 +251,7 @@ globals.agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
         ...(opts.mode === undefined ? {} : { mode: opts.mode }),
         ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
         ...(worktree === undefined ? {} : { worktree }),
+        ...(stuckAfter === undefined ? {} : { stuckAfter }),
         ...blocks,
         ...(schema === undefined ? {} : { schema }),
       },

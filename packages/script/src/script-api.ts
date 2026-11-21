@@ -36,6 +36,8 @@ export interface AgentCallOptions {
   effort?: string;
   mode?: "ask" | "auto" | "full";
   cwd?: string;
+  /** How long a turn of the session may go with no progress before it counts as stuck: kept in the record of the session. */
+  stuckAfter?: Duration;
   /** Run the session in a new git worktree; removed at the end when clean with no new commit, else the answer carries `worktree`. */
   worktree?: true | { repo?: string; base?: string; description?: string };
   /** Claude Code (`claude-code`, `claude-sdk`): `advisor: false` takes its advisor tool away from the session. */

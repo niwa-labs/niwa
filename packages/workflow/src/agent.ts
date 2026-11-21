@@ -65,6 +65,8 @@ const agentInput = (harness: string, launch: HarnessLaunch) =>
       worktree: WorktreeOption.optional(),
       /** The JSON Schema the answer must pass. Absent: the answer is text. */
       schema: JsonSchemaValue.optional(),
+      /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck. */
+      stuckAfter: z.number().int().positive().optional(),
       // The options of the harness's kind, in the block named after it.
       ...OptionBlocks.shape,
     },
@@ -159,6 +161,7 @@ export function sessionAgent(harness: string, launch: HarnessLaunch = {}): Actio
         ...(input.mode === undefined ? {} : { mode: input.mode }),
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         ...(input.worktree === undefined ? {} : { worktree: worktreeAsked(input.worktree, input.label, input.prompt) }),
+        ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
         ...blocksOf(input),
         visible: { actions: [...new Set([...VISIBLE_ACTIONS, ...(input.visible ?? [])])], disabledTools: [] },
       });

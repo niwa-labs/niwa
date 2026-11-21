@@ -1094,6 +1094,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             mode: mode ?? input.mode,
             options: Object.keys(blocks).length === 0 ? undefined : blocks,
             ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
+            ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
           });
           await ctx.emit(SessionMarked, { session: ref, mark });
           // The session has a name only now, so the input of its prompt is written once the harness took it; a start

@@ -56,6 +56,8 @@ export interface AgentOptions extends OptionBlocks {
   worktree?: WorktreeOptionGiven;
   /** A zod schema for the answer: the call gives the answer parsed, typed as the schema says. */
   schema?: z.ZodType;
+  /** How long a turn of the session may go with no progress before it counts as stuck. */
+  stuckAfter?: Duration;
 }
 
 /** The action an agent call goes to by default: `mcode-work` becomes `session.start.mcode-work`. */
@@ -130,6 +132,8 @@ export const ScriptRequest = z.discriminatedUnion("op", [
       worktree: WorktreeOption.optional(),
       /** The JSON Schema the answer must pass, made from the zod schema of the script. */
       schema: JsonSchemaValue.optional(),
+      /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck. */
+      stuckAfter: z.number().int().positive().optional(),
       // The options of the harness's kind, in the block named after it.
     }).extend(OptionBlocks.shape),
   }),

@@ -109,6 +109,22 @@ test("the block of the harness's kind in an agent() call reaches the control sid
   expect(Object.keys(control.starts[1] ?? {})).not.toContain("claude");
 }, 30_000);
 
+test("stuckAfter of an agent() call is kept in the record of the session it starts, in milliseconds", async () => {
+  const { seen } = await run(
+    [
+      "export default workflow({ output: z.json() }, async () => {",
+      '  await agent("watched", { harness: "claude-sonnet", stuckAfter: "10m" });',
+      '  await agent("unwatched", { harness: "claude-sonnet" });',
+      "  return null;",
+      "});",
+      "",
+    ].join("\n"),
+    (seen) => seen.includes("workflow.run.finished"),
+  );
+  const started = (JSON.parse(seen) as Array<{ type: string; data: { stuckAfter?: number } }>).filter((row) => row.type === "session.started");
+  expect(started.map((row) => row.data.stuckAfter)).toEqual([600_000, undefined]);
+}, 30_000);
+
 test("the block of another kind fails the call before a session starts, and so does a field the block does not have", async () => {
   const { control, seen } = await run(
     [

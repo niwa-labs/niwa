@@ -288,6 +288,8 @@ export const sessionStart = actionRef("session.start", {
      * retry with it answers the session it made instead of making another. Default: the operation of the call.
      */
     operation: z.string().min(1).max(200).optional(),
+    /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck; kept in its record. */
+    stuckAfter: z.number().int().positive().optional(),
   }).extend(OptionBlocks.shape),
   output: z.object({
     /** The id niwa gave the session: what every session action takes. */
