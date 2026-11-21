@@ -12,7 +12,7 @@ import { z } from "zod";
 import { counter, gate } from "./index.ts";
 
 export { describe } from "@niwa-labs/host";
-export { CLEANUP_TIMER, WorktreeRefusal, git } from "@niwa-labs/git";
+export { CLEANUP_TIMER, WorktreeRefusal, git, registeredWorktree } from "@niwa-labs/git";
 export { historyRead } from "@niwa-labs/history/records";
 export { messages } from "@niwa-labs/messages";
 export { TaskDone, tasks } from "@niwa-labs/tasks";

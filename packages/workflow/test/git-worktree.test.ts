@@ -15,7 +15,7 @@ import { gitHeadObserve, gitWorktreeCreate, gitWorktreeGet, gitWorktreeList, git
 import { NoOptions, harnessId, kindOptions, machineId, sessionId } from "@niwa-labs/harness";
 import type { AskAnswer, AskOptions, Harness, SessionControl, SessionId, StartOptions, StartedSession } from "@niwa-labs/harness";
 import { SessionTurnEnded, sessionStart } from "@niwa-labs/sessions/records";
-import { createNiwa, CLEANUP_TIMER, WorktreeRefusal, git, sessions, timer, timerList, timers, eventually, tempHome } from "@niwa-labs/testing";
+import { createNiwa, CLEANUP_TIMER, WorktreeRefusal, git, registeredWorktree, sessions, timer, timerList, timers, eventually, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 import { workflow, workflowInstallationList } from "../src/index.ts";
 
@@ -103,7 +103,10 @@ async function served(withSessions = false): Promise<{ host: Host; home: string;
   // The cleanup is its own test: these hosts have no timers or workflow module to run it.
   host.use(git({ cleanup: false }));
   if (withSessions) {
-    host.use(sessions({ harnesses: [{ instance, control, options: kindOptions("claude", NoOptions) }] }));
+    host.use(sessions({
+      harnesses: [{ instance, control, options: kindOptions("claude", NoOptions) }],
+      worktreeFor: registeredWorktree,
+    }));
     host.use(workflow({ harnesses: [HARNESS] }));
   }
   await host.serve();
