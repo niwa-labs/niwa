@@ -2,10 +2,12 @@
  * The proc module: run a command.
  *
  * - **proc.run** runs a command in a box from `@niwa-labs/sandbox`: it may write only in its working
- *   directory, it has no network, and it has no credentials: its environment is `PATH`, `HOME` and what
- *   the call lists, and the keys of the host and the places credentials live are closed to it. Because
- *   the box holds this, the class of the action is honest for any command: a write in the local world. It
- *   never runs without a box: a box that cannot run here stops the call before a process exists.
+ *   directory, it has no network, and it has no credentials: its environment is `PATH`, `HOME`, a
+ *   `TMPDIR` inside its directory and what the call lists, and the keys of the host and the places
+ *   credentials live are closed to it. Because the box holds this, the class of the action is honest
+ *   for any command: a write in the local world. It never runs without a box: a box that cannot run
+ *   here, or cannot hold this (it must keep writes to the directory and reads to an allow-list), stops
+ *   the call before a process exists.
  *
  * - **proc.exec** runs a command with no box. Nothing limits what it writes or reaches, so it is an
  *   irreversible action in the external world, and a grant has to name it. It gets `PATH`, `HOME`,
@@ -26,7 +28,7 @@
  * itself dies is not stopped by it.
  */
 
-import { realpathSync, statSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -34,7 +36,7 @@ import { HOST_KEY_FILE, OWNER_TOKEN_FILE, RECORD_DATA_LIMIT, action } from "@niw
 import type { ActionContext } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin } from "@niwa-labs/plugin";
-import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, requireSandbox, srt } from "@niwa-labs/sandbox";
+import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, requireSandbox } from "@niwa-labs/sandbox";
 import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 
 import { OutputCapture } from "./artifact.ts";
@@ -49,7 +51,7 @@ export type { ProcRefusalCode } from "./refusal.ts";
 
 /** What the module is given. Every field has a default. */
 export interface ProcOptions {
-  /** The sandbox of `proc.run`. Default: nono where it can run, else srt. */
+  /** The sandbox of `proc.run`; it has to keep writes to the directory and reads to an allow-list. Default: nono. */
   readonly sandbox?: Sandbox;
   /** The most bytes of output kept in an artifact. Default: 16 MiB. */
   readonly outputLimit?: number;
@@ -101,6 +103,27 @@ function directoryOf(cwd: string, authorized: string | undefined): string {
   return real;
 }
 
+/**
+ * Does a sandbox keep what `proc.run` promises beyond the lists of its spec: no write outside the
+ * directory, no read of what the user keeps that the spec does not name? A sandbox that does not
+ * say so is taken not to.
+ */
+function holdsRun(sandbox: Sandbox): boolean {
+  return sandbox.guarantees?.exactWrites === true && sandbox.guarantees.closedReads === true;
+}
+
+/**
+ * A place for a command's temp files inside its directory, the one place its box lets it write.
+ * Absent where the directory cannot be written, and the command then has no temp place at all.
+ */
+function scratchIn(cwd: string): string | undefined {
+  try {
+    return mkdtempSync(join(cwd, ".niwa-tmp-"));
+  } catch {
+    return undefined;
+  }
+}
+
 /** The environment every command has before the call adds to it. */
 function baseEnv(): Record<string, string> {
   return { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: homedir() };
@@ -147,7 +170,7 @@ export function proc(options: ProcOptions = {}): Plugin {
   const limit = wholeNumber("outputLimit", options.outputLimit, DEFAULT_OUTPUT_LIMIT, 1, Number.MAX_SAFE_INTEGER);
   const tailBytes = wholeNumber("tailBytes", options.tailBytes, DEFAULT_TAIL_BYTES, 0, MAX_TAIL_BYTES);
   const killGraceMs = wholeNumber("killGraceMs", options.killGraceMs, DEFAULT_KILL_GRACE_MS, 0, Number.MAX_SAFE_INTEGER);
-  const natural = [nono(), srt()];
+  const natural = [nono()];
   // The host reads the target of a call to match its grant, then runs the action with the same
   // input object. The real path the target named is kept here, keyed by that object, so the
   // action starts the command in the directory the grant covered and in no other.
@@ -158,11 +181,17 @@ export function proc(options: ProcOptions = {}): Plugin {
     return fileTarget(real);
   };
 
-  /** The sandbox of a run: the one given, or the first of the natural ones that can run here. */
+  /** The sandbox of a run: the one given, or the first of the natural ones that can run here. Either has to hold what a run promises. */
   const sandboxOf = async (): Promise<Sandbox> => {
-    if (options.sandbox !== undefined) return await requireSandbox(options.sandbox);
+    if (options.sandbox !== undefined) return await requireSandbox(holding(options.sandbox));
     for (const candidate of natural) if (await candidate.available()) return candidate;
     return await requireSandbox(natural[0] as Sandbox);
+  };
+  const holding = (sandbox: Sandbox): Sandbox => {
+    if (!holdsRun(sandbox)) {
+      throw new SandboxUnsupported(sandbox.name, "it does not keep writes to the directory and reads to an allow-list, as a run promises");
+    }
+    return sandbox;
   };
 
   return plugin("proc", (api) => {
@@ -191,11 +220,13 @@ export function proc(options: ProcOptions = {}): Plugin {
           const sandbox = await beforeStart(sandboxOf);
           // Cancelled while the sandbox was being found: nothing was started, and nothing will be.
           ctx.signal?.throwIfAborted();
+          // Temp files go inside the directory, where the box lets the command write: its own TMPDIR unless the call sets one.
+          const scratch = input.env?.["TMPDIR"] === undefined ? scratchIn(cwd) : undefined;
           const spec: BoxSpec = boxSpec({
             cwd,
             write: [cwd],
             net: [],
-            env: { ...baseEnv(), ...input.env },
+            env: { ...baseEnv(), ...(scratch === undefined ? {} : { TMPDIR: scratch }), ...input.env },
             denyRead: [
               join(home(), OWNER_TOKEN_FILE),
               join(home(), HOST_KEY_FILE),
@@ -213,6 +244,8 @@ export function proc(options: ProcOptions = {}): Plugin {
           } catch (error) {
             capture.discard();
             throw error;
+          } finally {
+            if (scratch !== undefined) rmSync(scratch, { recursive: true, force: true });
           }
         },
       }),

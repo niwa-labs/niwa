@@ -6,13 +6,15 @@
 //      cannot be started each refuse the call as a ProcRefusal, which the caller catches and the
 //      core does not record as a failure that may have had an effect
 //   2. nothing was started, and no `proc.finished` was written
+//   3. a sandbox that does not keep writes to the cwd and reads to an allow-list (srt, or one that
+//      says nothing) cannot run it, so the promise of the action is never made on its word
 
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 
 import { CatchableError } from "@niwa-labs/core";
-import { SandboxUnavailable, SandboxUnsupported } from "@niwa-labs/sandbox";
+import { SandboxUnavailable, SandboxUnsupported, srt } from "@niwa-labs/sandbox";
 import type { Sandbox } from "@niwa-labs/sandbox";
 
 import { ProcRefusal } from "../src/index.ts";
@@ -38,6 +40,26 @@ const wrapperGone: Sandbox = {
     throw new SandboxUnavailable("nono", "the wrapper cannot be started");
   },
 };
+
+test("a sandbox that does not hold writes and reads to the lists of the spec refuses the call before anything starts", async () => {
+  const { guarantees: _kept, ...silent } = recordingSandbox();
+  const writesOnly: Sandbox = { ...recordingSandbox(), guarantees: { exactWrites: true, closedReads: false } };
+  const readsOnly: Sandbox = { ...recordingSandbox(), guarantees: { exactWrites: false, closedReads: true } };
+  for (const sandbox of [silent, writesOnly, readsOnly, srt()]) {
+    const bench = await procActions({ sandbox });
+    benches.push(bench);
+    const cwd = realpathSync(dirIn(bench.home, "work"));
+    const error = await bench.call("proc.run", { cmd: sh("touch ran"), cwd, timeout: 10_000 }).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    );
+    expect(error).toBeInstanceOf(ProcRefusal);
+    expect((error as ProcRefusal).code).toBe("no-sandbox");
+    expect((error as Error).message).toMatch(/keep writes to the directory and reads to an allow-list/);
+    expect(existsSync(join(cwd, "ran"))).toBe(false);
+    expect(bench.emitted).toEqual([]);
+  }
+});
 
 test("a box that cannot be had refuses the call before anything starts", async () => {
   for (const [sandbox, message] of [

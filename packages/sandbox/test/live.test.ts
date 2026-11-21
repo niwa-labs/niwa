@@ -10,7 +10,7 @@
 //   4. a relative `write` is read from the cwd, where the wrapper runs
 //   5. a path with pattern characters names itself and not its neighbours
 //   6. a detached box leads its own process group, and a group signal ends what it started
-//   7. nono lets a process write no temp area, only what `write` lists
+//   7. a sandbox that holds exact writes lets a process write no temp area, only what `write` lists
 //      and the devices it needs
 //
 // Only the public API is used: "@niwa-labs/sandbox".
@@ -63,7 +63,7 @@ for (const sandbox of [srt(), nono()]) {
       }
     });
 
-    test.skipIf(!present || sandbox.name !== "nono")("writes no temp area, and still has the devices it needs", async () => {
+    test.skipIf(!present || !sandbox.guarantees?.exactWrites)("writes no temp area, and still has the devices it needs", async () => {
       const cwd = await realpath(await tempDir("box-temp"));
       const name = `niwa-box-temp-${process.pid}-${Date.now()}`;
       const shared = [join("/tmp", name), join(await realpath(tmpdir()), name)];

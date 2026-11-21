@@ -3,31 +3,33 @@
 // Runs the real srt and nono, so it is behind `live`, and each part is skipped on a machine where
 // that sandbox is not available.
 //
-// What it proves, for srt and for nono:
+// What it proves, for nono:
 //   1. a run writes in its cwd and cannot write outside it
 //   2. a run reaches no network
 //   3. a run cannot read the owner token of the host, though the host's home holds it
+//   4. a run cannot write a shared temp area, and the temp files of a command that follows TMPDIR still work
 
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { nono, srt } from "@niwa-labs/sandbox";
+import { nono } from "@niwa-labs/sandbox";
 import { live } from "@niwa-labs/testing";
 
 import { procRun } from "../src/index.ts";
 import { dirIn, outputOf, procHost } from "./support.ts";
 
-for (const sandbox of [srt(), nono()]) {
+// srt is not among them: it cannot keep what a run promises (its own temp directory is writable and
+// every read is open unless named), so proc.run refuses it.
+for (const sandbox of [nono()]) {
   const present = live && (await sandbox.available());
   describe(`proc.run in ${sandbox.name}`, () => {
     test.skipIf(!present)("writes in its cwd, not outside it, and reaches no network", async () => {
-      // A home under the user's home, as the host's is: nono grants the temp area on its own.
+      // A home under the user's home, as the host's is.
       const host = await procHost({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
-      // Not under tmpdir: nono leaves the temp area writable on its own.
-      const outside = realpathSync(mkdtempSync(join(homedir(), ".niwa-proc-out-")));
+      const outside = realpathSync(mkdtempSync(join(tmpdir(), "niwa-proc-out-")));
       try {
         const cwd = realpathSync(dirIn(host.home, "work"));
         const inside = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", "echo x > in.txt"], cwd, timeout: 20_000 });
@@ -49,6 +51,24 @@ for (const sandbox of [srt(), nono()]) {
         await host.stop();
       }
     }, 90_000);
+
+    test.skipIf(!present)("has no shared temp area, and a command's temp files go inside its cwd", async () => {
+      const host = await procHost({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
+      const shared = join(realpathSync(tmpdir()), `niwa-proc-shared-${process.pid}-${Date.now()}`);
+      try {
+        const cwd = realpathSync(dirIn(host.home, "work"));
+        const refused = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", `echo x > '${shared}'`], cwd, timeout: 20_000 });
+        expect(refused.exit).not.toBe(0);
+        expect(existsSync(shared)).toBe(false);
+        const made = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", 'mktemp "$TMPDIR/file.XXXXXX"'], cwd, timeout: 20_000 });
+        expect(made.exit).toBe(0);
+        expect(outputOf(host, made.output).trim().startsWith(`${cwd}/`)).toBe(true);
+        expect(readdirSync(cwd)).toEqual([]);
+      } finally {
+        rmSync(shared, { force: true });
+        await host.stop();
+      }
+    }, 60_000);
 
     test.skipIf(!present)("cannot read the owner token of its host", async () => {
       // A home under the user's home, as the host's is: nono reads the temp area on its own.

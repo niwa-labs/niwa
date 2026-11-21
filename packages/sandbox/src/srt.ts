@@ -107,6 +107,9 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
   return {
     name: "srt",
     class: "process",
+    // srt always lets a process write its own temp directory and a few places under the home, and
+    // reads everything that no `denyRead` names.
+    guarantees: { exactWrites: false, closedReads: false },
     manifest,
     available() {
       probed ??= (async () => {

@@ -4,7 +4,10 @@ Running commands.
 
 - `proc.run { cmd, cwd, timeout, env? }` always runs in a box from `@niwa-labs/sandbox`: it may write only in
   `cwd`, has no network and no credentials. Because the box holds that, the action is a write in the local world.
-  A box that cannot run here stops the call; a run never falls back to no box.
+  A box that cannot run here stops the call; a run never falls back to no box. The box has to keep writes to
+  `cwd` and reads to an allow-list (`guarantees` of the sandbox): nono does, srt does not, so a run is refused
+  with it. The command has a `TMPDIR` inside `cwd`, made for the run and removed after it; a tool that asks the
+  system for its temp directory instead of reading `TMPDIR` (Apple's `mktemp`) finds none it may write.
 - `proc.exec { cmd, cwd, timeout, env?, net?, secrets? }` runs with no box. It is irreversible and external, so a
   grant names it. `env` values may be `secret("name")` references (`secret()` is exported by `@niwa-labs/core`)
   and `secrets` lists secrets given as variables of their own names; values are resolved from

@@ -9,7 +9,7 @@
 //   5. the whole output is an artifact; the result and the record carry only a bounded tail
 //   6. a box that cannot run stops the call before any process exists
 
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
@@ -47,7 +47,7 @@ test("a run asks for a box that writes only in its cwd, reaches nothing, and hol
     expect(sandbox.specs).toHaveLength(1);
     expect(spec?.write).toEqual([cwd]);
     expect(spec?.net).toEqual([]);
-    expect(Object.keys(spec?.env ?? {}).sort()).toEqual(["HOME", "MODE", "PATH"]);
+    expect(Object.keys(spec?.env ?? {}).sort()).toEqual(["HOME", "MODE", "PATH", "TMPDIR"]);
     const home = realpathSync(host.home);
     expect(spec?.denyRead).toEqual(expect.arrayContaining([join(home, "owner.token"), join(home, "host.key"), join(home, "secrets")]));
     expect(result.box).toEqual({ sandbox: "nono", write: [cwd], net: [] });
@@ -58,6 +58,24 @@ test("a run asks for a box that writes only in its cwd, reaches nothing, and hol
     delete process.env["NIWA_ID"];
     delete process.env["GITLAB_TOKEN"];
   }
+});
+
+test("a run has a TMPDIR inside its cwd, the one place its box lets it write, and nothing of it is left behind", async () => {
+  const sandbox = recordingSandbox();
+  const host = await start({ sandbox });
+  const cwd = realpathSync(dirIn(host.home, "work"));
+  const result = await host.niwa.call(procRun, { cmd: sh('echo "$TMPDIR"; touch "$TMPDIR/scratch"'), cwd, timeout: 10_000 });
+  const temp = outputOf(host, result.output).trim();
+  expect(result.exit).toBe(0);
+  expect(temp.startsWith(`${cwd}/`)).toBe(true);
+  expect(sandbox.specs[0]?.env["TMPDIR"]).toBe(temp);
+  expect(existsSync(temp)).toBe(false);
+  expect(readdirSync(cwd)).toEqual([]);
+
+  // A call that names its own TMPDIR keeps it, and no directory is made.
+  const named = await host.niwa.call(procRun, { cmd: sh('echo "$TMPDIR"'), cwd, timeout: 10_000, env: { TMPDIR: "/somewhere" } });
+  expect(outputOf(host, named.output).trim()).toBe("/somewhere");
+  expect(readdirSync(cwd)).toEqual([]);
 });
 
 test("the box of a run inside the niwa home, where worktrees live, is one nono can express", async () => {

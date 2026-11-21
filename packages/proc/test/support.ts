@@ -20,6 +20,7 @@ export function recordingSandbox(): Sandbox & { readonly specs: BoxSpec[] } {
     specs,
     name: "nono",
     class: "process",
+    guarantees: { exactWrites: true, closedReads: true },
     available: async () => true,
     manifest: (spec) => ({ sandbox: "nono", cwd: spec.cwd, env: spec.env }),
     async launch(spec, argv, options) {
@@ -48,6 +49,7 @@ export function recordingSandbox(): Sandbox & { readonly specs: BoxSpec[] } {
 export const absentSandbox: Sandbox = {
   name: "nono",
   class: "process",
+  guarantees: { exactWrites: true, closedReads: true },
   available: async () => false,
   manifest: (spec) => ({ sandbox: "nono", cwd: spec.cwd, env: spec.env }),
   async launch() {

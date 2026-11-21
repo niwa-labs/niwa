@@ -192,6 +192,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
   return {
     name: "nono",
     class: "process",
+    guarantees: { exactWrites: true, closedReads: true },
     manifest,
     available() {
       probed ??= (async () => {

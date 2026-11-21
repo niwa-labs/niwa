@@ -51,9 +51,22 @@ export interface LaunchOptions {
   readonly detached?: boolean;
 }
 
+/**
+ * What a sandbox keeps to beyond the places a spec lists. A caller whose promise needs more than
+ * the lists says so by asking for it, and a sandbox that does not say it holds it does not.
+ */
+export interface SandboxGuarantees {
+  /** A process writes where `write` lists and nowhere else: the sandbox adds no temp or scratch place of its own. */
+  readonly exactWrites: boolean;
+  /** Reads are an allow-list: the cwd, `read` and what the system needs, and nothing else of the user's, not even a place no `denyRead` names. */
+  readonly closedReads: boolean;
+}
+
 export interface Sandbox<M extends SandboxManifest = SandboxManifest> {
   readonly name: SandboxName;
   readonly class: SandboxClass;
+  /** What it holds beyond the lists of the spec. Absent: nothing is promised. */
+  readonly guarantees?: SandboxGuarantees;
   /** Probes the machine: the binary is there and can really wrap a process. */
   available(): Promise<boolean>;
   /** Pure and deterministic: the same spec gives the same manifest. Recorded in the journal before launch. */

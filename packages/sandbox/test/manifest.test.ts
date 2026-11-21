@@ -9,7 +9,7 @@
 //   5. nono drops a denyRead it never granted, and refuses one it would have to carve out of a granted place
 //   6. a sandbox that is not available stops the session before it starts
 //   7. nono's manifest carries the profile it is run with: the default one without the temp areas;
-//      its own writes are the spec's and nothing else
+//      a denyRead that a granted socket would open is refused; what each sandbox holds is said
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
@@ -135,6 +135,11 @@ test("nono is run with the default profile less the temp areas, which each platf
   for (const profile of [mac, linux]) {
     for (const path of [...profile.filesystem.write, ...profile.filesystem.write_file]) expect(path).not.toMatch(/tmp|var\/folders/);
   }
+});
+
+test("what a sandbox holds beyond the lists of its spec is said: nono holds writes and reads, srt neither", () => {
+  expect(nono().guarantees).toEqual({ exactWrites: true, closedReads: true });
+  expect(srt().guarantees).toEqual({ exactWrites: false, closedReads: false });
 });
 
 test("a working directory under the home directory is expanded once, and the paths read from it follow", () => {
