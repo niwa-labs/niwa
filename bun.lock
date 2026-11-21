@@ -33,6 +33,7 @@
         "@niwa-labs/script": "workspace:*",
         "@niwa-labs/sessions": "workspace:*",
         "@niwa-labs/tasks": "workspace:*",
+        "zod": "^4.6.7",
       },
     },
     "packages/cli": {

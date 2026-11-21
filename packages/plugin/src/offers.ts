@@ -117,3 +117,22 @@ export interface CockpitModuleOffer {
  * point, so no plugin has to be installed to read it.
  */
 export const COCKPIT_MODULE: OfferKey<CockpitModuleOffer> = offerKey("cockpit.module", "host");
+
+/**
+ * An agent as a plugin defines it: the agents module serves it as it serves the agents of its own
+ * options. The name is the agent's address (`agent:<name>`); it runs on a harness installation or on a
+ * role, is told its prompt and character, and its sessions see the niwa actions of its hands.
+ */
+export interface AgentOffer {
+  readonly name: string;
+  readonly harness?: string;
+  readonly role?: string;
+  readonly prompt: string;
+  readonly character?: string;
+  readonly hands?: readonly string[];
+  readonly tools?: "all" | "niwa-only" | { readonly allow: readonly string[] };
+  readonly project?: { readonly cwd: string; readonly direction?: string };
+}
+
+/** Where a plugin defines an agent it needs (`api.offer(AGENT, { name, harness, prompt })`): the agents module reads it. */
+export const AGENT: OfferKey<AgentOffer> = offerKey("agent", "agents");
