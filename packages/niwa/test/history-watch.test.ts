@@ -7,8 +7,10 @@ import { createNiwa } from "@niwa-labs/host";
 import { seq } from "@niwa-labs/core";
 import type { ActionName, StoredRecord } from "@niwa-labs/core";
 import { LocatorSchema, harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
-import type { Harness, SessionReading, SessionRecord } from "@niwa-labs/harness";
+import type { AskAnswer, DeliveryReceipt, Harness, LifeEvent, SessionControl, SessionReading, SessionRecord, SessionState, StartedSession } from "@niwa-labs/harness";
 import { history } from "@niwa-labs/history";
+import type { Plugin } from "@niwa-labs/plugin";
+import { sessions } from "@niwa-labs/sessions";
 import { tempHome } from "@niwa-labs/testing";
 
 const ID = sessionId(harnessId("h"), "s1");
@@ -69,6 +71,7 @@ test("history.watch writes that it saw the session, its progress, its pause and 
   for (let waited = 0; !typesOf(await read()).includes("history.session.ended") && waited < 5_000; waited += 20) await Bun.sleep(20);
   const written = await read();
   expect(typesOf(written)).toEqual(["history.session.seen", "session.progress", "history.session.paused", "history.session.ended"]);
+  expect(written.find((record) => record.type === "history.session.ended")?.data).toEqual({ session: ID, certainty: "guessed", why: "idle" });
   expect(written.find((record) => record.type === "history.session.seen")?.data).toEqual({ session: ID, harness: "h", cwd: "/work" });
   expect(written.find((record) => record.type === "session.progress")?.data).toEqual({ session: ID, done: 1, total: 3 });
 
@@ -102,4 +105,95 @@ test("a watch that was on when the host stopped goes on after a restart, from it
     { session: ID, done: 1, total: 2 },
     { session: ID, done: 2, total: 2 },
   ]);
+});
+
+/** A control side of "h" that names the session `s1` and ends its signs of life when told to. */
+class EndingControl implements SessionControl {
+  #end: () => void = () => {};
+  readonly #ended = new Promise<void>((resolve) => (this.#end = resolve));
+  async start(): Promise<StartedSession> {
+    return { session: ID };
+  }
+  async resume(): Promise<void> {}
+  async send(): Promise<DeliveryReceipt> {
+    return { status: "started", turn: 1 };
+  }
+  async interrupt(): Promise<void> {}
+  async ask<T>(): Promise<AskAnswer<T>> {
+    throw new Error("not asked");
+  }
+  async *life(): AsyncIterable<LifeEvent> {
+    await this.#ended;
+  }
+  async state(): Promise<SessionState> {
+    return "idle";
+  }
+  end(): void {
+    this.#end();
+  }
+}
+
+const controlled: Harness = {
+  ...instance,
+  sides: { ...instance.sides, control: { start: true, resume: true, send: true, interrupt: false, ask: false, structuredOutput: false, launch: { model: false, effort: [], modes: [] } } },
+};
+
+async function hosted(plugins: (reading: SessionReading) => Plugin[], records: SessionRecord[]): Promise<{ call: (name: string, input: unknown) => Promise<unknown>; read: () => Promise<StoredRecord[]> }> {
+  const home = await tempHome();
+  const niwa = createNiwa({ home: home.path });
+  niwa.use(...plugins(growing(records)));
+  await niwa.serve();
+  open.push(async () => {
+    await niwa.close();
+    await home.cleanup();
+  });
+  return { call: (name, input) => niwa.call(name as ActionName, input), read: () => niwa.records.read() };
+}
+
+async function until(read: () => Promise<StoredRecord[]>, type: string): Promise<StoredRecord[]> {
+  for (let waited = 0; waited < 5_000; waited += 20) {
+    const all = await read();
+    if (all.some((record) => record.type === type)) return all;
+    await Bun.sleep(20);
+  }
+  throw new Error(`no ${type} was written`);
+}
+
+const ended = (records: readonly StoredRecord[]) => records.filter((record) => record.type === "history.session.ended").map((record) => record.data);
+
+test("a session niwa starts is watched by itself, is never guessed to have ended, and ends exactly when it ends", async () => {
+  const control = new EndingControl();
+  const timing = { pollMs: 10, pauseMs: 30, endMs: 60 };
+  const host = await hosted((reading) => [sessions({ harnesses: [{ instance: controlled, control }] }), history({ harnesses: [{ instance: controlled, reading }], timing })], [checklist(1, 1, 2)]);
+  await host.call("session.start", { harness: "h", prompt: "go" });
+  await until(host.read, "history.session.paused");
+  // Quiet for longer than a guess waits: a session niwa runs is asleep, not over.
+  await Bun.sleep(200);
+  expect(ended(await host.read())).toEqual([]);
+  expect((await host.read()).filter((record) => record.type === "session.progress").map((record) => record.data)).toEqual([{ session: ID, done: 1, total: 2 }]);
+
+  control.end();
+  expect(ended(await until(host.read, "history.session.ended"))).toEqual([{ session: ID, certainty: "exact", why: "session-ended" }]);
+});
+
+test("a signal ends a watched session: the harness's own end exactly, a process gone or a new binding as a guess", async () => {
+  for (const [signal, certainty] of [["end-hook", "exact"], ["process-gone", "guessed"], ["new-binding", "guessed"]] as const) {
+    const host = await hosted((reading) => [history({ harnesses: [{ instance, reading }], timing: { pollMs: 10, pauseMs: 60_000, endMs: 120_000 } })], [checklist(1, 0, 1)]);
+    // A session nobody watches has no end to say.
+    expect(await host.call("history.signal", { session: ID, signal })).toEqual({ ended: false });
+    await host.call("history.watch", { session: ID });
+    expect(await host.call("history.signal", { session: ID, signal })).toEqual({ ended: true });
+    expect(ended(await host.read())).toEqual([{ session: ID, certainty, why: signal }]);
+  }
+});
+
+test("a watch given the process of its harness guesses the session ended once the process is gone", async () => {
+  const process = Bun.spawn(["sleep", "30"]);
+  const host = await hosted((reading) => [history({ harnesses: [{ instance, reading }], timing: { pollMs: 10, pauseMs: 60_000, endMs: 120_000 } })], [checklist(1, 0, 1)]);
+  await host.call("history.watch", { session: ID, pid: process.pid });
+  await until(host.read, "session.progress");
+  expect(ended(await host.read())).toEqual([]);
+  process.kill();
+  await process.exited;
+  expect(ended(await until(host.read, "history.session.ended"))).toEqual([{ session: ID, certainty: "guessed", why: "process-gone" }]);
 });

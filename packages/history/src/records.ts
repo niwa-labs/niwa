@@ -107,10 +107,16 @@ export const DigestReadSchema = z.object({
   omitted: z.number().int().nonnegative(),
 });
 
-/** A watch of a session began: the session, its harness, and the directory it works in when the harness says. */
+/** A watch of a session began: the session, its harness, the directory it works in when the harness says, and its process when known. */
 export const HistorySessionSeen = record(
   "history.session.seen",
-  z.object({ session: SessionIdSchema, harness: HarnessIdSchema, cwd: z.string().optional() }),
+  z.object({
+    session: SessionIdSchema,
+    harness: HarnessIdSchema,
+    cwd: z.string().optional(),
+    /** The process of the harness the session runs in, when the watch was given it. */
+    pid: z.number().int().positive().optional(),
+  }),
 );
 
 /** A watched session wrote nothing for a while: what it holds up to here can be worked on. */
@@ -120,12 +126,27 @@ export const HistorySessionPaused = record(
 );
 
 /**
- * A watched session is over: `exact` when it is known, `guessed` when it only wrote nothing for
- * longer than the watch waits, which is all a transcript can tell of another harness's session.
+ * What told a watch that its session is over:
+ *
+ * - `session-ended` — niwa ran the session, and its control side closed it;
+ * - `end-hook` — the harness said so itself, through the insert inside it;
+ * - `idle` — the transcript grew no record for longer than the watch waits;
+ * - `process-gone` — the process of the harness the session ran in is gone;
+ * - `new-binding` — another session of the same harness took its place in the same directory.
+ */
+export const EndSignalSchema = z.enum(["session-ended", "end-hook", "idle", "process-gone", "new-binding"]);
+export type EndSignal = z.output<typeof EndSignalSchema>;
+
+/** The signals that only suggest an end: the others say it. */
+export const GUESSED_SIGNALS: readonly EndSignal[] = ["idle", "process-gone", "new-binding"];
+
+/**
+ * A watched session is over: `exact` when niwa or the harness said so, `guessed` when only a sign
+ * points to it, which is all a transcript can tell of another harness's session.
  */
 export const HistorySessionEnded = record(
   "history.session.ended",
-  z.object({ session: SessionIdSchema, certainty: z.enum(["exact", "guessed"]) }),
+  z.object({ session: SessionIdSchema, certainty: z.enum(["exact", "guessed"]), why: EndSignalSchema.optional() }),
 );
 
 /** A watch was stopped before the session ended. */
@@ -142,9 +163,16 @@ export const HISTORY_TYPES = [HistorySessionSeen, HistorySessionPaused, HistoryS
 
 export const historyWatch = actionRef("history.watch", {
   description:
-    "Follows a session of any harness while it grows: writes how far its checklist is when that changes, when it pauses, and when it ends (a guess for a session niwa did not start). Watching a session already watched changes nothing.",
-  input: z.object({ session: SessionIdSchema }),
+    "Follows a session of any harness while it grows: writes how far its checklist is when that changes, when it pauses, and when it ends (a guess for a session niwa did not start). Given the process of the harness the session runs in, its exit is taken for a sign of the end. Watching a session already watched changes nothing. A session niwa starts is watched by itself.",
+  input: z.object({ session: SessionIdSchema, pid: z.number().int().positive().optional() }),
   output: z.object({ watching: z.boolean() }),
+});
+
+export const historySignal = actionRef("history.signal", {
+  description:
+    "Tells the watch of a session a sign of its end: `end-hook` (the harness said so) ends it exactly, `process-gone` and `new-binding` as a guess. A session nobody watches is left as it is.",
+  input: z.object({ session: SessionIdSchema, signal: z.enum(["end-hook", "process-gone", "new-binding"]) }),
+  output: z.object({ ended: z.boolean() }),
 });
 
 export const historyUnwatch = actionRef("history.unwatch", {

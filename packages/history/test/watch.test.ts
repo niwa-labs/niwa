@@ -63,7 +63,7 @@ test("a watch says the checklist when it changes, a pause after a quiet while, a
     // The same checklist again says nothing.
     { kind: "progress", done: 1, total: 2 },
     { kind: "paused", upto: at(5), why: "idle" },
-    { kind: "ended", certainty: "guessed" },
+    { kind: "ended", certainty: "guessed", why: "idle" },
   ]);
 });
 

@@ -2,26 +2,33 @@
  * The history plugin: `history.watch` and `history.unwatch` over the reading sides of the
  * installations it is given. A watch writes what it learns as records (records.ts) and goes on after
  * a restart from where the last pause left it; the transcript itself is never written.
+ *
+ * A session niwa starts is watched by itself, from its `session.started`: its progress is written like
+ * any other's, a long quiet is a pause and never a guessed end, and its `session.ended` is the exact
+ * end. The plugin reads those records by their names, so it imports nothing of the sessions module.
  */
 
-import { action, seq } from "@niwa-labs/core";
-import type { StoredRecord } from "@niwa-labs/core";
+import { action, recordTypeName, seq } from "@niwa-labs/core";
+import type { JournalReader, StoredRecord } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
-import type { Plugin, PluginApi } from "@niwa-labs/plugin";
-import { requireAbility } from "@niwa-labs/harness";
+import type { Plugin, PluginApi, Subscriber } from "@niwa-labs/plugin";
+import { harnessId, requireAbility, sessionId } from "@niwa-labs/harness";
 import type { HarnessInstanceRegistry, HarnessKindRegistry, Locator, SessionId } from "@niwa-labs/harness";
 
 import type { ReadingBinding } from "./read.ts";
 import {
+  GUESSED_SIGNALS,
   HISTORY_TYPES,
   HistorySessionEnded,
   HistorySessionPaused,
   HistorySessionSeen,
   HistorySessionUnwatched,
   SessionProgress,
+  historySignal,
   historyUnwatch,
   historyWatch,
 } from "./records.ts";
+import type { EndSignal } from "./records.ts";
 import { watchSession } from "./watch.ts";
 import type { Progress, WatchClock, WatchTiming } from "./watch.ts";
 
@@ -43,11 +50,38 @@ function bindingsOf(options: HistoryOptions): ReadingBinding[] {
 
 const keyOf = (id: SessionId): string => `${id.harness}\u0000${id.native}`;
 
-/** Where a watch of a session stands in the journal: watched or not, the last pause and the last progress. */
+/** The names of the records of the sessions module this plugin reads: a session niwa started, and its end. */
+const SESSION_STARTED = recordTypeName("session.started");
+const SESSION_ENDED = recordTypeName("session.ended");
+/** The record the insert inside a harness writes when the harness says a session ended. */
+const INSERT_SESSION_ENDED = recordTypeName("insert.session-ended");
+
+/** A session as the sessions module names it, `<harness> <native>`, as a reading side names it. */
+function sessionOfRef(ref: unknown): SessionId | undefined {
+  if (typeof ref !== "string") return undefined;
+  const space = ref.indexOf(" ");
+  if (space <= 0 || space === ref.length - 1) return undefined;
+  return sessionId(harnessId(ref.slice(0, space)), ref.slice(space + 1));
+}
+
+/** The session a record of the insert names, `{ harness, native }`. */
+function sessionOfPair(value: unknown): SessionId | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const { harness, native } = value as { harness?: unknown; native?: unknown };
+  return typeof harness === "string" && typeof native === "string" && harness !== "" && native !== "" ? sessionId(harnessId(harness), native) : undefined;
+}
+
+/** Did niwa start this session? Its own `session.started` says so. */
+function ownedBy(journal: JournalReader | undefined, id: SessionId): boolean {
+  return (journal?.find({ type: SESSION_STARTED, field: "session", equals: `${id.harness} ${id.native}` }).length ?? 0) > 0;
+}
+
+/** Where a watch of a session stands in the journal: watched or not, the last pause, the last progress and its process. */
 interface Standing {
   watching: boolean;
   from?: Locator;
   progress?: Progress;
+  pid?: number;
 }
 
 function standingOf(records: readonly StoredRecord[]): Map<string, Standing & { session: SessionId }> {
@@ -57,8 +91,12 @@ function standingOf(records: readonly StoredRecord[]): Map<string, Standing & { 
     if (session === undefined) continue;
     const key = keyOf(session);
     const now = standing.get(key) ?? { session, watching: false };
-    if (stored.type === HistorySessionSeen.name) now.watching = true;
-    else if (stored.type === HistorySessionEnded.name || stored.type === HistorySessionUnwatched.name) now.watching = false;
+    if (stored.type === HistorySessionSeen.name) {
+      now.watching = true;
+      const { pid } = HistorySessionSeen.schema.parse(stored.data);
+      if (pid === undefined) delete now.pid;
+      else now.pid = pid;
+    } else if (stored.type === HistorySessionEnded.name || stored.type === HistorySessionUnwatched.name) now.watching = false;
     else if (stored.type === HistorySessionPaused.name) now.from = HistorySessionPaused.schema.parse(stored.data).upto;
     else if (stored.type === SessionProgress.name) {
       const { done, total } = SessionProgress.schema.parse(stored.data);
@@ -67,6 +105,16 @@ function standingOf(records: readonly StoredRecord[]): Map<string, Standing & { 
     standing.set(key, now);
   }
   return standing;
+}
+
+/** Does a process live? A process that exists but is not ours to signal lives too. */
+function lives(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as { code?: unknown }).code === "EPERM";
+  }
 }
 
 export function history(options: HistoryOptions): Plugin {
@@ -87,21 +135,32 @@ export function history(options: HistoryOptions): Plugin {
       return binding.reading;
     };
 
+    /** Stop following a session, when it is followed. */
+    const stop = (id: SessionId): void => {
+      const controller = watches.get(keyOf(id));
+      watches.delete(keyOf(id));
+      controller?.abort();
+    };
+
     /** Follow a session; what it learns is written as records until it ends or the watch stops. */
-    const follow = (id: SessionId, from?: Locator, progress?: Progress): void => {
+    const follow = (id: SessionId, standing: Omit<Standing, "watching">): void => {
       const key = keyOf(id);
       if (watches.has(key)) return;
+      const reading = readingOf(id);
       const controller = new AbortController();
       watches.set(key, controller);
-      const reading = readingOf(id);
+      const owned = ownedBy(api.journal?.(), id);
       void (async () => {
         try {
           const events = watchSession(reading, id, {
             signal: controller.signal,
             ...(options.timing === undefined ? {} : { timing: options.timing }),
             ...(options.clock === undefined ? {} : { clock: options.clock }),
-            ...(from === undefined ? {} : { from }),
-            ...(progress === undefined ? {} : { progress }),
+            ...(standing.from === undefined ? {} : { from: standing.from }),
+            ...(standing.progress === undefined ? {} : { progress: standing.progress }),
+            // A session niwa runs ends when niwa says so: its quiet is a wait for the next turn.
+            ...(owned ? { guessEnd: false } : {}),
+            ...(standing.pid === undefined ? {} : { alive: () => lives(standing.pid!) }),
           });
           for await (const event of events) {
             switch (event.kind) {
@@ -112,7 +171,7 @@ export function history(options: HistoryOptions): Plugin {
                 await api.emit(HistorySessionPaused, { session: id, upto: event.upto, why: event.why });
                 break;
               case "ended":
-                await api.emit(HistorySessionEnded, { session: id, certainty: event.certainty });
+                await api.emit(HistorySessionEnded, { session: id, certainty: event.certainty, why: event.why });
                 break;
             }
           }
@@ -123,6 +182,9 @@ export function history(options: HistoryOptions): Plugin {
         }
       })();
     };
+
+    /** The certainty a signal of the end gives. */
+    const certaintyOf = (signal: EndSignal) => (GUESSED_SIGNALS.includes(signal) ? "guessed" : "exact");
 
     api.action(
       action(historyWatch, {
@@ -136,8 +198,13 @@ export function history(options: HistoryOptions): Plugin {
           for await (const info of reading.list({ natives: [id.native] })) cwd = info.cwd ?? cwd;
           // A session watched before goes on from where that watch left it, saying no progress twice.
           const before = standingNow().get(keyOf(id));
-          await ctx.emit(HistorySessionSeen, { session: id, harness: id.harness, ...(cwd === undefined ? {} : { cwd }) });
-          follow(id, before?.from, before?.progress);
+          await ctx.emit(HistorySessionSeen, {
+            session: id,
+            harness: id.harness,
+            ...(cwd === undefined ? {} : { cwd }),
+            ...(input.pid === undefined ? {} : { pid: input.pid }),
+          });
+          follow(id, { ...before, ...(input.pid === undefined ? {} : { pid: input.pid }) });
           return { watching: true };
         },
       }),
@@ -147,15 +214,59 @@ export function history(options: HistoryOptions): Plugin {
       action(historyUnwatch, {
         recovery: "repeat",
         run: async (input, ctx) => {
-          const controller = watches.get(keyOf(input.session));
-          if (controller === undefined) return { stopped: false };
-          watches.delete(keyOf(input.session));
-          controller.abort();
+          if (!watches.has(keyOf(input.session))) return { stopped: false };
+          stop(input.session);
           await ctx.emit(HistorySessionUnwatched, { session: input.session });
           return { stopped: true };
         },
       }),
     );
+
+    api.action(
+      action(historySignal, {
+        // An end already written is not written again: the signal may be given again.
+        recovery: "repeat",
+        run: async (input, ctx) => {
+          if (standingNow().get(keyOf(input.session))?.watching !== true) return { ended: false };
+          stop(input.session);
+          await ctx.emit(HistorySessionEnded, { session: input.session, certainty: certaintyOf(input.signal), why: input.signal });
+          return { ended: true };
+        },
+      }),
+    );
+
+    // The sessions niwa starts, and the ends niwa and the inserts say: read by their names, from the
+    // moment the plugin first serves, so the sessions of an older journal are not watched again.
+    let firstServed: number | undefined;
+    api.subscribers(() => {
+      const journal = api.journal?.();
+      if (journal === undefined) return [];
+      firstServed ??= journal.last();
+      // One subscription, so a session's start is always taken before its end.
+      const sessions: Subscriber = {
+        id: "niwa-sessions",
+        queries: [{ types: [SESSION_STARTED, SESSION_ENDED, INSERT_SESSION_ENDED] }],
+        from: firstServed,
+        handler: async (data, step, stored) => {
+          const { session, cwd } = data as { session?: unknown; cwd?: unknown };
+          if (stored.type === SESSION_STARTED) {
+            const id = sessionOfRef(session);
+            if (id === undefined || watches.has(keyOf(id))) return;
+            // A session of an installation with no reading side has no transcript to follow.
+            if (bindings.find((candidate) => candidate.instance.id === id.harness)?.reading === undefined) return;
+            await step.emit(HistorySessionSeen, { session: id, harness: id.harness, ...(typeof cwd === "string" ? { cwd } : {}) });
+            follow(id, {});
+            return;
+          }
+          const id = stored.type === SESSION_ENDED ? sessionOfRef(session) : sessionOfPair(session);
+          if (id === undefined || standingNow().get(keyOf(id))?.watching !== true) return;
+          stop(id);
+          const why: EndSignal = stored.type === SESSION_ENDED ? "session-ended" : "end-hook";
+          await step.emit(HistorySessionEnded, { session: id, certainty: certaintyOf(why), why });
+        },
+      };
+      return [sessions];
+    });
 
     // The watches the journal says are on go on from their last pause; all stop with the host.
     api.service(() => {
@@ -163,7 +274,7 @@ export function history(options: HistoryOptions): Plugin {
         for (const [, standing] of standingNow()) {
           if (!standing.watching) continue;
           try {
-            follow(standing.session, standing.from, standing.progress);
+            follow(standing.session, standing);
           } catch {
             // An installation that is gone has nothing to watch with.
           }

@@ -52,7 +52,7 @@ export interface Progress {
 export type WatchEvent =
   | { readonly kind: "progress"; readonly done: number; readonly total: number }
   | { readonly kind: "paused"; readonly upto: Locator; readonly why: "idle" }
-  | { readonly kind: "ended"; readonly certainty: "guessed" };
+  | { readonly kind: "ended"; readonly certainty: "guessed"; readonly why: "idle" | "process-gone" };
 
 export interface WatchOptions {
   readonly timing?: WatchTiming;
@@ -62,6 +62,13 @@ export interface WatchOptions {
   readonly from?: Locator;
   /** The progress an earlier watch said last: the same again is not said. */
   readonly progress?: Progress;
+  /**
+   * Whether a long quiet is taken for the end. Default: true. A session niwa runs is not over when it
+   * is quiet: it waits for its next turn, and niwa knows when it ends.
+   */
+  readonly guessEnd?: boolean;
+  /** Whether the process the session runs in still lives, when it is known: its exit is taken for the end. */
+  readonly alive?: () => boolean;
 }
 
 /**
@@ -95,11 +102,15 @@ export async function* watchSession(reading: SessionReading, id: SessionId, opti
     }
     for (const each of said) yield { kind: "progress", ...each };
     const now = clock.now();
+    if (options.alive !== undefined && !grew && !options.alive()) {
+      yield { kind: "ended", certainty: "guessed", why: "process-gone" };
+      return;
+    }
     if (grew) {
       lastRecordAt = now;
       paused = false;
-    } else if (now - lastRecordAt >= timing.endMs) {
-      yield { kind: "ended", certainty: "guessed" };
+    } else if (options.guessEnd !== false && now - lastRecordAt >= timing.endMs) {
+      yield { kind: "ended", certainty: "guessed", why: "idle" };
       return;
     } else if (!paused && upto !== undefined && now - lastRecordAt >= timing.pauseMs) {
       paused = true;
