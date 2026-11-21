@@ -32,7 +32,7 @@ export {
 
 export { isSettled, StateRing, WORK_STATE_LABEL, type StateRingProps, type WorkState } from "./agent/state.tsx";
 export { IdChip, idPrefix, isPlainClick, shortId, type IdChipProps } from "./agent/id-chip.tsx";
-export { formatDuration, formatPayload } from "./agent/payload.ts";
+export { formatAgo, formatDuration, formatPayload } from "./agent/payload.ts";
 export { ToolCall, type ToolCallProps, type ToolCallState } from "./agent/tool-call.tsx";
 export { Markdown, type MarkdownProps } from "./agent/markdown.tsx";
 export { DiffView, type DiffLayout, type DiffViewProps } from "./agent/diff-view.tsx";

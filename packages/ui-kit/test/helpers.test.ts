@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { formatDuration, formatPayload, idPrefix, isPlainClick, isSettled, shortId } from "../src/index.ts";
+import { formatAgo, formatDuration, formatPayload, idPrefix, isPlainClick, isSettled, shortId } from "../src/index.ts";
 
 describe("ids", () => {
   test("the prefix is the lowercase word before the first dash", () => {
@@ -49,5 +49,28 @@ describe("formatting", () => {
     expect(isSettled("reused")).toBe(true);
     expect(isSettled("running")).toBe(false);
     expect(isSettled("waiting")).toBe(false);
+  });
+});
+
+describe("how long ago", () => {
+  const now = Date.parse("2026-11-21T12:00:00Z");
+  const at = (offsetMs: number): number => now - offsetMs;
+
+  test("a moment is told in the largest unit that fits", () => {
+    expect(formatAgo(at(10_000), now)).toBe("just now");
+    expect(formatAgo(at(5 * 60_000), now)).toBe("5m ago");
+    expect(formatAgo(at(3 * 3_600_000), now)).toBe("3h ago");
+    expect(formatAgo(at(2 * 86_400_000), now)).toBe("2d ago");
+    expect(formatAgo(at(60 * 86_400_000), now)).toBe("2026-09-22");
+  });
+
+  test("an ISO time is read as the moment it names, and one that is none gives nothing", () => {
+    expect(formatAgo("2026-11-21T11:00:00Z", now)).toBe("1h ago");
+    expect(formatAgo("yesterday", now)).toBe("");
+    expect(formatAgo(Number.NaN, now)).toBe("");
+  });
+
+  test("a moment after now is not told as ago", () => {
+    expect(formatAgo(now + 120_000, now)).toBe("in the future");
   });
 });

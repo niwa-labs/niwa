@@ -20,3 +20,22 @@ export function formatDuration(ms: number): string {
   if (minutes < 60) return `${minutes}m ${String(totalSeconds % 60).padStart(2, "0")}s`;
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
+
+/**
+ * How long ago a moment was, short: `just now`, `5m ago`, `3h ago`, `2d ago`, and past a month the date. The moment is
+ * milliseconds since the epoch or an ISO time; a moment that is not one gives an empty text.
+ */
+export function formatAgo(at: number | string, now: number = Date.now()): string {
+  const moment = typeof at === "number" ? at : Date.parse(at);
+  if (!Number.isFinite(moment)) return "";
+  const seconds = Math.round((now - moment) / 1000);
+  if (seconds < 0) return "in the future";
+  if (seconds < 45) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${String(minutes)}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${String(hours)}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 31) return `${String(days)}d ago`;
+  return new Date(moment).toISOString().slice(0, 10);
+}
