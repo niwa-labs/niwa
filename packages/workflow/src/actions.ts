@@ -286,7 +286,7 @@ export const RegisterInput = z.object({
 
 export const workflowRegister = actionRef("workflow.register", {
   description:
-    "Register a workflow script: it becomes the action flow.<id>, with its input and output as its schemas. Without id a new workflow is made and its id (wf-…) is answered; with id the script is a new version of that workflow; a built-in (one a plugin ships) is refused, its versions come with the plugin. The version is the hash of the script and the local files it imports. A changed contract checks the workflows that call it again, and the ones that no longer pass are marked broken.",
+    "Register a workflow script: it becomes the action flow.<id>, with its input and output as its schemas. Without id a new workflow is made and its id (wf-…) is answered; with id the script is a new version of that workflow, which only whoever made it and the owner may register; a built-in (one a plugin ships) is refused, its versions come with the plugin. The version is the hash of the script and the local files it imports. A changed contract checks the workflows that call it again, and the ones that no longer pass are marked broken.",
   input: RegisterInput,
   output: z.object({
     id: WorkflowId,

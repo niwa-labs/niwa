@@ -1327,10 +1327,18 @@ export function workflow(opts: WorkflowOptions = {}) {
               `${existing.id} is the built-in "${existing.builtin.name}" of the plugin "${existing.builtin.plugin}": its versions come with the plugin, a file is not registered under it. Register the file as a workflow of its own`,
             );
           }
+          // A new version moves the latest of a workflow: only whoever made it, or the owner, may move it.
+          if (existing !== undefined) mayAct(ctx.caller, makerOf(existing), `register a version of the workflow ${existing.id}`);
           return registerScript(ctx, resolveFile(opts.root, input.file), existing);
         },
       }),
     );
+
+    /** Who made a workflow: the principal its first registration was written by; none when the host or a handler made it. */
+    const makerOf = (registered: RegisteredWorkflow): Principal | undefined => {
+      const actor = journal().get(registered.record)?.actor;
+      return actor?.kind === "client" ? actor.principal : undefined;
+    };
 
     /** The installations of a workflow that stand. */
     const installationsOfWorkflow = (id: WorkflowId): InstallationId[] =>
