@@ -13,6 +13,7 @@ import { bootCockpit, DEFAULT_BACKLOG, startFailure } from "../src/boot.tsx";
 import { BUILD_SOURCES, importsOf, isStale, SHARED_MODULES } from "../src/index.ts";
 import { parseSearch, stringifySearch } from "../src/router.tsx";
 import { entryName } from "../src/shared-modules.ts";
+import { fetching, json, module } from "./support.ts";
 
 const folders: string[] = [];
 afterEach(() => {
@@ -71,33 +72,6 @@ test("a login that is missing is said in words, any other failure with its reaso
   expect(startFailure(new HostCallError(502, "the host is down"))).toBe("The cockpit could not start: the host is down");
   expect(startFailure("plain")).toBe("The cockpit could not start: plain");
 });
-
-type Served = Record<string, () => Response>;
-
-function fetching(served: Served, seen: string[]): typeof fetch {
-  return (async (input: Request | string | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    seen.push(url);
-    const path = url.split("?")[0] ?? "";
-    if (path.endsWith("/api/events")) {
-      // The feed stays open until the app closes it.
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          init?.signal?.addEventListener("abort", () => controller.close());
-        },
-      });
-      return new Response(stream, { headers: { "content-type": "text/event-stream" } });
-    }
-    const make = served[path.replace(/^https?:\/\/[^/]+/, "")];
-    return make === undefined ? new Response("no such address", { status: 404 }) : make();
-  }) as typeof fetch;
-}
-
-const json = (value: unknown): (() => Response) => () => Response.json(value);
-
-function module(id: string, entry = `/modules/${id}/${"a".repeat(64)}/index.js`) {
-  return { id, package: `@niwa-labs/${id}`, version: "0.0.0", entry, hash: "a".repeat(64) };
-}
 
 test("the cockpit loads the listed modules before it makes the router, and a broken module leaves only itself out", async () => {
   const seen: string[] = [];

@@ -95,34 +95,45 @@ export async function bootCockpit(options: BootOptions = {}): Promise<Cockpit> {
 
   const stream = createRecordStream(host);
   const seq = typeof info.seq === "number" ? info.seq : 0;
+  // The feed starts before the modules are set up, so the records that arrive while they are are not missed. From here to the
+  // return the cockpit has no handle that could stop it, so a failure stops it here.
   stream.start(Math.max(0, seq - (options.backlog ?? DEFAULT_BACKLOG)));
+  try {
+    const loaded = await loadPlugins(
+      catalogueSources(
+        { modules: catalogue.modules.map((module) => ({ ...module, entry: `${base}${module.entry}` })) },
+        options.importModule,
+      ),
+      { viewer, host, records: stream },
+      { timeoutMs: options.moduleTimeoutMs, paths: SHELL_PATHS },
+    );
 
-  const document = options.document ?? (typeof globalThis.document === "undefined" ? undefined : globalThis.document);
-  if (document !== undefined) for (const module of catalogue.modules) for (const sheet of module.styles ?? []) linkStylesheet(document, `${base}${sheet}`);
+    // A module that was left out has no say in how the page looks: only the accepted ones bring their stylesheets.
+    const document = options.document ?? (typeof globalThis.document === "undefined" ? undefined : globalThis.document);
+    if (document !== undefined) {
+      for (const module of catalogue.modules) {
+        if (loaded.registry.plugins.includes(module.id)) for (const sheet of module.styles ?? []) linkStylesheet(document, `${base}${sheet}`);
+      }
+    }
 
-  const loaded = await loadPlugins(
-    catalogueSources(
-      { modules: catalogue.modules.map((module) => ({ ...module, entry: `${base}${module.entry}` })) },
-      options.importModule,
-    ),
-    { viewer, host, records: stream },
-    { timeoutMs: options.moduleTimeoutMs, paths: SHELL_PATHS },
-  );
-
-  const faults = new FaultLog(loaded.faults);
-  const router = createCockpitRouter(loaded.registry, options.history);
-  const runtime: CockpitRuntime = {
-    viewer,
-    host,
-    records: stream,
-    registry: loaded.registry,
-    navigator: {
-      navigate: (to, opts) => (opts?.replace === true ? router.history.replace(to) : router.history.push(to)),
-    },
-    reportFault: (fault: PluginFault) => faults.add(fault),
-  };
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
-  return { runtime, router, queryClient, faults, stream, stop: () => stream.stop() };
+    const faults = new FaultLog(loaded.faults);
+    const router = createCockpitRouter(loaded.registry, options.history);
+    const runtime: CockpitRuntime = {
+      viewer,
+      host,
+      records: stream,
+      registry: loaded.registry,
+      navigator: {
+        navigate: (to, opts) => (opts?.replace === true ? router.history.replace(to) : router.history.push(to)),
+      },
+      reportFault: (fault: PluginFault) => faults.add(fault),
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
+    return { runtime, router, queryClient, faults, stream, stop: () => stream.stop() };
+  } catch (error) {
+    stream.stop();
+    throw error;
+  }
 }
 
 export function CockpitApp({ cockpit }: { cockpit: Cockpit }) {

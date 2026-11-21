@@ -1,6 +1,6 @@
 /** The frame of the cockpit: navigation, the status bar and the place a page is drawn in. */
 
-import { FaultNotice, PageLink, Slot, useRegistry, useViewer } from "@niwa-labs/cockpit-sdk";
+import { FaultNotice, PageLink, PluginBoundary, Slot, useRegistry, useViewer } from "@niwa-labs/cockpit-sdk";
 import type { PluginFault } from "@niwa-labs/cockpit-sdk";
 import { Outlet, useRouterState } from "@tanstack/react-router";
 
@@ -20,9 +20,14 @@ function Navigation() {
         <PageLink
           key={item.path}
           to={item.path}
-          className={`rounded-md px-2 py-1.5 text-sm hover:bg-accent ${active(item.path) ? "bg-accent font-medium" : ""}`}
+          className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent ${active(item.path) ? "bg-accent font-medium" : ""}`}
         >
-          {item.label}
+          {item.icon === undefined ? null : (
+            <PluginBoundary plugin={item.plugin} place="nav.icon" fallback={() => null}>
+              <item.icon className="size-4 shrink-0" />
+            </PluginBoundary>
+          )}
+          <span className="min-w-0 truncate">{item.label}</span>
         </PageLink>
       ))}
     </nav>
