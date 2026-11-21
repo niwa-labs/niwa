@@ -36,6 +36,7 @@ import {
   OWNER,
   OWNER_TOKEN_FILE,
   principalOf,
+  CANCEL_STEPS_ACTION,
   MOVE_ACTION,
   RESOLVE_ACTION,
   attemptRecordId,
@@ -121,6 +122,7 @@ import {
   admits,
   findWaited,
   invocationId,
+  abortSteps,
   runInvocation,
   stepKey,
   openJournal,
@@ -553,6 +555,14 @@ function latestStates(journal: Journal): Map<string, string> {
 
 const MoveInput = z.object({ invocation: z.string() });
 
+/** What a cancel of steps names: the invocation, the key prefixes it gives up, the ones it spares, and why. */
+const CancelStepsInput = z.object({
+  invocation: z.string(),
+  prefixes: z.array(z.string().min(1)).min(1),
+  except: z.array(z.string().min(1)).optional(),
+  reason: z.string().min(1),
+});
+
 const ResolveInput = z
   .object({
     invocation: z.string().optional(),
@@ -647,6 +657,7 @@ class Niwa implements Host {
   private readonly stopping: Array<Promise<void>> = [];
   private readonly resolver = this.resolveAction();
   private readonly mover = this.moveAction();
+  private readonly canceller = this.cancelStepsAction();
   private readonly installer = pluginInstallAction({
     install: (plugin) => this.use(plugin),
     record: async (caller, data) => {
@@ -1316,6 +1327,7 @@ class Niwa implements Host {
     // The host registers one action for itself: the way an owner answers a paused invocation.
     this.actions.set(this.resolver.name, this.resolver);
     this.actions.set(this.mover.name, this.mover);
+    this.actions.set(this.canceller.name, this.canceller);
     // And one more: the way anyone asks what a plugin would do differently over recorded records.
     // And the install of a plugin from a file: its target is the plugin, so a grant can limit it.
     this.actions.set(this.installer.name, this.installer);
@@ -1414,6 +1426,50 @@ class Niwa implements Host {
         // Retry calls the step as a new attempt, skip continues without it.
         if (input.choice !== "cancel") this.schedule(spec);
         return { resolved: true };
+      },
+    });
+  }
+
+  /**
+   * The action the host registers for itself: cancel the steps of an invocation under some keys.
+   *
+   * The cancel is written as a record first, so it holds whatever process runs the invocation
+   * later. Then the calls it holds that are in flight here are aborted, and an invocation that
+   * waits runs again: a wait the cancel holds ends, and the code that made it goes on. The
+   * invocation itself may cancel its own steps; any other caller is the owner.
+   */
+  private cancelStepsAction(): AnyAction {
+    return action(CANCEL_STEPS_ACTION, {
+      description:
+        "Cancel the steps of an invocation under some key prefixes: a step not called yet is not called, a call in flight is aborted, and each ends as cancelled.",
+      input: CancelStepsInput,
+      output: z.object({ aborted: z.number().int() }),
+      // The cancel is written under the id of the operation: a call made again finds it and
+      // writes nothing twice.
+      recovery: "repeat",
+      run: async (input: z.infer<typeof CancelStepsInput>, ctx) => {
+        const journal = this.requireJournal();
+        const admitted = journal.get(recordId(input.invocation));
+        const spec =
+          admitted?.type === CORE_TYPES.invocationAdmitted ? this.specOf(journal, admitted) : undefined;
+        if (spec === undefined) throw new Error(`unknown invocation "${input.invocation}"`);
+        const own = ctx.caller.kind === "handler" && ctx.caller.invocation === spec.invocation;
+        if (!own) requireOwner(ctx.caller, "cancels the steps of an invocation");
+        const cancel = {
+          invocation: spec.invocation,
+          prefixes: input.prefixes,
+          ...(input.except === undefined || input.except.length === 0 ? {} : { except: input.except }),
+          reason: input.reason,
+        };
+        const id = recordId(`sc:${ctx.operationId}`);
+        if (journal.get(id) === undefined) {
+          this.append([{ ...this.invocationRecord(spec, "sc", CORE_TYPES.stepCancelled, cancel, ctx.caller), id }]);
+        }
+        const aborted = abortSteps(cancel);
+        // A waiting invocation runs again, so the waits the cancel holds end.
+        const waiting = this.waiting.get(spec.invocation);
+        if (waiting !== undefined) this.schedule(waiting.spec);
+        return { aborted };
       },
     });
   }

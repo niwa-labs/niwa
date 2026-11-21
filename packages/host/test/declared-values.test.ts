@@ -90,6 +90,7 @@ test("declared values: a declared action is described with its schemas, an undec
       "niwa.describe",
       "niwa.host.status",
       "niwa.host.stop",
+      "niwa.invocation.cancel-steps",
       "niwa.invocation.move",
       "niwa.invocation.resolve",
       "niwa.records.read",
