@@ -108,10 +108,12 @@ export function seatKeys(seats: readonly Seat[], what: string): string[] {
 }
 
 /**
- * The errors no helper turns into a value: a call the grant refused, or a budget spent. A branch
- * that ends with one throws it out of the helper.
+ * The errors no helper turns into a value: a call the grant refused, a budget spent, and a question
+ * to the owner that was cancelled or went unanswered. A branch that ends with one throws it out of
+ * the helper, and a worker that met one is not run again. Only `humanGate` turns the last two into
+ * an outcome. A branch the scope cancelled ends as `Cancelled`, which is no such error.
  */
-const FATAL = new Set(["Denied", "BudgetExceeded"]);
+const FATAL = new Set(["Denied", "BudgetExceeded", "AskCancelled", "AskExpired"]);
 
 /** Whether a failure is one no helper keeps as a value. */
 export const isFatal = (error: { name: string }): boolean => FATAL.has(error.name);

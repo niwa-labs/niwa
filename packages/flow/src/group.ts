@@ -1,8 +1,9 @@
 /**
  * Groups of branches over `scope`: a keyed map in the order of its input, a stream read in the
  * order of outcomes and the two ways to choose from it, map-reduce in batches, a swarm of workers
- * and a consensus of seats. A branch's failure is a value (`Settled`), except a refusal of the grant
- * or a spent budget, which every helper throws.
+ * and a consensus of seats. A branch's failure is a value (`Settled`), except a refusal of the grant,
+ * a spent budget, or a question to the owner that was cancelled or went unanswered, which every
+ * helper throws the moment it is read.
  */
 
 import type { Stream } from "@niwa-labs/script";
@@ -30,22 +31,56 @@ export async function map<I, T>(
   const keys = checkKeys(items.map(opts.key), "the key of an item");
   return script().scope(key, opts.concurrency === undefined ? undefined : { concurrency: opts.concurrency }, async (s) => {
     const branches = items.map((item, index) => s.start(keys[index] as string, () => fn(item)));
+    const at = new Map(keys.map((one, index) => [one, index]));
     const out: Settled<T>[] = [];
-    for (const branch of branches) {
-      const settled = await branch.settled();
-      // A refusal of the grant is not a value: the original error leaves the map, and the scope cancels the rest.
-      if (!settled.ok && isFatal(settled.error)) await branch.value();
-      out.push(settled);
+    // The outcomes are read as the host committed them, so an error that must leave is met when it ends, not when the branches before it have; they are put in the order of the items.
+    for (let got = await s.next(); got !== null; got = await s.next()) {
+      const index = at.get(got.key) as number;
+      const settled = got.result as Settled<T>;
+      if (!settled.ok && isFatal(settled.error)) {
+        // The original error leaves the map, and the scope cancels the rest.
+        await (branches[index] as { value(): Promise<T> }).value();
+        throw errorOf(settled);
+      }
+      out[index] = settled;
     }
     return out;
   });
 }
 
-/** Branches read one outcome at a time, in the order the host committed them. Closing the stream cancels the rest. */
+/**
+ * Branches read one outcome at a time, in the order the host committed them. Closing the stream
+ * cancels the rest. Every way to read it throws an error no helper keeps as a value (a refusal of
+ * the grant, a spent budget, an unanswered question), as `map` does.
+ */
 export function stream<K extends string, T>(key: string, branches: Record<K, () => Promise<T>>, opts: { concurrency?: number } = {}): Stream<K, T> {
   checkKey(key, "the key of a stream");
   checkKeys(Object.keys(branches), "the key of a branch");
-  return script().stream(key, branches, opts) as Stream<K, T>;
+  const raw = script().stream(key, branches, opts) as Stream<K, T>;
+  const checked = <V extends { result: Settled<T> }>(got: V): V => {
+    if (!got.result.ok && isFatal(got.result.error)) throw errorOf(got.result);
+    return got;
+  };
+  const checkedStream: Stream<K, T> = {
+    next: async () => {
+      const got = await raw.next();
+      return got === null ? null : checked(got);
+    },
+    ready: async () => (await raw.ready()).map(checked),
+    rest: async () => {
+      const all = await raw.rest();
+      for (const settled of Object.values<Settled<T>>(all)) checked({ result: settled });
+      return all;
+    },
+    pending: () => raw.pending(),
+    cancel: (keys) => raw.cancel(keys),
+    close: () => raw.close(),
+    async *[Symbol.asyncIterator]() {
+      for (let got = await checkedStream.next(); got !== null; got = await checkedStream.next()) yield got;
+    },
+    [Symbol.asyncDispose]: () => raw[Symbol.asyncDispose](),
+  };
+  return checkedStream;
 }
 
 /** The first outcome of a stream that succeeded and passes `pass`; the stream stays open. Null when none did. */
@@ -93,8 +128,9 @@ export async function mapReduce<I, M, R>(
 }
 
 /**
- * Workers on briefs, each in a branch keyed by the brief's id. A result `valid` refuses is dropped;
- * with `respawn: 1` a worker that failed or was refused runs once more. `gaps` are the briefs with
+ * Workers on briefs, each in a branch keyed by the brief's id, each attempt in a scope `a1`, `a2`
+ * of its own. A result `valid` refuses is dropped; with `respawn: 1` a worker that failed or was
+ * refused runs once more, unless it met an error no helper keeps as a value. `gaps` are the briefs with
  * no result in the end, `dropped` those whose result was refused.
  */
 export async function swarm<B, R>(
@@ -110,7 +146,8 @@ export async function swarm<B, R>(
     for (let attempt = 1; attempt <= tries; attempt += 1) {
       let result: R;
       try {
-        result = await opts.worker(brief, id);
+        // Each attempt is a scope of its own, so what the worker names in it is not met a second time.
+        result = await script().scope(`a${String(attempt)}`, undefined, () => opts.worker(brief, id));
       } catch (error) {
         if (error instanceof Error && isFatal(error)) throw error;
         if (attempt === tries) throw error;

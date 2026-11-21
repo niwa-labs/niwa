@@ -217,3 +217,80 @@ test("seat keys number a seat met again with a name no other seat has", () => {
   expect(seatKeys(["judge-2", "judge", "judge"], "a seat")).toEqual(["judge-2", "judge", "judge-3"]);
   expect(seatKeys(["a", "a", "a"], "a seat")).toEqual(["a", "a-2", "a-3"]);
 });
+test("map throws a refusal of the grant as soon as it is committed, not when the branches before it ended", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { map } from "@niwa-labs/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      try {
+        await map("items", ["slow", "refused"], { key: (k) => k }, async (k) => {
+          if (k === "slow") { await sleep("1h"); return k; }
+          throw Object.assign(new Error("the grant does not hold it"), { name: "Denied" });
+        });
+        return "kept";
+      } catch (error) {
+        return (error as Error).name;
+      }
+    });`);
+  expect(resultOf(ended)).toBe("Denied");
+}, 30_000);
+
+test("a question the owner left unanswered leaves a map and a swarm, and a worker that met it is not run again", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { map, swarm } from "@niwa-labs/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const mapped = await map("asks", ["a"], { key: (k) => k }, async () => ask.confirm("Go on?", { timeout: "50ms" })).then(() => "kept", (error) => (error as Error).name);
+      let tries = 0;
+      const swarmed = await swarm("crew", {
+        briefs: { one: 1 },
+        respawn: 1,
+        worker: async () => { tries += 1; return ask.confirm("Go on?", { timeout: "50ms" }); },
+      }).then(() => "kept", (error) => (error as Error).name);
+      return { mapped, swarmed, tries };
+    });`);
+  expect(resultOf(ended)).toEqual({ mapped: "AskExpired", swarmed: "AskExpired", tries: 1 });
+}, 30_000);
+
+test("a swarm worker that opens a named scope can run again after a failed attempt", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { swarm } from "@niwa-labs/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      let tries = 0;
+      return swarm("crew", {
+        briefs: { one: 1 },
+        respawn: 1,
+        worker: async (brief) => scope("work", undefined, async () => {
+          tries += 1;
+          if (tries === 1) throw new Error("not this time");
+          return brief * 7;
+        }),
+      });
+    });`);
+  expect(resultOf(ended)).toEqual({ results: { one: 7 }, gaps: [], dropped: [] });
+}, 30_000);
+
+test("every way to read a stream throws a refusal of the grant", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { stream } from "@niwa-labs/flow";
+    const refused = async () => { throw Object.assign(new Error("the grant does not hold it"), { name: "Denied" }); };
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const name = (read: () => Promise<unknown>) => read().then(() => "kept", (error) => (error as Error).name);
+      const next = await name(async () => stream("next", { refused }).next());
+      const rest = await name(async () => stream("rest", { refused }).rest());
+      const ready = await name(async () => {
+        const s = stream("ready", { refused });
+        for (let tries = 0; tries < 100; tries += 1) {
+          const got = await s.ready();
+          if (got.length > 0) return got;
+          await sleep(20);
+        }
+        return "nothing was ready";
+      });
+      const each = await name(async () => { for await (const _ of stream("each", { refused })) { /* read */ } });
+      return { next, rest, ready, each };
+    });`);
+  expect(resultOf(ended)).toEqual({ next: "Denied", rest: "Denied", ready: "Denied", each: "Denied" });
+}, 30_000);
