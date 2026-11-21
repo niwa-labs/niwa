@@ -500,6 +500,8 @@ export type Handler<T> = (data: T, step: Step, record: StoredRecord) => Promise<
 export interface AuthorizeHow {
   readonly input?: unknown;
   readonly reason?: string;
+  /** What is held to the grant is a read of the journal, not a call: under a rule that asks it is denied, not asked. */
+  readonly read?: true;
 }
 
 /** What the owner may answer to a question of a grant. */

@@ -370,13 +370,13 @@ export function bridge(deps: BridgeDeps): Bridge {
     name: string,
     input: NoInfer<In>,
     lineage: Lineage,
-    opts: { reason?: string; agent?: boolean } = {},
+    opts: { reason?: string; agent?: boolean; read?: boolean } = {},
   ): Promise<O> => {
     const { reason } = opts;
     return takeOrRun(key, deps.earlier.get(key), { key, action: name, input: jsonOf(input), agent: opts.agent === true }, lineage, async () => {
       // The run is held to its grant for the call (a rule that asks puts the question to the owner);
       // the session it starts may see no more than the run does.
-      await authorized(key, "call", name, { input, ...(reason === undefined ? {} : { reason }) });
+      await authorized(key, "call", name, { input, ...(reason === undefined ? {} : { reason }), ...(opts.read === true ? { read: true as const } : {}) });
       deps.visible(visibleOf(name, input));
       return guarded(() => step(target, input, { key, as: deps.run, ...(reason === undefined ? {} : { reason }) }));
     });
@@ -431,8 +431,8 @@ export function bridge(deps: BridgeDeps): Bridge {
   };
 
   const waiting = async (key: string, request: Extract<ScriptRequest, { op: "wait" }>, lineage: Lineage): Promise<unknown> => {
-    // A wait reads the journal: it is held to the same right as a read of records.
-    await authorized(key, "call", RECORDS_READ);
+    // A wait reads the journal: it is held to the same right as a read of records, and a read is never asked.
+    await authorized(key, "call", RECORDS_READ, { read: true });
     const filter = request.filter === undefined ? {} : { filter: request.filter };
     // A wait from a position looks after it; one without looks after where the journal was when it
     // began, so a record that arrives while the wake is being armed is not missed.
@@ -521,11 +521,11 @@ export function bridge(deps: BridgeDeps): Bridge {
         return takeOrRun(key, written, { key, action: type.name, input: jsonOf(now.success ? (now.data ?? null) : null) }, lineage, () => emitNow(key, type, request.data));
       }
       case "read-state":
-        await authorized(key, "call", RECORDS_READ);
+        await authorized(key, "call", RECORDS_READ, { read: true });
         return guarded(() => step(own.state, { plugin: request.plugin }, { key }));
       case "read-records":
         // The records, and where the next read or wait goes on: a wait from `next` misses nothing.
-        return act(key, RECORDS_READ, RECORDS_READ, request.query, lineage);
+        return act(key, RECORDS_READ, RECORDS_READ, request.query, lineage, { read: true });
       case "now":
         return clock(key, lineage);
       case "random":

@@ -1774,7 +1774,9 @@ class Niwa implements Host {
     const input = checked?.success === true ? checked.data : how?.input;
     const target = found?.target === undefined || checked?.success !== true ? undefined : found.target(checked.data);
     let answer = permit(standing, verb, name, target, found?.effect);
-    if (verb === "call") {
+    if (!answer.allowed && answer.asks === true && how?.read === true) {
+      answer = { ...answer, reason: `"${name}" asks the owner, and a read is not asked: it is denied` };
+    } else if (verb === "call") {
       answer = await settleAsk(answer, {
         caller,
         name,
