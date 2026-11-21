@@ -40,6 +40,7 @@ export { ZCODE_FAKE } from "./harness-zcode.ts";
 export * from "./messages.ts";
 export * from "./niwa.ts";
 export * from "./requests.ts";
+export { unreadable, unsendable } from "./schema-reads.ts";
 export * from "./sessions.ts";
 export * from "./tasks.ts";
 export * from "./web.ts";
