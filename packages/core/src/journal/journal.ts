@@ -422,7 +422,7 @@ class SqliteJournal implements Journal {
               id, type: CORE_TYPES.recordRefused, schema: 1, stream: rec.stream, actor: rec.actor,
               cause: rec.cause !== null && this.get(rec.cause) ? rec.cause : null,
               root: this.get(rec.root) ? rec.root : id,
-              data: { intent: batch ?? entries[0]!.record.id, attempted: rec.id, recordType: rec.type, group: guard.group, entity, code: denial.code, reason: denial.reason },
+              data: { ...(entry.terminalClaimOf === undefined ? {} : { terminalClaimOf: entry.terminalClaimOf }), intent: batch ?? entries[0]!.record.id, attempted: rec.id, recordType: rec.type, group: guard.group, entity, code: denial.code, reason: denial.reason },
             }, this.clock.now());
             this.db.run("INSERT INTO refused_intents VALUES (?, ?, ?)", [rec.id, batchDigest(entries), id]);
             return RecordRefused.fromAudit(audit, true);

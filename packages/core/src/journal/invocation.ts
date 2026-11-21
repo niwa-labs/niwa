@@ -123,7 +123,7 @@ export interface RunnerDeps {
    * The placement of the record is the runtime's business: the actor is the caller, and the
    * cause and the root come from the invocation the call runs in.
    */
-  emit(action: ActionName, caller: Caller, entries: readonly { type: RecordType<any>; data: unknown; place: Placement }[], batch?: RecordId): Promise<StoredRecord[]>;
+  emit(action: ActionName, caller: Caller, entries: readonly { type: RecordType<any>; data: unknown; place: Placement }[], batch?: RecordId, terminalClaimOf?: OperationId): Promise<StoredRecord[]>;
   /**
    * Check a record a handler writes, as a record written over the wire is checked: the type is
    * declared, and the handler's own plugin declares it, or it is open, or the caller's grant lets it
@@ -704,6 +704,13 @@ async function runStepOnce<I, O, In = I>(
     return { key, outcome: { status: "completed", value: value.data } };
   }
 
+  // Admission recorded this refusal in the transaction that denied the explicit claim.
+  // This covers loss of the process before the thrown error reached the step boundary.
+  if (intent !== undefined) {
+    const [audit] = ctx.deps.journal.find({type: CORE_TYPES.recordRefused, field: "terminalClaimOf", equals: operation, after: intent.seq});
+    if (audit) throwRefusal(ctx, key, attempt, audit);
+  }
+
   // A cancel holds the step: it is not called, and a call of it that was cut off is not made again.
   const cancel = cancelOf(ctx.deps.journal, ctx.invocation, key);
   if (cancel !== undefined) {
@@ -943,7 +950,7 @@ async function callAction<I, O, In = I>(
       caller: callerAs(ctx, as),
       invocation: ctx.invocation,
       signal: controller.signal,
-      ...emitFor(ctx, action.name, operation),
+      ...emitFor(ctx, action.name, operation, action.terminalClaim),
       wait: waitFor(ctx, key, attempt),
       waitAnyOf: waitAnyFor(ctx, key, attempt),
       step: nested.step,
@@ -958,9 +965,8 @@ async function callAction<I, O, In = I>(
     }
     // The invocation is waiting, not failing: the call is made again when the answer arrives.
     if (error instanceof SuspendSignal) throw error;
-    // An error the caller catches is not a failed step: it belongs to the code that called the
-    // action, and no outcome is written for it. The call may be made again, so the error is
-    // thrown again and the caller catches it again.
+    // The audit lets a replay throw the same typed refusal to the caller.
+    if (error instanceof RecordRefused) throwRefusal(ctx, key, attempt, error.audit);
     if (error instanceof CatchableError) throw error;
     // A nested call of this run paused: the invocation needs a decision about that call, and this
     // call is not failed - it is made again when the decision comes.
@@ -997,13 +1003,16 @@ async function callAction<I, O, In = I>(
  * ordinal of the write, and the operation is stable across repeats of a step, so a repeat
  * returns the record it wrote instead of writing a second one.
  */
-function emitFor(ctx: RunContext, action: ActionName, operation: OperationId) {
+function emitFor(ctx: RunContext, action: ActionName, operation: OperationId, terminalClaim?: RecordTypeName) {
   return actionEmits(async (entries, batch) => {
     const placed = entries.map(({type, data, ordinal}) => ({
       type, data, place: {id: recordId(`${operation}/emit/${ordinal}`), stream: ctx.stream, cause: ctx.cause, root: ctx.root},
     }));
     if (placed.some(({place}) => ctx.deps.journal.get(place.id) === undefined)) startRunning(ctx);
-    return ctx.deps.emit(action, ctx.actor, placed, batch === undefined ? undefined : recordId(`${operation}/batch/${batch}`));
+    const first = entries[0];
+    const claim = batch === undefined && first?.ordinal === 1 && first.type.name === terminalClaim;
+    return ctx.deps.emit(action, ctx.actor, placed,
+      batch === undefined ? undefined : recordId(`${operation}/batch/${batch}`), claim ? operation : undefined);
   });
 }
 
@@ -1502,9 +1511,22 @@ function isMismatch(intent: StoredRecord, action: ActionName, input: unknown): b
   return stableJson(holder.input) !== stableJson(input);
 }
 
+function throwRefusal(ctx: RunContext, key: StepKey, attempt: number, audit: StoredRecord): never {
+  commitAll(ctx, [recordOf(ctx, attemptRecordId(ctx.invocation, key, attempt, "outcome"), CORE_TYPES.stepOutcome, {
+    invocation: ctx.invocation, key, outcome: {status: "refused", audit: audit.id},
+  })]);
+  throw RecordRefused.fromAudit(audit);
+}
+
 /** The outcome of a recorded step, as it was written: a value kept as an artifact is read back. */
 function readOutcome<O>(ctx: RunContext, data: unknown): Outcome<O> {
-  return storedOutcome<O>((data as { outcome: unknown }).outcome, ctx.deps.artifacts);
+  const {outcome} = data as {outcome: {status: string; audit?: RecordId}};
+  if (outcome.status === "refused") {
+    const audit = outcome.audit && ctx.deps.journal.get(outcome.audit);
+    if (!audit || audit.type !== CORE_TYPES.recordRefused) throw new Error("record refusal audit missing");
+    throw RecordRefused.fromAudit(audit);
+  }
+  return storedOutcome<O>(outcome, ctx.deps.artifacts);
 }
 
 /** The message of a thrown value. */

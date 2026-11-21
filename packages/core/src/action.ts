@@ -34,6 +34,7 @@ import type {
   CheckResult,
   Effect,
   OperationId,
+  RecordTypeName,
   Recovery,
   World,
 } from "./types.ts";
@@ -100,6 +101,8 @@ export interface ActionSpec<I, O, In = I> {
    * Required: every action declares its own contract.
    */
   recovery: Recovery;
+  /** The first single emit claims the right to act. Its refusal always ends this action before any external effect. */
+  terminalClaim?: RecordTypeName;
   /**
    * What a call changes: "read", "record" (only niwa's own records), "write" or "irreversible".
    *
@@ -268,6 +271,7 @@ export function action<I, O, In = I>(
     input: spec.input,
     output: spec.output,
     recovery,
+    ...(spec.terminalClaim === undefined ? {} : { terminalClaim: spec.terminalClaim }),
     effect,
     ...(world === undefined ? {} : { world }),
     ...(spec.idempotent === undefined ? {} : { idempotent: spec.idempotent }),

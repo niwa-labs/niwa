@@ -391,6 +391,8 @@ export type ActionTarget<I, O, In = I> = ActionRef<I, O, In> | ActionName;
 export interface Action<I, O, In = I> extends ActionRef<I, O, In> {
   kind: "action";
   recovery: Recovery;
+  /** The first single emit claims the right to act. Its refusal always ends this action before any external effect. */
+  terminalClaim?: RecordTypeName;
   /** What a call changes: with `classify`, the most a call can change. */
   effect: Effect;
   /** The class of one call, from the input it is made with; absent when every call has `effect`. */
@@ -647,6 +649,8 @@ export interface JournalQuery {
 /** A record to append, with the links it declares. */
 export interface AppendEntry {
   record: NewRecord;
+  /** Set by the runner for the declared initial claim of this action attempt. */
+  terminalClaimOf?: OperationId;
   /** Records this one depends on, apart from its cause. */
   links?: RecordId[];
 }

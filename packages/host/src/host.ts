@@ -2621,7 +2621,7 @@ class Niwa implements Host {
         }
       },
       standingOf: (caller) => this.access.standing(caller),
-      emit: async (action, caller, entries, batch) => this.emitAs(action, caller, entries, batch),
+      emit: async (action, caller, entries, batch, claim) => this.emitAs(action, caller, entries, batch, claim),
       admitEmit: (caller, name, data) => {
         const declared = this.declaredType(name);
         if (declared === undefined) throw new UnknownType(name);
@@ -2647,8 +2647,8 @@ class Niwa implements Host {
   // --- writing ---------------------------------------------------------------
 
   /** Commit the records, then publish them. */
-  private append(records: NewRecord[], batch?: RecordId): StoredRecord[] {
-    return this.appendAll(records.map((record) => ({ record })), batch);
+  private append(records: NewRecord[]): StoredRecord[] {
+    return this.appendAll(records.map((record) => ({ record })));
   }
 
   /** Commit the records with their links, then publish them. */
@@ -2839,15 +2839,15 @@ class Niwa implements Host {
    */
   private emitAs(
     action: ActionName, caller: Caller,
-    entries: readonly { type: AnyType; data: unknown; place: Placement }[], batch?: RecordId,
+    entries: readonly { type: AnyType; data: unknown; place: Placement }[], batch?: RecordId, terminalClaimOf?: OperationId,
   ): StoredRecord[] {
     const owned = this.typesOfAction(action);
-    return this.append(entries.map(({type, data, place}) => {
+    return this.appendAll(entries.map(({type, data, place}) => {
       const declared = this.declaredType(type.name);
       if (declared === undefined || !owned?.has(declared.name)) throw new UnknownType(type.name);
       const parsed = declared.schema.safeParse(data);
       if (!parsed.success) throw new ValidationError(`the data of "${type.name}" is not valid`, parsed.error.issues);
-      return { ...place, type: type.name, schema: declared.version, data: parsed.data, actor: caller };
+      return { record: { ...place, type: type.name, schema: declared.version, data: parsed.data, actor: caller }, terminalClaimOf };
     }), batch);
   }
 
