@@ -322,12 +322,22 @@ export interface ActionStep {
   /**
    * Returns the value; any other outcome pauses the invocation.
    */
-  <I, O, In = I>(action: ActionTarget<I, O, In>, input: NoInfer<In>): Promise<O>;
+  <I, O, In = I>(action: ActionTarget<I, O, In>, input: NoInfer<In>, opts?: ActionStepOptions): Promise<O>;
   /** Returns the outcome to the code instead of pausing. */
   outcome<I, O, In = I>(
     action: ActionTarget<I, O, In>,
     input: NoInfer<In>,
+    opts?: ActionStepOptions,
   ): Promise<Outcome<O>>;
+}
+
+/** How an action makes a call of its own. */
+export interface ActionStepOptions {
+  /**
+   * Make the call as this principal, not as the action's own work: an action that acts for its
+   * caller (an agent call of a run starting the run's session) holds what it calls to the caller's grant.
+   */
+  readonly as?: Principal;
 }
 
 /** What a check sees: it reads the outcome, it never writes. */

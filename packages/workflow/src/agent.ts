@@ -167,6 +167,9 @@ export function sessionAgent(harness: string, launch: HarnessLaunch = {}): Actio
       if (input.worktree !== undefined && !isObjectSchema(answerSchema)) {
         throw new Error("an agent call with a worktree answers an object, so the worktree can ride along: give it a schema of an object");
       }
+      // The session is the run's: started as the run, it is held to the run's grant (its box, its tools),
+      // as every call of the script is.
+      const run = ctx.caller.kind === "client" ? ctx.caller.principal : undefined;
       const { session, worktree } = await ctx.step(sessionStart, {
         harness,
         prompt: "",
@@ -179,7 +182,7 @@ export function sessionAgent(harness: string, launch: HarnessLaunch = {}): Actio
         ...(input.box === undefined ? {} : { box: input.box }),
         ...blocksOfCall(harness, input),
         visible: { actions: [...new Set([...VISIBLE_ACTIONS, ...(input.visible ?? [])])], disabledTools: [] },
-      });
+      }, run === undefined ? {} : { as: run });
       const { value } = await ctx.step(sessionAsk, {
         session,
         prompt: input.prompt,

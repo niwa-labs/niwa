@@ -10,10 +10,12 @@ import { z } from "zod";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 
+import { action } from "@niwa-labs/core";
 import type { ActionName } from "@niwa-labs/core";
+import type { Plugin } from "@niwa-labs/plugin";
 import { harnessId, kindOptions, machineId, sessionId } from "@niwa-labs/harness";
 import type { Harness, KindOptions, SessionControl, SessionId, StartOptions, StartedSession } from "@niwa-labs/harness";
-import { createNiwa, sessions, tempDirSync, watch } from "@niwa-labs/testing";
+import { createNiwa, plugin, sessions, tempDirSync, watch } from "@niwa-labs/testing";
 import { workflow } from "../src/index.ts";
 
 
@@ -74,11 +76,12 @@ async function run(
   script: string,
   done: (seen: string) => boolean,
   binding: { options?: KindOptions } = { options: CLAUDE },
+  extra: readonly Plugin[] = [],
 ): Promise<{ control: RecordingControl; seen: string }> {
   const control = new RecordingControl();
   const home = tempDirSync("agent-options");
   const niwa = createNiwa({ home });
-  niwa.use(sessions({ harnesses: [{ instance, control, ...binding }] }));
+  niwa.use(sessions({ harnesses: [{ instance, control, ...binding }] }), ...extra);
   niwa.use(workflow({ harnesses: [HARNESS] }));
   await niwa.serve();
   try {
@@ -143,6 +146,30 @@ test("the box an agent() call asks for is the session's: what it adds is in the 
   const started = (JSON.parse(seen) as Array<{ type: string; data: { box?: unknown } }>).filter((row) => row.type === "session.started");
   expect(started.map((row) => row.data.box)).toEqual([{ allow: [{ net: "crates.io" }] }]);
 }, 30_000);
+
+test("an agent() call's box is held to the run's uses: wider than the default takes the run's box rule", async () => {
+  const script = (uses: string) =>
+    [
+      `export default workflow({ uses: [${uses}], output: z.json() }, async () => {`,
+      "  try {",
+      '    await agent("boxed", { harness: "claude-sonnet", cwd: "/work", box: { allow: [{ net: "crates.io" }] } });',
+      '    return "started";',
+      "  } catch (error) {",
+      "    return String(error);",
+      "  }",
+      "});",
+      "",
+    ].join("\n");
+  const narrow = await run(script('"session.start.claude-sonnet"'), (seen) => seen.includes("workflow.run.finished"));
+  expect(narrow.control.starts).toHaveLength(0);
+  expect(narrow.seen).toContain("box.net@crates.io");
+  // A rule a script names is an action the host serves: here a stand-in for the box plugin's.
+  const rules = plugin("box", (api) => {
+    api.action(action("box.net", { description: "A rule.", input: z.object({ host: z.string() }), output: z.object({ held: z.literal(true) }), effect: "read", recovery: "repeat", target: (input) => input.host, run: async () => ({ held: true as const }) }));
+  });
+  const wide = await run(script('"session.start.claude-sonnet", "box.net@crates.io"'), (seen) => seen.includes("workflow.run.finished"), { options: CLAUDE }, [rules]);
+  expect(wide.control.starts[0]?.box?.spec.net?.map(String)).toEqual(["crates.io"]);
+}, 60_000);
 
 test("the block of another kind fails the call before a session starts, and so does a field the block does not have", async () => {
   const { control, seen } = await run(

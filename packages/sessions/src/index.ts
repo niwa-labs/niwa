@@ -901,7 +901,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      * an unlimited caller's child stays as it asked.
      */
     const grantOfSession = (caller: Caller, requested: VisibleActionsInput | undefined, visible: VisibleActions): Grant => {
-      const asked = requested?.actions ?? [];
+      // The answering action is the module's to give, whoever asked for it.
+      const asked = (requested?.actions ?? []).filter((name) => name !== SUBMIT_ANSWER_ACTION);
       const narrowed = api.narrow(caller, [...asked, ...inheritedLaunch(api.rights(caller), asked)]);
       if ("refused" in narrowed) {
         throw new SessionRefusal(

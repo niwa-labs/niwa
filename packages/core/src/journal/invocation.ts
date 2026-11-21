@@ -31,6 +31,7 @@ import { CORE_TYPES, newRecordId, recordId, stableJson, streamId } from "../reco
 import { keptOutcome, storedOutcome } from "../stores.ts";
 import type { ArtifactStore } from "../stores.ts";
 import type {
+  ActionStepOptions,
   ActionTarget,
   Action,
   ActionContext,
@@ -1092,9 +1093,10 @@ function stepFor(
     action: Action<I, O, In>,
     input: NoInfer<In>,
     nested: StepKey,
+    opts?: ActionStepOptions,
   ): Promise<StepResult<O>> => {
     try {
-      return await runStep(ctx, action, input, { key: nested });
+      return await runStep(ctx, action, input, { key: nested, ...(opts?.as === undefined ? {} : { as: opts.as }) });
     } catch (error) {
       if (error instanceof PauseSignal) paused = true;
       throw error;
@@ -1103,6 +1105,7 @@ function stepFor(
   const call = async <I, O, In = I>(
     target: ActionTarget<I, O, In>,
     input: NoInfer<In>,
+    opts?: ActionStepOptions,
   ): Promise<O> => {
     ordinal += 1;
     const nested = actionStepKey(key, attempt, ordinal);
@@ -1114,7 +1117,7 @@ function stepFor(
       ctx.pauseKey ??= nested;
       throw missing;
     }
-    const { outcome } = await nestedRun(action, input, nested);
+    const { outcome } = await nestedRun(action, input, nested, opts);
     if (outcome.status === "completed") return outcome.value;
     // The owner said skip: the call is not made and the code continues without it.
     if (outcome.status === "skipped") return undefined as O;
@@ -1126,6 +1129,7 @@ function stepFor(
     outcome: async <I, O, In = I>(
       target: ActionTarget<I, O, In>,
       input: NoInfer<In>,
+      opts?: ActionStepOptions,
     ): Promise<Outcome<O>> => {
       ordinal += 1;
       const nested = actionStepKey(key, attempt, ordinal);
@@ -1137,7 +1141,7 @@ function stepFor(
           effectPossible: false,
         };
       }
-      const { outcome } = await nestedRun(action, input, nested);
+      const { outcome } = await nestedRun(action, input, nested, opts);
       if (outcome.status === "skipped") {
         return { status: "failed", error: `step ${nested}: skipped`, effectPossible: false };
       }
