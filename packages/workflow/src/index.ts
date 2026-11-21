@@ -94,6 +94,7 @@ import {
   RunOutcome,
   RunPaused,
   RunPauseRequested,
+  RunHoldRequested,
   RunContinued,
   PhaseEntered,
   PhaseLeft,
@@ -122,7 +123,7 @@ import type { CurrentCall, RecordedCall, RevisionReport } from "./revise.ts";
 import { runScript, stopRun } from "./runner.ts";
 import { StatsFold, workflowStats } from "./stats.ts";
 import type { ScriptBox } from "./runner.ts";
-import { activeManualPause, manualPausesOf, openRequestsOfInvocations, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
+import { activeHold, activeManualPause, holdOver, manualPausesOf, openRequestsOfInvocations, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
 import type { RunState as RunStateName, RunStatus } from "./status.ts";
 import { installationIdsOf, installationsOf, profileOf, profileRulesOf, standing } from "./subscriptions.ts";
 import type { Installation } from "./subscriptions.ts";
@@ -687,6 +688,15 @@ export function workflow(opts: WorkflowOptions = {}) {
       run: async (input, ctx) => {
         const run = runOf(input.run, ctx.caller);
         mayAct(ctx.caller, ownerOfRun(journal(), run), `pause the run "${run}"`);
+        if (input.effects === "deny") {
+          return changeControl(run, async () => {
+            const status = statusOf(journal(), run);
+            if (status.state !== "finished" && activeHold(journal(), run) === undefined) {
+              await ctx.emit(RunHoldRequested, { run, tree: input.tree === true, effects: "deny" });
+            }
+            return statusOf(journal(), run);
+          });
+        }
         await pauseTree(run, ctx);
         return statusOf(journal(), run);
       },
@@ -723,6 +733,11 @@ export function workflow(opts: WorkflowOptions = {}) {
         mayAct(ctx.caller, ownerOfRun(journal(), run), `continue the run "${run}"`);
         const released = await changeControl(run, async () => {
           const pause = activeManualPause(journal(), run);
+          const hold = activeHold(journal(), run);
+          if (hold?.id === input.pause) {
+            await ctx.emit(RunContinued, { run, pause: input.pause });
+            return false;
+          }
           if (pause?.id !== input.pause) return false;
           await ctx.emit(RunContinued, { run, pause: input.pause });
           return true;
@@ -1640,7 +1655,17 @@ export function workflow(opts: WorkflowOptions = {}) {
         failed: () => {
           stepFailed = true;
         },
-        authorize: (verb, name, how) => api.authorize(runCaller, verb, name, how),
+        authorize: async (verb, name, how) => {
+          // A hold refuses what would change something: reads and niwa's own records go on.
+          const effect = verb === "call" ? api.effectOf(name) : undefined;
+          if (effect === "write" || effect === "irreversible") {
+            const hold = holdOver(journal(), run);
+            if (hold !== undefined) {
+              throw new DeniedError(`the run is on hold (${String(hold.id)}): "${name}" ${effect === "write" ? "writes" : "cannot be undone"}, and is refused until the hold is released`);
+            }
+          }
+          await api.authorize(runCaller, verb, name, how);
+        },
         visible: (masks) => {
           const narrowed = api.narrow(runCaller, masks);
           if ("refused" in narrowed) throw new UsesRefused(narrowed.refused.map((text) => text.replace(/^call:/, "")), "a session of the run");
@@ -2279,6 +2304,7 @@ export {
   RunLog,
   RunPaused,
   RunPauseRequested,
+  RunHoldRequested,
   RunContinued,
   PhaseEntered,
   PhaseLeft,
@@ -2297,7 +2323,7 @@ export {
 export { installationsOf, profileOf, standing, standingAt } from "./subscriptions.ts";
 export type { Installation } from "./subscriptions.ts";
 export { versionOf, workflowsOf } from "./registry.ts";
-export { RunStatus } from "./status.ts";
+export { InFlight, RunHold, RunStatus } from "./status.ts";
 export type { RevisionReport } from "./revise.ts";
 
 export { durationMs } from "./language.ts";

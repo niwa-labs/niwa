@@ -12,7 +12,7 @@ import type { RequestId } from "@niwa-labs/requests/records";
 import { z } from "zod";
 
 import { WorkflowPhase } from "./language.ts";
-import { PhaseEntered, PhaseLeft, RunContinued, RunFinished, RunOutcome, RunPaused, RunPauseRequested, RunRequested, RunStarted } from "./records.ts";
+import { PhaseEntered, PhaseLeft, RunContinued, RunFinished, RunHoldRequested, RunOutcome, RunPaused, RunPauseRequested, RunRequested, RunStarted } from "./records.ts";
 import { waitingFor } from "./waiting.ts";
 
 /** What a run is: it goes on, it waits for a decision, or it ended. */
@@ -28,10 +28,35 @@ export const PhaseProgress = WorkflowPhase.extend({ state: PhaseState });
 export type PhaseProgress = z.infer<typeof PhaseProgress>;
 
 /** A run, as a caller waiting for it sees it. */
+/** An operation a run began that has not ended: what a hold waits for before it is `held`. */
+export const InFlight = z.object({
+  run: z.string(),
+  key: z.string(),
+  action: z.string(),
+  effect: z.enum(["write", "irreversible"]),
+  operationId: z.string().optional(),
+});
+export type InFlight = z.infer<typeof InFlight>;
+
+/**
+ * A hold of a run: `holding` while operations that write are still going, listed in `inFlight`,
+ * and `held` once every one of them has ended. New writes are refused in both.
+ */
+export const RunHold = z.object({
+  id: z.string(),
+  state: z.enum(["holding", "held"]),
+  /** The hold covers the runs this run started, at any depth. */
+  tree: z.boolean(),
+  inFlight: z.array(InFlight),
+});
+export type RunHold = z.infer<typeof RunHold>;
+
 export const RunStatus = z.object({
   run: z.string(),
   state: RunState,
   manualPause: z.object({ id: z.string(), state: z.enum(["requested", "paused"]) }).optional(),
+  /** The hold of the run, while one stands. */
+  hold: RunHold.optional(),
   /** How the run ended, for a run that finished. */
   outcome: RunOutcome.optional(),
   /** Why the run paused. */
@@ -110,6 +135,94 @@ export function manualPausesOf(journal: JournalReader, run: string): StoredRecor
   return journal.find({ type: RunPauseRequested.name, field: "run", equals: run, after });
 }
 
+/** The hold of a run that stands: asked for since the run's latest start and not released. */
+export function activeHold(journal: JournalReader, run: string): StoredRecord | undefined {
+  const after = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1)?.seq ?? seq(0);
+  const hold = journal.find({ type: RunHoldRequested.name, field: "run", equals: run, after }).at(-1);
+  if (hold === undefined) return undefined;
+  return journal.find({ type: RunContinued.name, field: "pause", equals: hold.id, after: hold.seq }).length === 0 ? hold : undefined;
+}
+
+/**
+ * The runs a run started: those whose request names it as their parent (a workflow it calls),
+ * and those whose grant it is the parent of (a run it started with workflow.start).
+ */
+export function childRunsOf(journal: JournalReader, run: string): string[] {
+  const named = journal
+    .find({ type: RunRequested.name })
+    .map((row) => RunRequested.schema.parse(row.data))
+    .filter((data) => data.parent?.run === run)
+    .map((data) => String(data.run));
+  const granted = journal.find({ type: CORE_TYPES.accessGranted, field: "parent.principal.id", equals: run }).flatMap((row) => {
+    const data = row.data as { principal?: { kind?: string; id?: string }; parent?: { principal?: { kind?: string } } };
+    return data.principal?.kind === "run" && data.parent?.principal?.kind === "run" && data.principal.id !== undefined ? [data.principal.id] : [];
+  });
+  return [...new Set([...named, ...granted])];
+}
+
+/** The run that started a run, when a run did: the parent its request names, or the run its grant came from. */
+function parentRunOf(journal: JournalReader, run: string): string | undefined {
+  const requested = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1);
+  const named = requested === undefined ? undefined : RunRequested.schema.parse(requested.data).parent?.run;
+  if (named !== undefined) return named;
+  for (const row of journal.find({ type: CORE_TYPES.accessGranted, field: "principal.id", equals: run })) {
+    const data = row.data as { principal?: { kind?: string }; parent?: { principal?: { kind?: string; id?: string } } };
+    if (data.principal?.kind === "run") return data.parent?.principal?.kind === "run" ? data.parent.principal.id : undefined;
+  }
+  return undefined;
+}
+
+/** The hold that holds a run: its own, or a hold of the tree of a run above it. */
+export function holdOver(journal: JournalReader, run: string): StoredRecord | undefined {
+  const own = activeHold(journal, run);
+  if (own !== undefined) return own;
+  const seen = new Set([run]);
+  for (let above = parentRunOf(journal, run); above !== undefined && !seen.has(above); above = parentRunOf(journal, above)) {
+    seen.add(above);
+    const hold = activeHold(journal, above);
+    if (hold !== undefined && RunHoldRequested.schema.parse(hold.data).tree) return hold;
+  }
+  return undefined;
+}
+
+/** The operations that write, begun in the invocations of a run, that have no outcome yet. */
+function inFlightOf(journal: JournalReader, run: string): InFlight[] {
+  const invocations = new Set(
+    journal.find({ type: RunStarted.name, field: "run", equals: run }).flatMap((row) => (row.actor.kind === "handler" ? [String(row.actor.invocation)] : [])),
+  );
+  const going = new Map<string, InFlight>();
+  for (const invocation of invocations) {
+    for (const row of journal.find({ type: CORE_TYPES.stepIntent, field: "invocation", equals: invocation })) {
+      const data = row.data as { key: string; action: string; effect?: string; operationId?: string };
+      if (data.effect !== "write" && data.effect !== "irreversible") continue;
+      going.set(`${invocation}\n${data.key}`, {
+        run,
+        key: data.key,
+        action: data.action,
+        effect: data.effect,
+        ...(data.operationId === undefined ? {} : { operationId: data.operationId }),
+      });
+    }
+    for (const row of journal.find({ type: CORE_TYPES.stepOutcome, field: "invocation", equals: invocation })) {
+      going.delete(`${invocation}\n${(row.data as { key: string }).key}`);
+    }
+  }
+  return [...going.values()];
+}
+
+/** The hold of a run as its status shows it: what is still going in it and, for a tree, in the runs below it. */
+function holdStatusOf(journal: JournalReader, run: string): RunHold | undefined {
+  const hold = activeHold(journal, run);
+  if (hold === undefined) return undefined;
+  const { tree } = RunHoldRequested.schema.parse(hold.data);
+  const runs = [run];
+  for (let at = 0; tree && at < runs.length; at++) {
+    for (const child of childRunsOf(journal, runs[at] ?? "")) if (!runs.includes(child)) runs.push(child);
+  }
+  const inFlight = runs.flatMap((one) => inFlightOf(journal, one));
+  return { id: String(hold.id), state: inFlight.length === 0 ? "held" : "holding", tree, inFlight };
+}
+
 export function activeManualPause(journal: JournalReader, run: string): StoredRecord | undefined {
   const pause = manualPausesOf(journal, run).at(-1);
   if (pause === undefined) return;
@@ -171,7 +284,9 @@ export function phasesOf(journal: JournalReader, run: string, status: Pick<RunSt
 
 /** Project the current invocation outcome and any outstanding manual pause. */
 export function statusOf(journal: JournalReader, run: string): RunStatus {
-  const status = stateOf(journal, run);
+  const own = stateOf(journal, run);
+  const hold = holdStatusOf(journal, run);
+  const status = hold === undefined ? own : { ...own, hold };
   const phases = phasesOf(journal, run, status);
   const plan = phases === undefined ? {} : { currentPhases: phases.filter((phase) => phase.state === "current").map((phase) => phase.title), phases };
   if (status.state !== "running") return { ...status, ...plan };

@@ -153,9 +153,21 @@ export const workflowResume = actionRef("workflow.resume", {
   output: ResumeOutput,
 });
 
+/** What a pause may say: which run, and with `effects: "deny"` a hold instead of a pause at a boundary. */
+export const PauseInput = RunInput.extend({
+  /**
+   * `"deny"`: hold the run instead of pausing it. A new call of an action that writes or cannot be undone is refused;
+   * reads and niwa's own records go on, and operations already going are left to end.
+   */
+  effects: z.literal("deny").optional(),
+  /** With `effects: "deny"`: hold the runs this run started too, at any depth. A pause at a boundary goes down the tree by itself. */
+  tree: z.boolean().optional(),
+});
+
 export const workflowPause = actionRef("workflow.pause", {
-  description: "Request a durable pause at a workflow boundary. Operations already admitted can complete. Answers the current state and the pause identifier. For whoever started the run, and the owner.",
-  input: RunInput,
+  description:
+    'Request a durable pause at a workflow boundary. Operations already admitted can complete. Answers the current state and the pause identifier. With effects: "deny" the run is held instead: new writes and irreversible calls are refused while reads and records of niwa\'s own go on; the hold is holding while operations it began are still going (listed in hold.inFlight) and held once they ended; tree: true holds the runs it started too. workflow.continue with the hold\'s id releases it. For whoever started the run, and the owner.',
+  input: PauseInput,
   output: RunStatus,
 });
 

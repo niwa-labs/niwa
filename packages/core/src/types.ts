@@ -641,7 +641,7 @@ export const CORE = {
   invocationResolved: "niwa.invocation.resolved", // { invocation, key, choice }
   invocationMoved: "niwa.invocation.moved",       // { invocation, from, to }
   stepDecision: "niwa.step.decision",             // { invocation, key, attempt, requested, final, denied, reason? }
-  stepIntent: "niwa.step.intent",                 // { invocation, key, action, input, operationId }
+  stepIntent: "niwa.step.intent",                 // { invocation, key, action, input, operationId, recovery?, effect? }
   stepOutcome: "niwa.step.outcome",               // { invocation, key, outcome }
   stepCancelled: "niwa.step.cancelled",           // { invocation, prefixes, except?, reason }
   stateChanged: "niwa.state.changed",             // { plugin, name, op, value }

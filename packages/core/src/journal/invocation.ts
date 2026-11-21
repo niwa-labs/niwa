@@ -49,6 +49,7 @@ import type {
   RecordType,
   RecordTypeName,
   Recovery,
+  Effect,
   Seq,
   Step,
   StepEmitOptions,
@@ -719,7 +720,7 @@ async function runStepOnce<I, O, In = I>(
       const error = describeIssues(invalidMessage(action.name, decided.which), decided.issues);
       const outcome: Outcome<O> = { status: "failed", error, effectPossible: false };
       commitAll(ctx, [
-        intentRecord(ctx, key, action.name, held, operation, attempt, action.recovery),
+        intentRecord(ctx, key, action.name, held, operation, attempt, action.recovery, action.effect),
         outcomeRecord(ctx, key, outcome, attempt),
       ]);
       return { key, outcome };
@@ -730,14 +731,14 @@ async function runStepOnce<I, O, In = I>(
       const outcome: Outcome<O> = { status: "denied", reason: decided.reason };
       commitAll(ctx, [
         decisionRecord(ctx, key, decided, attempt),
-        intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery),
+        intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery, action.effect),
         outcomeRecord(ctx, key, outcome, attempt),
       ]);
       return { key, outcome };
     }
     commitAll(ctx, [
       decisionRecord(ctx, key, decided, attempt),
-      intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery),
+      intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery, action.effect),
     ]);
     return callAction(ctx, as, key, action, decided.final, operation, attempt);
   }
@@ -1267,7 +1268,7 @@ function nextKey(ctx: RunContext, opts?: StepOptions): StepKey {
   return stepKey(String(ctx.ordinal));
 }
 
-/** The intent of a step: which action, with what input, under which operation id and recovery contract. */
+/** The intent of a step: which action, with what input, under which operation id, recovery contract and effect class. */
 function intentRecord(
   ctx: RunContext,
   key: StepKey,
@@ -1276,6 +1277,7 @@ function intentRecord(
   operation: OperationId,
   attempt: number,
   recovery?: Recovery,
+  effect?: Effect,
 ): NewRecord {
   return recordOf(ctx, attemptRecordId(ctx.invocation, key, attempt, "intent"), CORE_TYPES.stepIntent, {
     invocation: ctx.invocation,
@@ -1284,6 +1286,7 @@ function intentRecord(
     input,
     operationId: operation,
     ...(recovery === undefined ? {} : { recovery }),
+    ...(effect === undefined ? {} : { effect }),
   });
 }
 

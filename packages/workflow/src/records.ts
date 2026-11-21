@@ -168,6 +168,16 @@ export const RunPaused = record(
 /** A request to stop entering script operations at a workflow boundary. */
 export const RunPauseRequested = record("workflow.run.pause-requested", z.object({ run: RunId }));
 
+/**
+ * A hold of a run: from now on a new call of an action that writes or cannot be undone is refused,
+ * in the run and, with `tree`, in the runs it started; reads and niwa's own records go on. The
+ * operations already going are left to end. Released by `workflow.run.continued` with its id.
+ */
+export const RunHoldRequested = record(
+  "workflow.run.hold-requested",
+  z.object({ run: RunId, tree: z.boolean(), effects: z.literal("deny") }),
+);
+
 /** Release only the specified request, so a duplicate cannot release a later pause. */
 export const RunContinued = record("workflow.run.continued", z.object({ run: RunId, pause: z.string() }));
 
@@ -420,6 +430,7 @@ export const WORKFLOW_TYPES = [
   RunLog,
   RunPaused,
   RunPauseRequested,
+  RunHoldRequested,
   RunContinued,
   RunFinished,
   StepReused,
