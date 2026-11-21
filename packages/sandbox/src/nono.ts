@@ -136,7 +136,8 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     // Relative paths are read from the box's working directory, which is where nono is run: the same
     // place for the flags and for the check below.
     const spec = anchoredSpec(given);
-    const granted = [spec.cwd, ...spec.read, ...spec.write].map(expanded);
+    // A socket is granted for reading as well, so it is a place the box may read.
+    const granted = [spec.cwd, ...spec.read, ...spec.write, ...spec.sockets].map(expanded);
     const carved = spec.denyRead.find((denied) => granted.some((place) => overlap(expanded(denied), place)));
     if (carved !== undefined) {
       throw new SandboxUnsupported("nono", `reads are an allow-list there, so ${carved} cannot be carved out of a place the box may use`);

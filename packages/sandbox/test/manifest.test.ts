@@ -117,6 +117,12 @@ test("srt on Linux refuses a socket it would silently leave closed", () => {
   expect(srt({ platform: "darwin" }).manifest(sockets).settings.network.allowUnixSockets).toEqual(["~/.niwa/host.sock"]);
 });
 
+test("a socket nono grants is a place the box may read, so a denyRead on it is refused", () => {
+  const socket = "~/.niwa/host.sock";
+  expect(() => nono().manifest(boxSpec({ cwd: "/x", sockets: [socket], denyRead: [socket] }))).toThrow(SandboxUnsupported);
+  expect(() => nono().manifest(boxSpec({ cwd: "/x", sockets: [socket], denyRead: ["~/.niwa/host.key"] }))).not.toThrow();
+});
+
 test("nono is run with the default profile less the temp areas, which each platform names in its own group", () => {
   const mac = nono({ platform: "darwin" }).manifest(boxSpec({ cwd: "/x" })).profile;
   expect(mac.extends).toBe("default");
