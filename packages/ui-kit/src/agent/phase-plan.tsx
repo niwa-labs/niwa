@@ -10,7 +10,7 @@ import { useState, type ReactNode } from "react";
 import { cn } from "../lib/cn.ts";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../ui/collapsible.tsx";
 import { GuardButton, GuardNotice, useGuardedAction } from "./guarded-action.tsx";
-import type { GuardTiming } from "./guard.ts";
+import type { GuardState, GuardTiming } from "./guard.ts";
 import {
   describeRecompute,
   describeStop,
@@ -39,13 +39,19 @@ export type PhasePlanProps = {
   canRecompute?: ((target: PlanTarget) => boolean) | undefined;
   /** Whether a target may be stopped; every running or waiting target by default. */
   canStop?: ((target: PlanTarget) => boolean) | undefined;
-  /** The explanation shown before a recompute; worked out from the plan by default. */
+  /**
+   * The explanation shown before a recompute. By default it is worked out from the plan alone, which
+   * cannot tell whether a step that already acted outside is repeated; a host that can forecast it
+   * for the chosen target passes the forecast here. Called only while the notice is shown.
+   */
   explainRecompute?: ((target: PlanTarget) => ReactNode) | undefined;
-  /** The explanation shown before a stop; worked out from the plan by default. */
+  /** The explanation shown before a stop; worked out from the plan by default. Called only while shown. */
   explainStop?: ((target: PlanTarget) => ReactNode) | undefined;
   timing?: Partial<GuardTiming> | undefined;
   className?: string | undefined;
 };
+
+type GuardPhase = GuardState["phase"];
 
 function isActive(state: WorkState): boolean {
   return state === "running" || state === "waiting";
@@ -65,6 +71,9 @@ function RowControls({ target, state, controls, children }: { target: PlanTarget
   const recompute = useGuardedAction({ onConfirm: () => onRecompute?.(target), timing: controls.timing, disabled: !recomputable });
   const stop = useGuardedAction({ onConfirm: () => onStop?.(target), timing: controls.timing, disabled: !stoppable });
   const engaged = recompute.state.phase !== "idle" || stop.state.phase !== "idle";
+  // Only an armed or held control shows its explanation, so only then is it worked out: the default
+  // one reads the whole plan.
+  const explains = (phase: GuardPhase) => phase === "armed" || phase === "holding";
 
   return (
     <div className="flex min-w-0 flex-col gap-1">
@@ -87,13 +96,19 @@ function RowControls({ target, state, controls, children }: { target: PlanTarget
       <GuardNotice
         guard={recompute}
         pending="Recomputing"
-        consequence={controls.explainRecompute?.(target) ?? describeRecompute(controls.phases, target)}
+        consequence={
+          explains(recompute.state.phase)
+            ? (controls.explainRecompute?.(target) ?? describeRecompute(controls.phases, target))
+            : null
+        }
       />
       <GuardNotice
         guard={stop}
         pending="Stopping"
         tone="destructive"
-        consequence={controls.explainStop?.(target) ?? describeStop(controls.phases, target)}
+        consequence={
+          explains(stop.state.phase) ? (controls.explainStop?.(target) ?? describeStop(controls.phases, target)) : null
+        }
       />
     </div>
   );

@@ -73,3 +73,49 @@ test("a phase that settles closes by itself when nobody chose", async () => {
   expect(host.querySelector('[data-slot="collapsible-trigger"]')!.getAttribute("aria-expanded")).toBe("false");
   await act(async () => root.unmount());
 });
+
+test("an explanation is worked out only for the control that shows it", async () => {
+  const asked: string[] = [];
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const phases: PhasePlanPhase[] = [
+    {
+      id: "build",
+      title: "Build",
+      state: "running",
+      steps: [
+        { id: "a", title: "A", state: "done" },
+        { id: "b", title: "B", state: "done" },
+      ],
+    },
+  ];
+  await act(async () =>
+    root.render(
+      <TooltipProvider>
+        <PhasePlan
+          phases={phases}
+          onRecompute={() => {}}
+          onStop={() => {}}
+          explainRecompute={(target) => {
+            asked.push(`recompute ${target.step ?? target.phase}`);
+            return "explained";
+          }}
+          explainStop={(target) => {
+            asked.push(`stop ${target.step ?? target.phase}`);
+            return "explained";
+          }}
+        />
+      </TooltipProvider>,
+    ),
+  );
+  expect(asked).toEqual([]);
+  const first = host.querySelector<HTMLElement>('[data-slot="plan-step"] [data-slot="guard-button"]')!;
+  await act(async () => {
+    first.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
+  });
+  expect(asked.length).toBeGreaterThan(0);
+  expect(new Set(asked)).toEqual(new Set(["recompute a"]));
+  expect(host.textContent).toContain("explained");
+  await act(async () => root.unmount());
+});
