@@ -1,5 +1,5 @@
-// A workflow script that is a client of all of niwa, not only of `agent()`: it calls actions,
-// waits for a record, sleeps and asks the owner. It is not run with `bun` directly: the
+// A workflow script that calls niwa actions, waits on records, sleeps and asks the owner.
+// It is not run with `bun` directly: the
 // workflow module runs it in a process of its own, `niwa.call(workflowStart, { file })`.
 // test/workflow-client-example.test.ts runs it on a host.
 //

@@ -1,7 +1,7 @@
 // A workflow script. It is not run with `bun` directly: the workflow module runs it in a
 // process of its own, `niwa.call(workflowStart, { file, args: { repos: [...] } })`.
 //
-// A workflow is a script made of steps. `agent()` starts a session in any harness.
+// A workflow is a script made of steps. `ask()` starts a session and waits for one answer.
 //
 // On failure the run pauses with a choice: retry, skip, cancel. An agent may edit
 // this file and restart the run with its id; calls that already finished return
@@ -14,7 +14,7 @@ import type { ScriptApi } from "@niwa-labs/script";
 // `z` and the rest are declared for you and need no import.
 declare const workflow: ScriptApi["workflow"];
 declare const z: ScriptApi["z"];
-declare const agent: ScriptApi["agent"];
+declare const ask: ScriptApi["ask"];
 declare function parallel<T>(thunks: Array<() => Promise<T>>): Promise<T[]>;
 declare function phase(name: string): void;
 
@@ -35,18 +35,19 @@ export default workflow(
     phase("Study");
     const studied = await parallel(
       repos.map((repo) => () =>
-        agent(`Study how ${repo} is built. Answer with a short report.`, {
-          harness: "mcode-work",
-          label: `study:${repo}`, // an explicit key, so reordering the list does not rerun work
-        }),
+        ask(
+          {
+            harness: "mcode-work",
+            label: `study:${repo}`, // an explicit key, so reordering the list does not rerun work
+          },
+          `Study how ${repo} is built. Answer with a short report.`,
+        ),
       ),
     );
     const reports = studied.map((one) => one.answer);
 
     phase("Merge");
-    const merged = await agent(`Merge these reports into one:\n${JSON.stringify(reports)}`, {
-      harness: "claude-personal",
-    });
+    const merged = await ask({ harness: "claude-personal" }, `Merge these reports into one:\n${JSON.stringify(reports)}`);
     return merged.answer;
   },
 );

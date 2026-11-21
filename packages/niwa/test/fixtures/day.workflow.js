@@ -62,10 +62,10 @@ export default workflow({ phases: [{ title: "Study" }, { title: "Merge" }], uses
   phase("Study");
   const answers = await parallel(
     TOPICS.map((topic, index) => () =>
-      agent(forHarness(HARNESSES[index], index === WRONG ? wrongInstruction() : instruction(topic)), {
-        harness: HARNESSES[index],
-        label: `study:${topic}`,
-      }),
+      ask(
+        { harness: HARNESSES[index], label: `study:${topic}` },
+        forHarness(HARNESSES[index], index === WRONG ? wrongInstruction() : instruction(topic)),
+      ),
     ),
   );
 
@@ -79,15 +79,13 @@ export default workflow({ phases: [{ title: "Study" }, { title: "Merge" }], uses
       continue;
     }
     log(`the study of ${topic} answered without three lines: it is sent again`);
-    const again = await agent(forHarness(HARNESSES[index], instruction(topic)), {
-      harness: HARNESSES[index],
-      label: `study:${topic}:fixed`,
-    });
+    const again = await ask({ harness: HARNESSES[index], label: `study:${topic}:fixed` }, forHarness(HARNESSES[index], instruction(topic)));
     studies.push(textOf(again));
   }
 
   phase("Merge");
-  const merged = await agent(
+  const merged = await ask(
+    { harness: "claude-test", label: "merge:day" },
     claudePrompt([
       "Five studies of a day are given. Return one list: one line for each topic below, and",
       "each line starts with the name of its topic. Put the list in the answer field of the JSON",
@@ -96,7 +94,6 @@ export default workflow({ phases: [{ title: "Study" }, { title: "Merge" }], uses
       "Studies:",
       ...TOPICS.map((topic, index) => `${topic}: ${studies[index]}`),
     ].join("\n")),
-    { harness: "claude-test", label: "merge:day" },
   );
 
   return { topics: TOPICS, merged: textOf(merged) };

@@ -15,7 +15,7 @@
 
 import { z } from "zod";
 
-/** The name of a block: the key it is written under in `agent()`, `session.start` and on the command line. */
+/** The name of a block: the key in workflow session options, `session.start` and on the command line. */
 export const OptionsBlockNameSchema = z
   .string()
   .regex(/^[a-z][a-z0-9-]*$/, "a block name is lower case letters, digits and dashes, starting with a letter");

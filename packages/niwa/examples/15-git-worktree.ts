@@ -1,4 +1,4 @@
-// An agent that works in a git worktree of its own, beside your checkout: the git module makes the
+// A session that works in a git worktree of its own, beside your checkout: the git module makes the
 // worktree (branch `wt-<hex>`, directory `<home>/worktrees/<id>`), the session runs in it, and niwa
 // never merges. When the call ends with the worktree clean and no new commit, it is removed; when the
 // agent changed something, the answer says where (`worktree: { id, path, branch, changed }`) and the
@@ -13,7 +13,7 @@ import type { ScriptApi } from "@niwa-labs/script";
 
 declare const workflow: ScriptApi["workflow"];
 declare const z: ScriptApi["z"];
-declare const agent: ScriptApi["agent"];
+declare const ask: ScriptApi["ask"];
 
 export default workflow(
   {
@@ -22,10 +22,10 @@ export default workflow(
     output: z.string(),
   },
   async ({ repo }) => {
-    const fix = await agent("Run the tests, fix the one that fails and commit the fix.", {
-      harness: "claude-personal",
-      worktree: { repo, description: "fix the failing test" },
-    });
+    const fix = await ask(
+      { harness: "claude-personal", worktree: { repo, description: "fix the failing test" } },
+      "Run the tests, fix the one that fails and commit the fix.",
+    );
     return fix.worktree === undefined ? "nothing to change" : `the fix is on ${fix.worktree.branch} in ${fix.worktree.path}`;
   },
 );

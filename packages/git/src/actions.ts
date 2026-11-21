@@ -2,7 +2,7 @@
  * The actions of the git module, as typed references.
  *
  * The module's factory builds its real actions from the same references, so the schemas here are
- * the ones the host checks against. `WorktreeOption` is what `session.start` and `agent()` take as
+ * the ones the host checks against. `WorktreeOption` is what `session.start` and `ask()` take as
  * `worktree`: the sugar that makes a worktree and starts the session in it.
  */
 
@@ -12,7 +12,7 @@ import { EntityDescription, SessionRefSchema, actionRef, getRef, listRef } from 
 
 import { CommitId, Worktree, WorktreeId, WorktreeRemote } from "./record-types.ts";
 
-/** What a worktree is made from, as `session.start` and `agent()` take it: `true`, or the parts to choose. */
+/** What a worktree is made from for `session.start`, `session()` and `ask()`: `true`, or the parts to choose. */
 export const WorktreeOption = z.union([
   z.literal(true),
   z.strictObject({

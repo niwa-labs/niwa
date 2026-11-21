@@ -84,8 +84,7 @@ harness's own subagents. Your private todo list is not a niwa task.
 `session.list`, `session.search` and `session.read` also cover sessions that niwa did not start.
 `session.list` answers one page, the most recently active first; when `nextCursor` is present, pass it as
 `cursor` (with the same filters) for the next page, or narrow by `harness` or `cwd`.
-(`session.start.<instance>` actions exist too: they are what a workflow's `agent()` calls, a start
-that waits for the answer. For handing work over, use `session.start`.)
+For handing work over from CLI or MCP, use `session.start`. A workflow uses the session SDK below.
 
 ### Ask the owner
 
@@ -148,7 +147,14 @@ Rules that scripts break most often:
 - Use `now()` and `random()` (recorded reads), not `Date.now()` and `Math.random()`, and no direct
   I/O in the body; go through actions.
 - Keep `uses` to the masks the script actually calls.
-- Pass a `schema` to `agent()` whenever you branch on its answer.
+- Use `ask({ harness, schema, label }, prompt)` for one structured answer. The run closes the session
+  after the answer. For several turns with one model, use `const review = session({ harness, box })`,
+  then `await review.ask(prompt, { schema, label })` for each turn and `await review.end()` when done.
+  Choose a schema whenever you branch on an answer. Turns replay from the journal.
+- Put the required session actions in `uses`. `workflow.guide` lists them and the box options
+  the caller's grant can permit. Helpers started by a run's session belong to the run too.
+- Use `agent("rin").tell(text)` to send a message to the persistent agent's inbox.
+  Use `ask.confirm`, `ask.choice` and the other request helpers to ask the owner.
 
 ## Ids
 

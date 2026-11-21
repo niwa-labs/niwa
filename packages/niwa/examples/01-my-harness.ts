@@ -52,7 +52,7 @@ niwa.use(
   messages({ bind }),
   tasks({ messages: { bind } }),
   requests({ bind }),
-  // Worktrees agents work in (`agent(prompt, { worktree: true })`). The old ones are removed by a
+  // Worktrees sessions work in (`ask({ harness, worktree: true }, prompt)`). The old ones are removed by a
   // workflow the module ships, every day at four on a timer it offers: `git({ cleanup: false })` turns it off.
   git(),
   // The timers. A module offers the timers it needs itself (git's cleanup), and a handler of a timer's

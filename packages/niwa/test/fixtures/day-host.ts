@@ -2,11 +2,10 @@
 //
 // It serves the sessions module with two installations: the "mcode-test" harness, on the
 // MiniMax Code model, and the "claude-test" harness, on haiku. It serves the workflow
-// module with one agent action per harness, named "session.start.<harness>", so a script
-// that names a harness reaches the agents of that harness.
+// module with one "session.start.<harness>" action per harness, so `ask()` in a script
+// reaches the named harness.
 //
-// The agent action is the one the workflow module ships (`sessionAgent`): the host only
-// says which harnesses have one, through the `harnesses` option.
+// The host supplies the enabled harnesses through the `harnesses` option.
 //
 // The home directory comes from argv[2]. The host only starts when the file is run directly.
 

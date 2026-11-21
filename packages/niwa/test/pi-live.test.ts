@@ -185,7 +185,7 @@ liveTest(
 );
 
 liveTest(
-  "an agent call answers through niwa's submit-answer action, with a value that passed its schema",
+  "a workflow session answers through niwa's submit-answer action, with a value that passed its schema",
   async () => {
     const before = probed.length;
     const dir = await tempDir("pi-live-script");
@@ -193,11 +193,11 @@ liveTest(
     await Bun.write(
       file,
       `export default workflow({ uses: ["session.start.${String(HARNESS)}", "probe.code"], output: z.json() }, async () =>
-  agent("Learn this host's secret code by calling your probe_code tool, then answer with it.", {
+  ask({
     harness: ${JSON.stringify(String(HARNESS))},
     visible: ["probe.code"],
     schema: z.object({ code: z.string() }),
-  }),
+  }, "Learn this host's secret code by calling your probe_code tool, then answer with it."),
 );
 `,
     );

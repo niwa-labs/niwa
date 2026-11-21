@@ -196,7 +196,7 @@ const HarnessItem = z.object({
   capabilities: HarnessSidesSchema,
   /** The block a start of this harness may carry; absent, it takes none. */
   block: OptionsBlockNameSchema.optional(),
-  /** The JSON Schema of the block, as `agent()` and `session.start` take it. */
+  /** The schema of the options block used by workflow sessions and `session.start`. */
   options: JsonSchemaValue.optional(),
 });
 
