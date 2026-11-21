@@ -70,7 +70,8 @@ Calling actions:
     const review = await agent("Review the diff in ./src", { harness: "codex", schema: Review });
     if (review.verdict === "changes") log(review.notes.join("\n"));
 - uses lists the actions the script calls, as names or masks ("task.*"). The check holds the script to it:
-  a call outside the list is an error. The run holds exactly those rights, narrowed from the caller's: a mask the
+  a call outside the list is an error, and so is an agent() call on a harness it does not list as "session.start.<harness>";
+  a harness known only when the script runs is a warning of the check, which asks for an entry that covers it. The run holds exactly those rights, narrowed from the caller's: a mask the
   caller does not hold refuses the start. Without uses a script started by a caller with a grant may call
   nothing; only a caller that nothing limits (the host itself) gets every action.
 - Run workflow.check { file } before workflow.start: it type-checks the script against the declarations below and

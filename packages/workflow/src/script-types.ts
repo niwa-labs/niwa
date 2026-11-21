@@ -93,6 +93,11 @@ declare function workflow<I extends import("zod").z.ZodObject = never, O extends
 /** The prefix of the action that starts a session of a harness and asks it: what an `agent({ harness })` goes to. */
 const AGENT_ACTION_PREFIX = "session.start.";
 
+/** The harness an agent action serves: `codex` of `session.start.codex`; absent for any other action. */
+export function harnessOfAction(name: string): string | undefined {
+  return name.startsWith(AGENT_ACTION_PREFIX) && name.length > AGENT_ACTION_PREFIX.length ? name.slice(AGENT_ACTION_PREFIX.length) : undefined;
+}
+
 /** The type of a field of the input of an action: the literals it lists, else what its schema says. */
 function fieldType(input: Schema, field: string): string {
   const properties = typeof input === "object" && typeof input.properties === "object" && input.properties !== null ? (input.properties as Record<string, unknown>) : {};
@@ -115,14 +120,15 @@ function blocksTyping(own: OptionsBlock | undefined): string {
  * The options of `agent()`: the harness is one of those the caller may call a `session.start.<harness>` action for; the
  * model and the effort are the literals that action lists, where the adapter lists them; and the options block is the
  * one the sessions module binds the harness to (`blocks`), and no other. A call with no harness names no kind, so it
- * takes no block. A caller with no harness has nothing to check one against, so a harness is any text and any block is
- * taken.
+ * takes no block. A host that serves no harness has nothing to check one against, so a harness is any text and any block
+ * is taken; a host that serves some holds a script to the ones it may call, and a script that may call none names none.
  */
 function agentTyping(description: readonly ActionDescription[], callable: ReadonlySet<string>, blocks: ReadonlyMap<string, OptionsBlock>): string {
   const common = `{ label?: string; visible?: string[]; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption }`;
-  const served = description.filter((action) => callable.has(action.name) && action.name.startsWith(AGENT_ACTION_PREFIX) && action.name.length > AGENT_ACTION_PREFIX.length);
+  const hosted = description.filter((action) => harnessOfAction(action.name) !== undefined);
+  const served = hosted.filter((action) => callable.has(action.name));
   const variants =
-    served.length === 0
+    hosted.length === 0
       ? ["{ harness?: string; model?: string; effort?: string } & NiwaOptionBlocks"]
       : [
           `{ harness?: undefined; model?: string; effort?: string } & ${blocksTyping(undefined)}`,

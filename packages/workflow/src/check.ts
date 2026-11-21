@@ -32,13 +32,15 @@ import { SCRIPT_TYPES, WorkflowPhases } from "./language.ts";
 import type { ScriptBox } from "./runner.ts";
 import { ContractHash, JsonSchemaValue, Subscription } from "./records.ts";
 import { SCRIPT_API, typeRoots } from "./installation.ts";
-import { allowedFor, matches, scriptTyping } from "./script-types.ts";
+import { allowedFor, harnessOfAction, matches, scriptTyping } from "./script-types.ts";
 
 /** What a check says: the errors it found, what the script declares, and that its function was not run. */
 export interface CheckReport {
   file: string;
   ok: boolean;
   errors: CheckError[];
+  /** What the check could not settle and the author should look at; absent when there is none. A warning does not fail the check. */
+  warnings?: CheckError[];
   note: "described, the script was not run";
   /** What the script says it is. */
   description?: string;
@@ -59,7 +61,7 @@ export interface CheckError {
   file: string;
   line: number;
   column: number;
-  /** The code of the type checker (`TS2339`), `workflow` for a script that is not `export default workflow({ ... }, fn)`, `uses` for a mask of `uses` that names no action, `emit` for a record the script may not write, `on` for an `on` the host cannot serve, `wait` for a filter of a wait no record of its type can hold, `schema` for an `input`, `output` or record of `emits` that is not a JSON Schema, `phases` for phases that are not a list of `{ title, detail? }` with titles of their own, written in the declaration, or `describe` for a module that could not be read. */
+  /** The code of the type checker (`TS2339`), `workflow` for a script that is not `export default workflow({ ... }, fn)`, `uses` for a mask of `uses` that names no action or an `agent()` call on a harness `uses` does not list, `emit` for a record the script may not write, `on` for an `on` the host cannot serve, `wait` for a filter of a wait no record of its type can hold, `schema` for an `input`, `output` or record of `emits` that is not a JSON Schema, `phases` for phases that are not a list of `{ title, detail? }` with titles of their own, written in the declaration, or `describe` for a module that could not be read. */
   code: string;
   message: string;
 }
@@ -213,7 +215,80 @@ function optionsFor(ts: typeof Ts, file: string): Ts.CompilerOptions {
   };
 }
 
-function diagnose(ts: typeof Ts, source: ScriptSource, typing: string): CheckError[] {
+/** The harnesses an `agent()` call may name: the ones the host serves, and the ones of them `uses` lets the script call. */
+interface Harnesses {
+  hosted: ReadonlySet<string>;
+  allowed: ReadonlySet<string>;
+}
+
+/** What a script's checker says: the errors, and what it could not settle. */
+interface Diagnosis {
+  errors: CheckError[];
+  warnings: CheckError[];
+}
+
+/** The names a type of a harness can be, or `"dynamic"` when it is text known only when the script runs. Absent when the call names none. */
+function harnessTypes(ts: typeof Ts, type: Ts.Type): string[] | "dynamic" | undefined {
+  const names: string[] = [];
+  for (const member of type.isUnion() ? type.types : [type]) {
+    if (member.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) continue;
+    if (!member.isStringLiteral()) return "dynamic";
+    names.push(member.value);
+  }
+  return names.length === 0 ? undefined : names;
+}
+
+/**
+ * The `agent()` calls that start a session on a harness `uses` does not list, read from what the checker knows of the
+ * `harness` of each call: a text, a constant that holds one, or a choice between them. A call whose harness is only known
+ * when the script runs is a warning, since a run pauses on the first harness outside `uses`. The type of the options
+ * refuses an unlisted harness in a script that is type checked, in the terms of overloads; the error here says which
+ * entry of `uses` is missing, and is the only one for a script that is not type checked.
+ */
+function harnessUses(ts: typeof Ts, program: Ts.Program, source: ScriptSource, harnesses: Harnesses): Diagnosis {
+  const found: Diagnosis = { errors: [], warnings: [] };
+  const parsed = program.getSourceFile(source.file);
+  if (parsed === undefined || harnesses.hosted.size === 0) return found;
+  const checker = program.getTypeChecker();
+  const uncovered = [...harnesses.hosted].filter((name) => !harnesses.allowed.has(name));
+  for (const call of callsOf(ts, parsed, "agent")) {
+    const options = call.arguments[1] === undefined ? undefined : bare(ts, call.arguments[1]);
+    if (options === undefined) continue;
+    const written = ts.isObjectLiteralExpression(options)
+      ? options.properties.find((property): property is Ts.PropertyAssignment | Ts.ShorthandPropertyAssignment => (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && property.name.getText(parsed) === "harness")
+      : undefined;
+    const spread = ts.isObjectLiteralExpression(options) ? options.properties.some((property) => ts.isSpreadAssignment(property)) : true;
+    const place = { file: source.file, ...placeOf(ts, parsed, written ?? call) };
+    const valueType = (property: Ts.PropertyAssignment | Ts.ShorthandPropertyAssignment): Ts.Type | undefined => {
+      if (ts.isPropertyAssignment(property)) return checker.getTypeAtLocation(property.initializer);
+      const value = checker.getShorthandAssignmentValueSymbol(property);
+      return value === undefined ? undefined : checker.getTypeOfSymbolAtLocation(value, property.name);
+    };
+    // Options that are not written in the call (`agent(p, opts)`, `{ ...opts }`) are read by the type they have.
+    const member = written === undefined && spread ? checker.getTypeAtLocation(options).getProperty("harness") : undefined;
+    const type =
+      written !== undefined
+        ? valueType(written)
+        : member === undefined
+          ? undefined
+          : checker.getTypeOfSymbolAtLocation(member, options);
+    const names = type === undefined ? undefined : harnessTypes(ts, type);
+    if (names === undefined) continue;
+    if (names === "dynamic") {
+      if (uncovered.length > 0) {
+        found.warnings.push({ ...place, code: "uses", message: `agent() takes a harness that is known only when the script runs: uses needs an entry for each harness it may name (session.start.<harness>, or session.start.*), or a run pauses on the first that is missing` });
+      }
+      continue;
+    }
+    // A harness the host does not serve is the options' to refuse, with the ones it does.
+    for (const name of names.filter((one) => harnesses.hosted.has(one) && !harnesses.allowed.has(one))) {
+      found.errors.push({ ...place, code: "uses", message: `agent() starts a session on the harness "${name}", which uses does not list: add "session.start.${name}" (or "session.start.*") to uses` });
+    }
+  }
+  return found;
+}
+
+function diagnose(ts: typeof Ts, source: ScriptSource, typing: string, harnesses: Harnesses): Diagnosis {
   const options = optionsFor(ts, source.file);
   const memory = new Map<string, string>([
     [source.file, source.text],
@@ -234,7 +309,7 @@ function diagnose(ts: typeof Ts, source: ScriptSource, typing: string): CheckErr
     return parsed;
   };
   const program = ts.createProgram([source.file, TYPING_FILE], options, host);
-  return ts
+  const errors = ts
     .getPreEmitDiagnostics(program)
     .filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)
     .map((diagnostic): CheckError => {
@@ -251,6 +326,8 @@ function diagnose(ts: typeof Ts, source: ScriptSource, typing: string): CheckErr
         message: ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
       };
     });
+  const uses = harnessUses(ts, program, source, harnesses);
+  return { errors: [...errors, ...uses.errors], warnings: uses.warnings };
 }
 
 /** What a check needs to know about the host. */
@@ -300,6 +377,8 @@ export interface TextCheck {
   file: string;
   ok: boolean;
   errors: CheckError[];
+  /** What the text could not settle; a warning does not fail the check. */
+  warnings: CheckError[];
   /** The module can be loaded for its schemas: it is `export default workflow({ ... }, fn)`. */
   readable: boolean;
   places: Places;
@@ -338,11 +417,12 @@ export function scriptChecker(): (source: ScriptSource, catalogue: Catalogue) =>
 export async function withDeclaration(text: TextCheck, describe: Describer, box?: ScriptBox): Promise<CheckReport> {
   const { file } = text;
   const errors = [...text.errors];
-  if (!text.readable) return { file, ok: errors.length === 0, errors, note: "described, the script was not run" };
+  const warned = text.warnings.length === 0 ? {} : { warnings: text.warnings };
+  if (!text.readable) return { file, ok: errors.length === 0, errors, ...warned, note: "described, the script was not run" };
   const read = await describe(file, box);
   if ("failed" in read) {
     errors.push({ file, ...text.places.declaration, code: "describe", message: `the module could not be read for its schemas: ${read.failed}` });
-    return { file, ok: false, errors, note: "described, the script was not run" };
+    return { file, ok: false, errors, ...warned, note: "described, the script was not run" };
   }
   const { description, input, output, emits, phases, problems } = read.described;
   for (const problem of problems) {
@@ -354,6 +434,7 @@ export async function withDeclaration(text: TextCheck, describe: Describer, box?
     file,
     ok: errors.length === 0,
     errors,
+    ...warned,
     note: "described, the script was not run",
     ...(description === undefined ? {} : { description }),
     ...(input === undefined ? {} : { input }),
@@ -589,6 +670,8 @@ async function check(source: ScriptSource, catalogue: Catalogue): Promise<TextCh
   ];
   const titles = phases !== undefined && "phases" in phases ? phases.phases.map((phase) => phase.title) : [];
   const typing = scriptTyping(catalogue.actions, allowed, described.filter((trigger) => listed.includes(trigger.name)), records, catalogue.blocks, titles);
-  errors.push(...diagnose(ts, source, typing.declarations));
-  return { file: source.file, ok: errors.length === 0, errors, readable: declaration !== undefined && "object" in declaration, places };
+  const harnessesOf = (names: readonly string[]) => new Set(names.flatMap((name) => harnessOfAction(name) ?? []));
+  const diagnosis = diagnose(ts, source, typing.declarations, { hosted: harnessesOf(catalogue.actions.map((action) => action.name)), allowed: harnessesOf(allowed) });
+  errors.push(...diagnosis.errors);
+  return { file: source.file, ok: errors.length === 0, errors, warnings: diagnosis.warnings, readable: declaration !== undefined && "object" in declaration, places };
 }
