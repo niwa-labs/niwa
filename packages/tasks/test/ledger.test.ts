@@ -2,14 +2,19 @@
 //
 // Updates change neither the creation nor the end of a task, so a reader of one task, and the
 // state of every task, never reads them: a series of reports costs nothing to the reads after it.
+// A call that was cut off asks the record it wrote first what it did.
 
 import { expect, test } from "bun:test";
 
 import { recordId, seq } from "@niwa-labs/core";
-import type { Address, Caller, JournalQuery, JournalReader, RecordTypeName, StoredRecord } from "@niwa-labs/core";
+import type { Address, Caller, JournalQuery, JournalReader, OperationId, RecordTypeName, StoredRecord } from "@niwa-labs/core";
+import { plugin } from "@niwa-labs/plugin";
+import type { CallerBinding } from "@niwa-labs/plugin";
+import { connectAsOwner, createNiwa, messages, tempHome } from "@niwa-labs/testing";
+import type { Host } from "@niwa-labs/testing";
 
-import { TaskCreated, TaskDone, TaskUpdated, taskLedger } from "../src/index.ts";
-import type { TaskContract } from "../src/index.ts";
+import { TaskCreated, TaskDone, TaskUpdated, taskActions, taskCreate, taskFail, taskFinish, taskIds, taskLedger, taskReport } from "../src/index.ts";
+import type { TaskActions, TaskContract, TaskLedger } from "../src/index.ts";
 
 const ASKER: Address = { kind: "owner" };
 const WORKER: Address = { kind: "agent", id: "worker" };
@@ -84,3 +89,84 @@ test("the state of one task, and of every task, is read without the updates", ()
   expect(none.handedOut()).toBe(0);
 });
 
+/** The actions of the module and its ledger, taken from inside a plugin of a running host. */
+async function served(
+  run: (taken: { ledger: TaskLedger; acts: TaskActions }, host: Host, home: string) => Promise<void>,
+) {
+  const home = await tempHome();
+  // A client speaks as the worker, which is responsible for the tasks; the host stands for nobody.
+  const bind: CallerBinding = (caller) => (caller.kind === "client" ? WORKER : undefined);
+  const niwa = createNiwa({ home: home.path });
+  niwa.use(messages({ bind }));
+  let taken: { ledger: TaskLedger; acts: TaskActions } | undefined;
+  niwa.use(
+    plugin("tasks", (api) => {
+      const ledger = taskLedger(() => api.journal?.());
+      const acts = taskActions(ledger, taskIds(() => api.journal?.()), bind);
+      api.declare(TaskCreated, TaskUpdated, TaskDone);
+      api.action(acts.create);
+      api.action(acts.report);
+      api.action(acts.finish);
+      api.action(acts.fail);
+      taken = { ledger, acts };
+    }),
+  );
+  await niwa.serve();
+  try {
+    if (taken === undefined) throw new Error("the plugin did not run");
+    await run(taken, niwa, home.path);
+  } finally {
+    await niwa.close().catch(() => {});
+    await home.cleanup();
+  }
+}
+
+/** The operation id a record was written under: the record is `<operation>/emit/1`. */
+const operationOf = (written: StoredRecord | undefined) => (written?.id ?? "").slice(0, -"/emit/1".length) as OperationId;
+
+test("a call that was cut off is answered from the record it wrote: create, report, finish and fail", async () => {
+  await served(async ({ ledger, acts }, niwa, home) => {
+    const caller: Caller = { kind: "host" };
+    const asked = (operation: OperationId) => ({ operationId: operation, caller });
+    const input = { kind: "change", description: CONTRACT.description, text: CONTRACT.text, askedBy: ASKER, responsible: WORKER, reportTo: ASKER };
+    const worker = await connectAsOwner(home, "worker");
+    try {
+      const { id } = await niwa.call(taskCreate, input);
+      await worker.call(taskReport, { task: id, text: "half way" });
+      await worker.call(taskFinish, { task: id, result: "done" });
+
+      // The task has ended, so the same report made again would be refused; the one that was
+      // written stands, and the check says so.
+      const reported = operationOf((await niwa.records.read({ types: [TaskUpdated.name] }))[0]);
+      expect(await acts.report.check?.(reported, asked(reported))).toEqual({
+        status: "completed",
+        value: { task: id },
+      });
+      const made = operationOf(ledger.created(id));
+      expect(await acts.create.check?.(made, asked(made))).toEqual({ status: "completed", value: { id } });
+      const [end] = await niwa.records.read({ types: [TaskDone.name] });
+      const finished = operationOf(end);
+      expect(await acts.finish.check?.(finished, asked(finished))).toEqual({
+        status: "completed",
+        value: { task: id, outcome: { status: "result", result: "done" } },
+      });
+
+      const failing = (await niwa.call(taskCreate, input)).id;
+      await worker.call(taskFail, { task: failing, reason: "broke" });
+      const ends = await niwa.records.read({ types: [TaskDone.name] });
+      const failed = operationOf(ends[1]);
+      expect(await acts.fail.check?.(failed, asked(failed))).toEqual({
+        status: "completed",
+        value: { task: failing, outcome: { status: "failure", reason: "broke" } },
+      });
+
+      // An operation that wrote nothing is not known to have done anything, and one that wrote
+      // another kind of fact is not an answer to the question.
+      const none = "op-none" as OperationId;
+      expect(await acts.create.check?.(none, asked(none))).toEqual({ status: "unknown" });
+      expect(await acts.finish.check?.(made, asked(made))).toEqual({ status: "unknown" });
+    } finally {
+      await worker.close().catch(() => {});
+    }
+  });
+}, 30_000);

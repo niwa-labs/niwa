@@ -6,7 +6,7 @@
  * state of one task is read from its own two records, never from the journal as a whole.
  */
 
-import { seq } from "@niwa-labs/core";
+import { recordId, seq } from "@niwa-labs/core";
 import type { JournalReader, StoredRecord } from "@niwa-labs/core";
 
 import { fold } from "./owner.ts";
@@ -21,6 +21,8 @@ export interface TaskLedger {
   state(task: string): TaskState | undefined;
   /** The record that created a task. */
   created(task: string): StoredRecord | undefined;
+  /** The record a call wrote first under an operation id: what a call that was cut off may have done. */
+  written(operation: string): StoredRecord | undefined;
 }
 
 /** The ledger of the tasks in the journal of a plugin. */
@@ -47,6 +49,9 @@ export function taskLedger(journal: () => JournalReader | undefined): TaskLedger
     created(task) {
       const reader = journal();
       return reader === undefined ? undefined : createdIn(reader, task);
+    },
+    written(operation) {
+      return journal()?.get(recordId(`${operation}/emit/1`));
     },
   };
 }

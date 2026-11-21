@@ -26,7 +26,7 @@
 import { z } from "zod";
 
 import { IdIndex, action } from "@niwa-labs/core";
-import type { Action, ActionContext, Address, Caller, JournalReader } from "@niwa-labs/core";
+import type { Action, ActionContext, Address, Caller, CheckResult, JournalReader, StoredRecord } from "@niwa-labs/core";
 import { bindingOf, COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import type { CallerBinding, MessagesOptions, Plugin } from "@niwa-labs/plugin";
@@ -210,9 +210,17 @@ export function taskActions(ledger: TaskLedger, ids: IdIndex<"task">, bind: Call
     return bound;
   };
 
+  /** What a call that was cut off did, read from the record it wrote first. */
+  const recorded = <T>(operation: string, read: (stored: StoredRecord) => T | undefined): CheckResult<T> => {
+    const stored = ledger.written(operation);
+    const value = stored === undefined ? undefined : read(stored);
+    return value === undefined ? { status: "unknown" } : { status: "completed", value };
+  };
+
   const create = action(taskCreate, {
     // A task is made once: a create that was cut off may have made the task, and a second
-    // create of the same task is refused. So the call is not made again.
+    // create of the same task is refused. So the call is not made again; the record the call
+    // wrote says whether it was made.
     recovery: "do-not-repeat",
     effect: "record",
     world: "niwa",
@@ -222,11 +230,17 @@ export function taskActions(ledger: TaskLedger, ids: IdIndex<"task">, bind: Call
       await ctx.emit(TaskCreated, contract);
       return { id: contract.id };
     },
+    async check(operation) {
+      return recorded(operation, (stored) => {
+        const created = TaskCreated.schema.safeParse(stored.data);
+        return created.success ? { id: created.data.id } : undefined;
+      });
+    },
   });
 
   const report = action(taskReport, {
     // A report is a fact written on the task: the same report may be written again, so
-    // it may be made again.
+    // it may be made again. One that was written before the task ended stands after it.
     recovery: "repeat",
     effect: "record",
     world: "niwa",
@@ -238,6 +252,12 @@ export function taskActions(ledger: TaskLedger, ids: IdIndex<"task">, bind: Call
       });
       await ctx.emit(TaskUpdated, input);
       return { task: input.task };
+    },
+    async check(operation) {
+      return recorded(operation, (stored) => {
+        const updated = TaskUpdated.schema.safeParse(stored.data);
+        return updated.success ? { task: updated.data.task } : undefined;
+      });
     },
   });
 
@@ -252,13 +272,21 @@ export function taskActions(ledger: TaskLedger, ids: IdIndex<"task">, bind: Call
     return { task, outcome };
   };
 
+  /** What a call that ended a task and was cut off did: the end it wrote. */
+  const ended = (operation: string): CheckResult<z.infer<typeof OutcomeOutput>> =>
+    recorded(operation, (stored) => {
+      const done = TaskDone.schema.safeParse(stored.data);
+      return done.success ? { task: done.data.task, outcome: done.data.outcome } : undefined;
+    });
+
   const finish = action(taskFinish, {
     // A task ends once: an end that was cut off may have written it, so it is not
-    // made again.
+    // made again; the record the call wrote says whether it was.
     recovery: "do-not-repeat",
     effect: "record",
     world: "niwa",
     run: (input, ctx) => end(ctx, input.task, { status: "result", result: input.result }),
+    check: async (operation) => ended(operation),
   });
 
   const fail = action(taskFail, {
@@ -267,6 +295,7 @@ export function taskActions(ledger: TaskLedger, ids: IdIndex<"task">, bind: Call
     effect: "record",
     world: "niwa",
     run: (input, ctx) => end(ctx, input.task, { status: "failure", reason: input.reason }),
+    check: async (operation) => ended(operation),
   });
 
   return { create, report, finish, fail };
