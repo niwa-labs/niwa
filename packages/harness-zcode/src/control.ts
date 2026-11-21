@@ -91,7 +91,11 @@ export interface ZcodeControlOptions {
   readonly harness: string;
   /** The `zcode` binary, resolved through PATH when it is a bare name. */
   readonly binary?: string;
-  /** The directory that holds `cli/db/db.sqlite`: where a session to resume is asked which directory it ran in. */
+  /**
+   * The directory of the installation, which holds `cli/db/db.sqlite`: where a session to resume is
+   * asked which directory it ran in, and where the children store their sessions and a box may write.
+   * Without it a child keeps to `~/.zcode`.
+   */
   readonly home?: string;
   /** The working mode of sessions, when the caller does not choose one per start. Default: `auto`. */
   readonly mode?: SessionMode;
@@ -130,8 +134,8 @@ const STDERR_TAIL_CHARS = 2000;
 /** The subscription kind the server takes, newest spelling first: the enum moved between bundles. */
 const DELIVERY_KINDS = ["desktop-continuous", "desktop"] as const;
 
-/** What ZCode needs inside a box: its own directory. Its model endpoint depends on the provider, so the grant names it. */
-const ZCODE_NEEDS: HarnessNeeds = { write: [homePath(".zcode")], net: [] };
+/** Where ZCode keeps its files when nothing says otherwise. */
+const DEFAULT_HOME = homePath(".zcode");
 
 /**
  * One envelope: a response, a notification or a request of the server, by which fields are present.
@@ -357,6 +361,14 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
   const stopGraceMs = options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
   const harnessId = HarnessIdSchema.parse(options.harness);
+
+  // The installation is resolved once. The reading side opens its database; the child is told the same
+  // directory and database (a child left to itself uses `~/.zcode`), and a box is given the same
+  // directory to write: ZCode's model endpoint depends on the provider, so the grant names no host.
+  const home = options.home === undefined ? undefined : resolve(options.home);
+  const installationEnv: Readonly<Record<string, string>> =
+    home === undefined ? {} : { ZCODE_STORAGE_DIR: home, ZCODE_SESSION_DB_PATH: dbPathOf(home) };
+  const needs: HarnessNeeds = { write: [home ?? DEFAULT_HOME], net: [] };
 
   /** The sessions by id; `owned` also holds those still starting. */
   const sessions = new Map<string, LiveSession>();
@@ -731,9 +743,10 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       cwd,
       // Its own process group, so a stop reaches everything ZCode started and nothing else.
       detached: true,
-      env: { ...plan.env },
+      // The installation comes last: a child that kept to another one would write where the reader does not look.
+      env: { ...plan.env, ...installationEnv },
       box: plan.box,
-      needs: ZCODE_NEEDS,
+      needs,
     });
     const session = new LiveSession(child);
     owned.add(session);
@@ -1102,7 +1115,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
 
       // The session is resumed in the directory it ran in; one the database does not know is
       // resumed where this process is, and the CLI says whether it has it.
-      const cwd = (options.home === undefined ? undefined : directoryOf(options.home, id.native)) ?? held?.cwd ?? process.cwd();
+      const cwd = (home === undefined ? undefined : directoryOf(home, id.native)) ?? held?.cwd ?? process.cwd();
       let session: LiveSession;
       try {
         session = await spawnSession(cwd, resumeOptions ?? {});
@@ -1121,7 +1134,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         // another mode than niwa started it in is not run.
         if (resumeOptions?.mode !== undefined) {
           const wanted = SESSION_MODES[resumeOptions.mode];
-          const restored = options.home === undefined ? undefined : persistedModeOf(options.home, id.native);
+          const restored = home === undefined ? undefined : persistedModeOf(home, id.native);
           if (restored === undefined) {
             throw unavailable("resume", `the mode ZCode restores the session in cannot be read, so it cannot be compared with "${wanted}" (${resumeOptions.mode}); it was not resumed`);
           }

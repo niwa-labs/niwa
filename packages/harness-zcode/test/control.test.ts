@@ -699,9 +699,9 @@ test("a resume the server refuses leaves no process behind", async () => {
   expect(() => process.kill(pid, 0)).toThrow();
 });
 
-test("a session starts inside a box: the directory of ZCode is added to the manifest, which is recorded before the process", async () => {
-  const records: BoxRecord[] = [];
-  const nono: Sandbox = {
+/** A sandbox that wraps nothing: the process it launches is the program itself. */
+function plainNono(): Sandbox {
+  return {
     name: "nono",
     class: "process",
     available: async () => true,
@@ -711,7 +711,11 @@ test("a session starts inside a box: the directory of ZCode is added to the mani
       return { pid: child.pid, stdin: child.stdin, stdout: child.stdout, stderr: child.stderr, exited: child.exited, kill: () => child.kill() };
     },
   };
-  const restore = useSandbox("nono", nono);
+}
+
+test("a session starts inside a box: the directory of ZCode is added to the manifest, which is recorded before the process", async () => {
+  const records: BoxRecord[] = [];
+  const restore = useSandbox("nono", plainNono());
   const forget = onBoxManifest((record) => void records.push(record));
   try {
     const c = control();
@@ -729,6 +733,26 @@ test("a session starts inside a box: the directory of ZCode is added to the mani
     forget();
     restore();
   }
+});
+
+test("the child, the box and the reader all use the installation the control side is given", async () => {
+  const home = join(dir, "installation");
+  const records: BoxRecord[] = [];
+  const restore = useSandbox("nono", plainNono());
+  const forget = onBoxManifest((record) => void records.push(record));
+  try {
+    await control({ home }).start({ prompt: hello, cwd: dir, box: { sandbox: "nono", spec: { cwd: dir, write: [dir], env: {} } } });
+    // The grant names the installation, not `~/.zcode`; the child keeps its sessions where the reader looks.
+    expect(records[0]?.spec.write.map(String)).toEqual([dir, home]);
+    expect((await logOf("env.log"))[0]).toMatchObject({ storage: home, db: dbPathOf(home) });
+  } finally {
+    forget();
+    restore();
+  }
+  // Without one the child is left to its own default.
+  await rm(join(dir, "env.log"));
+  await control().start({ prompt: hello, cwd: dir });
+  expect((await logOf("env.log"))[0]?.["storage"]).toBeUndefined();
 });
 
 test("dispose stops the process of every session", async () => {
