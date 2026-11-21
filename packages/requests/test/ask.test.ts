@@ -5,13 +5,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { z } from "zod";
 
-import { CORE_TYPES, action, actionName, deny, grant, principalOf, seq } from "@niwa-labs/core";
+import { CORE_TYPES, action, actionName, deny, grant, owner as ownerAddress, principalOf, seq } from "@niwa-labs/core";
 import type { RuleSpec, Token } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import { HostError, connect, createNiwa, eventually, tempHome, testClock, connectAsOwner, pick } from "@niwa-labs/testing";
 import type { Host, NiwaApi, TestClock } from "@niwa-labs/testing";
 
-import { REQUEST_ANSWER, REQUEST_CANCEL, REQUEST_OPEN, requests } from "../src/index.ts";
+import { REQUEST_ANSWER, REQUEST_CANCEL, REQUEST_OPEN, RequestAnswered, requests } from "../src/index.ts";
 
 
 /** The inputs the probe was run with, in order: what the owner let through is what ran. */
@@ -248,4 +248,17 @@ test("the decision of an allowed ask records the scope that let it through", asy
   expect(rows.map((row) => row.data)).toContainEqual(
     expect.objectContaining({ name: "probe.run", outcome: "allowed", answered: "once", rule: "call:probe.run" }),
   );
+});
+
+test("a subject that may write the answer record itself cannot confirm its own call as the owner", async () => {
+  const s = await served([{ do: "probe.run", ask: true }, "emit:request.answered"]);
+  const pending = denial(call(s.subject, "probe.run", "a"));
+  await eventually(async () => (await s.open()).length === 1);
+  const [asked] = await s.open();
+  // The record says the owner answered, but the one who wrote it is the subject's own client.
+  await s.subject.emit(RequestAnswered, { id: asked?.id as never, answer: pick("always"), by: ownerAddress });
+  expect((await pending).message).toContain("not answered");
+  expect(ran).toEqual([]);
+  const rows = await s.host.records.read({ types: [CORE_TYPES.accessAnswered] });
+  expect(rows).toEqual([]);
 });

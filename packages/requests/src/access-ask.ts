@@ -67,8 +67,9 @@ export class PendingAsks {
   /**
    * The request ended: the call that waited for it goes on or is denied. A request nobody waits for is left alone.
    *
-   * An access ask ends only by an answer of the owner. An answer by anyone else, or by nobody the
-   * binding knows, is no answer: the call is denied, whatever the answer says.
+   * An access ask ends only by an answer of the owner. `by` is the address the writer of the answer
+   * record is bound to. An answer by anyone else, or by nobody the binding knows, is no answer: the
+   * call is denied, whatever the answer says.
    */
   end(id: RequestId, outcome: AskOutcome, by?: Address): void {
     const resolve = this.waiting.get(id);

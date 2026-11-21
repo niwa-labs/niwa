@@ -456,9 +456,11 @@ export function requests(opts: RequestsOptions = {}): Plugin {
 
     // A request that is created or ends changes the nearest deadline.
     // The ones that end a question of a rule that asks let its call go on, or deny it.
-    api.on(RequestAnswered, (data) => {
+    // The decision of an access ask is the owner's only when the owner wrote the record: who did is
+    // the actor the host stamped on it, bound as any caller is, never the `by` the data claims.
+    api.on(RequestAnswered, (data, _step, written) => {
       rearm?.();
-      asks.end(data.id, outcomeOf(data.answer), data.by);
+      asks.end(data.id, outcomeOf(data.answer), bind(written.actor));
     });
     api.on(RequestCancelledRecord, (data) => {
       rearm?.();
