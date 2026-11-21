@@ -9,8 +9,11 @@
 //   5. the whole output is an artifact; the result and the record carry only a bounded tail
 //   6. a box that cannot run stops the call before any process exists
 //   7. the box a run and its record name is the policy the sandbox reports it applies
+//   8. a run has a home and a temp directory of its own inside its cwd, and is refused where it cannot have them
+//   9. a run reads the directories of its programs (the host's PATH by default), never one that holds the
+//      home or a closed place, and the call cannot add to them
 
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
@@ -48,7 +51,7 @@ test("a run asks for a box that writes only in its cwd, reaches nothing, and hol
     expect(sandbox.specs).toHaveLength(1);
     expect(spec?.write).toEqual([cwd]);
     expect(spec?.net).toEqual([]);
-    expect(Object.keys(spec?.env ?? {}).sort()).toEqual(["HOME", "MODE", "PATH", "TMPDIR"]);
+    expect(Object.keys(spec?.env ?? {}).sort()).toEqual(["HOME", "MODE", "PATH", "TEMP", "TMP", "TMPDIR"]);
     const home = realpathSync(host.home);
     expect(spec?.denyRead).toEqual(expect.arrayContaining([join(home, "owner.token"), join(home, "host.key"), join(home, "secrets")]));
     expect(result.box).toEqual({ sandbox: "nono", write: [cwd], devices: ["/dev/null"], read: [cwd, "/usr/lib"], net: [] });
@@ -77,28 +80,94 @@ test("the box a run and its record name is the policy the sandbox applies, not t
   expect((finished[0]?.data as { box?: unknown }).box).toEqual(box);
 });
 
-test("a run has a TMPDIR inside its cwd, the one place its box lets it write, and nothing of it is left behind", async () => {
+test("a run has a home and a temp directory of its own inside its cwd, and nothing of them is left behind", async () => {
   const sandbox = recordingSandbox();
   const host = await start({ sandbox });
   const cwd = realpathSync(dirIn(host.home, "work"));
-  const result = await host.niwa.call(procRun, { cmd: sh('echo "$TMPDIR"; touch "$TMPDIR/scratch"'), cwd, timeout: 10_000 });
-  const temp = outputOf(host, result.output).trim();
+  const result = await host.niwa.call(procRun, {
+    cmd: sh('echo "$HOME"; echo "$TMPDIR"; echo "$TMP"; echo "$TEMP"; touch "$HOME/.toolrc" "$TMPDIR/scratch"'),
+    cwd,
+    timeout: 10_000,
+  });
   expect(result.exit).toBe(0);
-  expect(temp.startsWith(`${cwd}/`)).toBe(true);
+  const [home, temp, tmp, tempToo] = outputOf(host, result.output).trim().split("\n");
+  expect(home?.startsWith(`${cwd}/`)).toBe(true);
+  expect(temp?.startsWith(`${cwd}/`)).toBe(true);
+  expect(home).not.toBe(temp);
+  expect([tmp, tempToo]).toEqual([temp, temp]);
+  expect(sandbox.specs[0]?.env["HOME"]).toBe(home);
   expect(sandbox.specs[0]?.env["TMPDIR"]).toBe(temp);
-  expect(existsSync(temp)).toBe(false);
+  expect(existsSync(home as string)).toBe(false);
   expect(readdirSync(cwd)).toEqual([]);
 
-  // A call that names its own TMPDIR keeps it, and no directory is made.
-  const named = await host.niwa.call(procRun, { cmd: sh('echo "$TMPDIR"'), cwd, timeout: 10_000, env: { TMPDIR: "/somewhere" } });
-  expect(outputOf(host, named.output).trim()).toBe("/somewhere");
+  // A call that names its own HOME or TMPDIR keeps it, and nothing is left behind either.
+  const named = await host.niwa.call(procRun, {
+    cmd: sh('echo "$HOME $TMPDIR"'),
+    cwd,
+    timeout: 10_000,
+    env: { HOME: "/home/somebody", TMPDIR: "/somewhere" },
+  });
+  expect(outputOf(host, named.output).trim()).toBe("/home/somebody /somewhere");
   expect(readdirSync(cwd)).toEqual([]);
+});
+
+test("a run in a directory it cannot write is refused: it would have no home and no temp directory", async () => {
+  const host = await start({ sandbox: recordingSandbox() });
+  const cwd = realpathSync(dirIn(host.home, "work"));
+  chmodSync(cwd, 0o555);
+  try {
+    const error = await host.niwa.call(procRun, { cmd: sh("true"), cwd, timeout: 10_000 }).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    );
+    expect(String(error)).toContain("cannot be written");
+  } finally {
+    chmodSync(cwd, 0o755);
+  }
+});
+
+test("a run reads the program directories it is given, and none that hold the home or a place it may not read", async () => {
+  const base = realpathSync(mkdtempSync(join(homedir(), ".niwa-proc-tools-")));
+  const sandbox = recordingSandbox();
+  try {
+    const tools = dirIn(base, "tools");
+    const niwaHome = dirIn(base, "home");
+    const host = await procHost(
+      { sandbox, toolchains: [tools, "relative/bin", join(base, "absent"), homedir(), "/", niwaHome, join(niwaHome, "secrets"), tools] },
+      niwaHome,
+    );
+    try {
+      const cwd = realpathSync(dirIn(host.home, "work"));
+      await host.niwa.call(procRun, { cmd: sh("true"), cwd, timeout: 10_000, env: { PATH: `/elsewhere/bin:${base}` } });
+      expect(sandbox.specs[0]?.read).toEqual([tools]);
+    } finally {
+      await host.stop();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("the program directories a run reads are by default those of the host's PATH", async () => {
+  const base = realpathSync(mkdtempSync(join(homedir(), ".niwa-proc-path-")));
+  const tools = dirIn(base, "bin");
+  const saved = process.env["PATH"];
+  process.env["PATH"] = `${tools}:relative:${homedir()}:/usr/bin`;
+  try {
+    const sandbox = recordingSandbox();
+    const host = await start({ sandbox });
+    const cwd = realpathSync(dirIn(host.home, "work"));
+    await host.niwa.call(procRun, { cmd: ["/usr/bin/true"], cwd, timeout: 10_000 });
+    expect(sandbox.specs[0]?.read).toEqual([tools, "/usr/bin"]);
+  } finally {
+    process.env["PATH"] = saved;
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("the box of a run inside the niwa home, where worktrees live, is one nono can express", async () => {
   const sandbox = recordingSandbox();
-  // A home under the user's home, as the host's is: nono grants the temp area on its own, so it
-  // cannot close the host's keys there.
+  // A home under the user's home, as the host's is.
   const host = await start({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
   const cwd = dirIn(host.home, "worktrees", "wt-1");
   await host.niwa.call(procRun, { cmd: ["/usr/bin/true"], cwd, timeout: 10_000 });

@@ -103,7 +103,8 @@ export const procRun = actionRef("proc.run", {
     "Run a command in a box: it may write only in `cwd`, it has no network and no credentials. " +
     "`cmd` is the program and its arguments, run as they are (a shell is [\"sh\", \"-c\", \"…\"]). " +
     "`timeout` is in milliseconds; a command that runs longer is stopped, with everything it started, as is one whose call is cancelled. " +
-    "`env` is the whole environment besides PATH, HOME and a TMPDIR, a directory inside `cwd` that exists for the run and is removed after it (list TMPDIR to use another place). " +
+    "`env` is the whole environment besides PATH, and a HOME and a TMPDIR (also TMP and TEMP) of the run's own: directories inside `cwd` that exist for the run and are removed after it (list HOME or TMPDIR to use another place). " +
+    "The command reads `cwd`, the system's places and the directories of the host's programs, nothing else of the user's home. " +
     "The result has the exit code, the end of the output (`tail`) and the output as an artifact, which keeps its first 16 MiB: with `truncated` the artifact holds the start and `tail` the end. " +
     "A non-zero exit is a result, not an error. A command is stopped with its process group: one that left the group is not reached. " +
     "A grant names the real path of `cwd` (`proc.run@/work/repo`); a space or another character a rule cannot hold is written as % and its hex code (`My%20Project`). " +

@@ -2,12 +2,13 @@
  * The proc module: run a command.
  *
  * - **proc.run** runs a command in a box from `@niwa-labs/sandbox`: it may write only in its working
- *   directory, it has no network, and it has no credentials: its environment is `PATH`, `HOME`, a
- *   `TMPDIR` inside its directory and what the call lists, and the keys of the host and the places
- *   credentials live are closed to it. Because the box holds this, the class of the action is honest
- *   for any command: a write in the local world. It never runs without a box: a box that cannot run
- *   here, or whose policy does not hold this (writes only in the directory, reads from an allow-list,
- *   no network), stops the call before a process exists. What the result and the record say of the
+ *   directory, it has no network, and it has no credentials: its environment is `PATH`, a `HOME` and
+ *   a `TMPDIR` of its own inside its directory, and what the call lists; it reads its directory, the
+ *   system's places and the directories of its programs, and nothing else of the user's. Because the
+ *   box holds this, the class of the action is honest for any command: a write in the local world.
+ *   It never runs without a box: a box that cannot run here, or whose policy does not hold this
+ *   (writes only in the directory, reads from an allow-list, no network), stops the call before a
+ *   process exists. What the result and the record say of the
  *   box is that policy, as the sandbox reports it, not the spec it was given.
  *
  * - **proc.exec** runs a command with no box. Nothing limits what it writes or reaches, so it is an
@@ -29,9 +30,9 @@
  * itself dies is not stopped by it.
  */
 
-import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE, RECORD_DATA_LIMIT, action } from "@niwa-labs/core";
 import type { ActionContext } from "@niwa-labs/core";
@@ -57,6 +58,13 @@ export interface ProcOptions {
    * and reads to an allow-list, with no network. Default: nono.
    */
   readonly sandbox?: Sandbox;
+  /**
+   * The directories of programs a run may read besides the system's: its toolchains. Default: the
+   * directories of the host's PATH. One that is not an absolute existing directory, that holds the
+   * user's home, or that holds or lies in a place a run may not read, is left out. A call's own PATH
+   * adds nothing to them.
+   */
+  readonly toolchains?: readonly string[];
   /** The most bytes of output kept in an artifact. Default: 16 MiB. */
   readonly outputLimit?: number;
   /**
@@ -126,21 +134,72 @@ function boxOf(sandbox: Sandbox, spec: BoxSpec): BoxUsed {
   return { sandbox: sandbox.name, write: [...policy.write], devices: [...policy.devices], read: [...policy.read.only], net: [...policy.net] };
 }
 
-/**
- * A place for a command's temp files inside its directory, the one place its box lets it write.
- * Absent where the directory cannot be written, and the command then has no temp place at all.
- */
-function scratchIn(cwd: string): string | undefined {
+/** Is `path` the place `root` names, or under it? */
+function covers(root: string, path: string): boolean {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+}
+
+/** The real path of a place, or the place as it is spelled when it is not there. */
+function realOr(path: string): string {
   try {
-    return mkdtempSync(join(cwd, ".niwa-tmp-"));
+    return realpathSync(path);
   } catch {
-    return undefined;
+    return resolve(path);
   }
+}
+
+/**
+ * The program directories a run may be given to read, as real paths: each absolute, an existing
+ * directory, and not the user's home or a place above it. Read once, when the module is made.
+ */
+function programDirectories(candidates: readonly string[]): string[] {
+  const home = realOr(homedir());
+  const found: string[] = [];
+  for (const candidate of candidates) {
+    if (!isAbsolute(candidate)) continue;
+    let real: string;
+    try {
+      real = realpathSync(candidate);
+      if (!statSync(real).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    if (!covers(real, home) && !found.includes(real)) found.push(real);
+  }
+  return found;
+}
+
+/**
+ * A run's own directories inside its cwd, the one place its box lets it write: a home and a temp
+ * directory, both removed after the run. A cwd they cannot be made in refuses the run: a command
+ * pointed at the user's home or the shared temp area would find places its box closes.
+ */
+function runDirectoriesIn(cwd: string): { readonly root: string; readonly home: string; readonly temp: string } {
+  let root: string;
+  try {
+    root = mkdtempSync(join(cwd, ".niwa-run-"));
+  } catch (error) {
+    throw new ProcRefusal("bad-cwd", `${cwd} cannot be written: a run keeps its home and temp files there (${(error as Error).message})`);
+  }
+  const made = { root, home: join(root, "home"), temp: join(root, "tmp") };
+  try {
+    mkdirSync(made.home);
+    mkdirSync(made.temp);
+  } catch (error) {
+    rmSync(root, { recursive: true, force: true });
+    throw new ProcRefusal("bad-cwd", `${cwd} cannot be written: a run keeps its home and temp files there (${(error as Error).message})`);
+  }
+  return made;
 }
 
 /** The environment every command has before the call adds to it. */
 function baseEnv(): Record<string, string> {
   return { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: homedir() };
+}
+
+/** The host's PATH, as a list of directories. */
+function hostPath(): string[] {
+  return (process.env["PATH"] ?? "").split(":");
 }
 
 /**
@@ -185,6 +244,8 @@ export function proc(options: ProcOptions = {}): Plugin {
   const tailBytes = wholeNumber("tailBytes", options.tailBytes, DEFAULT_TAIL_BYTES, 0, MAX_TAIL_BYTES);
   const killGraceMs = wholeNumber("killGraceMs", options.killGraceMs, DEFAULT_KILL_GRACE_MS, 0, Number.MAX_SAFE_INTEGER);
   const natural = [nono()];
+  // The directories of the run's programs, which its box may read: the owner's choice, never the call's.
+  const programs = programDirectories(options.toolchains ?? hostPath());
   // The host reads the target of a call to match its grant, then runs the action with the same
   // input object. The real path the target named is kept here, keyed by that object, so the
   // action starts the command in the directory the grant covered and in no other.
@@ -228,22 +289,25 @@ export function proc(options: ProcOptions = {}): Plugin {
           const sandbox = await beforeStart(sandboxOf);
           // Cancelled while the sandbox was being found: nothing was started, and nothing will be.
           ctx.signal?.throwIfAborted();
-          // Temp files go inside the directory, where the box lets the command write: its own TMPDIR unless the call sets one.
-          const scratch = input.env?.["TMPDIR"] === undefined ? scratchIn(cwd) : undefined;
-          const spec: BoxSpec = boxSpec({
-            cwd,
-            write: [cwd],
-            net: [],
-            env: { ...baseEnv(), ...(scratch === undefined ? {} : { TMPDIR: scratch }), ...input.env },
-            denyRead: [
-              join(home(), OWNER_TOKEN_FILE),
-              join(home(), HOST_KEY_FILE),
-              api.secrets.dir,
-              ...CREDENTIAL_PLACES.map((place) => join(homedir(), place)),
-            ],
-          });
+          const denyRead = [
+            join(home(), OWNER_TOKEN_FILE),
+            join(home(), HOST_KEY_FILE),
+            api.secrets.dir,
+            ...CREDENTIAL_PLACES.map((place) => join(homedir(), place)),
+          ];
+          const closed = denyRead.map(realOr);
+          // The home and temp files go inside the directory, where the box lets the command write; the call may name others.
+          const own = runDirectoriesIn(cwd);
           const capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
           try {
+            const spec: BoxSpec = boxSpec({
+              cwd,
+              read: programs.filter((dir) => !closed.some((place) => covers(place, dir) || covers(dir, place))),
+              write: [cwd],
+              net: [],
+              env: { ...baseEnv(), HOME: own.home, TMPDIR: own.temp, TMP: own.temp, TEMP: own.temp, ...input.env },
+              denyRead,
+            });
             const box = await beforeStart(async () => boxOf(sandbox, spec));
             const child = await beforeStart(() => sandbox.launch(spec, input.cmd, { detached: true }));
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
@@ -253,7 +317,7 @@ export function proc(options: ProcOptions = {}): Plugin {
             capture.discard();
             throw error;
           } finally {
-            if (scratch !== undefined) rmSync(scratch, { recursive: true, force: true });
+            rmSync(own.root, { recursive: true, force: true });
           }
         },
       }),

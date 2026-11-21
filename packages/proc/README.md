@@ -7,8 +7,12 @@ Running commands.
   A box that cannot run here stops the call; a run never falls back to no box. The policy the sandbox reports for
   the box has to keep writes to `cwd` (and the devices a process needs), reads to an allow-list and the network
   closed: nono's does; srt's does not (its own temp directory is writable and its reads are open), so a run is
-  refused with it. The `box` of the result and of `proc.finished` is that policy: `write`, `devices`, `read`, `net`. The command has a `TMPDIR` inside `cwd`, made for the run and removed after it; a tool that asks the
-  system for its temp directory instead of reading `TMPDIR` (Apple's `mktemp`) finds none it may write.
+  refused with it. The `box` of the result and of `proc.finished` is that policy: `write`, `devices`, `read`, `net`.
+  The command has a `HOME` and a `TMPDIR` (also `TMP`, `TEMP`) of its own inside `cwd`, made for the run and
+  removed after it; a `cwd` they cannot be made in refuses the run. A tool that asks the system for its temp
+  directory instead of reading `TMPDIR` (Apple's `mktemp`) finds none it may write. It reads `cwd`, the system's
+  places and the directories of its programs (`toolchains`, by default those of the host's PATH, never one that
+  holds the user's home or a place it may not read); the call's own `PATH` adds nothing to them.
 - `proc.exec { cmd, cwd, timeout, env?, net?, secrets? }` runs with no box. It is irreversible and external, so a
   grant names it. `env` values may be `secret("name")` references (`secret()` is exported by `@niwa-labs/core`)
   and `secrets` lists secrets given as variables of their own names; values are resolved from

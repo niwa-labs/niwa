@@ -9,6 +9,7 @@
 //   3. a run cannot read the owner token of the host, though the host's home holds it
 //   4. a run cannot write a shared temp area, and the temp files of a command that follows TMPDIR still work
 //   5. the box a run names is nono's policy: its cwd to write, and neither a temp area nor the home to read
+//   6. a run's HOME is its own, inside its cwd, and a toolchain under the user's home runs only when given
 
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -77,8 +78,40 @@ for (const sandbox of [nono()]) {
       }
     }, 60_000);
 
+    test.skipIf(!present)("has a home of its own, and runs a program of a toolchain it is given under the user's home", async () => {
+      const tools = realpathSync(mkdtempSync(join(homedir(), ".niwa-proc-tools-")));
+      writeFileSync(join(tools, "niwa-hello"), "#!/bin/sh\necho hello from the toolchain\n", { mode: 0o755 });
+      const given = await procHost({ sandbox, toolchains: [tools] }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
+      const bare = await procHost({ sandbox, toolchains: [] }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
+      try {
+        const cwd = realpathSync(dirIn(given.home, "work"));
+        const env = { PATH: `${tools}:/usr/bin:/bin` };
+        const own = await given.niwa.call(procRun, {
+          cmd: ["/bin/sh", "-c", 'echo "$HOME"; touch "$HOME/.toolrc" && echo wrote; niwa-hello'],
+          cwd,
+          timeout: 20_000,
+          env,
+        });
+        const [home, wrote, hello] = outputOf(given, own.output).trim().split("\n");
+        expect(own.exit).toBe(0);
+        expect(home?.startsWith(`${cwd}/`)).toBe(true);
+        expect([wrote, hello]).toEqual(["wrote", "hello from the toolchain"]);
+        expect(own.box.read).toContain(tools);
+
+        // Not given the toolchain, the same program is closed to it.
+        const other = realpathSync(dirIn(bare.home, "work"));
+        const closed = await bare.niwa.call(procRun, { cmd: ["/bin/sh", "-c", "niwa-hello"], cwd: other, timeout: 20_000, env });
+        expect(closed.exit).not.toBe(0);
+        expect(outputOf(bare, closed.output)).not.toContain("hello from the toolchain");
+      } finally {
+        await given.stop();
+        await bare.stop();
+        rmSync(tools, { recursive: true, force: true });
+      }
+    }, 60_000);
+
     test.skipIf(!present)("cannot read the owner token of its host", async () => {
-      // A home under the user's home, as the host's is: nono reads the temp area on its own.
+      // A home under the user's home, as the host's is.
       const host = await procHost({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
       try {
         writeFileSync(join(host.home, "owner.token"), "owner-token-value\n", { mode: 0o600 });
