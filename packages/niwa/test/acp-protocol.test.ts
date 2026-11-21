@@ -287,6 +287,19 @@ test("Claude Code: an update or a request the snapshot does not know is a typed 
   expect(replies).toContainEqual({ jsonrpc: "2.0", id: "x1", error: { code: -32601, message: "this control side cannot serve _zed/unknown" } });
 });
 
+test("Claude Code: a request of a known method with params that do not fit is refused as invalid params, with the field", async () => {
+  const replayed = [{ jsonrpc: "2.0", id: "x2", method: "session/request_permission", params: { sessionId: REPLAY_SESSION, options: "none" } }];
+  const side = claudeCodeControl({ harness: "fake", executable: "/bin/true", command: [await replayAgent(dir, replayed)] });
+  control = side;
+  expect(signsOf(await replayedTurn(side))).toEqual(["unknown:session/request_permission", "session/request_permission"]);
+  const replies = (await readFile(join(dir, "replies.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as unknown);
+  expect(replies).toContainEqual({
+    jsonrpc: "2.0",
+    id: "x2",
+    error: { code: -32602, message: expect.stringContaining("params.options") as unknown },
+  });
+});
+
 test("Claude Code: `advisor: false` switches the advisor off in the adapter's environment; left out, nothing is set", async () => {
   const seen = join(dir, "env.log");
   const script = join(dir, "env-acp");
@@ -452,6 +465,23 @@ test("fork: the captured refusal of a daemon too old for the mode of a session i
 });
 
 for (const lineage of ["upstream", "fork"] as const) {
+  test(`${lineage}: a request of a known method with params that do not fit is refused as invalid params, an unknown one as not found`, async () => {
+    const replayed = [
+      { jsonrpc: "2.0", id: "x2", method: "session/request_permission", params: { sessionId: REPLAY_SESSION, options: "none" } },
+      { jsonrpc: "2.0", id: "x3", method: "_zed/unknown", params: {} },
+    ];
+    const side = await minimaxSide(lineage, replayed);
+    control = side;
+    await replayedTurn(side);
+    const replies = (await readFile(join(dir, "replies.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as unknown);
+    expect(replies).toContainEqual({
+      jsonrpc: "2.0",
+      id: "x2",
+      error: { code: -32602, message: expect.stringContaining("params.options") as unknown },
+    });
+    expect(replies).toContainEqual({ jsonrpc: "2.0", id: "x3", error: { code: -32601, message: "niwa does not serve _zed/unknown" } });
+  });
+
   test(`${lineage}: an unknown notification is a typed unknown, never a crash`, async () => {
     const replayed = [{ jsonrpc: "2.0", method: "mcode/session/brand_new", params: {} }, update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } })];
     const side = await minimaxSide(lineage, replayed);

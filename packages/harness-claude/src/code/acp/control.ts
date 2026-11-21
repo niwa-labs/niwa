@@ -565,6 +565,11 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     session.client.refuse(frame.id, -32601, `this control side cannot serve ${method}`);
   }
 
+  /** Refuse a request of a known method whose params do not fit it, with the fields that do not. */
+  function refuseParams(session: LiveSession, frame: AgentRequest, method: string, invalid: string): void {
+    session.client.refuse(frame.id, -32602, `invalid params of ${method}: ${invalid}`);
+  }
+
   /**
    * Answer a request the agent makes of the client.
    *
@@ -577,7 +582,8 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     const read = readVariant(ClaudeAgentRequest, frame, CLAUDE_ACP_PROTOCOL, acpVariant);
     if (!read.ok) {
       emitUnknown(session, read.unknown);
-      refuse(session, frame, read.unknown.variant);
+      if (read.invalid === undefined) refuse(session, frame, read.unknown.variant);
+      else refuseParams(session, frame, read.unknown.variant, read.invalid);
       return;
     }
     const request = read.value;

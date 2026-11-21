@@ -727,12 +727,18 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     session.client.refuse(requestId, -32601, `niwa does not serve ${method}`);
   }
 
+  /** Refuse a request of a known method whose params do not fit it, with the fields that do not. */
+  function refuseParams(session: AcpSession, requestId: RequestId, method: string, invalid: string): void {
+    session.client.refuse(requestId, -32602, `invalid params of ${method}: ${invalid}`);
+  }
+
   /** A request of the agent: a permission or a questionnaire is answered, anything else refused. */
   function answerRequest(session: AcpSession, requestId: RequestId, message: AgentRequest): void {
     const read = readVariant(McodeAgentRequest, message, protocol, acpVariant);
     if (!read.ok) {
       emitUnknown(session, read.unknown);
-      refuse(session, requestId, read.unknown.variant);
+      if (read.invalid === undefined) refuse(session, requestId, read.unknown.variant);
+      else refuseParams(session, requestId, read.unknown.variant, read.invalid);
       return;
     }
     const asked = read.value;
