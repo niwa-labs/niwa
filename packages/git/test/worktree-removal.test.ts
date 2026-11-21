@@ -124,3 +124,33 @@ test("overlapping removals report one outcome and write one removed record", asy
   expect(results.map(({ removed }) => removed).sort()).toEqual([false, true]);
   expect((await host.records.read()).filter((row) => row.type === "git.worktree.removed")).toHaveLength(1);
 });
+
+test("a branch checked out elsewhere keeps its worktree and ref", async () => {
+  const repo = await makeRepo();
+  const { host } = await served(held);
+  const made = await host.call(gitWorktreeCreate, { repo, description: "branch in use elsewhere" });
+  gitIn(made.path, "switch", "-q", "--detach");
+  const other = join(repo, "other");
+  gitIn(repo, "worktree", "add", "-q", other, made.branch);
+
+  expect(await refusalOf(host.call(gitWorktreeRemove, { id: made.id }))).toBe("changed");
+  expect(existsSync(made.path)).toBe(true);
+  expect(gitIn(other, "rev-parse", "HEAD")).toBe(made.baseSha);
+});
+
+test("a locked worktree remains registered when its directory is missing", async () => {
+  const repo = await makeRepo();
+  const { host } = await served(held);
+  const made = await host.call(gitWorktreeCreate, { repo, description: "locked removable checkout" });
+  gitIn(made.path, "switch", "-q", "--detach");
+  gitIn(repo, "worktree", "lock", made.path);
+  rmSync(made.path, { recursive: true, force: true });
+
+  expect(await refusalOf(host.call(gitWorktreeRemove, { id: made.id }))).toBe("changed");
+  expect(gitIn(repo, "worktree", "list", "--porcelain")).toContain(made.path);
+  expect(gitIn(repo, "branch", "--list", made.branch)).not.toBe("");
+
+  expect(await host.call(gitWorktreeRemove, { id: made.id, force: true })).toEqual({ id: made.id, removed: true });
+  expect(gitIn(repo, "worktree", "list", "--porcelain")).not.toContain(made.path);
+  expect(gitIn(repo, "branch", "--list", made.branch)).toBe("");
+});

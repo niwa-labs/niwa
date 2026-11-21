@@ -295,24 +295,54 @@ interface Dismantled {
   readonly branch: string;
 }
 
+/** The worktree paths and refs Git still has registered, including locked or missing checkouts. */
+async function registeredWorktrees(repo: string): Promise<Array<{ path: string; ref: string | undefined }>> {
+  const listed = await gitRun(repo, ["worktree", "list", "--porcelain", "-z"]);
+  if (listed.code !== 0) {
+    throw new WorktreeRefusal("unverifiable", `git could not list the worktrees of ${repo}: ${listed.stderr.trim()}`);
+  }
+  return listed.stdout.split("\0\0").flatMap((row) => {
+    const [worktree, ...details] = row.split("\0");
+    if (!worktree?.startsWith("worktree ")) return [];
+    return [{ path: worktree.slice("worktree ".length), ref: details.find((field) => field.startsWith("branch "))?.slice("branch ".length) }];
+  });
+}
+
+/** An update-ref can delete a branch in use, so check the other worktrees first. */
+function keepCheckedOutBranch(worktrees: Awaited<ReturnType<typeof registeredWorktrees>>, branch: string, except?: string): void {
+  const other = worktrees.find((worktree) => worktree.ref === `refs/heads/${branch}` &&
+    (except === undefined || real(worktree.path) !== real(except)));
+  if (other !== undefined) {
+    throw new WorktreeRefusal("changed", `the branch "${branch}" is checked out at ${other.path}`);
+  }
+}
+
 /**
  * Remove the directory and the branch of a worktree; what is gone already stays gone.
  *
  * Without `force`, git decides whether the directory may go (it keeps a dirty or locked one), and the branch goes
- * only if it is still on `tip`, the commit that was checked. Force may remove an orphaned directory without
+ * only if it is still on the commit that was checked. Force may remove an orphaned directory without
  * a readable checkout. Either way, what was asked to go is checked to be gone before this returns.
  */
-async function dismantle(target: Dismantled, force: boolean, tip: string | undefined): Promise<void> {
+async function dismantle(target: Dismantled, force: boolean, seen?: Inspected): Promise<void> {
   const { repo, path, branch } = target;
   const known = repo !== undefined && existsSync(repo);
-  if (existsSync(path)) {
-    const common = await commonDirOf(path);
+  const checkouts = known ? await registeredWorktrees(repo) : [];
+  const present = existsSync(path);
+  const atPath = (worktree: { path: string }): boolean => real(worktree.path) === real(path);
+  keepCheckedOutBranch(checkouts, branch, path);
+  if (present || checkouts.some(atPath)) {
+    const common = present ? await commonDirOf(path) : undefined;
     if (common !== undefined && (!known || common !== (await commonDirOf(repo)))) {
       throw new WorktreeRefusal("changed", `${path} belongs to another repository`);
     }
+    if (!force && present && (await headOf(path)) !== seen?.standing.head) {
+      throw new WorktreeRefusal("changed", `the HEAD of ${path} moved while the worktree was being removed`);
+    }
     const removed = known ? await gitRun(repo, ["worktree", "remove", ...(force ? ["--force", "--force"] : []), path]) : undefined;
     if (removed?.code !== 0) {
-      if (!force || common !== undefined || (await commonDirOf(path)) !== undefined) {
+      if (!force || common !== undefined || (known && (await registeredWorktrees(repo)).some(atPath)) ||
+        (await commonDirOf(path)) !== undefined) {
         throw new WorktreeRefusal("changed", `git keeps ${path}: ${removed?.stderr.trim() ?? "its repository cannot be read"}`);
       }
       rmSync(path, { recursive: true, force: true });
@@ -320,13 +350,14 @@ async function dismantle(target: Dismantled, force: boolean, tip: string | undef
     if (existsSync(path)) throw new Error(`${path} is still there after it was removed`);
   }
   if (!known) return;
-  await gitRun(repo, ["worktree", "prune"]);
   const now = await commitOf(repo, `refs/heads/${branch}`);
   if (now === undefined) return;
-  if (!force && now !== tip) {
+  if (!force && now !== seen?.tip) {
     throw new WorktreeRefusal("changed", `the branch "${branch}" moved while the worktree was being removed, and is kept`);
   }
-  await gitOut(repo, ["update-ref", "-d", `refs/heads/${branch}`, now]);
+  keepCheckedOutBranch(await registeredWorktrees(repo), branch);
+  const deleted = await gitRun(repo, ["update-ref", "-d", `refs/heads/${branch}`, now]);
+  if (deleted.code !== 0) throw new WorktreeRefusal("changed", `git keeps the branch "${branch}": ${deleted.stderr.trim()}`);
   if ((await commitOf(repo, `refs/heads/${branch}`)) !== undefined) throw new Error(`the branch "${branch}" is still there after it was removed`);
 }
 
@@ -587,7 +618,7 @@ export function git(options: GitOptions = {}): Plugin {
       const seen = await inspect(place, worktree);
       const refusal = refusalOf(worktree.id, seen);
       if (refusal !== undefined && !force) throw refusal;
-      await dismantle({ ...worktree, repo: seen.repo }, force, seen.tip);
+      await dismantle({ ...worktree, repo: seen.repo }, force, seen);
       await emit({ id: idSchema("worktree").parse(worktree.id), forced: refusal !== undefined });
     };
 
@@ -613,7 +644,7 @@ export function git(options: GitOptions = {}): Plugin {
             if (!force) throw new WorktreeRefusal("orphan", `${path} has no record, so nothing says what it holds: remove it with force`);
             const common = await commonDirOf(path);
             const repo = common === undefined ? undefined : basename(common) === ".git" ? dirname(common) : undefined;
-            await dismantle({ repo, path, branch: orphan.data }, true, undefined);
+            await dismantle({ repo, path, branch: orphan.data }, true);
             return { id: orphan.data, removed: true };
           });
         },
