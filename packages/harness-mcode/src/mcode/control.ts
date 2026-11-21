@@ -58,6 +58,7 @@ import type {
   StartOptions,
   StartedSession,
   ToolsMode,
+  TurnOutcome,
   VisibleActions,
   SessionId,
   ReverseHandler,
@@ -541,29 +542,33 @@ class AcpSession {
     });
   }
 
-  /** The turn is over, however it ended: say so, and release those who wait for the idle. */
-  private settle(): void {
+  /** The turn is over, however it ended: say how, and release those who wait for the idle. */
+  private settle(outcome: TurnOutcome): void {
     this.running = false;
     this.held = undefined;
     // The turn is over: nothing it asked is waited for any more.
     this.cancelAsking();
-    this.emit({ kind: "turn-ended", turn: this.current, at: Date.now() });
+    this.emit({ kind: "turn-ended", turn: this.current, at: Date.now(), outcome });
     for (const waiter of this.idleWaiters.splice(0)) waiter();
   }
 
   /** The agent answered the prompt: the turn ended. */
   endTurn(result: TurnResult): void {
-    this.settle();
+    // Only an answer that says the turn ended of itself completed it; a cancel, a refusal or a limit did not.
+    this.settle(result.stopReason === STOP_TURN ? "completed" : "failed");
     const waiters = this.turnWaiters;
     this.turnWaiters = undefined;
     waiters?.resolve(result);
     this.drain();
   }
 
-  /** The turn did not end with an answer: the agent refused the prompt, or it ran out of time. */
-  failTurn(reason: Error): void {
+  /**
+   * The turn did not end with an answer: the agent refused the prompt, or it ran out of time. It
+   * failed, unless nobody can tell what became of it.
+   */
+  failTurn(reason: Error, outcome: TurnOutcome = "failed"): void {
     this.emit({ kind: "activity", at: Date.now(), detail: `the turn failed: ${reason.message}` });
-    this.settle();
+    this.settle(outcome);
     const waiters = this.turnWaiters;
     this.turnWaiters = undefined;
     waiters?.reject(reason);
@@ -1415,6 +1420,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
         if (!mine()) return;
         session.failTurn(
           new Error(`the turn status could not be read: ${error instanceof Error ? error.message : String(error)}`),
+          "unknown",
         );
         return;
       }

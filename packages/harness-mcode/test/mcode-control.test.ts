@@ -1573,3 +1573,40 @@ test("a large message to an agent that does not read its input is not waited for
   await expect(control.send(id, "x".repeat(4_000_000))).rejects.toMatchObject({ code: "InputPossiblySent" });
   expect(Date.now() - asked).toBeLessThan(3_000);
 });
+
+test("a turn the agent answered says it completed, and one an interrupt cut says it failed", async () => {
+  control = await fakeControl();
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  const ends: Array<[number, string | undefined]> = [];
+  const watching = (async () => {
+    for await (const event of control.life(id)) {
+      if (event.kind === "turn-ended") {
+        ends.push([event.turn, event.outcome]);
+        if (ends.length === 2) return;
+      }
+    }
+  })();
+  await control.send(id, "one");
+  await eventually(() => ends.length === 1, 10_000);
+  await control.send(id, "hang");
+  await eventually(async () => (await control.state(id)) === "running", 10_000);
+  await control.interrupt(id);
+  await watching;
+  expect(ends).toEqual([
+    [1, "completed"],
+    [2, "failed"],
+  ]);
+});
+
+test("a turn cut off for its time says it failed", async () => {
+  control = await fakeControl({ files: ["status", "deaf"], turnTimeoutMs: 600, cancelGraceMs: 500 });
+  const { session: id } = await control.start({ prompt: promptFromText("hang"), cwd: dir });
+  const outcomes: Array<string | undefined> = [];
+  void (async () => {
+    for await (const event of control.life(id)) if (event.kind === "turn-ended") outcomes.push(event.outcome);
+  })();
+  await Bun.sleep(1_500);
+  await writeFile(join(dir, "release"), "");
+  await eventually(() => outcomes.length === 1, 10_000);
+  expect(outcomes).toEqual(["failed"]);
+});
