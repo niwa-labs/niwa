@@ -82,7 +82,7 @@ import type {
   NcodeUpdateMarks,
   TurnStatusResult as TurnStatus,
 } from "../ncode/protocol.ts";
-import { formFields, formSteps, permissionAsk } from "./reverse.ts";
+import { formFields, formSteps, isQuestionnaire, permissionAsk } from "./reverse.ts";
 import { Acp, EXTENSIONS_META, MCODE_ACP_PROTOCOL, McodeAgentNotification, McodeAgentRequest, McodeInitializeMeta } from "./protocol.ts";
 import type { McodeMethod, McodePermissionMode } from "./protocol.ts";
 
@@ -874,6 +874,12 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       return;
     }
 
+    // A question for a person is not a tool to be allowed: with nobody to ask, it ends as cancelled.
+    if (isQuestionnaire(params)) {
+      session.emit({ kind: "activity", at: Date.now(), detail: "a question was left unanswered: the session has nowhere to ask it" });
+      replyTo(session, requestId, { outcome: { outcome: "cancelled" } });
+      return;
+    }
     const toolCall = asked.toolCall;
     const tool = toolCall.title ?? "";
     let decision: PermissionDecision = { behavior: "allow" };

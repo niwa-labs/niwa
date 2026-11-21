@@ -327,7 +327,13 @@ for await (const chunk of Bun.stdin.stream()) {
           { optionId: "allow-once", name: "Allow", kind: "allow_once" },
           { optionId: "deny", name: "Deny", kind: "reject_once" },
         ];
-        send({ jsonrpc: "2.0", id: "perm-1", method: "session/request_permission", params: { sessionId: "fake-1", toolCall: { toolCallId: "c9", title: "Bash" }, options: existsSync(${JSON.stringify(join(dir, "only-always"))}) ? options.slice(0, 2) : options } });
+        // The file "questionnaire" makes it a question for the person, in the shape a client without form support gets it.
+        const questionnaire = [
+          { optionId: "questionnaire:c9:red", name: "red", kind: "allow_once" },
+          { optionId: "questionnaire:c9:blue", name: "blue", kind: "allow_once" },
+          { optionId: "questionnaire:c9:cancel", name: "Cancel", kind: "reject_once" },
+        ];
+        send({ jsonrpc: "2.0", id: "perm-1", method: "session/request_permission", params: { sessionId: "fake-1", toolCall: { toolCallId: "c9", title: existsSync(${JSON.stringify(join(dir, "questionnaire"))}) ? "Which colour?" : "Bash" }, options: existsSync(${JSON.stringify(join(dir, "questionnaire"))}) ? questionnaire : existsSync(${JSON.stringify(join(dir, "only-always"))}) ? options.slice(0, 2) : options } });
       }
       // The file "tool-calls" makes the turn report tool calls; the fork marks them with its decision.
       if (existsSync(${JSON.stringify(join(dir, "tool-calls"))})) {
@@ -1316,3 +1322,37 @@ test("a model that is not advertised is never replaced by another provider's or 
   expect(mcodeModelOptionValue("model", advertised)).toBe("m:providerA:model:v:fast");
 });
 
+test("a question for the person that arrives as a permission request is never answered by a policy", async () => {
+  for (const permissions of ["allow", "deny"] as const) {
+    const answers = await permissionAnswers(permissions, "upstream", ["questionnaire"]);
+    expect(answers.at(-1)).toEqual({ outcome: { outcome: "cancelled" } });
+    await control?.dispose();
+    control = undefined;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a question for the person is not handed to a policy function as a tool", async () => {
+  const asked: string[] = [];
+  dir = await tempDir("mcode-fake");
+  for (const file of ["ask-permission", "questionnaire"]) await writeFile(join(dir, file), "");
+  const binary = join(dir, "mcode");
+  await writeFile(binary, FAKE_AGENT);
+  await chmod(binary, 0o755);
+  control = mcodeControl({
+    mode: "full",
+    harness: harnessId("mcode-fake"),
+    binary,
+    permissions: async (request) => {
+      asked.push(request.tool);
+      return { behavior: "allow" };
+    },
+  });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  const seen = firstTurnEnded(control.life(id));
+  await control.send(id, "go");
+  await seen;
+  for (let i = 0; i < 100 && !existsSync(join(dir, "permission.log")); i += 1) await Bun.sleep(20);
+  expect(asked).toEqual([]);
+  expect((await readFile(join(dir, "permission.log"), "utf8")).trim()).toBe(JSON.stringify({ outcome: { outcome: "cancelled" } }));
+});

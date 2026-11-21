@@ -59,19 +59,31 @@ const PermissionParamsSchema = z.object({
   options: z.array(z.unknown()).default([]),
 });
 
-/** The question of a `session/request_permission` request, and how its answer goes back. */
-export function permissionAsk(params: unknown): PermissionAsk {
+/** The pieces of a `session/request_permission` request, and the prefix of its options when it is a questionnaire. */
+function permissionParts(params: unknown) {
   const parsed = PermissionParamsSchema.safeParse(params);
   const { toolCall, options } = parsed.success ? parsed.data : { toolCall: {}, options: [] };
   const offered = options.flatMap((entry) => {
     const option = OfferedSchema.safeParse(entry);
     return option.success ? [option.data] : [];
   });
-
   const prefix = toolCall.toolCallId === undefined ? undefined : `${QUESTIONNAIRE_PREFIX}${toolCall.toolCallId}:`;
-  if (prefix !== undefined && offered.length > 0 && offered.every((option) => option.optionId.startsWith(prefix))) {
-    return questionnaireAsk(toolCall.title, offered, prefix);
-  }
+  const questionnaire = prefix !== undefined && offered.length > 0 && offered.every((option) => option.optionId.startsWith(prefix));
+  return { toolCall, offered, prefix, questionnaire };
+}
+
+/**
+ * Whether a `session/request_permission` request is a question for a person, not a permission: the
+ * answers of a questionnaire are offered as once-only options, and no policy may pick one of them.
+ */
+export function isQuestionnaire(params: unknown): boolean {
+  return permissionParts(params).questionnaire;
+}
+
+/** The question of a `session/request_permission` request, and how its answer goes back. */
+export function permissionAsk(params: unknown): PermissionAsk {
+  const { toolCall, offered, prefix, questionnaire } = permissionParts(params);
+  if (questionnaire && prefix !== undefined) return questionnaireAsk(toolCall.title, offered, prefix);
 
   const title = toolCall.title ?? toolCall.name ?? "a tool";
   const once: QuestionOption[] = offered.flatMap((option) =>
