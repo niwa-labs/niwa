@@ -78,11 +78,16 @@ function ownedBy(journal: JournalReader | undefined, id: SessionId): boolean {
   return (journal?.find({ type: SESSION_STARTED, field: "session", equals: `${id.harness} ${id.native}` }).length ?? 0) > 0;
 }
 
-/** Where a watch of a session stands in the journal: watched or not, the last pause, the last progress and its process. */
+/**
+ * Where a watch of a session stands in the journal: watched or not, its process, and where it got to.
+ * The position, the progress and whether a pause was said all come from the last record of a pause
+ * or of progress, which is where the watch left off.
+ */
 interface Standing {
   watching: boolean;
   from?: Locator;
   progress?: Progress;
+  paused: boolean;
   pid?: number;
 }
 
@@ -92,17 +97,22 @@ function standingOf(records: readonly StoredRecord[]): Map<string, Standing & { 
     const session = (stored.data as { session?: SessionId }).session;
     if (session === undefined) continue;
     const key = keyOf(session);
-    const now = standing.get(key) ?? { session, watching: false };
+    const now = standing.get(key) ?? { session, watching: false, paused: false };
     if (stored.type === HistorySessionSeen.name) {
       now.watching = true;
       const { pid } = HistorySessionSeen.schema.parse(stored.data);
       if (pid === undefined) delete now.pid;
       else now.pid = pid;
     } else if (stored.type === HistorySessionEnded.name || stored.type === HistorySessionUnwatched.name) now.watching = false;
-    else if (stored.type === HistorySessionPaused.name) now.from = HistorySessionPaused.schema.parse(stored.data).upto;
-    else if (stored.type === SessionProgress.name) {
-      const { done, total } = SessionProgress.schema.parse(stored.data);
+    else if (stored.type === HistorySessionPaused.name) {
+      now.from = HistorySessionPaused.schema.parse(stored.data).upto;
+      now.paused = true;
+    } else if (stored.type === SessionProgress.name) {
+      const { done, total, at } = SessionProgress.schema.parse(stored.data);
       now.progress = { done, total };
+      // Progress is written when the session grew: it is the later position, and the pause before it is over.
+      if (at !== undefined) now.from = at;
+      now.paused = false;
     }
     standing.set(key, now);
   }
@@ -201,7 +211,7 @@ export function history(options: HistoryOptions): Plugin {
     };
 
     /** Follow a session; what it learns is written as records until it ends or the watch stops. */
-    const follow = (id: SessionId, standing: Omit<Standing, "watching">): void => {
+    const follow = (id: SessionId, standing: Partial<Omit<Standing, "watching">>): void => {
       const key = keyOf(id);
       if (watches.has(key)) return;
       const reading = readingOf(id);
@@ -217,6 +227,7 @@ export function history(options: HistoryOptions): Plugin {
             clock,
             ...(standing.from === undefined ? {} : { from: standing.from }),
             ...(standing.progress === undefined ? {} : { progress: standing.progress }),
+            ...(standing.paused ? { paused: true } : {}),
             // A session niwa runs ends when niwa says so: its quiet is a wait for the next turn.
             ...(owned ? { guessEnd: false } : {}),
             ...(standing.pid === undefined ? {} : { alive: () => lives(standing.pid!) }),
@@ -225,7 +236,7 @@ export function history(options: HistoryOptions): Plugin {
             let written: boolean;
             switch (event.kind) {
               case "progress":
-                written = await publish(controller.signal, () => api.emit(SessionProgress, { session: id, done: event.done, total: event.total }));
+                written = await publish(controller.signal, () => api.emit(SessionProgress, { session: id, done: event.done, total: event.total, at: event.at }));
                 break;
               case "paused":
                 written = await publish(controller.signal, () => api.emit(HistorySessionPaused, { session: id, upto: event.upto, why: event.why }));
@@ -271,6 +282,7 @@ export function history(options: HistoryOptions): Plugin {
             follow(id, {
               ...(before?.from === undefined ? {} : { from: before.from }),
               ...(before?.progress === undefined ? {} : { progress: before.progress }),
+              paused: before?.paused === true,
               ...(input.pid === undefined ? {} : { pid: input.pid }),
             });
           });

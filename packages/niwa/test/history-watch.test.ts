@@ -9,6 +9,7 @@ import type { ActionName, StoredRecord } from "@niwa-labs/core";
 import { LocatorSchema, harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
 import type { AskAnswer, DeliveryReceipt, Harness, LifeEvent, SessionControl, SessionReading, SessionRecord, SessionState, StartedSession } from "@niwa-labs/harness";
 import { history } from "@niwa-labs/history";
+import type { WatchClock } from "@niwa-labs/history";
 import type { Plugin } from "@niwa-labs/plugin";
 import { insertPlugin, sessions } from "@niwa-labs/sessions";
 import { tempHome } from "@niwa-labs/testing";
@@ -73,7 +74,7 @@ test("history.watch writes that it saw the session, its progress, its pause and 
   expect(typesOf(written)).toEqual(["history.session.seen", "session.progress", "history.session.paused", "history.session.ended"]);
   expect(written.find((record) => record.type === "history.session.ended")?.data).toEqual({ session: ID, certainty: "guessed", why: "idle" });
   expect(written.find((record) => record.type === "history.session.seen")?.data).toEqual({ session: ID, harness: "h", cwd: "/work" });
-  expect(written.find((record) => record.type === "session.progress")?.data).toEqual({ session: ID, done: 1, total: 3 });
+  expect(written.find((record) => record.type === "session.progress")?.data).toEqual({ session: ID, done: 1, total: 3, at: at(1) });
 
   // Watched again and stopped by hand.
   await call("history.watch", { session: ID });
@@ -102,8 +103,8 @@ test("a watch that was on when the host stopped goes on after a restart, from it
   for (let waited = 0; !typesOf(await second.records.read()).includes("history.session.ended") && waited < 5_000; waited += 20) await Bun.sleep(20);
   const progress = (await second.records.read()).filter((record) => record.type === "session.progress").map((record) => record.data);
   expect(progress).toEqual([
-    { session: ID, done: 1, total: 2 },
-    { session: ID, done: 2, total: 2 },
+    { session: ID, done: 1, total: 2, at: at(1) },
+    { session: ID, done: 2, total: 2, at: at(2) },
   ]);
 });
 
@@ -170,7 +171,7 @@ test("a session niwa starts is watched by itself, is never guessed to have ended
   // Quiet for longer than a guess waits: a session niwa runs is asleep, not over.
   await Bun.sleep(200);
   expect(ended(await host.read())).toEqual([]);
-  expect((await host.read()).filter((record) => record.type === "session.progress").map((record) => record.data)).toEqual([{ session: ID, done: 1, total: 2 }]);
+  expect((await host.read()).filter((record) => record.type === "session.progress").map((record) => record.data)).toEqual([{ session: ID, done: 1, total: 2, at: at(1) }]);
 
   control.end();
   expect(ended(await until(host.read, "history.session.ended"))).toEqual([{ session: ID, certainty: "exact", why: "session-ended" }]);
@@ -242,4 +243,86 @@ test("a sign that only suggests an end does not end a session niwa runs, whose o
 
   control.end();
   expect(ended(await until(host.read, "history.session.ended"))).toEqual([{ session: ID, certainty: "exact", why: "session-ended" }]);
+});
+
+/** A watch clock whose time moves only when the test says; waiting is real and short. */
+function movedByHand(): WatchClock & { advance(ms: number): void } {
+  let now = 0;
+  return {
+    now: () => now,
+    advance: (ms) => void (now += ms),
+    sleep: (_ms, signal) =>
+      new Promise<void>((resolve) => {
+        if (signal.aborted) return resolve();
+        const timer = setTimeout(done, 5);
+        function done(): void {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", done);
+          resolve();
+        }
+        signal.addEventListener("abort", done, { once: true });
+      }),
+  };
+}
+
+/** Serve a host over `home` whose watch of the session is paced by `clock`. */
+async function servedOver(home: { path: string }, records: SessionRecord[], clock: WatchClock) {
+  const niwa = createNiwa({ home: home.path });
+  niwa.use(history({ harnesses: [{ instance, reading: growing(records) }], clock, timing: { pollMs: 5, pauseMs: 100, endMs: 1_000_000 } }));
+  await niwa.serve();
+  const count = async (type: string) => (await niwa.records.read()).filter((record) => record.type === type).length;
+  const reach = async (type: string, n: number) => {
+    for (let waited = 0; (await count(type)) < n && waited < 5_000; waited += 5) await Bun.sleep(5);
+    expect(await count(type)).toBe(n);
+  };
+  return { niwa, count, reach };
+}
+
+test("a watch that goes on after a restart does not say a pause it already said", async () => {
+  const home = await tempHome();
+  open.push(() => home.cleanup());
+  const clock = movedByHand();
+  const records: SessionRecord[] = [checklist(1, 1, 2)];
+  const first = await servedOver(home, records, clock);
+  await first.niwa.call("history.watch" as ActionName, { session: ID });
+  await first.reach("session.progress", 1);
+  clock.advance(100);
+  await first.reach("history.session.paused", 1);
+  await first.niwa.close();
+
+  const second = await servedOver(home, records, clock);
+  open.unshift(() => second.niwa.close());
+  clock.advance(100);
+  await Bun.sleep(150);
+  expect(await second.count("history.session.paused")).toBe(1);
+  expect(await second.count("session.progress")).toBe(1);
+});
+
+test("a watch that goes on after a restart does not say again the progress written after its last pause", async () => {
+  const home = await tempHome();
+  open.push(() => home.cleanup());
+  const clock = movedByHand();
+  const records: SessionRecord[] = [checklist(1, 1, 3)];
+  const first = await servedOver(home, records, clock);
+  await first.niwa.call("history.watch" as ActionName, { session: ID });
+  await first.reach("session.progress", 1);
+  clock.advance(100);
+  await first.reach("history.session.paused", 1);
+  records.push(checklist(2, 2, 3), checklist(3, 3, 3));
+  await first.reach("session.progress", 3);
+  // Time stands still, so the quiet after these records is not yet a pause when the host stops.
+  await first.niwa.close();
+
+  const second = await servedOver(home, records, clock);
+  open.unshift(() => second.niwa.close());
+  // The quiet since the last record was not said yet: it is the one pause the restarted watch writes.
+  clock.advance(100);
+  await second.reach("history.session.paused", 2);
+  await Bun.sleep(100);
+  expect(await second.count("session.progress")).toBe(3);
+  expect((await second.niwa.records.read()).filter((record) => record.type === "session.progress").map((record) => record.data)).toMatchObject([
+    { done: 1, total: 3 },
+    { done: 2, total: 3 },
+    { done: 3, total: 3 },
+  ]);
 });

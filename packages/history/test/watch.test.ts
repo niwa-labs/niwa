@@ -59,9 +59,9 @@ test("a watch says the checklist when it changes, a pause after a quiet while, a
     events.push(event);
   }
   expect(events).toEqual([
-    { kind: "progress", done: 0, total: 2 },
+    { kind: "progress", done: 0, total: 2, at: at(2) },
     // The same checklist again says nothing.
-    { kind: "progress", done: 1, total: 2 },
+    { kind: "progress", done: 1, total: 2, at: at(5) },
     { kind: "paused", upto: at(5), why: "idle" },
     { kind: "ended", certainty: "guessed", why: "idle" },
   ]);
@@ -75,7 +75,7 @@ test("a watch that goes on from a pause reads only what came after it and keeps 
   for await (const event of watchSession(growing(records), ID, { signal: controller.signal, clock, from: at(2), progress: { done: 1, total: 2 } })) {
     events.push(event);
   }
-  expect(events).toEqual([{ kind: "progress", done: 2, total: 2 }]);
+  expect(events).toEqual([{ kind: "progress", done: 2, total: 2, at: at(4) }]);
 });
 
 test("a half-written record is waited for, not read past", async () => {
@@ -89,7 +89,7 @@ test("a half-written record is waited for, not read past", async () => {
   for await (const event of watchSession(growing(records), ID, { signal: controller.signal, clock, timing: { pollMs: 10, pauseMs: 1_000, endMs: 2_000 } })) {
     events.push(event);
   }
-  expect(events).toEqual([{ kind: "progress", done: 1, total: 1 }]);
+  expect(events).toEqual([{ kind: "progress", done: 1, total: 1, at: at(2) }]);
 });
 
 
@@ -116,7 +116,7 @@ test("a read that fails is not a quiet one: the watch neither pauses nor ends wh
   for await (const event of watchSession(flaky, ID, { signal: controller.signal, clock, timing: { pollMs: 10, pauseMs: 30, endMs: 60 } })) {
     events.push(event);
   }
-  expect(events).toEqual([{ kind: "progress", done: 1, total: 1 }]);
+  expect(events).toEqual([{ kind: "progress", done: 1, total: 1, at: at(2) }]);
 });
 
 test("a read that finishes after the watch was stopped says nothing", async () => {

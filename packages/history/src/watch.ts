@@ -50,7 +50,7 @@ export interface Progress {
 
 /** What a watch learns. */
 export type WatchEvent =
-  | { readonly kind: "progress"; readonly done: number; readonly total: number }
+  | { readonly kind: "progress"; readonly done: number; readonly total: number; readonly at: Locator }
   | { readonly kind: "paused"; readonly upto: Locator; readonly why: "idle" }
   | { readonly kind: "ended"; readonly certainty: "guessed"; readonly why: "idle" | "process-gone" };
 
@@ -62,6 +62,8 @@ export interface WatchOptions {
   readonly from?: Locator;
   /** The progress an earlier watch said last: the same again is not said. */
   readonly progress?: Progress;
+  /** Whether the earlier watch had said that the session paused at `from`: a pause already said is not said again. */
+  readonly paused?: boolean;
   /**
    * Whether a sign that only suggests an end is taken for it: a long quiet, or the exit of the process
    * (`alive`). Default: true. A session niwa runs is not over when it is quiet or its process is
@@ -83,11 +85,11 @@ export async function* watchSession(reading: SessionReading, id: SessionId, opti
   let upto = options.from;
   let progress = options.progress;
   let lastRecordAt = clock.now();
-  let paused = false;
+  let paused = options.paused ?? false;
   while (!options.signal.aborted) {
     let grew = false;
     let failed = false;
-    const said: Progress[] = [];
+    const said: Array<Progress & { at: Locator }> = [];
     try {
       for await (const record of reading.read(id, upto)) {
         if (record.incomplete) break;
@@ -97,7 +99,7 @@ export async function* watchSession(reading: SessionReading, id: SessionId, opti
         const now = checklistProgress(record);
         if (progress === undefined || now.done !== progress.done || now.total !== progress.total) {
           progress = now;
-          said.push(now);
+          said.push({ ...now, at: record.locator });
         }
       }
     } catch {

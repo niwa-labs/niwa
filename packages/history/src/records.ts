@@ -220,10 +220,14 @@ export function sessionEnded(session: SessionId): TypeQuery<z.output<typeof Hist
 /** A watch was stopped before the session ended. */
 export const HistorySessionUnwatched = record("history.session.unwatched", z.object({ session: SessionIdSchema }));
 
-/** How far the agent's checklist is, written when it changes; the checklist itself is read on demand. */
+/**
+ * How far the agent's checklist is, written when it changes; the checklist itself is read on demand.
+ * `at` is where the checklist was read in the transcript: a watch that goes on after a restart
+ * starts from there, so the progress and the position it resumes from come from one record.
+ */
 export const SessionProgress = record(
   "session.progress",
-  z.object({ session: SessionIdSchema, done: z.number().int().nonnegative(), total: z.number().int().nonnegative() }),
+  z.object({ session: SessionIdSchema, done: z.number().int().nonnegative(), total: z.number().int().nonnegative(), at: LocatorSchema.optional() }),
 );
 
 /** The record types the history plugin declares. */
