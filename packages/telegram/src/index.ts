@@ -24,6 +24,8 @@ import { NotSent, OptionIdSchema, action, client, optionsOf, owner, questionLine
 import type { Action, ActionContext, Answer, Caller, JournalReader, Outcome, RecordType, SpeaksFor } from "@niwa-labs/core";
 import { bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi, ServiceContext } from "@niwa-labs/plugin";
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
 
 import {
@@ -129,10 +131,25 @@ const POSTED_POLL_MS = 50;
 /** A request as it was created. */
 type Created = z.infer<typeof RequestCreated.schema>;
 
+/**
+ * Where an update came from: the bot, and the run of update ids it belongs to.
+ *
+ * Telegram numbers updates in sequence, but starts again from an arbitrary number after a week
+ * without any, and another bot has a numbering of its own. An update is told apart by its
+ * numbering and its number, so a number seen again in a new run is a new update, never a repeat.
+ */
+const Source = {
+  /** The id of the bot, the part of its token that is not secret. */
+  bot: z.string(),
+  /** The run of update ids: the moment it began. */
+  epoch: z.number(),
+};
+
 /** A message that came in from the owner's chat. */
 export const Received = record(
   TELEGRAM_RECEIVED,
   z.object({
+    ...Source,
     update: updateSchema,
     chat: chatSchema,
     message: messageSchema,
@@ -145,7 +162,7 @@ export const Received = record(
 /** A message from another chat: not the owner's, so only the fact of it is kept. */
 export const Ignored = record(
   TELEGRAM_IGNORED,
-  z.object({ update: updateSchema, chat: chatSchema, message: messageSchema }),
+  z.object({ ...Source, update: updateSchema, chat: chatSchema, message: messageSchema }),
 );
 
 /** A request that was posted to the owner, with the buttons that answer it. */
@@ -167,12 +184,16 @@ export const Posted = record(
 export const Answered = record(
   TELEGRAM_ANSWER,
   z.object({
+    ...Source,
     update: updateSchema,
     request: RequestId,
     answer: z.string(),
     chat: chatSchema,
   }),
 );
+
+/** A day, in milliseconds: how long Telegram keeps an update nobody confirmed. */
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** The record types the polling service restores its offset from. */
 const OFFSET_TYPES = [Received, Ignored, Answered];
@@ -195,6 +216,12 @@ export interface TelegramOptions {
   readonly retryDelay?: number;
   /** The bot, when the caller has one of its own. */
   readonly bot?: Bot;
+  /**
+   * How long the offset of the polls is trusted after the last update it passed, in milliseconds.
+   * Telegram keeps an update for a day and starts its numbering anew only after a week without
+   * updates, so past a day the offset is dropped and a new run of numbers begins. Default: a day.
+   */
+  readonly offsetTtl?: number;
 }
 
 export interface TelegramHooks {
@@ -216,19 +243,34 @@ export interface TelegramHooks {
   toAgent?: (text: string, ctx: ActionContext) => Promise<Outcome<unknown> | void>;
 }
 
-/** The id of the record of an incoming message: the update id, so a repeat is harmless. */
-export function receivedId(update: UpdateId): string {
-  return `rec_telegram_${String(update)}`;
+/** Where an update was numbered: what its record ids are made from. */
+interface UpdateSource {
+  readonly bot: string;
+  readonly epoch: number;
+}
+
+/** The id of the record of an incoming message: its source and update id, so a repeat is harmless. */
+export function receivedId(source: UpdateSource, update: UpdateId): string {
+  return `rec_telegram_${source.bot}_${String(source.epoch)}_${String(update)}`;
 }
 
 /** The id of the record of a message from another chat. */
-function ignoredId(update: UpdateId): string {
-  return `rec_telegram_ignored_${String(update)}`;
+function ignoredId(source: UpdateSource, update: UpdateId): string {
+  return `rec_telegram_ignored_${source.bot}_${String(source.epoch)}_${String(update)}`;
 }
 
 /** The id of the record of a button press. */
-function answeredId(update: UpdateId): string {
-  return `rec_telegram_answer_${String(update)}`;
+function answeredId(source: UpdateSource, update: UpdateId): string {
+  return `rec_telegram_answer_${source.bot}_${String(source.epoch)}_${String(update)}`;
+}
+
+/**
+ * The id of a bot, as its records name it: the number its token starts with, which is public. A
+ * token of another shape is named by a digest, never by itself.
+ */
+export function botIdOf(token: string): string {
+  const head = token.split(":")[0] ?? "";
+  return /^\d+$/.test(head) ? head : `h${createHash("sha256").update(token).digest("hex").slice(0, 12)}`;
 }
 
 /**
@@ -267,15 +309,24 @@ export class TelegramService {
   private readonly pollTimeout: number;
   private readonly retryDelay: number;
   private readonly hooks: TelegramHooks;
+  private readonly botId: string;
+  private readonly offsetTtl: number;
   private emit: ServiceContext["emit"] | undefined;
+  private now: ServiceContext["now"] | undefined;
   private journal: JournalReader | undefined;
   private offset = 0;
+  /** The run of update ids the offset belongs to. */
+  private epoch = 0;
+  /** When the last update was handled, or the run began. */
+  private lastActivity = 0;
 
   constructor(opts: TelegramOptions, hooks: TelegramHooks) {
     this.bot =
       opts.bot ??
       createBot({ token: opts.token, ...(opts.apiBase === undefined ? {} : { apiBase: opts.apiBase }) });
     this.owner = opts.owner;
+    this.botId = botIdOf(opts.token);
+    this.offsetTtl = opts.offsetTtl ?? DAY_MS;
     this.pollTimeout = opts.pollTimeout ?? 25;
     this.retryDelay = opts.retryDelay ?? 250;
     this.hooks = hooks;
@@ -286,17 +337,26 @@ export class TelegramService {
   }
 
   /**
-   * Start polling. The offset continues after the newest update the journal holds, and the
-   * returned function stops the loop and the poll in flight.
+   * Start polling. The offset continues after the newest update of this bot the journal holds, as
+   * long as that update is recent; the returned function stops the loop and the poll in flight.
    */
   start(ctx: ServiceContext, journal: JournalReader | undefined): () => void {
     this.emit = ctx.emit;
+    this.now = () => ctx.now();
     this.journal = journal;
+    this.newRun();
     if (journal !== undefined) {
-      const known = journal
+      const mine = journal
         .since(0 as never, OFFSET_TYPES.map((type) => type.name))
-        .map((stored) => (stored.data as { update: number }).update);
-      this.offset = Math.max(this.offset, ...known.map((update) => update + 1));
+        .filter((stored) => (stored.data as { bot?: string }).bot === this.botId);
+      const newest = mine.at(-1);
+      if (newest !== undefined && ctx.now() - newest.at <= this.offsetTtl) {
+        const epoch = (newest.data as { epoch: number }).epoch;
+        const known = mine.filter((stored) => (stored.data as { epoch: number }).epoch === epoch);
+        this.epoch = epoch;
+        this.lastActivity = newest.at;
+        this.offset = Math.max(...known.map((stored) => (stored.data as { update: number }).update + 1));
+      }
     }
     const abort = new AbortController();
     void this.poll(abort.signal);
@@ -306,15 +366,34 @@ export class TelegramService {
     };
   }
 
+  /** Begin a run of update ids: nothing is known of them, so Telegram is asked from the first it holds. */
+  private newRun(): void {
+    const moment = this.now?.() ?? 0;
+    this.epoch = moment;
+    this.lastActivity = moment;
+    this.offset = 0;
+  }
+
+  /** Drop an offset nobody has used for so long that Telegram may have numbered anew. */
+  private expire(): void {
+    if (this.offset !== 0 && this.now !== undefined && this.now() - this.lastActivity > this.offsetTtl) this.newRun();
+  }
+
+  private get source(): UpdateSource {
+    return { bot: this.botId, epoch: this.epoch };
+  }
+
   private async poll(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       try {
+        this.expire();
         const updates = await this.bot.getUpdates(this.offset, this.pollTimeout, signal);
         for (const update of updates) {
           // Below the offset is an update already handled: Telegram may hand it out again.
           if (update.update_id < this.offset) continue;
           await this.handle(update);
           this.offset = update.update_id + 1;
+          this.lastActivity = this.now?.() ?? this.lastActivity;
         }
       } catch (error) {
         if (signal.aborted) return;
@@ -337,8 +416,8 @@ export class TelegramService {
     if (!this.isOwner(message.chat, message.from)) {
       await this.write(
         Ignored,
-        { update: update.update_id, chat: message.chat.id, message: message.message_id },
-        ignoredId(update.update_id),
+        { ...this.source, update: update.update_id, chat: message.chat.id, message: message.message_id },
+        ignoredId(this.source, update.update_id),
       );
       return;
     }
@@ -347,13 +426,14 @@ export class TelegramService {
     await this.write(
       Received,
       {
+        ...this.source,
         update: update.update_id,
         chat: message.chat.id,
         message: message.message_id,
         text,
         ...(message.from?.username === undefined ? {} : { from: message.from.username }),
       },
-      receivedId(update.update_id),
+      receivedId(this.source, update.update_id),
     );
   }
 
@@ -380,8 +460,8 @@ export class TelegramService {
     if (!this.isOwner(message.chat, query.from)) {
       await this.write(
         Ignored,
-        { update, chat: message.chat.id, message: message.message_id },
-        ignoredId(update),
+        { ...this.source, update, chat: message.chat.id, message: message.message_id },
+        ignoredId(this.source, update),
       );
       return;
     }
@@ -395,12 +475,13 @@ export class TelegramService {
     await this.write(
       Answered,
       {
+        ...this.source,
         update,
         request: posted.request,
         answer,
         chat: message.chat.id,
       },
-      answeredId(update),
+      answeredId(this.source, update),
     );
   }
 

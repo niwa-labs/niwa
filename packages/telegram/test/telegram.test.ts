@@ -24,6 +24,7 @@ import {
   Ignored,
   Posted,
   Received,
+  botIdOf,
   keyboardFor,
   parseCallback,
   receivedId,
@@ -215,11 +216,12 @@ test("telegram: the owner's message is one record, a foreign chat is only noted"
     const ignored = records.filter((record) => record.type === Ignored.name);
 
     expect(received).toHaveLength(1);
-    expect(received[0]?.id).toBe(receivedId(100 as UpdateId) as never);
+    const { epoch } = received[0]?.data as { epoch: number };
+    expect(received[0]?.id).toBe(receivedId({ bot: botIdOf("test-token"), epoch }, 100 as UpdateId) as never);
     expect(received[0]?.data).toMatchObject({ text: "hello Rin", chat: OWNER });
 
     expect(ignored).toHaveLength(1);
-    expect(ignored[0]?.data).toEqual({ update: 101, chat: FOREIGN, message: 1010 });
+    expect(ignored[0]?.data).toEqual({ bot: botIdOf("test-token"), epoch, update: 101, chat: FOREIGN, message: 1010 });
     expect(JSON.stringify(records)).not.toContain("let me in");
     expect(JSON.stringify(records)).not.toContain("test-token");
   } finally {
@@ -357,6 +359,98 @@ test("telegram: after a restart the offset comes from the journal", async () => 
     expect(fake.offsets[0]).toBe(201);
     expect(received.map((record) => (record.data as { text: string }).text)).toEqual(["one", "two"]);
     expect(toAgent).toEqual(["one", "two"]);
+  } finally {
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+/** The texts of the messages the owner has written, as the journal holds them. */
+async function receivedTexts(home: string): Promise<string[]> {
+  return (await recordsOf(home, 200))
+    .filter((record) => record.type === Received.name)
+    .map((record) => (record.data as { text: string }).text);
+}
+
+test("telegram: past the time Telegram keeps updates, numbers it hands out again are new messages", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const quick = { ...options(fake.base), token: "111:first", offsetTtl: 400 };
+
+  try {
+    const first = createNiwa({ home: home.path });
+    first.use(telegram(quick));
+    await first.serve();
+    fake.push(messageUpdate(5000, OWNER, "before the silence"));
+    await eventually(() => fake.offsets.includes(5001), 5_000, "the first update should be handled");
+    await first.close();
+
+    // After a week of silence Telegram numbers anew, from any number: here a lower one, and one
+    // that is the same as a number already seen.
+    await Bun.sleep(600);
+    fake.offsets.length = 0;
+    const second = createNiwa({ home: home.path });
+    second.use(telegram(quick));
+    await second.serve();
+    fake.push(messageUpdate(10, OWNER, "after the silence"));
+    fake.push(messageUpdate(5000, OWNER, "same number, other message"));
+    await eventually(() => fake.offsets.includes(5001), 5_000, "the new updates should be handled");
+    const texts = await receivedTexts(home.path);
+    await second.close();
+
+    expect(fake.offsets[0]).toBe(0);
+    expect(texts).toEqual(["before the silence", "after the silence", "same number, other message"]);
+  } finally {
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: a host that is up through the silence also starts a new run of numbers", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    host.use(telegram({ ...options(fake.base), offsetTtl: 400 }));
+    await host.serve();
+    fake.push(messageUpdate(5000, OWNER, "before the silence"));
+    await eventually(() => fake.offsets.includes(5001), 5_000, "the first update should be handled");
+
+    await Bun.sleep(700);
+    fake.push(messageUpdate(10, OWNER, "after the silence"));
+    await eventually(() => fake.offsets.includes(11), 5_000, "the new update should be handled");
+    expect(await receivedTexts(home.path)).toEqual(["before the silence", "after the silence"]);
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: another bot's numbers do not continue the offset of the one before it", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+
+  try {
+    const first = createNiwa({ home: home.path });
+    first.use(telegram({ ...options(fake.base), token: "111:first" }));
+    await first.serve();
+    fake.push(messageUpdate(5000, OWNER, "from the first bot"));
+    await eventually(() => fake.offsets.includes(5001), 5_000, "the first update should be handled");
+    await first.close();
+
+    fake.offsets.length = 0;
+    const second = createNiwa({ home: home.path });
+    second.use(telegram({ ...options(fake.base), token: "222:second" }));
+    await second.serve();
+    fake.push(messageUpdate(5000, OWNER, "from the second bot"));
+    await eventually(() => fake.offsets.includes(5001), 5_000, "the second bot's update should be handled");
+    const texts = await receivedTexts(home.path);
+    await second.close();
+
+    expect(fake.offsets[0]).toBe(0);
+    expect(texts).toEqual(["from the first bot", "from the second bot"]);
   } finally {
     fake.stop();
     await home.cleanup();
