@@ -37,6 +37,7 @@ export const sendFrame = action("live-frames.frame", {
   input: Text,
   output: Ok,
   recovery: "repeat",
+  effect: "write",
   run: async (input) => {
     // The frame is not a record: it is never written to the journal.
     if (niwa === undefined) {

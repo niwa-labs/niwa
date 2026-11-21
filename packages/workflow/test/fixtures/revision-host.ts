@@ -35,6 +35,7 @@ if (import.meta.main) {
     input: AgentInput,
     output: AgentOutput,
     recovery: "repeat",
+    effect: "write",
     async run(input: z.infer<typeof AgentInput>): Promise<z.infer<typeof AgentOutput>> {
       calls.hit();
       if (input.prompt.includes("fail")) throw new Error("the agent could not answer");

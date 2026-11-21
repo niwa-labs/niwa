@@ -52,6 +52,7 @@ export function makePlugin(home: string, withHandler: boolean) {
     input: z.object({ n: z.number() }),
     output: z.object({ n: z.number() }),
     recovery: "repeat",
+    effect: "write",
     result: (input) => input,
   });
 

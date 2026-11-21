@@ -251,7 +251,7 @@ export function git(options: GitOptions = {}): Plugin {
         description: "Remove old worktrees that are clean, merged and unused",
         triggers: ["timer.fired"],
       });
-      api.action(action(gitCleanupConfig, { recovery: "repeat", run: () => ({ days: cleanup.days }) }));
+      api.action(action(gitCleanupConfig, { recovery: "repeat", effect: "read", world: "niwa", run: () => ({ days: cleanup.days }) }));
     }
 
     const journal = () => api.journal?.();
@@ -266,6 +266,8 @@ export function git(options: GitOptions = {}): Plugin {
         // A create made again finds what it made: the id comes from the step, and the checkout of
         // that id is taken as it is.
         recovery: "repeat",
+        effect: "write",
+        world: "local",
         async run(input, ctx) {
           const id = ids.issue(birthOf(ctx));
           const known = entries().get(id);
@@ -289,6 +291,8 @@ export function git(options: GitOptions = {}): Plugin {
     api.action(
       action(gitWorktreeList, {
         recovery: "repeat",
+        effect: "read",
+        world: "local",
         async run() {
           const live = [...entries().values()].filter((entry) => !entry.removed);
           const named = new Set<string>(live.map((entry) => entry.worktree.id));
@@ -320,6 +324,8 @@ export function git(options: GitOptions = {}): Plugin {
     api.action(
       action(gitWorktreeGet, {
         recovery: "repeat",
+        effect: "read",
+        world: "local",
         async run(input) {
           const id = ids.require(input.id);
           const entry = entries().get(id);
@@ -346,6 +352,8 @@ export function git(options: GitOptions = {}): Plugin {
       action(gitWorktreeRemove, {
         // Removing what is removed already is a no-op, so it may be made again.
         recovery: "repeat",
+        effect: "write",
+        world: "local", destructive: true,
         async run(input, ctx) {
           const force = input.force ?? false;
           const id = ids.resolve(input.id);

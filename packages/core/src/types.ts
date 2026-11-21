@@ -179,6 +179,14 @@ export interface ActionDescription {
   description: string;
   /** What may be done after a call that was cut off: "repeat" | "repeat-with-key" | "do-not-repeat". */
   recovery: Recovery;
+  /** What a call changes: "read" | "record" | "write" | "irreversible". */
+  effect: Effect;
+  /** Where its effect lands, when the action says: "niwa" | "local" | "external". */
+  world?: World;
+  /** Two separate calls with the same input do what one does, when the action says so. */
+  idempotent?: boolean;
+  /** The action destroys or overwrites something, when it says so; an irreversible one always does. */
+  destructive?: boolean;
   /** The schema of the input, as JSON Schema. */
   input: JsonSchema;
   /** The schema of the output, as JSON Schema. */
@@ -218,6 +226,22 @@ export interface LiveFrame<T = unknown> {
 }
 
 export type Recovery = "repeat" | "repeat-with-key" | "do-not-repeat";
+
+/**
+ * What a call of an action changes.
+ *
+ * "read" changes nothing; "record" writes only niwa's own records (a plan, a task, a note) and
+ * changes nothing outside; "write" changes something outside that can be put back; "irreversible"
+ * changes something that cannot be taken back. A mask never grants an irreversible action: only a
+ * rule that names it does.
+ */
+export type Effect = "read" | "record" | "write" | "irreversible";
+
+/**
+ * Where the effect of an action lands: "niwa" its own journal and home, "local" this machine (files,
+ * processes, repositories), "external" a system elsewhere (a server, a chat, a forge).
+ */
+export type World = "niwa" | "local" | "external";
 
 export interface ActionContext {
   /** Stable across repeats of the same step. */
@@ -338,6 +362,14 @@ export type ActionTarget<I, O, In = I> = ActionRef<I, O, In> | ActionName;
 export interface Action<I, O, In = I> extends ActionRef<I, O, In> {
   kind: "action";
   recovery: Recovery;
+  /** What a call changes. */
+  effect: Effect;
+  /** Where its effect lands; absent when the action does not say. */
+  world?: World;
+  /** Two separate calls with the same input do what one does; absent when the action does not say. */
+  idempotent?: boolean;
+  /** The action destroys or overwrites something; absent when it does not say. */
+  destructive?: boolean;
   run(input: I, ctx: ActionContext): Promise<O>;
   /**
    * What happened to a call that was cut off, asked by its operation id.

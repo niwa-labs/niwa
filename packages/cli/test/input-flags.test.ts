@@ -11,6 +11,7 @@ const ASKING = {
   name: "demo.ask",
   description: "Asks.",
   recovery: "repeat",
+  effect: "write",
   input: {
     type: "object",
     properties: { question: { type: "string" }, input: { type: "object" }, to: { type: "object" } },

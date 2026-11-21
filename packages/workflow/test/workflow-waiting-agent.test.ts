@@ -31,6 +31,7 @@ test("a run waiting for an agent shows its harness, session and turn", async () 
     input: z.object({ prompt: z.string() }),
     output: z.object({ answer: z.string() }),
     recovery: "repeat",
+    effect: "write",
     run: async (_input, ctx) => {
       await ctx.emit(SessionStarted, { session, id: idSchema("session").parse("s-0a1b2c") });
       await ctx.emit(SessionTurnStarted, { session, turn: 1 });

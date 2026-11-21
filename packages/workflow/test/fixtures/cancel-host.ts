@@ -36,6 +36,7 @@ if (import.meta.main) {
     input: AgentInput,
     output: AgentOutput,
     recovery: "repeat",
+    effect: "write",
     async run(input: z.infer<typeof AgentInput>): Promise<z.infer<typeof AgentOutput>> {
       calls.hit();
       // The call never finishes on its own: the test opens the gate or the run is cancelled.

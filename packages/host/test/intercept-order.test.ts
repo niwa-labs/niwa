@@ -241,6 +241,7 @@ test("intercept cycle: an intercept that calls its own action is refused, and a 
     input: z.object({ n: z.number() }),
     output: z.object({ n: z.number() }),
     recovery: "repeat",
+    effect: "write",
     run: (input) => {
       ran += 1;
       return input;

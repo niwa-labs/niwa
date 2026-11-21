@@ -37,6 +37,7 @@ const probe = plugin("self-answer-probe", (api) => {
       input: z.object({ n: z.string() }),
       output: z.object({ ran: z.string() }),
       recovery: "repeat",
+      effect: "write",
       run: async (input) => {
         ran.push(input.n);
         return { ran: input.n };

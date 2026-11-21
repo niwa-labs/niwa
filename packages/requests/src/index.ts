@@ -120,6 +120,8 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
     // however many times the call is made: it may be made again, and the wait finds the
     // answer that arrived in the meantime.
     recovery: "repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx) {
       const id = ledger.ids.issue(createdRecordOf(ctx.operationId));
       // A run asks as itself, whatever the host binds its other callers to: the owner sees who asks.
@@ -194,6 +196,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     // The answer is written under the id of the operation, and the first answer stands:
     // a call that was cut off may be made again, and the same answer stands.
     recovery: "repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx) {
       const by = bind(ctx.caller);
       const id = ledger.named(input, (request) => by !== undefined && (by.kind === "owner" || sameAddress(by, request.to)));
@@ -212,6 +216,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     // The cancellation is written under the id of the operation, and the same address
     // cancelling again changes nothing: a call that was cut off may be made again.
     recovery: "repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx) {
       // A client is held to its binding; a handler or the host, in-process, may say who cancels.
       const by = bind(ctx.caller) ?? (ctx.caller.kind === "client" ? undefined : input.by);
@@ -231,6 +237,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
   const open = action(requestOpen, {
     // A read of what waits changes nothing: it may be made again.
     recovery: "repeat",
+    effect: "read",
+    world: "niwa",
     async run(input) {
       const requests: z.infer<typeof OpenOutput>["requests"] = [];
       for (const state of ledger.requests().values()) {
@@ -246,6 +254,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
   const list = action(requestList, {
     // A read of what exists changes nothing: it may be made again.
     recovery: "repeat",
+    effect: "read",
+    world: "niwa",
     async run(input) {
       const items = [...ledger.requests().values()]
         .filter(
@@ -262,6 +272,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
 
   const get = action(requestGet, {
     recovery: "repeat",
+    effect: "read",
+    world: "niwa",
     async run(input) {
       return entityOf(ledger.get(input.id));
     },
@@ -271,6 +283,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     // The resolvers only read and answer, and the answer stands: a resolve that was cut
     // off may be made again.
     recovery: "repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx) {
       const bound = bind(ctx.caller);
       const id = ledger.named(
@@ -353,6 +367,8 @@ export function requests(opts: RequestsOptions = {}): Plugin {
     api.action(
       action(requestFind, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         async run(input) {
           const journal = api.journal?.();
           return { id: journal === undefined ? undefined : requestOfCause(journal, recordId(input.cause), input.question) };

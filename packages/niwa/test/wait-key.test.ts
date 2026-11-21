@@ -46,6 +46,7 @@ function build(home: string, keyed: boolean) {
     input: Input,
     output: z.string(),
     recovery: "repeat",
+    effect: "write",
     async run(input, ctx) {
       const id = `k${String(input.n)}`;
       // A filter on the id keys the wait by it. Without one the wait is woken by every answer, and
@@ -208,6 +209,7 @@ function buildParallel(home: string) {
     input: z.object({ id: z.string(), delay: z.number() }),
     output: z.string(),
     recovery: "repeat",
+    effect: "write",
     async run(input, ctx) {
       if (input.delay > 0) await new Promise((resolve) => setTimeout(resolve, input.delay));
       const answered = await ctx.wait(Answer, { filter: { id: input.id } });
@@ -373,6 +375,7 @@ function buildSlowEnd(home: string) {
     input: z.object({ id: z.string() }),
     output: z.string(),
     recovery: "repeat",
+    effect: "write",
     async run(input, ctx) {
       const answered = await ctx.wait(Answer, { filter: { id: input.id } });
       return answered.data.id;

@@ -93,6 +93,7 @@ function counted<O>(
     input: z.object({ n: z.number().optional() }),
     output,
     recovery,
+    effect: "write",
     ...(extra.check === undefined ? {} : { check: extra.check }),
     run: async () => {
       calls.count += 1;

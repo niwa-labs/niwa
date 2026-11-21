@@ -190,6 +190,8 @@ export function history(options: HistoryOptions): Plugin {
       action(historyWatch, {
         // A watch that is already on is left as it is: it may be asked for again.
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const id = input.session;
           if (watches.has(keyOf(id))) return { watching: true };
@@ -213,6 +215,8 @@ export function history(options: HistoryOptions): Plugin {
     api.action(
       action(historyUnwatch, {
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           if (!watches.has(keyOf(input.session))) return { stopped: false };
           stop(input.session);
@@ -226,6 +230,8 @@ export function history(options: HistoryOptions): Plugin {
       action(historySignal, {
         // An end already written is not written again: the signal may be given again.
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           if (standingNow().get(keyOf(input.session))?.watching !== true) return { ended: false };
           stop(input.session);

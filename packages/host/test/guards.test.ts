@@ -97,6 +97,7 @@ test("a handler that swallows the refusal of the journal does not continue", asy
     input: z.object({}),
     output: z.object({}),
     recovery: "repeat",
+    effect: "write",
     run: async () => ({}),
   });
   const spec: InvocationSpec = {
@@ -223,6 +224,7 @@ test("a wake of a call waiting inside an action asks no guard again and writes n
     input: z.object({ text: z.string() }),
     output: z.object({ text: z.string() }),
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       ran.push(input.text);
       await ctx.wait(Reply, { filter: { ok: true } });
@@ -265,6 +267,7 @@ test("a waiting call whose adjust now decides otherwise is decided again, and a 
     input: z.object({ text: z.string() }),
     output: z.object({ text: z.string() }),
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       await ctx.wait(Reply, { filter: { ok: true } });
       return input;
@@ -298,6 +301,7 @@ function waitingAsk(entered: { count: number }, again: (ctx: ActionContext) => v
     input: z.object({ text: z.string() }),
     output: z.object({ text: z.string() }),
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       entered.count += 1;
       if (entered.count === 2) await again(ctx);
@@ -414,6 +418,7 @@ test("a plain wake of a call that emitted before finds its record and writes not
     input: z.object({ text: z.string() }),
     output: z.object({ text: z.string() }),
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       entered.count += 1;
       await ctx.emit(Note, {});

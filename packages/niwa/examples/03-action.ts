@@ -33,6 +33,12 @@ export const sendTelegram = action("telegram.send", {
   //   "do-not-repeat"    the message may already have been delivered
   recovery: "do-not-repeat",
 
+  // What a call changes: "read", "record" (only niwa's own records), "write" or
+  // "irreversible", and where: "niwa", "local" or "external". A hold refuses writes, and only
+  // a rule that names an irreversible action grants it.
+  effect: "write",
+  world: "external",
+
   run: async ({ text, chat }) => bot.send(chat ?? ownerChat, text),
 });
 

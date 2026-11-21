@@ -43,6 +43,7 @@ export const Work = action("feed.work", {
   input: z.object({ n: z.number() }),
   output: z.object({ n: z.number() }),
   recovery: "repeat",
+  effect: "write",
   run: (input) => {
     appendFileSync(join(home(), CALL_LOG), `${input.n}\n`);
     return { n: input.n };

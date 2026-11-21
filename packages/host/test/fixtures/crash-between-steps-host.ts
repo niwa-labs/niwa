@@ -29,6 +29,7 @@ export function makePlugin(home: string) {
     input: z.object({ n: z.number() }),
     output: z.number(),
     recovery: "repeat",
+    effect: "write",
     result: (input) => input.n,
   });
 
@@ -37,6 +38,7 @@ export function makePlugin(home: string) {
     input: z.object({ n: z.number() }),
     output: z.number(),
     recovery: "repeat",
+    effect: "write",
     gate: "g2",
     result: (input) => input.n,
   });

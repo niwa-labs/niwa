@@ -25,6 +25,7 @@ const First = action("replay.first", {
   input: z.object({ text: z.string() }),
   output: z.object({}),
   recovery: "repeat",
+  effect: "write",
   run: async () => ({}),
 });
 const Second = action("replay.second", {
@@ -32,6 +33,7 @@ const Second = action("replay.second", {
   input: z.object({ text: z.string() }),
   output: z.object({}),
   recovery: "repeat",
+  effect: "write",
   run: async () => ({}),
 });
 

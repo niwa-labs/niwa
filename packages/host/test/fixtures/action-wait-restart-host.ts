@@ -30,6 +30,7 @@ export function makePlugin() {
     input: z.object({ n: z.number() }),
     output: z.object({ n: z.number() }),
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       return (await ctx.wait(Answer, { filter: { n: input.n } })).data;
     },

@@ -204,6 +204,8 @@ export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: Caller
     // A task is made once: a create that was cut off may have made the task, and a second
     // create of the same task is refused. So the call is not made again.
     recovery: "do-not-repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx) {
       const contract: TaskContract = { ...input, id: ids.issue(birthOf(ctx)) };
       decide(stateOf(facts(), contract.id), { kind: "create", contract });
@@ -216,6 +218,8 @@ export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: Caller
     // A report is a fact written on the task: the same report may be written again, so
     // it may be made again.
     recovery: "repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx) {
       decide(stateOf(facts(), input.task), {
         kind: "report",
@@ -242,12 +246,16 @@ export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: Caller
     // A task ends once: an end that was cut off may have written it, so it is not
     // made again.
     recovery: "do-not-repeat",
+    effect: "record",
+    world: "niwa",
     run: (input, ctx) => end(ctx, input.task, { status: "result", result: input.result }),
   });
 
   const fail = action(taskFail, {
     // The same as finish: the end may have been written.
     recovery: "do-not-repeat",
+    effect: "record",
+    world: "niwa",
     run: (input, ctx) => end(ctx, input.task, { status: "failure", reason: input.reason }),
   });
 
@@ -263,6 +271,8 @@ function entityOf(state: TaskState): TaskEntity {
 function taskReads(facts: TaskFacts, ids: IdIndex<"task">, bind: CallerBinding) {
   const list = action(taskList, {
     recovery: "repeat",
+    effect: "read",
+    world: "niwa",
     run: async (input) => ({
       items: [...fold(facts()).values()]
         .filter((state) => input.status === undefined || state.status === input.status)
@@ -278,6 +288,8 @@ function taskReads(facts: TaskFacts, ids: IdIndex<"task">, bind: CallerBinding) 
 
   const get = action(taskGet, {
     recovery: "repeat",
+    effect: "read",
+    world: "niwa",
     run: async (input) => {
       const id = ids.require(input.id);
       const state = stateOf(facts(), id);
@@ -288,6 +300,8 @@ function taskReads(facts: TaskFacts, ids: IdIndex<"task">, bind: CallerBinding) 
 
   const assigned = action(taskAssigned, {
     recovery: "repeat",
+    effect: "read",
+    world: "niwa",
     run: async (_input, ctx) => {
       const me = bind(ctx.caller);
       if (me === undefined) return { tasks: [] };
@@ -315,6 +329,8 @@ function taskResult(facts: TaskFacts, watcher: Watcher) {
   return action(taskResultRef, {
     // The result is read from the journal: it may be asked again.
     recovery: "repeat",
+    effect: "read",
+    world: "niwa",
     async run(input) {
       for (;;) {
         const watch = watcher.watch(input.task);

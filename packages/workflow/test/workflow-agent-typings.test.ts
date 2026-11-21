@@ -28,7 +28,7 @@ afterEach(async () => {
 /** An action as the host describes it, with the input given. */
 function described(name: string, input: z.ZodType): ActionDescription {
   const one = describe({
-    actions: [action(name, { description: `The action ${name}.`, input, output: z.object({}), recovery: "repeat", run: () => ({}) })],
+    actions: [action(name, { description: `The action ${name}.`, input, output: z.object({}), recovery: "repeat", effect: "write", run: () => ({}) })],
     types: [],
   }).actions[0];
   if (one === undefined) throw new Error("no description");

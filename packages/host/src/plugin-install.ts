@@ -173,6 +173,8 @@ export function pluginInstallAction(deps: PluginInstallDeps): Action<z.infer<typ
     input: Input,
     output: Output,
     recovery: "repeat",
+    effect: "write",
+    world: "local",
     target: (input) => input.plugin,
     async run(input, ctx) {
       const named = pluginName(input.plugin);

@@ -38,6 +38,7 @@ export function makePlugin(home: string) {
     input: Input,
     output: Output,
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       return (await ctx.wait(Answer, { filter: { n: input.n } })).data;
     },
@@ -48,6 +49,7 @@ export function makePlugin(home: string) {
     input: Input,
     output: Output,
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       return ctx.step(actionName("waiter"), input);
     },
@@ -58,6 +60,7 @@ export function makePlugin(home: string) {
     input: Input,
     output: Output,
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       return ctx.step(actionName("middle"), input);
     },
@@ -69,6 +72,7 @@ export function makePlugin(home: string) {
     input: Input,
     output: z.number(),
     recovery: "do-not-repeat",
+    effect: "write",
     gate: "g-slow",
     result: (input) => input.n,
   });
@@ -78,6 +82,7 @@ export function makePlugin(home: string) {
     input: Input,
     output: Output,
     recovery: "repeat",
+    effect: "write",
     async run(input, ctx) {
       await ctx.step(actionName("waiter"), input);
       return { n: await ctx.step(actionName("slow"), input) };

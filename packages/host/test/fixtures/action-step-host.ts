@@ -45,6 +45,7 @@ export function makePlugin(home: string, recovery: "repeat" | "do-not-repeat") {
     input: z.object({ n: z.number() }),
     output: z.number(),
     recovery,
+    effect: "write",
     gate: "g-inner",
     result: (input) => input.n,
   });
@@ -54,6 +55,7 @@ export function makePlugin(home: string, recovery: "repeat" | "do-not-repeat") {
     input: z.object({ n: z.number() }),
     output: z.object({ n: z.number() }),
     recovery: "repeat",
+    effect: "write",
     async run(input, ctx) {
       // The nested call: it is a step of the invocation this action runs in.
       const value = await ctx.step(INNER, { n: input.n });
@@ -71,6 +73,7 @@ export function makePlugin(home: string, recovery: "repeat" | "do-not-repeat") {
     input: z.object({ n: z.number() }),
     output: z.object({ n: z.number() }),
     recovery: "repeat",
+    effect: "write",
     async run(input, ctx) {
       try {
         await ctx.step(NOBODY, { n: input.n });
@@ -88,6 +91,7 @@ export function makePlugin(home: string, recovery: "repeat" | "do-not-repeat") {
     input: z.object({ n: z.number() }),
     output: z.object({ n: z.number() }),
     recovery: "repeat",
+    effect: "write",
     async run(input, ctx) {
       const answer = await ctx.step.outcome(NOBODY, { n: input.n });
       return { n: answer.status === "failed" ? input.n : -1 };
@@ -101,6 +105,7 @@ export function makePlugin(home: string, recovery: "repeat" | "do-not-repeat") {
     input: z.object({ n: z.number() }),
     output: z.number(),
     recovery: "repeat",
+    effect: "write",
     async run() {
       counter(home, "boom").hit();
       throw new Error("boom");
@@ -112,6 +117,7 @@ export function makePlugin(home: string, recovery: "repeat" | "do-not-repeat") {
     input: z.object({ n: z.number() }),
     output: z.object({ n: z.number() }),
     recovery: "do-not-repeat",
+    effect: "write",
     async run(input, ctx) {
       return { n: await ctx.step(actionName("boom"), { n: input.n }) };
     },

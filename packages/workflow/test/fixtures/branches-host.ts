@@ -36,6 +36,7 @@ if (import.meta.main) {
     input: AgentInput,
     output: AgentOutput,
     recovery: "repeat",
+    effect: "write",
     async run(input: z.infer<typeof AgentInput>): Promise<z.infer<typeof AgentOutput>> {
       calls.hit();
       // The gate of the call: the test opens the gates in the order it wants the calls to end.

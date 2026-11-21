@@ -149,6 +149,7 @@ function asker(): ReturnType<typeof plugin> {
         input: z.object({ session: z.string(), schema: z.enum(["valid", "impossible"]) }),
         output: z.object({ started: z.boolean() }),
         recovery: "repeat",
+        effect: "write",
         async run(input, ctx) {
           await ctx.emit(Asked, input);
           return { started: true };
@@ -160,6 +161,7 @@ function asker(): ReturnType<typeof plugin> {
       input: z.object({ session: z.string(), value: z.unknown().optional(), error: z.string().optional() }),
       output: z.object({ reported: z.boolean() }),
       recovery: "repeat",
+      effect: "write",
       async run(input, ctx) {
         await ctx.emit(Answered, input);
         return { reported: true };

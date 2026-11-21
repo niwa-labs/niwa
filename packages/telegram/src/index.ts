@@ -412,6 +412,8 @@ export function telegramSend(opts: {
     input: SendInput,
     output: z.object({ messageId: messageSchema, chat: chatSchema }),
     recovery: "do-not-repeat",
+    effect: "write",
+    world: "external",
     run: async (input) => {
       const keyboard = input.choices === undefined ? undefined : keyboardFor(input.choices);
       const sent = await opts.bot.sendMessage(opts.owner, input.text, keyboard);
@@ -446,6 +448,8 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     input: z.object({ text: z.string() }),
     output: z.object({}),
     recovery: "do-not-repeat",
+    effect: "write",
+    world: "local",
     run: async (input) => {
       await toAgent?.(input.text);
       return {};

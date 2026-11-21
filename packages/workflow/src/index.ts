@@ -471,6 +471,8 @@ export function workflow(opts: WorkflowOptions = {}) {
         // The run is asked for: a start that was cut off may have begun one, so it is
         // not made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           if ((input.id === undefined) === (input.file === undefined)) {
             throw new RunRefusal("start-what", "a start names the workflow to run: its id, or a script file, one of the two");
@@ -557,6 +559,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowWait, {
         // Nothing is written: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input, ctx) => {
           const run = runOf(input.run, ctx.caller);
           if (!runExists(journal(), run)) throw new RunRefusal("unknown-run", `unknown run "${run}"`);
@@ -569,6 +573,8 @@ export function workflow(opts: WorkflowOptions = {}) {
     api.action(
       action(workflowInspect, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: (input, ctx) => {
           const run = runOf(input.run, ctx.caller);
           const reader = journal();
@@ -584,6 +590,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowRuns, {
         // Nothing is written: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: (input, ctx) => {
           const reader = journal();
           // The runs of whoever asks: a client that is not the owner sees the runs it started.
@@ -602,6 +610,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowStats, {
         // Nothing is written: the fold catches up with the journal and answers.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: (input) => {
           stats.catchUp(journal());
           if (input.id === undefined) {
@@ -632,6 +642,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowCheck, {
         // The script is read and checked, and nothing is written: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "local",
         run: async (input, ctx) => {
           const file = resolveFile(opts.root, input.file);
           const script = readScript(file);
@@ -645,6 +657,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowGuide, {
         // The description is read and nothing is written: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (_input, ctx) => {
           const { actions, callable, blocks } = await catalogueFor(ctx, api.rights(ctx.caller));
           return guideFor(actions, callable, triggersNow(), blocks);
@@ -667,6 +681,8 @@ export function workflow(opts: WorkflowOptions = {}) {
     api.action(action(workflowPause, {
       // A re-issued command while there is an outstanding pause returns its original identifier.
       recovery: "do-not-repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input, ctx) => {
         const run = runOf(input.run, ctx.caller);
         mayAct(ctx.caller, ownerOfRun(journal(), run), `pause the run "${run}"`);
@@ -699,6 +715,8 @@ export function workflow(opts: WorkflowOptions = {}) {
 
     api.action(action(workflowContinue, {
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input, ctx) => {
         const run = runOf(input.run, ctx.caller);
         mayAct(ctx.caller, ownerOfRun(journal(), run), `continue the run "${run}"`);
@@ -718,6 +736,8 @@ export function workflow(opts: WorkflowOptions = {}) {
         // The script runs again: a resume that was cut off may have run it, so it is not
         // made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const run = runOf(input.run, ctx.caller);
           const facts = known(run);
@@ -763,6 +783,8 @@ export function workflow(opts: WorkflowOptions = {}) {
         // The edited script runs again: a revise that was cut off may have run it, so it
         // is not made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const run = runOf(input.run, ctx.caller);
           const facts = known(run);
@@ -782,6 +804,8 @@ export function workflow(opts: WorkflowOptions = {}) {
         // The run ends once: a cancel that was cut off may have ended it, so it is not
         // made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const run = runOf(input.run, ctx.caller);
           known(run);
@@ -827,6 +851,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       input: z.object({ run: RunId }),
       output: z.null(),
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input, ctx) => {
         await cancelTree(input.run, ctx);
         return null;
@@ -837,6 +863,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowStop, {
         // The steps are cancelled once: a stop that was cut off may have cancelled them, so it is not made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const run = runOf(input.run, ctx.caller);
           known(run);
@@ -917,6 +945,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       input: z.object({ installation: z.number().int() }),
       output: z.object({ run: RunId.optional() }),
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: ({ installation }, ctx) => {
         const found = installationsOf(journal()).find((one) => one.seq === installation);
         if (found === undefined || found.removed !== undefined) return {};
@@ -1050,6 +1080,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowInstall, {
         // The profile and the installation are written: a cut-off install may have made them, so it is not made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           if ((input.id === undefined) === (input.file === undefined)) {
             throw new RunRefusal("install-what", "an installation names the workflow to install: its id, or a script file, one of the two");
@@ -1073,6 +1105,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowUninstall, {
         // The installation ends once: a cut-off uninstall may have ended it, so it is not made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const stands = standing(journal());
           const id = installationIndex.require(input.id, (one) => stands.some((here) => here.id === one));
@@ -1115,6 +1149,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowInstallationList, {
         // Nothing is written: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: () => ({
           items: standing(journal()).map((one) => ({
             id: one.id,
@@ -1133,6 +1169,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowInstallationGet, {
         // Nothing is written: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: (input) => {
           const all = installationsOf(journal());
           const id = installationIndex.require(input.id);
@@ -1261,6 +1299,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowRegister, {
         // A registration is written once: a cut-off one may have made the workflow, so it is not made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const existing = input.id === undefined ? undefined : workflowOf(input.id);
           if (existing?.builtin !== undefined) {
@@ -1282,6 +1322,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowList, {
         // Nothing is written: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: () => ({
           items: workflowsOf(journal()).map((one) => ({
             id: one.id,
@@ -1301,6 +1343,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       action(workflowGet, {
         // Nothing is written: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: (input) => {
           const found = workflowOf(input.id);
           const versions = found.versions.map((one) => {
@@ -1385,6 +1429,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       input: WantedBuiltin,
       output: BuiltinSynced,
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async (item, ctx) => {
         const caller = ctx.caller;
         if (caller.kind !== "handler" || String(caller.handler) !== `workflow/${BUILTINS_HANDLER}`) {
@@ -1409,6 +1455,8 @@ export function workflow(opts: WorkflowOptions = {}) {
       input: BuiltinRetireInput,
       output: BuiltinRetired,
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async ({ keep }, ctx) => {
         const caller = ctx.caller;
         if (caller.kind !== "handler" || String(caller.handler) !== `workflow/${BUILTINS_HANDLER}`) {
@@ -1441,6 +1489,8 @@ export function workflow(opts: WorkflowOptions = {}) {
         output: latest.output === undefined ? z.null() : schemaOf(latest.output),
         // The run is asked for: a call that was cut off may have begun one, so it is not made again.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input: unknown, ctx: ActionContext) => {
           const current = workflowOf(registered.id);
           // A run that calls a workflow is the parent of the run it starts: a cancel and a pause go down to it.

@@ -83,7 +83,7 @@ const memoryBrief = actionRef("memtest.brief", { description: "A section of the 
 test("the briefing holds the inbox, the open tasks and questions of the agent, its latest facts and the sections plugins offer", async () => {
   const sections = plugin("memtest", (api) => {
     api.offer(AGENT_BRIEFING, { title: "What it remembers", action: memoryBrief.name });
-    api.action(action(memoryBrief, { recovery: "repeat", run: async ({ agent }) => ({ text: `the top notes of ${agent}` }) }));
+    api.action(action(memoryBrief, { recovery: "repeat", effect: "read", run: async ({ agent }) => ({ text: `the top notes of ${agent}` }) }));
   });
   const host = await served({ agents: [RIN] }, { after: [sections] });
   await asOwner(host, "task.create", {

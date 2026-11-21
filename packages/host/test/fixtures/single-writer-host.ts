@@ -59,6 +59,7 @@ export function makePlugin(home: string, gateName = "block", pluginName = "singl
     input: N,
     output: Ok,
     recovery: "repeat",
+    effect: "write",
     gate: gateName,
     result: () => ({ ok: true }),
   });
@@ -71,6 +72,7 @@ export function makePlugin(home: string, gateName = "block", pluginName = "singl
     input: N,
     output: Ok,
     recovery: "repeat",
+    effect: "write",
     result: () => ({ ok: true }),
   });
 

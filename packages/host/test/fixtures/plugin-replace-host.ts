@@ -58,6 +58,7 @@ export const upgrade = action("fixture.upgrade", {
   input: NoInput,
   output: Ok,
   recovery: "repeat",
+  effect: "write",
   run: async () => {
     if (host === undefined || pV2 === undefined) {
       throw new Error("fixture.upgrade: the host is not running");
@@ -73,6 +74,7 @@ export const unload = action("fixture.unload", {
   input: NoInput,
   output: Ok,
   recovery: "repeat",
+  effect: "write",
   run: async () => {
     if (host === undefined || pV1 === undefined) {
       throw new Error("fixture.unload: the host is not running");
@@ -102,6 +104,7 @@ function buildPlugins(home: string): { v1: Plugin; v2: Plugin } {
     input: z.object({ n: z.number() }),
     output: Ok,
     recovery: "repeat",
+    effect: "write",
     result: () => ({ ok: true }),
   });
 
@@ -110,6 +113,7 @@ function buildPlugins(home: string): { v1: Plugin; v2: Plugin } {
     input: z.object({ n: z.number() }),
     output: Ok,
     recovery: "repeat",
+    effect: "write",
     result: () => ({ ok: true }),
   });
 
@@ -118,6 +122,7 @@ function buildPlugins(home: string): { v1: Plugin; v2: Plugin } {
     input: z.object({ n: z.number() }),
     output: Ok,
     recovery: "repeat",
+    effect: "write",
     result: () => ({ ok: true }),
   });
 

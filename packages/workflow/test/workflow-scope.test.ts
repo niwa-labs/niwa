@@ -48,6 +48,7 @@ function work(seen: Seen) {
         input: z.object({ name: z.string(), ms: z.number().optional() }),
         output: z.object({ name: z.string() }),
         recovery: "repeat",
+        effect: "write",
         run: async ({ name, ms }) => {
           seen.calls.push(name);
           seen.active += 1;
@@ -64,6 +65,7 @@ function work(seen: Seen) {
         input: z.object({ name: z.string() }),
         output: z.object({ name: z.string() }),
         recovery: "repeat",
+        effect: "write",
         run: async ({ name }) => {
           seen.calls.push(name);
           throw new Error("the work failed");
@@ -76,6 +78,7 @@ function work(seen: Seen) {
         input: z.object({ name: z.string() }),
         output: z.object({ name: z.string() }),
         recovery: "do-not-repeat",
+        effect: "write",
         run: ({ name }, ctx) =>
           new Promise((_resolve, reject) => {
             seen.calls.push(name);

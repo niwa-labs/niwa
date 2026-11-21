@@ -28,6 +28,10 @@ export function describeAction(action: Action<any, any>): ActionDescription {
     name: action.name,
     description: action.description,
     recovery: action.recovery,
+    effect: action.effect,
+    ...(action.world === undefined ? {} : { world: action.world }),
+    ...(action.idempotent === undefined ? {} : { idempotent: action.idempotent }),
+    ...(action.destructive === undefined ? {} : { destructive: action.destructive }),
     input: toJsonSchema(action.input, "input"),
     output: toJsonSchema(action.output, "output"),
   };

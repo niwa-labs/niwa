@@ -21,6 +21,7 @@ const whoami = action("host.whoami", {
   input: z.object({}),
   output: z.object({ caller: z.string() }),
   recovery: "repeat",
+  effect: "write",
   run: async (_input, ctx) => ({ caller: callerName(ctx.caller) }),
 });
 

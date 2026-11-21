@@ -144,6 +144,8 @@ export function insertPlugin(options: InsertPluginOptions = {}): Plugin {
         // The record is written under the id of the operation, so a report that was cut off
         // may be made again: the same record is found instead of a second one.
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async (event, ctx): Promise<InsertReportOutput> => {
           const written = await write(ctx, event);
           return { reported: true, record: written.id };

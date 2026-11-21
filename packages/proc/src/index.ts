@@ -125,6 +125,9 @@ export function proc(options: ProcOptions = {}): Plugin {
     api.action(
       action(procRun, {
         recovery: "do-not-repeat",
+        // Held in a box that writes only its directory, with no network and no credentials.
+        effect: "write",
+        world: "local",
         target: (input) => cwdTarget(input.cwd),
         async run(input, ctx) {
           const cwd = directoryOf(input.cwd);
@@ -160,6 +163,9 @@ export function proc(options: ProcOptions = {}): Plugin {
     api.action(
       action(procExec, {
         recovery: "do-not-repeat",
+        // No box, a network and secrets: nothing says what the command reaches.
+        effect: "irreversible",
+        world: "external",
         target: (input) => cwdTarget(input.cwd),
         async run(input, ctx) {
           const cwd = directoryOf(input.cwd);

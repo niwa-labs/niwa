@@ -109,6 +109,8 @@ export const WAIT = action("workflow.script.wait", {
   output: z.union([z.object({ data: z.unknown(), at: z.number() }), z.object({ timedOut: z.literal(true) })]),
   // The wait reads and waits: it may be entered again.
   recovery: "repeat",
+  effect: "read",
+  world: "niwa",
   run: async (input, ctx) => {
     const wanted = { type: record(input.type, z.unknown()), ...(input.filter === undefined ? {} : { filter: input.filter }) };
     const from = input.since === undefined ? {} : { from: seq(input.since) };
@@ -129,6 +131,8 @@ function readers(journal: () => JournalReader) {
       input: z.object({}),
       output: z.object({ seq: z.number() }),
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: () => ({ seq: journal().last() }),
     }),
     state: action("workflow.read.state", {
@@ -136,6 +140,8 @@ function readers(journal: () => JournalReader) {
       input: z.object({ plugin: z.string().min(1) }),
       output: z.record(z.string(), z.unknown()),
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: (input) => {
         const values: Record<string, unknown> = {};
         for (const row of journal().find({ type: CORE_TYPES.stateChanged, field: "plugin", equals: input.plugin })) {
@@ -198,6 +204,8 @@ const ASK_ENDED = action("workflow.ask.ended", {
   input: AskEnd,
   output: AskEnd,
   recovery: "repeat",
+  effect: "record",
+  world: "niwa",
   run: (input) => input,
 });
 
@@ -221,6 +229,8 @@ const SNAPSHOT = (keys: readonly string[]) =>
     input: z.object({}),
     output: z.array(z.string()),
     recovery: "repeat",
+    effect: "read",
+    world: "niwa",
     run: () => [...keys],
   });
 
@@ -291,6 +301,8 @@ export function bridge(deps: BridgeDeps): Bridge {
       output: Authorized,
       // A question that was cut off is asked again: nothing was decided.
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async (): Promise<z.infer<typeof Authorized>> => {
         try {
           await deps.authorize(verb, name, how);

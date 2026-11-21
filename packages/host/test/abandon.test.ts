@@ -16,7 +16,7 @@ const Start = record("abandon.start", z.object({ abandon: z.boolean() }));
 const FAIL: ActionName = actionName("abandon.fail");
 const NEST: ActionName = actionName("abandon.nest");
 
-const io = { input: z.object({}), output: z.object({}), recovery: "do-not-repeat" as const };
+const io = { input: z.object({}), output: z.object({}), recovery: "do-not-repeat" as const, effect: "write" as const };
 
 /** The states the invocations were written in, in order. */
 async function run(abandon: boolean, call: ActionName): Promise<string[]> {

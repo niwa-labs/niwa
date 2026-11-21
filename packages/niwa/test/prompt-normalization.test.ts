@@ -13,6 +13,7 @@ const Take = action("prompt-norm.take", {
   input: z.object({ prompt: PromptInputSchema }),
   output: z.object({}),
   recovery: "repeat",
+  effect: "write",
   run: () => ({}),
 });
 

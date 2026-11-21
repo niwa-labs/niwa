@@ -112,6 +112,7 @@ test("inspect uses run ownership and reports a skipped step without a session", 
     input: z.object({}),
     output: z.object({}),
     recovery: "repeat",
+    effect: "write",
     run: () => { throw new Error("expected failure"); },
   });
   host.use(plugin("inspect", (api) => api.action(fail)), workflow());

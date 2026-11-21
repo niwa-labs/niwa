@@ -18,6 +18,7 @@ const DESCRIPTION: Description = {
       name: actionName("session.send"),
       description: "Sends a message into a session.",
       recovery: "do-not-repeat",
+      effect: "write",
       input: { type: "object", properties: { message: { type: "string" } } },
       output: { type: "object", properties: {} },
     },
@@ -25,6 +26,7 @@ const DESCRIPTION: Description = {
       name: actionName("task.create"),
       description: "Creates a task.",
       recovery: "repeat",
+      effect: "record",
       input: { type: "object", properties: { title: { type: "string" } } },
       output: { type: "object", properties: {} },
     },
@@ -32,6 +34,7 @@ const DESCRIPTION: Description = {
       name: actionName("niwa.trace"),
       description: "Everything that grew from a record.",
       recovery: "repeat",
+      effect: "read",
       input: { type: "object", properties: { id: { type: "string" } } },
       output: { type: "object", properties: {} },
     },
@@ -100,4 +103,27 @@ test("ans-1: references inside an answer schema keep pointing at that schema onc
   expect(Object.keys(two.$defs)).toEqual(["q0_Thing", "q1_Thing"]);
   expect(two.properties.value.anyOf[1].properties.kids.items).toEqual({ $ref: "#/properties/value/anyOf/1" });
   expect(two.properties.value.anyOf[1].properties.thing).toEqual({ $ref: "#/$defs/q1_Thing" });
+});
+
+test("the hints of a tool come from what its action declares, and an unknown one is left out", () => {
+  const base = { description: "x", recovery: "repeat" as const, input: { type: "object" }, output: { type: "object" } };
+  const catalog = catalogOf({
+    actions: [
+      { ...base, name: actionName("a.read"), effect: "read", world: "niwa" },
+      { ...base, name: actionName("a.note"), effect: "record" },
+      { ...base, name: actionName("a.comment"), effect: "write", world: "external", recovery: "repeat-with-key" },
+      { ...base, name: actionName("a.merge"), effect: "irreversible", world: "external", recovery: "do-not-repeat" },
+      { ...base, name: actionName("a.put"), effect: "write", world: "local", idempotent: true, destructive: true },
+    ],
+    types: [],
+  });
+  const hints = Object.fromEntries(catalog.tools.map((tool) => [tool.name, tool.annotations]));
+  expect(hints).toEqual({
+    a_read: { readOnlyHint: true, openWorldHint: false },
+    a_note: { readOnlyHint: false },
+    // A retry with the same key is one operation; two calls are two comments: no idempotent hint.
+    a_comment: { readOnlyHint: false, openWorldHint: true },
+    a_merge: { readOnlyHint: false, openWorldHint: true, destructiveHint: true },
+    a_put: { readOnlyHint: false, openWorldHint: false, destructiveHint: true, idempotentHint: true },
+  });
 });

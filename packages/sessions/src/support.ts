@@ -79,6 +79,8 @@ export function harnessSupport(registry: HarnessInstanceRegistry): Plugin {
       action(harnessSupports, {
         // A read of a declaration: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: (input) => ({
           harness: input.harness,
           side: input.side,

@@ -45,6 +45,7 @@ export function actionsOf(homePath: string) {
     input: z.object({ q: z.string() }),
     output: z.object({ answer: z.string() }),
     recovery: "repeat",
+    effect: "write",
     result: (input) => ({ answer: `answer:${input.q}` }),
   });
 
@@ -55,6 +56,7 @@ export function actionsOf(homePath: string) {
     input: z.object({ text: z.string() }),
     output: z.object({ text: z.string() }),
     recovery: "repeat",
+    effect: "write",
     gate: "g1",
     result: (input) => ({ text: input.text }),
   });

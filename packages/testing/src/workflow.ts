@@ -34,6 +34,8 @@ export function stub(home: string): Plugin {
         input: z.object({}),
         output: z.object({ count: z.number() }),
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: () => ({ count: bumped.update((count) => count + 1) }),
       }),
     );
@@ -43,6 +45,8 @@ export function stub(home: string): Plugin {
         input: z.object({ name: z.string() }),
         output: z.object({ id: z.string() }),
         recovery: "do-not-repeat",
+        effect: "write",
+        world: "local",
         run: ({ name }) => {
           counter(home, "w1.create").hit();
           return { id: `t-${name}` };
@@ -55,6 +59,8 @@ export function stub(home: string): Plugin {
         input: z.object({ id: z.string() }),
         output: z.object({ id: z.string() }),
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async ({ id }, ctx) => {
           await ctx.emit(StubFinished, { id });
           return { id };
@@ -67,6 +73,8 @@ export function stub(home: string): Plugin {
         input: z.object({ name: z.string() }),
         output: z.object({ name: z.string() }),
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async ({ name }) => {
           counter(home, `w1.hold.${name}`).hit();
           await gate(home, `w1.hold.${name}`).wait();

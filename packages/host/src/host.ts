@@ -1064,6 +1064,8 @@ class Niwa implements Host {
       output: RecordsOutput,
       // A read writes nothing: it may be made again.
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async (input: z.infer<typeof RecordsReadInput>) =>
         this.untilFound(input.waitMs, () => this.readQuery(input)),
     });
@@ -1081,6 +1083,8 @@ class Niwa implements Host {
       input: RecordsSearchInput,
       output: RecordsOutput,
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async (input: z.infer<typeof RecordsSearchInput>) =>
         this.untilFound(input.waitMs, () =>
           readFiltered(this.requireJournal(), seq(input.from ?? 0), input.filter ?? {}, {
@@ -1150,6 +1154,8 @@ class Niwa implements Host {
       output: TracedRecordsOutput,
       // A walk reads the records and writes nothing: it may be made again.
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async (input: z.infer<typeof RecordWalkInput>) =>
         trace(this.requireJournal(), recordId(input.id)),
     });
@@ -1167,6 +1173,8 @@ class Niwa implements Host {
       output: RecordList,
       // A walk reads the records and writes nothing: it may be made again.
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async (input: z.infer<typeof RecordWalkInput>) =>
         causes(this.requireJournal(), recordId(input.id)),
     });
@@ -1185,6 +1193,8 @@ class Niwa implements Host {
       output: DescriptionOutput,
       // A description reads the registrations and writes nothing: it may be made again.
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async () => this.describe(),
     });
   }
@@ -1212,6 +1222,8 @@ class Niwa implements Host {
       output: StatusOutput,
       // It reads and writes nothing: it may be made again.
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: (_input, ctx) => {
         requireOwner(ctx.caller, "sees the status of the host");
         return {
@@ -1236,6 +1248,8 @@ class Niwa implements Host {
       output: CatalogOutput,
       // It reads files and writes nothing: it may be made again.
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: () => catalogOf(this.offersAt(COCKPIT_MODULE, undefined), (plugin) => this.plugins.get(pluginName(plugin))?.version ?? ""),
     });
   }
@@ -1248,6 +1262,8 @@ class Niwa implements Host {
       output: z.object({ stopping: z.literal(true) }),
       // A stop that was cut off is not made again: it would stop the host that took its place.
       recovery: "do-not-repeat",
+      effect: "write",
+      world: "local",
       run: (_input, ctx) => {
         requireOwner(ctx.caller, "stops the host");
         setTimeout(this.onStop, STOP_DELAY_MS);
@@ -1376,6 +1392,8 @@ class Niwa implements Host {
       // The answer is written as a record and the invocation runs again with it: the choice
       // stands whatever happens to the call, so it may be made again.
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input: z.infer<typeof ResolveInput>, ctx) => {
         const journal = this.requireJournal();
         // The invocation is named by its id, or by a unique start, end or short form of the id of one that is paused.
@@ -1449,6 +1467,8 @@ class Niwa implements Host {
       // The cancel is written under the id of the operation: a call made again finds it and
       // writes nothing twice.
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input: z.infer<typeof CancelStepsInput>, ctx) => {
         const journal = this.requireJournal();
         const admitted = journal.get(recordId(input.invocation));
@@ -1495,6 +1515,8 @@ class Niwa implements Host {
       // The record of the move is written under the id of the operation: a call made again
       // finds it and moves nothing twice.
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input: z.infer<typeof MoveInput>, ctx) => {
         const journal = this.requireJournal();
         const admitted = journal.get(recordId(input.invocation));

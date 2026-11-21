@@ -31,6 +31,7 @@ const gate = action("gate.pass", {
   input: z.object({}),
   output: z.object({ passed: z.boolean() }),
   recovery: "repeat",
+  effect: "write",
   run: () => {
     if (shut) throw new Error("the gate is shut");
     return { passed: true };

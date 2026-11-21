@@ -37,6 +37,7 @@ export function makePlugin(home: string) {
     input: z.object({ q: z.string() }),
     output: z.boolean(),
     recovery: "repeat",
+    effect: "write",
     result: () => true,
   });
 
@@ -46,6 +47,7 @@ export function makePlugin(home: string) {
     input: z.object({ text: z.string() }),
     output: z.string(),
     recovery: "repeat",
+    effect: "write",
     result: (input) => input.text,
   });
 

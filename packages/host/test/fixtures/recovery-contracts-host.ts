@@ -33,6 +33,7 @@ export function makePlugin(home: string, recovery: "repeat" | "repeat-with-key")
     input: z.object({ n: z.number() }),
     output: z.number(),
     recovery,
+    effect: "write",
     gate: "g1",
     // The operation id of every call is recorded, so the test can compare the first call with
     // the second one across the crash.
@@ -45,6 +46,7 @@ export function makePlugin(home: string, recovery: "repeat" | "repeat-with-key")
     input: z.object({ n: z.number() }),
     output: z.number(),
     recovery: "repeat",
+    effect: "write",
     result: (input) => input.n,
   });
 

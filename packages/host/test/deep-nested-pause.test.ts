@@ -26,7 +26,7 @@ function serve(path: string, state: { failing: boolean; calls: number }) {
   niwa.use(
     plugin("deep", (api) => {
       api.declare(Start, Answered);
-      const io = { input: z.object({}), output: z.object({ value: z.number() }), recovery: "do-not-repeat" as const };
+      const io = { input: z.object({}), output: z.object({ value: z.number() }), recovery: "do-not-repeat" as const, effect: "write" as const };
       api.action(action(C, { ...io, description: "c", run: async () => {
         state.calls += 1;
         if (state.failing) throw new Error("c is not ready");

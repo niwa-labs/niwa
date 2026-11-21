@@ -15,7 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { z } from "zod";
 
 import { action } from "@niwa-labs/core";
-import type { Clock, Action, ActionContext, Recovery } from "@niwa-labs/core";
+import type { Clock, Action, ActionContext, Effect, Recovery } from "@niwa-labs/core";
 import { socketPath } from "@niwa-labs/client";
 
 // What nearly every test needs besides the helpers below: a host to run, a client to speak with,
@@ -255,6 +255,8 @@ export function stubAction<I, O, In = I>(
     input: z.ZodType<I, In>;
     output: z.ZodType<O>;
     recovery: Recovery;
+    /** What a call changes. Default: "write". */
+    effect?: Effect;
     /** The name of the gate this action waits on before it returns. */
     gate?: string;
     /** Record the operation id of every call, under this name. */
@@ -270,6 +272,7 @@ export function stubAction<I, O, In = I>(
     input,
     output,
     recovery,
+    effect: opts.effect ?? "write",
     async run(value: I, ctx: ActionContext): Promise<O> {
       count.hit();
       ids?.hit(ctx.operationId);

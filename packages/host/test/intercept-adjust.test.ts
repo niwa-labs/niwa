@@ -32,6 +32,7 @@ const Take = action("adjust.take", {
   input: z.object({ n: z.number().int().min(0) }),
   output: z.object({ n: z.number() }),
   recovery: "repeat",
+  effect: "write",
   run: (input) => {
     runs.push(input.n);
     seen.push(input);
@@ -231,6 +232,7 @@ const Holding = action("adjust.holding", {
   input: z.object({ n: z.number().int().min(0), held: z.custom<() => number>((v) => typeof v === "function") }),
   output: z.object({ n: z.number() }),
   recovery: "repeat",
+  effect: "write",
   run: (input) => ({ n: input.n }),
 });
 
@@ -281,6 +283,7 @@ test("an instance of a class keeps its class, and nested plain data is copied ar
     input: z.object({ box: z.instanceof(Box), list: z.array(z.object({ n: z.number() })) }),
     output: z.object({ ok: z.boolean() }),
     recovery: "repeat",
+    effect: "write",
     run: () => ({ ok: true }),
   });
   const intercepts = newIntercepts();
@@ -304,6 +307,7 @@ test("with no adjust, a schema whose output is not its input is not made to pars
     input: z.string().transform((text) => text.length),
     output: z.object({ n: z.number() }),
     recovery: "repeat",
+    effect: "write",
     run: (n) => ({ n }),
   });
   const decision = await decide({ intercepts: newIntercepts(), action: Length, input: "four", caller: CALLER });

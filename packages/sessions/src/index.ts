@@ -654,6 +654,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       action(sessionList, {
         // A read changes nothing: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input) => {
           const { catalog, entries, unreadable } = await survey(input.harness, input.cwd, input.managedOnly);
           const { page, nextCursor } = pageOf(entries, input.limit ?? SESSION_LIST_DEFAULT, input.cursor);
@@ -674,6 +676,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       action(sessionGet, {
         // A read changes nothing: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input) => {
           const ref = refOf(input.id);
           const { catalog } = await survey(sessionOf(ref).harness, undefined);
@@ -689,6 +693,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         // The belonging is one fact: the same session and the same address are one record, so a
         // call that was cut off may be made again.
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const ref = refOf(input.session);
           const to = input.to;
@@ -707,6 +713,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       action(sessionRead, {
         // A read changes nothing: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "local",
         run: async (input) => {
           const id = sessionOf(refOf(input.session));
           return await readTranscript(bindings.find((candidate) => candidate.instance.id === id.harness), id, input);
@@ -718,6 +726,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       action(sessionSearch, {
         // A search reads and changes nothing: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "local",
         run: async (input) => {
           const id = sessionOf(refOf(input.session));
           return await searchSession(bindings.find((candidate) => candidate.instance.id === id.harness), id, input);
@@ -736,12 +746,16 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       action(harnessList, {
         // A read of how the harnesses are bound: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: () => ({ items: bindings.map(harnessItem) }),
       }),
     );
     api.action(
       action(harnessGet, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: (input) => {
           const binding = bindings.find((one) => one.instance.id === input.name);
           if (binding === undefined) throw new Error(`harness "${input.name}" is not known: harness.list names the harnesses`);
@@ -758,6 +772,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       action(sessionRunning, {
         // A read changes nothing: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input) => {
           const { entries, unreadable, own } = await survey(input.harness, undefined);
           const limit = input.limit ?? DEFAULT_RUNNING_LIMIT;
@@ -1029,6 +1045,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         // A harness names the session once: a start that was cut off may have made one
         // that nothing knows of, so it is not made again.
         recovery: "do-not-repeat",
+        effect: "write",
+        world: "local",
         run: async (input, ctx) => {
           // The prompt is an input under an operation: a retry with it answers the session it made.
           const operation = input.operation ?? ctx.operationId;
@@ -1118,6 +1136,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         // The harness takes the session on again: a resume that was cut off may have
         // happened, so it is not made again.
         recovery: "do-not-repeat",
+        effect: "write",
+        world: "local",
         run: async (input, ctx) => {
           const { ref, id, control } = controlOf(input.session, "resume");
           const prompt = input.prompt;
@@ -1174,6 +1194,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         // The message is delivered into the session: a send that was cut off may have
         // been delivered, so it is not made again.
         recovery: "do-not-repeat",
+        effect: "write",
+        world: "local",
         run: async (input, ctx) => {
           const { ref, id, control } = controlOf(input.session, "send");
           const sending = () => control.send(id, input.message, input.into === undefined ? undefined : { into: input.into });
@@ -1214,6 +1236,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         // The turn is interrupted once: an interrupt that was cut off may have happened,
         // so it is not made again.
         recovery: "do-not-repeat",
+        effect: "write",
+        world: "local",
         run: async (input) => {
           // Refused before anything is attempted: niwa does not emulate an interrupt.
           const { ref, id, control } = controlOf(input.session, "interrupt");
@@ -1233,6 +1257,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       action(sessionOpenQuestions, {
         // A read of what waits changes nothing: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input, ctx) => {
           const journal = api.journal?.();
           if (journal === undefined) return { questions: [] };
@@ -1259,6 +1285,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         // The session is asked: an ask that was cut off may have reached the harness, so
         // it is not made again.
         recovery: "do-not-repeat",
+        effect: "write",
+        world: "local",
         run: async (input, ctx) => {
           const { ref, id, control } = controlOf(input.session, "ask");
           const schema = z.fromJSONSchema(input.schema);

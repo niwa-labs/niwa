@@ -28,6 +28,7 @@ test("cancelled steps end as cancelled: the call in flight is aborted and the wa
           input: z.object({}),
           output: z.object({}),
           recovery: "do-not-repeat",
+          effect: "write",
           run: (_input, ctx) =>
             new Promise((_resolve, reject) => {
               ctx.signal?.addEventListener("abort", () => {
@@ -106,6 +107,7 @@ test("an invocation whose steps are cancelled while it runs runs again when it e
           input: z.object({}),
           output: z.object({}),
           recovery: "repeat",
+          effect: "write",
           run: async () => {
             await released;
             return {};

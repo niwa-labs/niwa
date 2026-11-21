@@ -128,6 +128,7 @@ function asker(): ReturnType<typeof plugin> {
         input: z.object({ what: z.string() }),
         output: z.object({ started: z.boolean() }),
         recovery: "repeat",
+        effect: "write",
         async run(input, ctx) {
           await ctx.emit(Asked, { what: input.what });
           return { started: true };
@@ -145,6 +146,7 @@ function asker(): ReturnType<typeof plugin> {
         }),
         output: z.object({ reported: z.boolean() }),
         recovery: "repeat",
+        effect: "write",
         async run(input, ctx) {
           await ctx.emit(Answered, input);
           return { reported: true };

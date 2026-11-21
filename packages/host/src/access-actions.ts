@@ -57,6 +57,8 @@ export function accessActions(control: AccessControl, doors: () => Doors): Actio
       input: z.object({ name: z.string().min(1), rules: Rules }),
       output: z.object({ name: z.string(), rules: Rules }),
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input, ctx) => {
         requireOwner(ctx.caller, "sets a profile");
         return { name: input.name, rules: specsOf(control.setProfile(ctx.caller, input.name, input.rules)) };
@@ -72,6 +74,8 @@ export function accessActions(control: AccessControl, doors: () => Doors): Actio
         set: z.boolean().optional(),
       }),
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async (input) => {
         const names = control.profileNames();
         if (input.name === undefined) return { names };
@@ -85,6 +89,8 @@ export function accessActions(control: AccessControl, doors: () => Doors): Actio
       input: z.object({ principal: principalSchema, rules: Rules }),
       output: z.object({ grant: z.string(), closed: z.array(principalSchema) }),
       recovery: "do-not-repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input, ctx) => {
         requireOwner(ctx.caller, "changes a grant");
         return control.change(ctx.caller, input.principal, input.rules);
@@ -95,6 +101,8 @@ export function accessActions(control: AccessControl, doors: () => Doors): Actio
       input: z.object({ principal: principalSchema, reason: z.string().min(1).optional() }),
       output: z.object({ closed: z.array(principalSchema) }),
       recovery: "do-not-repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input, ctx) => {
         requireOwner(ctx.caller, "closes a grant");
         return { closed: control.close(ctx.caller, input.principal, input.reason ?? "closed by the owner") };
@@ -105,6 +113,8 @@ export function accessActions(control: AccessControl, doors: () => Doors): Actio
       input: z.object({ all: z.enum(["on", "off"]) }),
       output: z.object({ all: z.enum(["on", "off"]) }),
       recovery: "repeat",
+      effect: "record",
+      world: "niwa",
       run: async (input, ctx) => {
         requireOwner(ctx.caller, "moves the switch");
         control.setSwitch(ctx.caller, input.all);
@@ -122,6 +132,8 @@ export function accessActions(control: AccessControl, doors: () => Doors): Actio
         rules: Rules,
       }),
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async (_input, ctx) => control.mine(ctx.caller),
     }),
     action(EXPLAIN, {
@@ -139,6 +151,8 @@ export function accessActions(control: AccessControl, doors: () => Doors): Actio
         chain: z.array(GrantView),
       }),
       recovery: "repeat",
+      effect: "read",
+      world: "niwa",
       run: async (input) => {
         const table = doors();
         const at = control.recordOf(recordId(input.record));

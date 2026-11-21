@@ -34,6 +34,7 @@ export function makePlugin(home: string, stepInput: number) {
     input: z.object({ n: z.number() }),
     output: z.number(),
     recovery: "repeat",
+    effect: "write",
     gate: "g1",
     result: (input) => input.n,
   });

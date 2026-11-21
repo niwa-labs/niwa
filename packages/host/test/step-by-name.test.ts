@@ -29,6 +29,7 @@ const upper = action("sbn.upper", {
   input: z.object({ text: z.string() }),
   output: z.object({ text: z.string() }),
   recovery: "repeat",
+  effect: "write",
   run: async (input) => ({ text: input.text.toUpperCase() }),
 });
 
@@ -37,6 +38,7 @@ const start = action("sbn.start", {
   input: z.object({ mode: z.enum(["found", "missing", "outcome"]) }),
   output: z.object({}),
   recovery: "repeat",
+  effect: "write",
   run: async (input, ctx) => {
     await ctx.emit(Trigger, { mode: input.mode });
     return {};

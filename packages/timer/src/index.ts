@@ -572,6 +572,8 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
       action(timerList, {
         // A read changes nothing: it may be made again.
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: (_input, ctx) => {
           onlyOwner(ctx.caller);
           return {
@@ -591,6 +593,8 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
     api.action(
       action(timerGet, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: ({ name }, ctx) => {
           onlyOwner(ctx.caller);
           const entry = scheduleOfHost().find((one) => one.id === name);
@@ -604,6 +608,8 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
     api.action(
       action(timerSleepRequest, {
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           await ctx.emit(SleepRequested, input);
           return {};

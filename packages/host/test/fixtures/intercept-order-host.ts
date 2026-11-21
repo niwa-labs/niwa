@@ -50,6 +50,7 @@ export const Send = action("intercept-order.send", {
   input: z.object({ text: z.string() }),
   output: z.object({ text: z.string() }),
   recovery: "repeat",
+  effect: "write",
   run: (input, ctx) => {
     appendFileSync(join(home(), CALL_LOG), `${input.text}:${ctx.operationId}\n`);
     return { text: input.text };

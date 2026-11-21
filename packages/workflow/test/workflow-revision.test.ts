@@ -49,6 +49,7 @@ async function setup() {
     output: z.object({ answer: z.string(), at: z.number() }),
     // A session is started and asked: it has an effect.
     recovery: "do-not-repeat",
+    effect: "write",
     run: async ({ prompt }) => {
       calls.push(`agent:${prompt}`);
       return { answer: prompt, at: calls.length };
@@ -60,8 +61,8 @@ async function setup() {
   niwa.use(
     plugin("rev", (api) => {
       api.action(agent);
-      api.action(action("rev.read", { ...io, description: "Reads: it may be made again.", recovery: "repeat", run: async ({ name }) => answer(`read:${name}`) }));
-      api.action(action("rev.write", { ...io, description: "Writes: it is made once.", recovery: "do-not-repeat", run: async ({ name }) => answer(`write:${name}`) }));
+      api.action(action("rev.read", { ...io, description: "Reads: it may be made again.", recovery: "repeat", effect: "read", run: async ({ name }) => answer(`read:${name}`) }));
+      api.action(action("rev.write", { ...io, description: "Writes: it is made once.", recovery: "do-not-repeat", effect: "write", run: async ({ name }) => answer(`write:${name}`) }));
     }),
   );
   niwa.use(workflow({ agentAction: agent }));

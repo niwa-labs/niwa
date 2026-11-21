@@ -38,6 +38,7 @@ const doors = plugin("doors-check", (api) => {
       input: z.object({}),
       output: z.object({ ok: z.boolean() }),
       recovery: "repeat",
+      effect: "write",
       run: async () => ({ ok: true }),
     }),
   );
@@ -47,6 +48,7 @@ const doors = plugin("doors-check", (api) => {
       input: z.object({}),
       output: z.object({ ok: z.boolean() }),
       recovery: "repeat",
+      effect: "write",
       run: async () => ({ ok: true }),
     }),
   );

@@ -122,6 +122,8 @@ export function messageSend(
   return action(messageSendRef, {
     // The write is idempotent by the id of the message, so the call may be made again.
     recovery: "repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx): Promise<Message> {
       const from = senderOf(ctx.caller, input.from, bind);
       const envelope = envelopeOf(input, from, ctx, ids);
@@ -145,6 +147,8 @@ export function messageReceive(
   const bind = bindingOf(opts);
   return action(messageReceiveRef, {
     recovery: "repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx): Promise<Message> {
       const from = senderOf(ctx.caller, input.from, bind);
       const envelope = envelopeOf(input, from, ctx, ids);
@@ -175,6 +179,8 @@ export function messages(opts?: MessagesOptions): Plugin {
     api.action(
       action(messageListRef, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input) => ({
           items: messagesOf(api.journal?.())
             .filter((message) => input.task === undefined || message.task === input.task)
@@ -192,6 +198,8 @@ export function messages(opts?: MessagesOptions): Plugin {
     api.action(
       action(messageGetRef, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input) => {
           const id = ids.require(input.id);
           const found = messagesOf(api.journal?.()).find((message) => message.id === id);

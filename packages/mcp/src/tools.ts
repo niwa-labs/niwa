@@ -8,13 +8,38 @@
  */
 
 import { toolNameOf } from "@niwa-labs/core";
-import type { JsonValue, ActionName, Description, JsonSchema } from "@niwa-labs/core";
+import type { JsonValue, ActionDescription, ActionName, Description, JsonSchema } from "@niwa-labs/core";
+
+/** What a tool tells its client about its effect: only what the action declares. */
+export interface ToolHints {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
 
 /** One MCP tool. */
 export interface Tool {
   name: string;
   description: string;
   inputSchema: JsonSchema;
+  annotations?: ToolHints;
+}
+
+/**
+ * The hints of an action's tool. Read-only comes from the effect, the open world from the world,
+ * destructive is always set for an irreversible action and otherwise only when the action says,
+ * and idempotent only when the action says: the recovery contract is about one call cut off and
+ * repeated, not about two calls. A hint the action does not settle is left out.
+ */
+export function hintsOf(action: ActionDescription): ToolHints {
+  const destructive = action.effect === "irreversible" ? true : action.destructive;
+  return {
+    readOnlyHint: action.effect === "read",
+    ...(action.world === undefined ? {} : { openWorldHint: action.world === "external" }),
+    ...(destructive === undefined ? {} : { destructiveHint: destructive }),
+    ...(action.idempotent === undefined ? {} : { idempotentHint: action.idempotent }),
+  };
 }
 
 /** The action tools, each with the action it calls. */
@@ -44,8 +69,9 @@ export function catalogOf(description: Description, visible?: readonly string[])
     declared.push({
       tool: {
         name,
-        description: `${action.description}\n\nThe action is "${action.name}"; recovery: ${action.recovery}.`,
+        description: `${action.description}\n\nThe action is "${action.name}"; effect: ${action.effect}; recovery: ${action.recovery}.`,
         inputSchema: action.input,
+        annotations: hintsOf(action),
       },
       action: action.name,
     });

@@ -465,6 +465,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       action(agentCreate, {
         // The name is the identity: a create made again finds the name taken by the first.
         recovery: "do-not-repeat",
+        effect: "record",
+        world: "niwa",
         run: async (definition, ctx) => {
           if (defined().has(definition.name)) throw new AgentRefusal("name-taken", `there is already an agent "${definition.name}"`);
           // The agent's sessions are started by this module, which nothing limits: a caller held to a grant
@@ -487,6 +489,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     api.action(
       action(agentList, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async () => ({
           items: [...defined().values()].map(({ definition, source }) => {
             const main = mainOf(definition.name);
@@ -505,6 +509,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     api.action(
       action(agentGet, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input) => {
           const { definition, source } = require(input.agent);
           const main = mainOf(input.agent);
@@ -526,6 +532,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       action(agentTell, {
         // The message is written once, under the id of its operation.
         recovery: "repeat",
+        effect: "write",
+        world: "local",
         run: async (input, ctx) => {
           require(input.agent);
           // Sent by the messages module, so the sender is the address the caller speaks as, never one it names.
@@ -539,6 +547,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       action(agentNotify, {
         // The fact is written under an id cut from its operation: a repeat finds it.
         recovery: "repeat",
+        effect: "write",
+        world: "local",
         run: async (input, ctx) => {
           require(input.agent);
           const turn = factId(String(ctx.operationId));
@@ -575,6 +585,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       action(agentAttach, {
         // The attachment is a fact of the owner's: made again, it is the same attachment, and the watch is on.
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const name = input.agent ?? options.default;
           if (name === undefined) throw new AgentRefusal("no-agent", "no agent was named and this host has no default agent: name one (`agent.list` shows them)");
@@ -612,6 +624,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     api.action(
       action(agentDetach, {
         recovery: "repeat",
+        effect: "record",
+        world: "niwa",
         run: async (input, ctx) => {
           const attached = attachments().get(input.session);
           if (attached === undefined) return {};
@@ -626,6 +640,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     api.action(
       action(agentAttachment, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input) => {
           const attached = attachments().get(input.session);
           if (attached === undefined) return {};
@@ -641,6 +657,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     api.action(
       action(agentBriefing, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input, ctx) => ({ text: await briefingOf(input.agent, ctx) }),
       }),
     );
@@ -648,6 +666,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     api.action(
       action(agentBounds, {
         recovery: "repeat",
+        effect: "read",
+        world: "niwa",
         run: async (input) => {
           const { definition } = require(input.agent);
           const main = mainOf(input.agent);

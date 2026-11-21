@@ -27,6 +27,7 @@ const three = action("trace-call.three", {
   input: z.object({}),
   output: z.object({ ids: z.array(z.string()) }),
   recovery: "repeat",
+  effect: "write",
   run: async (_input, ctx) => {
     const ids: string[] = [];
     for (const n of [1, 2, 3]) {

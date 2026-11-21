@@ -89,6 +89,7 @@ function counted(name: string) {
     input: z.object({ n: z.number() }),
     output: z.object({ n: z.number() }),
     recovery: "do-not-repeat",
+    effect: "write",
     run: async ({ n }) => {
       calls.count += 1;
       return { n };
@@ -155,6 +156,7 @@ test("a call in flight is cut short through its signal, and what it returns late
     input: z.object({}),
     output: z.object({ done: z.boolean() }),
     recovery: "do-not-repeat",
+    effect: "write",
     run: async (_input, ctx) => {
       signal = ctx.signal;
       await new Promise<void>((done) => {
@@ -207,6 +209,7 @@ test("a call still in flight after its invocation suspended on another step is a
     input: z.object({}),
     output: z.object({}),
     recovery: "do-not-repeat",
+    effect: "write",
     run: (_input, ctx) =>
       new Promise((_resolve, reject) => {
         signal = ctx.signal;

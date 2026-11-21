@@ -174,6 +174,8 @@ export function submitAnswerAction(journal: () => JournalReader | undefined): Ac
     // The answer is written under the id of the operation, and the first answer stands: a
     // call that was cut off may be made again, and the same answer stands.
     recovery: "repeat",
+    effect: "record",
+    world: "niwa",
     async run(input, ctx) {
       // The value is the answer given as a plain value; the question says which answer it is.
       const named = requestNamed(journal(), input.question);

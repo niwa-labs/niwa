@@ -147,6 +147,8 @@ export function sessionAgent(harness: string, launch: HarnessLaunch = {}): Actio
     output: AgentOutput,
     // A session is started and asked: a call that was cut off may have done both.
     recovery: "do-not-repeat",
+    effect: "write",
+    world: "local",
     run: async (input, ctx) => {
       await requireOwnBlock(harness, input, ctx);
       const answerSchema = input.schema ?? ANSWER_SCHEMA;

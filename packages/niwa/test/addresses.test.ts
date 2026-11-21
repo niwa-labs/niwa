@@ -316,6 +316,7 @@ test("ActionContext.emit: a type of another plugin is refused", async () => {
     input: z.object({}),
     output: z.object({}),
     recovery: "repeat",
+    effect: "write",
     async run(_input, ctx) {
       await ctx.emit(Foreign, { n: 1 });
       return {};
@@ -326,6 +327,7 @@ test("ActionContext.emit: a type of another plugin is refused", async () => {
     input: z.object({}),
     output: z.object({ id: z.string() }),
     recovery: "repeat",
+    effect: "write",
     async run(_input, ctx) {
       const stored = await ctx.emit(Own, { n: 1 });
       return { id: stored.id };

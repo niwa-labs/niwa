@@ -60,6 +60,7 @@ export const greet = action("surface.greet", {
   input: Text,
   output: Ok,
   recovery: "repeat",
+  effect: "write",
   run: async () => ({ ok: true }),
 });
 
@@ -69,6 +70,7 @@ export const whoami = action("surface.whoami", {
   input: Who,
   output: Caller,
   recovery: "repeat",
+  effect: "write",
   run: async (_input, ctx) => ({
     caller: ctx.caller.kind === "client" ? ctx.caller.id : ctx.caller.kind,
     kind: ctx.caller.kind,
@@ -89,6 +91,7 @@ const extra = plugin("surface-extra", (api) => {
       input: z.object({}),
       output: z.object({ pong: z.boolean() }),
       recovery: "repeat",
+      effect: "write",
       run: async () => ({ pong: true }),
     }),
   );
@@ -100,6 +103,7 @@ export const addAction = action("surface.add-action", {
   input: z.object({}),
   output: Ok,
   recovery: "repeat",
+  effect: "write",
   run: async () => {
     if (host === undefined) {
       throw new Error("surface.add-action: the host is not running");
@@ -117,6 +121,7 @@ export function makePlugin() {
     input: Text,
     output: Ok,
     recovery: "repeat",
+    effect: "write",
     run: async () => ({ ok: true }),
   });
 

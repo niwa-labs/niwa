@@ -27,8 +27,8 @@ const Note = record("demo.note", z.object({ n: z.number() }), { open: true });
 
 const demo = plugin("demo", (api) => {
   api.declare(Note);
-  api.action(action("demo.read", { description: "Reads.", input: Empty, output: Ok, recovery: "repeat", run: () => ({ ok: true }) }));
-  api.action(action("demo.write", { description: "Writes.", input: Empty, output: Ok, recovery: "do-not-repeat", run: () => ({ ok: true }) }));
+  api.action(action("demo.read", { description: "Reads.", input: Empty, output: Ok, recovery: "repeat", effect: "read", run: () => ({ ok: true }) }));
+  api.action(action("demo.write", { description: "Writes.", input: Empty, output: Ok, recovery: "do-not-repeat", effect: "write", run: () => ({ ok: true }) }));
 });
 
 async function hosted(): Promise<string> {

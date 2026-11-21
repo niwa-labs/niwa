@@ -54,6 +54,7 @@ test("a description is printed as the list of actions and types", () => {
         name: "note.add",
         description: "Adds a note.",
         recovery: "repeat",
+        effect: "write",
         input: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
         output: { type: "object" },
       },

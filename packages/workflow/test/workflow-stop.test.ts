@@ -49,6 +49,7 @@ async function setup() {
           input: z.object({ name: z.string() }),
           output: z.object({ name: z.string() }),
           recovery: "do-not-repeat",
+          effect: "write",
           run: ({ name }, ctx) =>
             new Promise((_resolve, reject) => {
               calls.push(name);
@@ -65,6 +66,7 @@ async function setup() {
           input: z.object({ name: z.string() }),
           output: z.object({ name: z.string() }),
           recovery: "repeat",
+          effect: "write",
           run: async ({ name }) => {
             calls.push(name);
             return { name };

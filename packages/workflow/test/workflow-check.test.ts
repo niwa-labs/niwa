@@ -219,7 +219,7 @@ test("the typing handles what the schemas of niwa hold: references, records, enu
   const Tree: z.ZodType<Tree> = z.lazy(() => z.object({ name: z.string(), children: z.array(Tree) }));
   const described = (name: string, input: z.ZodType, output: z.ZodType): ActionDescription => {
     const [one] = describe({
-      actions: [action(name, { description: `The action ${name}.`, input, output, recovery: "repeat", run: () => ({}) })],
+      actions: [action(name, { description: `The action ${name}.`, input, output, recovery: "repeat", effect: "write", run: () => ({}) })],
       types: [],
     }).actions;
     if (one === undefined) throw new Error("no description");

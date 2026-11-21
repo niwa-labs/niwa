@@ -113,6 +113,7 @@ const caller = action("mcpask.caller", {
   input: z.object({}),
   output: z.object({ caller: z.string(), kind: z.string() }),
   recovery: "repeat",
+  effect: "write",
   run: async (_input, ctx) => ({
     caller: ctx.caller.kind === "client" ? ctx.caller.id : ctx.caller.kind,
     kind: ctx.caller.kind,

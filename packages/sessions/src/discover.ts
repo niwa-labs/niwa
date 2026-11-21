@@ -87,6 +87,8 @@ export function harnessDiscovery(options: HarnessDiscoveryOptions): Plugin {
         // The finding changes nothing that cannot be made again: the proposals are written
         // under ids that follow the installations.
         recovery: "repeat",
+        effect: "read",
+        world: "local",
         run: async (input): Promise<HarnessDiscoverOutput> => {
           const wanted = input.kinds;
           const kinds =

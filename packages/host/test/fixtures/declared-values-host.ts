@@ -43,6 +43,7 @@ export const shout = action("declared-values.shout", {
   input: Text,
   output: Text,
   recovery: "do-not-repeat",
+  effect: "write",
   run: async (input) => ({ text: input.text.toUpperCase() }),
 });
 
@@ -52,6 +53,7 @@ export const unloadExtra = action("declared-values.unload-extra", {
   input: z.object({}),
   output: Ok,
   recovery: "repeat",
+  effect: "write",
   run: async () => {
     if (host === undefined) {
       throw new Error("declared-values.unload-extra: the host is not running");
@@ -69,6 +71,7 @@ export function makePlugin(home: string) {
     input: Text,
     output: Ok,
     recovery: "repeat",
+    effect: "write",
     result: () => ({ ok: true }),
   });
 

@@ -32,8 +32,10 @@ import type {
   ActionTarget,
   CheckContext,
   CheckResult,
+  Effect,
   OperationId,
   Recovery,
+  World,
 } from "./types.ts";
 
 /**
@@ -44,6 +46,12 @@ import type {
  * "do-not-repeat" means the effect may already have happened, so the step resolves as unknown.
  */
 const RECOVERIES: readonly Recovery[] = ["repeat", "repeat-with-key", "do-not-repeat"];
+
+/** The classes of an action's effect, from the one that changes nothing to the one that cannot be undone. */
+export const EFFECTS: readonly Effect[] = ["read", "record", "write", "irreversible"];
+
+/** Where the effect of an action may land. */
+export const WORLDS: readonly World[] = ["niwa", "local", "external"];
 
 /**
  * The name of an action: how it is called by name, how it is keyed in the registry and how it is
@@ -92,6 +100,22 @@ export interface ActionSpec<I, O, In = I> {
    * Required: every action declares its own contract.
    */
   recovery: Recovery;
+  /**
+   * What a call changes: "read", "record" (only niwa's own records), "write" or "irreversible".
+   *
+   * Required: a mask never grants an irreversible action, and a hold refuses writes, so every
+   * action says which it is.
+   */
+  effect: Effect;
+  /** Where the effect lands: "niwa", "local" or "external". Absent, the action does not say. */
+  world?: World;
+  /**
+   * Two separate calls with the same input do what one does. Only what the action declares: a
+   * retry under the same operation id is one call, and says nothing about two.
+   */
+  idempotent?: boolean;
+  /** The action destroys or overwrites something. An irreversible action always does. */
+  destructive?: boolean;
   /** The `@target` of a call, for the rules of a grant that name one. */
   target?(input: I): string | undefined;
   /** The body: what the action actually does. */
@@ -201,6 +225,24 @@ export function action<I, O, In = I>(
     );
   }
 
+  const effect = spec.effect;
+  if (!EFFECTS.includes(effect)) {
+    throw new TypeError(`action "${key}": effect must be one of ${EFFECTS.join(", ")}, got ${describe(effect)}`);
+  }
+  const world = spec.world;
+  if (world !== undefined && !WORLDS.includes(world)) {
+    throw new TypeError(`action "${key}": world must be one of ${WORLDS.join(", ")}, got ${describe(world)}`);
+  }
+  for (const flag of ["idempotent", "destructive"] as const) {
+    const value = spec[flag];
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new TypeError(`action "${key}": ${flag} must be a boolean, got ${describe(value)}`);
+    }
+  }
+  if (effect === "irreversible" && spec.destructive === false) {
+    throw new TypeError(`action "${key}": an irreversible action is destructive`);
+  }
+
   const check = spec.check;
   const targetOf = spec.target;
   return {
@@ -210,6 +252,10 @@ export function action<I, O, In = I>(
     input: spec.input,
     output: spec.output,
     recovery,
+    effect,
+    ...(world === undefined ? {} : { world }),
+    ...(spec.idempotent === undefined ? {} : { idempotent: spec.idempotent }),
+    ...(spec.destructive === undefined ? {} : { destructive: spec.destructive }),
     ...(targetOf === undefined ? {} : { target: targetOf }),
     // The wrapper is what makes the promise total: a synchronous body and a synchronous throw
     // both come out as a promise.

@@ -22,8 +22,8 @@ import { jsonOf, mcpPair } from "./fixtures/mcp-pair.ts";
 const Where = z.object({ directory: z.string().optional(), note: z.string().optional() });
 
 const wherePlugin = plugin("where", (api) => {
-  api.action(action("where.run", { description: "Says the directory it was given.", input: Where, output: z.object({ given: z.unknown() }), recovery: "repeat", run: (input) => ({ given: input }) }));
-  api.action(action("where.plain", { description: "Takes no directory.", input: z.object({ note: z.string().optional() }), output: z.object({ given: z.unknown() }), recovery: "repeat", run: (input) => ({ given: input }) }));
+  api.action(action("where.run", { description: "Says the directory it was given.", input: Where, output: z.object({ given: z.unknown() }), recovery: "repeat", effect: "write", run: (input) => ({ given: input }) }));
+  api.action(action("where.plain", { description: "Takes no directory.", input: z.object({ note: z.string().optional() }), output: z.object({ given: z.unknown() }), recovery: "repeat", effect: "write", run: (input) => ({ given: input }) }));
 });
 
 async function withHost(run: (home: string, cwd: string) => Promise<void>): Promise<void> {

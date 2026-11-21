@@ -354,6 +354,7 @@ test("a subscription is not woken by a record its invocation caused through an a
       input: z.object({ n: z.number() }),
       output: z.object({}),
       recovery: "repeat",
+      effect: "write",
       run: async (input, ctx) => {
         await ctx.emit(Item, { n: input.n });
         return {};

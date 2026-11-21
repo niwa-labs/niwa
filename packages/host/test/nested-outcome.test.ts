@@ -16,6 +16,7 @@ const Wrong = action("nested-outcome.wrong", {
   input: z.object({}),
   output: z.object({ n: z.number() }),
   recovery: "repeat",
+  effect: "write",
   run: async () => ({ n: "not a number" }) as unknown as { n: number },
 });
 
@@ -24,6 +25,7 @@ const Strict = action("nested-outcome.strict", {
   input: z.object({ n: z.number() }),
   output: z.object({}),
   recovery: "repeat",
+  effect: "write",
   run: async () => ({}),
 });
 
@@ -32,6 +34,7 @@ const Outer = action("nested-outcome.outer", {
   input: z.object({}),
   output: z.object({ wrong: z.unknown(), badInput: z.unknown() }),
   recovery: "repeat",
+  effect: "write",
   run: async (_input, ctx) => ({
     wrong: await ctx.step.outcome(Wrong, {}),
     badInput: await ctx.step.outcome(Strict, { n: "x" } as unknown as { n: number }),

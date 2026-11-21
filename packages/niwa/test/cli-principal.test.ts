@@ -18,6 +18,7 @@ const probe = plugin("cli-principal-probe", (api) => {
       input: z.object({ n: z.string() }),
       output: z.object({ ran: z.string() }),
       recovery: "repeat",
+      effect: "write",
       run: async (input) => ({ ran: input.n }),
     }),
   );

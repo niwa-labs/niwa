@@ -23,6 +23,7 @@ export const echo = action("echo", {
   input: z.object({ n: z.number() }),
   output: z.object({ n: z.number() }),
   recovery: "repeat",
+  effect: "write",
   run: async (input) => input,
 });
 
