@@ -16,7 +16,7 @@ import { assistant, createDatabase, user, writeSession } from "../src/fixtures.t
 import type { FixtureMessage } from "../src/fixtures.ts";
 import { PART_TYPES } from "../src/format.ts";
 import { dbPathOf } from "../src/paths.ts";
-import { ZcodeReading, directoryOf } from "../src/reading.ts";
+import { ZcodeReading, directoryOf, itemsOf } from "../src/reading.ts";
 
 let home: string;
 let db: Database;
@@ -176,6 +176,43 @@ test("a call left running in an older message does not hold back what came after
   // The abandoned call is delivered as it stands, with no result invented for it, and nothing after it is incomplete.
   expect(records.map((record) => `${record.kind}:${record.incomplete}`)).toEqual(["user:false", "tool-call:false", "user:false", "assistant:false"]);
   expect((await reading().coverage(id("sess_a"), records[1]!.locator)).status).toBe("not-scanned");
+});
+
+test("the tail marker and the rows come from one snapshot: a message written in between is not taken for a finished one", async () => {
+  // ZCode's own database is in WAL mode: a reader holds a snapshot and a writer is not held up by it.
+  db.run("pragma journal_mode = wal");
+  writeSession(db, "sess_a", [user("m1", "one"), assistant("m2", "two")]);
+  const writer = new Database(dbPathOf(home));
+  const reader = new Database(dbPathOf(home), { readonly: true });
+  // The write lands right after the reader asked which message is the last.
+  const spying = new Proxy(reader, {
+    get(target, key) {
+      if (key !== "query") return Reflect.get(target, key).bind?.(target) ?? Reflect.get(target, key);
+      return (sql: string) => {
+        const query = target.query(sql);
+        if (!sql.includes("max(sequence)")) return query;
+        return {
+          get: (...args: never[]) => {
+            const found = query.get(...args);
+            writer.query("insert into message (id, session_id, time_created, time_updated, data, sequence) values ('m3', 'sess_a', 3, 3, ?, 2)").run(JSON.stringify({ role: "assistant", time: { created: 3 } }));
+            writer.query("insert into part (id, message_id, session_id, time_created, time_updated, data, sequence) values ('m3p', 'm3', 'sess_a', 3, 3, ?, 0)").run(JSON.stringify({ type: "text", text: "half" }));
+            return found;
+          },
+        };
+      };
+    },
+  });
+  try {
+    const seen = [...itemsOf(spying, harnessId("zcode-test"), "sess_a", undefined)];
+    // What the reader had asked about is all it gives: the half-written message is for the next read.
+    expect(seen.map((item) => item.record.kind)).toEqual(["user", "assistant"]);
+    expect(seen.every((item) => !item.record.incomplete)).toBe(true);
+  } finally {
+    reader.close();
+    writer.close();
+  }
+  const next = await all(reading().read(id("sess_a")));
+  expect(next.map((record) => `${record.kind}:${record.incomplete}`)).toEqual(["user:false", "assistant:false", "assistant:true"]);
 });
 
 test("a session spawned inside sits after the part that existed when it was created, whichever way it names its parent", async () => {

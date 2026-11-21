@@ -262,7 +262,11 @@ function summaryOf(db: Database, messageId: string): string | undefined {
 }
 
 /** The records of a session in the order they sit, with where each is. Only what follows `after` is given. */
-function* itemsOf(db: Database, harness: HarnessId, native: string, after: Position | undefined): Generator<Item> {
+export function* itemsOf(db: Database, harness: HarnessId, native: string, after: Position | undefined): Generator<Item> {
+  // One snapshot for the marker of the tail, the sessions spawned inside and the rows: a message that
+  // is written between two of the reads must not be taken for a finished one. The connection is closed
+  // by the caller, which ends the read.
+  db.run("begin");
   const last = (db.query("select max(sequence) as last from message where session_id = ?").get(native) as {
     last: number | null;
   }).last;
