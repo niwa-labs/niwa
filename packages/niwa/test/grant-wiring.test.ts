@@ -193,9 +193,9 @@ process.stdin.on("data", (chunk) => {
 
 // -- the derivation ----------------------------------------------------------
 
-const plan = { home: "/home/.niwa", cwd: "/work", socket: "/home/.niwa/niwa.sock", sandbox: "srt" } as const;
+const plan = { home: "/niwa-absent-home/.niwa", cwd: "/work", socket: "/niwa-absent-home/.niwa/niwa.sock", sandbox: "srt" } as const;
 /** What every box closes whatever its grant says: the owner's token and the host key. */
-const KEYS = ["/home/.niwa/owner.token", "/home/.niwa/host.key"];
+const KEYS = ["/niwa-absent-home/.niwa/owner.token", "/niwa-absent-home/.niwa/host.key"];
 
 test("tool rules are the allowance; no tool rule and `tool:*` leave the harness its default", () => {
   expect(launchOf(grant(["tool:read", "tool:grep", "request.open"]), plan)).toEqual({ tools: { allow: ["read", "grep"] } });
@@ -214,14 +214,14 @@ test("write and net rules are the box; its cwd is the session's, and tools ride 
       cwd: "/work",
       write: ["/work/out", "/tmp/scratch"],
       net: ["registry.npmjs.org"],
-      sockets: ["/home/.niwa/niwa.sock"],
+      sockets: ["/niwa-absent-home/.niwa/niwa.sock"],
       denyRead: KEYS,
     },
   });
   // A net rule alone makes a box too, with nothing writable.
   expect(launchOf(grant(["net:gitlab.example.com"]), { ...plan, cwd: "/w", sandbox: "nono" }).box).toEqual({
     sandbox: "nono",
-    spec: { cwd: "/w", write: [], net: ["gitlab.example.com"], sockets: ["/home/.niwa/niwa.sock"], denyRead: KEYS },
+    spec: { cwd: "/w", write: [], net: ["gitlab.example.com"], sockets: ["/niwa-absent-home/.niwa/niwa.sock"], denyRead: KEYS },
   });
 });
 
@@ -234,12 +234,12 @@ test("every box closes the owner's token and the host key, whatever the grant sa
       const spec = boxSpec(box.spec);
       expect(keys(spec.denyRead)).toEqual(KEYS);
       if (sandbox === "srt") {
-        expect(keys(srt().manifest(spec).settings.filesystem.denyRead)).toEqual(KEYS);
+        expect(srt().manifest(spec).settings.filesystem.denyRead.map((entry) => entry.path)).toEqual(KEYS);
       } else if (rules.includes("write:*")) {
         // nono reads by allow-list: a key under a place the box may write cannot be carved out, so the box is refused.
         expect(() => nono().manifest(spec)).toThrow(SandboxUnsupported);
       } else {
-        expect(nono().manifest(spec).flags).not.toContain("/home/.niwa/owner.token");
+        expect(nono().manifest(spec).flags).not.toContain("/niwa-absent-home/.niwa/owner.token");
       }
     }
   }

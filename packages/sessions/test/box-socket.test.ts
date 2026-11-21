@@ -10,7 +10,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 
-import { readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -86,7 +86,9 @@ for (const sandbox of [srt(), nono()]) {
     test.skipIf(!present)("a session in its box calls the running host with its NIWA_ID; gitlab.com stays closed", async () => {
       const dir = await realpath(await tempDir("box-socket"));
       cleanups.push(() => rm(dir, { recursive: true, force: true }));
-      const home = await tempHome();
+      // A home under the user's home, as the host's is: nono grants the temp area on its own, so
+      // it cannot close the host's keys inside it.
+      const home = { path: await realpath(await mkdtemp(join(homedir(), ".niwa-box-home-"))), cleanup: () => rm(home.path, { recursive: true, force: true }) };
       const out = join(dir, "answers.txt");
       const control = new ShellControl(
         () => `( ${callMine(join(home.path, "niwa.sock"))}; echo; echo "gitlab $(${CURL("https://gitlab.com")} 2>&1)" ) > ${out} 2>&1`,

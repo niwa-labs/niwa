@@ -226,7 +226,14 @@ test("relative paths of a spec are read from its working directory, for the flag
   ]);
 
   const settings = srt().manifest(boxSpec({ cwd, write: ["out", "~/.claude"], denyRead: ["secret"], sockets: ["run/host.sock"] })).settings;
-  expect(settings.filesystem).toEqual({ denyRead: [`${cwd}/secret`], allowWrite: [`${cwd}/out`, "~/.claude"], denyWrite: [] });
+  expect(settings.filesystem).toEqual({
+    denyRead: [{ path: `${cwd}/secret`, literal: true }],
+    allowWrite: [
+      { path: `${cwd}/out`, literal: true },
+      { path: "~/.claude", literal: true },
+    ],
+    denyWrite: [],
+  });
   expect(settings.network.allowUnixSockets).toEqual([`${cwd}/run/host.sock`]);
 });
 

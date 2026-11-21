@@ -24,7 +24,8 @@ for (const sandbox of [srt(), nono()]) {
   const present = live && (await sandbox.available());
   describe(`proc.run in ${sandbox.name}`, () => {
     test.skipIf(!present)("writes in its cwd, not outside it, and reaches no network", async () => {
-      const host = await procHost({ sandbox });
+      // A home under the user's home, as the host's is: nono grants the temp area on its own.
+      const host = await procHost({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
       // Not under tmpdir: nono leaves the temp area writable on its own.
       const outside = realpathSync(mkdtempSync(join(homedir(), ".niwa-proc-out-")));
       try {

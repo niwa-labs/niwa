@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 
-/** A path as the grant wrote it. A leading `~` is expanded by the sandbox, not here, so the spec is a pure value. */
+/** A path as the grant wrote it. A leading `~` is expanded by the sandbox, not here, so the spec is a pure value; the working directory's is expanded once when paths are anchored to it. */
 export const BoxPathSchema = z.string().min(1).brand<"BoxPath">();
 export type BoxPath = z.output<typeof BoxPathSchema>;
 

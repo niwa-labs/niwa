@@ -8,7 +8,8 @@
 //   2. a process reaches a host in `net` and does not reach one that is not listed (GitLab)
 //   3. the process gets the listed environment and not the host's
 //   4. a relative `write` is read from the cwd, where the wrapper runs
-//   5. a detached box leads its own process group, and a group signal ends what it started
+//   5. a path with pattern characters names itself and not its neighbours
+//   6. a detached box leads its own process group, and a group signal ends what it started
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
@@ -101,6 +102,22 @@ for (const sandbox of [srt(), nono()]) {
         expect((await run(sandbox, spec, "echo x > b")).code).not.toBe(0);
       } finally {
         await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    test.skipIf(!present)("a path with pattern characters names itself and not its neighbours", async () => {
+      const base = await realpath(await mkdtemp(join(homedir(), ".niwa-box-glob-")));
+      try {
+        const cwd = join(base, "work");
+        await mkdir(cwd);
+        // `out*` does not exist yet: read as a pattern it would grant `outside` too.
+        const spec = boxSpec({ cwd, write: [cwd, join(base, "out*")], env: { PATH: "/usr/bin:/bin", HOME: homedir() } });
+        expect((await run(sandbox, spec, "echo x > here")).code).toBe(0);
+        const neighbour = await run(sandbox, spec, `echo x > '${base}/outside'`);
+        expect(neighbour.code).not.toBe(0);
+        expect(await Bun.file(join(base, "outside")).exists()).toBe(false);
+      } finally {
+        await rm(base, { recursive: true, force: true });
       }
     });
 

@@ -5,7 +5,9 @@
  * the flag list nono is run with. Writing, the network and sockets map one to one. Reading is an
  * allow-list in nono, so a `denyRead` entry needs no flag: what was never granted is already closed.
  * Carving a hole out of a granted directory cannot be said, so a `denyRead` that overlaps a place the
- * box may read or write is refused rather than weakened. nono runs with a `HOME` and PATH of its own, the host's; the spec's environment is set on the command inside.
+ * box may read or write is refused rather than weakened. So is one that a place nono grants on its own
+ * (the system directories, the temp areas) covers: nono is asked, and a read it would allow is not
+ * left to look closed. nono runs with a `HOME` and PATH of its own, the host's; the spec's environment is set on the command inside.
  */
 
 import { realpathSync } from "node:fs";
@@ -50,6 +52,27 @@ function launcherEnv(): Readonly<Record<string, string>> {
   return { PATH: SYSTEM_PATH, HOME: homedir() };
 }
 
+/** Where nono is asked about a path: a system directory its default profile already lets it read. */
+const ASKING_DIRECTORY = "/usr/share";
+
+/** Would nono let the box read this path, by what it grants without being asked? `undefined` when it cannot say. */
+function readable(binary: string, path: string): boolean | undefined {
+  const asked = Bun.spawnSync([binary, "why", "--json", "--op", "read", "--path", path], {
+    cwd: ASKING_DIRECTORY,
+    env: { ...launcherEnv() },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    timeout: 5_000,
+  });
+  try {
+    const status: unknown = (JSON.parse(asked.stdout.toString()) as { status?: unknown }).status;
+    return status === "allowed" ? true : status === "denied" ? false : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface NonoManifest extends SandboxManifest {
   readonly sandbox: "nono";
   /** The flags between `nono run` and the program. */
@@ -64,6 +87,8 @@ export interface NonoOptions {
 export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
   const binary = options.binary ?? Bun.which("nono") ?? undefined;
   let probed: Promise<boolean> | undefined;
+  /** What nono answered for a path, so each is asked once. */
+  const memo = new Map<string, boolean | undefined>();
 
   const manifest = (given: BoxSpec): NonoManifest => {
     // Relative paths are read from the box's working directory, which is where nono is run: the same
@@ -73,6 +98,18 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     const carved = spec.denyRead.find((denied) => granted.some((place) => overlap(expanded(denied), place)));
     if (carved !== undefined) {
       throw new SandboxUnsupported("nono", `reads are an allow-list there, so ${carved} cannot be carved out of a place the box may use`);
+    }
+    if (binary !== undefined) {
+      for (const denied of spec.denyRead) {
+        const open = memo.get(denied) ?? readable(binary, expanded(denied));
+        memo.set(denied, open);
+        if (open !== false) {
+          throw new SandboxUnsupported(
+            "nono",
+            `reads are an allow-list there, and ${denied} ${open ? "is inside a place it grants by default" : "could not be checked against what it grants by default"}`,
+          );
+        }
+      }
     }
     const net = spec.net.length === 0 ? ["--block-net"] : spec.net.flatMap((host) => ["--allow-domain", host]);
     return {

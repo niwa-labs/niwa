@@ -13,6 +13,7 @@
 
 import { expect, test } from "bun:test";
 import { mkdir, symlink } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, requireSandbox, srt } from "@niwa-labs/sandbox";
@@ -55,10 +56,18 @@ test("srt settings are the spec's write, net, denyRead and sockets", () => {
   const manifest = srt().manifest(spec);
   expect(manifest.settings).toEqual({
     network: { allowedDomains: ["api.anthropic.com", "registry.npmjs.org"], deniedDomains: [], allowUnixSockets: ["~/.niwa/host.sock"] },
-    filesystem: { denyRead: [], allowWrite: ["/work/repo", "/tmp", "~/.claude"], denyWrite: [] },
+    filesystem: {
+      denyRead: [],
+      allowWrite: [
+        { path: "/work/repo", literal: true },
+        { path: "/tmp", literal: true },
+        { path: "~/.claude", literal: true },
+      ],
+      denyWrite: [],
+    },
   });
   const user = srt().manifest(boxSpec({ cwd: "/work/repo", denyRead: ["~/.ssh"] }));
-  expect(user.settings.filesystem.denyRead).toEqual(["~/.ssh"]);
+  expect(user.settings.filesystem.denyRead).toEqual([{ path: "~/.ssh", literal: true }]);
   expect(user.settings.network.allowedDomains).toEqual([]);
 });
 
@@ -80,7 +89,7 @@ test("nono flags are the spec's write, net and sockets; no net is a blocked net"
 });
 
 test("nono needs no flag for a denyRead it never granted, and refuses one it would have to carve out", () => {
-  const closed = nono().manifest(boxSpec({ cwd: "/x", denyRead: ["~/.ssh", "/home/.niwa/owner.token"] }));
+  const closed = nono().manifest(boxSpec({ cwd: "/x", denyRead: ["~/.ssh", "~/.niwa/owner.token"] }));
   expect(closed.flags).toEqual(nono().manifest(boxSpec({ cwd: "/x" })).flags);
   expect(() => nono().manifest(boxSpec({ cwd: "/x", denyRead: ["/x/secret"] }))).toThrow(SandboxUnsupported);
   expect(() => nono().manifest(boxSpec({ cwd: "/x", write: ["/home/.niwa"], denyRead: ["/home/.niwa/host.key"] }))).toThrow(
@@ -88,6 +97,34 @@ test("nono needs no flag for a denyRead it never granted, and refuses one it wou
   );
   expect(() => nono().manifest(boxSpec({ cwd: "/home", denyRead: ["/home/.niwa/host.key"] }))).toThrow(SandboxUnsupported);
   expect(() => nono().manifest(boxSpec({ cwd: "/x", read: ["/home"], denyRead: ["/home/.niwa/host.key"] }))).toThrow(SandboxUnsupported);
+});
+
+test.skipIf(process.platform !== "darwin" || !(await nono().available()))(
+  "nono refuses a denyRead inside a place it grants without being asked",
+  () => {
+    // nono's default profile lets the box read /usr/share: a flag cannot close a file there, and
+    // leaving the entry out would only make it look closed.
+    expect(() => nono().manifest(boxSpec({ cwd: "/x", denyRead: ["/usr/share/niwa-secret"] }))).toThrow(SandboxUnsupported);
+  },
+);
+
+test("srt on Linux refuses a socket it would silently leave closed", () => {
+  const sockets = boxSpec({ cwd: "/x", sockets: ["~/.niwa/host.sock"] });
+  expect(() => srt({ platform: "linux" }).manifest(sockets)).toThrow(SandboxUnsupported);
+  expect(srt({ platform: "linux" }).manifest(boxSpec({ cwd: "/x" })).settings.network.allowUnixSockets).toEqual([]);
+  expect(srt({ platform: "darwin" }).manifest(sockets).settings.network.allowUnixSockets).toEqual(["~/.niwa/host.sock"]);
+});
+
+test("a working directory under the home directory is expanded once, and the paths read from it follow", () => {
+  const home = homedir();
+  for (const sandbox of [srt(), nono()]) {
+    const manifest = sandbox.manifest(boxSpec({ cwd: "~/project", write: ["out"] }));
+    expect(manifest.cwd).toBe(join(home, "project"));
+  }
+  expect(srt().manifest(boxSpec({ cwd: "~/project", write: ["out"] })).settings.filesystem.allowWrite).toEqual([
+    { path: join(home, "project", "out"), literal: true },
+  ]);
+  expect(nono().manifest(boxSpec({ cwd: "~/project", write: ["out"] })).flags).toContain(join(home, "project", "out"));
 });
 
 test("nono sees through a link: a denyRead under a place reached by a link is refused too", async () => {

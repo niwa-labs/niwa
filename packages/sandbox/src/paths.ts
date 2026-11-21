@@ -1,6 +1,7 @@
 /** Where a relative path of a spec is read from, said once: the sandboxes and their checks all use it. */
 
-import { isAbsolute, resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { boxSpec } from "./spec.ts";
 import type { BoxSpec } from "./spec.ts";
@@ -13,8 +14,12 @@ export function anchored(path: string, base: string): string {
   return path === "~" || path.startsWith("~/") || isAbsolute(path) ? path : resolve(base, path);
 }
 
-/** The working directory of a spec, absolute: the one place the host's own directory is consulted. */
+/**
+ * The working directory of a spec, absolute: the one place the host's own directory is consulted,
+ * and the one place a leading `~` is expanded here, since every relative path is read from the result.
+ */
 export function workingDirectory(cwd: string): string {
+  if (cwd === "~" || cwd.startsWith("~/")) return join(homedir(), cwd.slice(2));
   return anchored(cwd, process.cwd());
 }
 

@@ -11,11 +11,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Sandbox, SandboxManifest } from "./sandbox.ts";
-import { SandboxUnavailable } from "./sandbox.ts";
+import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
 import { SYSTEM_PATH, insideBox, probe, spawnBox } from "./spawn.ts";
+
+/**
+ * A path as srt is to read it: the name and nothing else. A plain string is also a pattern wherever
+ * it has `*`, `?` or `[`, so an entry that does not exist yet would grant its neighbours as well.
+ */
+export interface SrtPath {
+  readonly path: string;
+  readonly literal: true;
+}
 
 /** The part of srt's settings file this adapter writes. */
 export interface SrtSettings {
@@ -25,9 +34,9 @@ export interface SrtSettings {
     readonly allowUnixSockets: readonly string[];
   };
   readonly filesystem: {
-    readonly denyRead: readonly string[];
-    readonly allowWrite: readonly string[];
-    readonly denyWrite: readonly string[];
+    readonly denyRead: readonly SrtPath[];
+    readonly allowWrite: readonly SrtPath[];
+    readonly denyWrite: readonly SrtPath[];
   };
 }
 
@@ -59,22 +68,32 @@ function packagedCommand(): string[] | undefined {
 export interface SrtOptions {
   /** The srt command. Default: the installed `@anthropic-ai/sandbox-runtime`. */
   readonly command?: readonly string[];
+  /** The platform srt runs on. Default: this one. */
+  readonly platform?: NodeJS.Platform;
 }
+
+const literally = (paths: readonly string[]): SrtPath[] => paths.map((path) => ({ path, literal: true }));
 
 export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
   const command = options.command ?? packagedCommand();
+  const platform = options.platform ?? process.platform;
   let probed: Promise<boolean> | undefined;
 
   // Relative paths are read from the box's working directory, where srt is run, not from the host's.
   const manifest = (given: BoxSpec): SrtManifest => {
     const spec = anchoredSpec(given);
+    // On Linux srt cannot filter a socket by its path: the list is ignored, and the box would run
+    // with the socket the spec promises it closed to the process.
+    if (platform === "linux" && spec.sockets.length > 0) {
+      throw new SandboxUnsupported("srt", "on Linux it cannot allow a unix socket by its path");
+    }
     return {
       sandbox: "srt",
       cwd: spec.cwd,
       env: withPath(spec.env),
       settings: {
         network: { allowedDomains: spec.net, deniedDomains: [], allowUnixSockets: spec.sockets },
-        filesystem: { denyRead: spec.denyRead, allowWrite: spec.write, denyWrite: [] },
+        filesystem: { denyRead: literally(spec.denyRead), allowWrite: literally(spec.write), denyWrite: [] },
       },
     };
   };

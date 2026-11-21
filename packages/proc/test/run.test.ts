@@ -9,7 +9,8 @@
 //   5. the whole output is an artifact; the result and the record carry only a bounded tail
 //   6. a box that cannot run stops the call before any process exists
 
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 
@@ -26,8 +27,8 @@ afterEach(async () => {
   for (const host of hosts.splice(0)) await host.stop();
 });
 
-async function start(options: Parameters<typeof procHost>[0] = {}): Promise<Host> {
-  const host = await procHost(options);
+async function start(options: Parameters<typeof procHost>[0] = {}, at?: string): Promise<Host> {
+  const host = await procHost(options, at);
   hosts.push(host);
   return host;
 }
@@ -61,7 +62,9 @@ test("a run asks for a box that writes only in its cwd, reaches nothing, and hol
 
 test("the box of a run inside the niwa home, where worktrees live, is one nono can express", async () => {
   const sandbox = recordingSandbox();
-  const host = await start({ sandbox });
+  // A home under the user's home, as the host's is: nono grants the temp area on its own, so it
+  // cannot close the host's keys there.
+  const host = await start({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
   const cwd = dirIn(host.home, "worktrees", "wt-1");
   await host.niwa.call(procRun, { cmd: ["/usr/bin/true"], cwd, timeout: 10_000 });
   const [spec] = sandbox.specs;
