@@ -6,10 +6,13 @@
 
 import type { z } from "zod";
 
+import { readWindow } from "@niwa-labs/digest";
+import type { DigestMode, FileIndex } from "@niwa-labs/digest";
 import { LocatorSchema, failedCoverage, requireAbility, unavailableCoverage } from "@niwa-labs/harness";
 import type { Coverage, Harness, SessionId, SessionReading, SessionRecord } from "@niwa-labs/harness";
 
-import type { SessionRecordSchema } from "./records.ts";
+import { DEFAULT_READ_BUDGET } from "./records.ts";
+import type { DigestReadSchema, SessionRecordSchema } from "./records.ts";
 import type { SearchMatch, SearchQuery } from "./records.ts";
 import { searchTranscript } from "./search.ts";
 
@@ -19,10 +22,17 @@ export interface ReadingBinding {
   readonly reading?: SessionReading;
 }
 
-/** What a read is given beside the session: where to go on from, or the window of records before a locator. */
+/**
+ * What a read is given beside the session: where to go on from, or the window of records before a
+ * locator; and how much of the records to keep, in windows of about how many tokens, with the file
+ * index of the window before.
+ */
 export interface ReadQuery {
   readonly from?: string | undefined;
   readonly window?: { limit: number; before?: string | undefined } | undefined;
+  readonly mode?: DigestMode | undefined;
+  readonly budget?: number | undefined;
+  readonly files?: FileIndex | undefined;
 }
 
 /** What a read answers with. */
@@ -30,6 +40,8 @@ export interface ReadAnswer {
   records: Array<z.output<typeof SessionRecordSchema>>;
   coverage: Coverage;
   page?: { hasEarlier: boolean };
+  /** The window of a digest or a brief: its records are not given one by one. */
+  digest?: z.output<typeof DigestReadSchema>;
 }
 
 /**
@@ -48,7 +60,8 @@ export async function readTranscript(binding: ReadingBinding | undefined, id: Se
   }
   requireAbility(binding.instance, "reading", "read");
 
-  if (input.window !== undefined) return await readWindow(binding.reading, id, input.window);
+  if (input.window !== undefined) return await readRecordWindow(binding.reading, id, input.window);
+  if (input.mode === "digest" || input.mode === "brief") return await readDigest(binding.reading, id, { ...input, mode: input.mode });
 
   const from = input.from === undefined ? undefined : LocatorSchema.parse(input.from);
   const records: SessionRecord[] = [];
@@ -76,8 +89,28 @@ export async function searchSession(
   return await searchTranscript(binding.reading, id, input);
 }
 
+/** A window of a digest or a brief from `from`; what was read before a failure is not given, the failure is. */
+async function readDigest(
+  reading: SessionReading,
+  id: SessionId,
+  input: ReadQuery & { mode: "digest" | "brief" },
+): Promise<ReadAnswer> {
+  const from = input.from === undefined ? undefined : LocatorSchema.parse(input.from);
+  try {
+    const window = await readWindow(reading.read(id, from), {
+      mode: input.mode,
+      budget: input.budget ?? DEFAULT_READ_BUDGET,
+      ...(input.files === undefined ? {} : { files: input.files }),
+    });
+    if (window.view.mode === "full") throw new Error("a digest read gave every record");
+    return { records: [], coverage: await reading.coverage(id, from), digest: { ...window, view: window.view } };
+  } catch (error) {
+    return { records: [], coverage: failedCoverage(error instanceof Error ? error.message : String(error)) };
+  }
+}
+
 /** Retain only the records of the requested window while scanning in the harness's order. */
-async function readWindow(
+async function readRecordWindow(
   reading: SessionReading,
   id: SessionId,
   { limit, before }: { limit: number; before?: string },

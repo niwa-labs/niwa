@@ -5,10 +5,12 @@
 
 import { z } from "zod";
 
+import { BriefSchema, DigestEntrySchema, DigestModeSchema, FileIndexSchema } from "@niwa-labs/digest";
 import {
   AssistantRecordSchema,
   ChecklistRecordSchema,
   CompactionRecordSchema,
+  LocatorSchema,
   NestedRecordSchema,
   PermissionRecordSchema,
   ThinkingRecordSchema,
@@ -77,3 +79,27 @@ export const SessionRecordSchema = z.discriminatedUnion("kind", [
   // The raw data of an unfamiliar record is kept by the reading side, not published here.
   UnknownRecordSchema.omit({ raw: true }),
 ]);
+
+export { FileIndexSchema };
+
+/** How much of a session a read keeps: every record (`full`), a digest, or a brief. */
+export const ReadModeSchema = DigestModeSchema;
+
+/** How many tokens a window of a compressed read holds when it is not told. */
+export const DEFAULT_READ_BUDGET = 40_000;
+
+/** A window of a compressed read: what it holds, where the next starts, and the file index to give it. */
+export const DigestReadSchema = z.object({
+  view: z.discriminatedUnion("mode", [
+    z.object({ mode: z.literal("digest"), entries: z.array(DigestEntrySchema) }),
+    z.object({ mode: z.literal("brief"), brief: BriefSchema }),
+  ]),
+  /** Where the next window reads from (`from`); `null` when this one read to the end. */
+  next: LocatorSchema.nullable(),
+  /** The last record the window holds: where a session that still grows is read on from later. */
+  upto: LocatorSchema.nullable(),
+  /** The file index after this window: what the next read is given as `files`. */
+  files: FileIndexSchema,
+  /** How many records left nothing in the window. */
+  omitted: z.number().int().nonnegative(),
+});

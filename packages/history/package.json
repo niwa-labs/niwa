@@ -8,6 +8,7 @@
     "./flow": "./src/flow.ts"
   },
   "dependencies": {
+    "@niwa-labs/digest": "workspace:*",
     "@niwa-labs/harness": "workspace:*",
     "zod": "^4.6.7"
   }

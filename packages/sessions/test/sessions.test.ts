@@ -377,6 +377,34 @@ test("read rejects invalid windows before accessing the reading side", async () 
   await expect(read({ session, window: { limit: 1, before: "" } })).rejects.toThrow();
 });
 
+test("a digest read gives entries in windows that go on from next, carrying the file index; a brief sums the session up", async () => {
+  const records = [
+    { kind: "user", text: "fix it", locator: "l1", incomplete: false },
+    { kind: "tool-call", callId: "c1", name: "Read", category: "read", target: "/r/a.ts", input: { file_path: "/r/a.ts" }, locator: "l2", incomplete: false },
+    { kind: "tool-result", callId: "c1", output: "x".repeat(2_000), ok: true, locator: "l3", incomplete: false },
+    { kind: "tool-call", callId: "c2", name: "Edit", category: "edit", target: "/r/a.ts", input: { file_path: "/r/a.ts" }, locator: "l4", incomplete: false },
+    { kind: "assistant", text: "done", locator: "l5", incomplete: false },
+  ] as unknown as SessionRecord[];
+  const actions = install({ harnesses: [{ instance: instance("a", true), reading: fakeReading({ records }) }] }, undefined);
+  const read = actions["session.read"]!;
+
+  const first = await read({ session: "a s1", mode: "digest", budget: 100 });
+  expect(first.records).toEqual([]);
+  expect(first.digest.view.entries.map((entry: { kind: string }) => entry.kind)).toEqual(["user", "tool"]);
+  expect(first.digest.next).toBe("l2");
+  const second = await read({ session: "a s1", mode: "digest", from: first.digest.next, files: first.digest.files });
+  expect(second.digest.view.entries.map((entry: { kind: string }) => entry.kind)).toEqual(["result", "tool", "assistant"]);
+  expect(second.digest.view.entries[1]).toMatchObject({ category: "edit", target: "[F1]" });
+  expect(second.digest.next).toBeNull();
+  expect(second.digest.files.files).toEqual([{ id: 1, path: "/r/a.ts", changed: true }]);
+
+  const brief = await read({ session: "a s1", mode: "brief" });
+  expect(brief.digest.view.brief).toMatchObject({ changed: ["/r/a.ts"], calls: { read: 1, edit: 1 }, outcome: "answered" });
+  // A full read is the records, as before.
+  expect((await read({ session: "a s1", mode: "full" })).records).toHaveLength(5);
+  await expect(read({ session: "a s1", mode: "digest", window: { limit: 2 } })).rejects.toThrow(/takes no digest/);
+});
+
 test("read refuses an undeclared ability before reading", async () => {
   const silent = { ...instance("a", true), sides: { reading: { list: true, read: false, watch: false } } };
   const actions = install({ harnesses: [{ instance: silent, reading: fakeReading({ records: [text("l1")] }) }] }, undefined);
