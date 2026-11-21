@@ -394,6 +394,11 @@ class AcpSession {
    * and a stop finds them by it.
    */
   readonly mark = randomUUID();
+  /**
+   * Why the session takes no new work, while the agent holds a turn it did not let go of after its
+   * cancel and its grace: what is sent meanwhile would wait behind a turn that may never end.
+   */
+  held: string | undefined;
   /** The last line written to the child, settled when its input has taken it or failed it. */
   accepted: Promise<void> = Promise.resolve();
   /** The text of the turn that is running. */
@@ -512,6 +517,7 @@ class AcpSession {
   /** The turn is over, however it ended: say so, and release those who wait for the idle. */
   private settle(): void {
     this.running = false;
+    this.held = undefined;
     // The turn is over: nothing it asked is waited for any more.
     this.cancelAsking();
     this.emit({ kind: "turn-ended", turn: this.current, at: Date.now() });
@@ -1297,6 +1303,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
    * that is busy, because mcode refuses it ("local_session_busy").
    */
   function turnOn(session: AcpSession, text: string, ability: string): Promise<TurnResult> {
+    if (session.held !== undefined) return Promise.reject(unavailable(ability, session.held));
     return session.running ? queueTurn(session, text, ability) : runTurn(session, text, ability);
   }
 
@@ -1384,6 +1391,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
         dropped = true;
         const reason = `the agent holds turn "${status.activeTurn.turnId}" of the session and did not let it go after it was cancelled`;
         session.emit({ kind: "activity", at: Date.now(), detail: reason });
+        session.held = reason;
         session.dropQueue(reason);
       }
     }
@@ -1444,6 +1452,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
         // The one who resumes names where its reverse requests go from now on.
         if (resumeOptions?.reverse !== undefined) session.reverse = resumeOptions.reverse;
         if (text.length === 0) return;
+        if (session.held !== undefined) throw unavailable("resume", session.held);
         if (session.running) {
           session.queued.push({ text, turn: session.reserveTurn() });
           return;
@@ -1543,6 +1552,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       if (session === undefined || session.ended || session.stopping) {
         throw new InputNotSent(harnessId, "send", `there is no running session "${id.native}"`);
       }
+      if (session.held !== undefined) throw new InputNotSent(harnessId, "send", session.held);
       const at = Date.now();
       if (sendOptions?.into === "turn" && session.running && session.steerable) {
         // Into the running turn: mcode joins the text to the turn between its tool calls and

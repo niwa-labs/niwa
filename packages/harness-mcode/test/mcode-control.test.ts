@@ -1442,3 +1442,37 @@ test("two resumes of a session that lost its process share one new process", asy
   await control.stop(id);
   expect(await control.state(id)).toBe("unknown");
 });
+
+test("a session whose turn the agent holds past its cancel takes no new work until the turn is over", async () => {
+  control = await fakeControl({ files: ["status", "deaf"], turnTimeoutMs: 300, cancelGraceMs: 600 });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  await control.send(id, "die");
+  for (let i = 0; i < 100 && (await control.state(id)) !== "unknown"; i += 1) await Bun.sleep(50);
+  await writeFile(join(dir, "foreign-turn"), "");
+  const here = process.cwd();
+  process.chdir(dir);
+  try {
+    await control.resume(id);
+  } finally {
+    process.chdir(here);
+  }
+  const schema = z.object({ word: z.string() });
+  // The question that waited behind the held turn is told which turn holds the session.
+  await expect(control.ask(id, { schema, prompt: promptFromText("give the word") })).rejects.toThrow(/holds turn "t0"/);
+
+  // Work that comes after is refused at once, not queued behind a turn that may never end.
+  const late = Promise.race([
+    control.ask(id, { schema, prompt: promptFromText("give the word") }).then(() => "answered", (error: unknown) => error),
+    Bun.sleep(3_000).then(() => "waiting"),
+  ]);
+  expect(await late).toMatchObject({ code: "Unavailable" });
+  await expect(control.send(id, "more")).rejects.toMatchObject({ code: "InputNotSent" });
+  await expect(control.resume(id, { prompt: promptFromText("more") })).rejects.toMatchObject({ code: "Unavailable" });
+  expect(await control.state(id)).toBe("running");
+
+  // The agent lets the turn go: the session takes work again.
+  await rm(join(dir, "foreign-turn"));
+  for (let i = 0; i < 100 && (await control.state(id)) !== "idle"; i += 1) await Bun.sleep(50);
+  expect(await control.state(id)).toBe("idle");
+  expect((await control.send(id, "again")).status).toBe("started");
+});
