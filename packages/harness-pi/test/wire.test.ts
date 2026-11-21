@@ -126,6 +126,57 @@ test("an agent_end without willRetry still ends the run: the session is idle aft
   }
 });
 
+test("an agent_end that says pi will retry does not end the turn: the session is running until the retry ends", async () => {
+  env("FAKE_END", { type: "agent_end", messages: [], willRetry: true });
+  const side = pi();
+  try {
+    const run = await watched(side);
+    const session = (await run.send()) as { turn: number };
+    expect(session.turn).toBe(1);
+    await eventually(async () => details(run.events).includes("agent_end (pi will retry)"));
+    expect(run.events.some((event) => event.kind === "turn-ended")).toBe(false);
+  } finally {
+    await side.dispose();
+  }
+});
+
+test("a run pi retries is the same turn: one start, one end, after the last try", async () => {
+  env("FAKE_LINES", [
+    { type: "agent_end", messages: [], willRetry: true },
+    { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 10, errorMessage: "overloaded" },
+    { type: "agent_start" },
+  ]);
+  const side = pi();
+  try {
+    const run = await watched(side);
+    await run.send();
+    await run.ended();
+    expect(run.events.filter((event) => event.kind === "turn-started")).toMatchObject([{ turn: 1 }]);
+    expect(run.events.filter((event) => event.kind === "turn-ended")).toMatchObject([{ turn: 1 }]);
+    // The end is the last thing that happened to the turn.
+    expect(run.events.at(-1)?.kind).toBe("turn-ended");
+  } finally {
+    await side.dispose();
+  }
+});
+
+test("pi giving up a retry it announced settles the turn it held open", async () => {
+  env("FAKE_LINES", [
+    { type: "agent_end", messages: [], willRetry: true },
+    { type: "agent_settled", aborted: true },
+  ]);
+  env("FAKE_END", "null");
+  const side = pi();
+  try {
+    const run = await watched(side);
+    await run.send();
+    await run.ended();
+    expect(run.events.filter((event) => event.kind === "turn-ended")).toHaveLength(1);
+  } finally {
+    await side.dispose();
+  }
+});
+
 test("the end of a run is the end of a run even when a message in it has a role or a block pi grew", async () => {
   env("FAKE_END", {
     type: "agent_end",

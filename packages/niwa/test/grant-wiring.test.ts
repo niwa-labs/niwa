@@ -172,7 +172,7 @@ process.stdin.on("data", (chunk) => {
   for (let nl = buffer.indexOf("\\n"); nl !== -1; nl = buffer.indexOf("\\n")) {
     const frame = JSON.parse(buffer.slice(0, nl));
     buffer = buffer.slice(nl + 1);
-    if (frame.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: frame.id, command: "get_state", success: true, data: { sessionId: "s1" } }) + "\\n");
+    if (frame.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: frame.id, command: "get_state", success: true, data: { sessionId: "s" + process.pid } }) + "\\n");
   }
 });
 `;
@@ -385,7 +385,7 @@ test("pi and codex are launched with the flags of the grant", async () => {
   await host.call(START, { harness: "codex-fake", prompt: "", cwd: dir, visible: { actions: ["tool:*"] } });
 
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
-    ["--mode", "rpc", "--tools", "read,grep"],
+    ["--mode", "rpc", "--tools", "read,grep", "--no-mcp"],
     ["--mode", "rpc"],
     ["app-server", "--stdio", ...codexToolFlags(["web_search", ...CODEX_FIXED_TOOLS])],
     ["app-server", "--stdio"],

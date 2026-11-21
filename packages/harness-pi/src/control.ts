@@ -45,8 +45,10 @@ import {
   DEFAULT_TURN_TIMEOUT_MS,
   InputNotSent,
   InputPossiblySent,
+  describeToolsMode,
   modeOf,
   modelName,
+  NIWA_SESSION_ENV,
   requireLaunch,
   sessionId as makeSessionId,
   Unavailable,
@@ -77,6 +79,7 @@ import type {
 } from "@niwa-labs/harness";
 import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
+import { PI_INSTANCE_ENV } from "./insert/insert.ts";
 import { PI_PROTOCOL, PiCommandSchema, RequestIdSchema, describeUnknown, parseLine, unknownVariantName } from "./protocol/index.ts";
 import type {
   PiUnknownVariant,
@@ -100,21 +103,53 @@ import type {
 const PI_NEEDS: HarnessNeeds = { write: [homePath(".pi")], net: [] };
 
 /**
- * pi's flags for an allow-list of its own tools (`docs/cli.md`): `--tools` replaces the selection
- * with exactly the tools named, built-in, extension or custom. With none named `--no-tools` starts
- * with every tool off, the extensions pi loads by itself among them: those are pi's, not niwa's.
+ * Why a name cannot be handed to pi's `--tools`, or `undefined` when it can.
+ *
+ * pi reads each entry of the list as a pattern of its own language: `*` matches any characters, a
+ * leading `+` or `-` adds to or removes from the default selection, and `mcp__` addresses the tools
+ * of its MCP servers. Only a plain name selects exactly that tool, which is all an allow-list of
+ * niwa may promise.
  */
-export function piToolFlags(allow: readonly string[]): string[] {
-  return allow.length === 0 ? ["--no-tools"] : ["--tools", allow.join(",")];
+function unliteralToolName(name: string): string | undefined {
+  if (name.trim() !== name || name === "") return "it is empty or has blank edges";
+  if (/[\s,*]/.test(name)) return "pi reads `,`, `*` and blanks as the syntax of its own selection";
+  if (name.startsWith("+") || name.startsWith("-")) return "pi reads a leading `+` or `-` as an edit of its defaults";
+  if (name.startsWith("mcp__")) return "the tools of MCP servers are not tools of pi's own";
+  return undefined;
 }
 
 /**
- * The flags for a tool mode. pi's RPC mode takes no MCP server, so a session of niwa's tools only
- * has none of pi's: `--no-tools`, the same as an empty allow-list.
+ * pi's flags for an allow-list of its own tools (`docs/cli.md`): `--tools` replaces the selection
+ * with exactly the tools named, built-in, extension or custom, but it keeps every MCP tool, so
+ * `--no-mcp` goes with it. With none named `--no-tools` starts with every tool off, the extensions
+ * and MCP servers pi loads by itself among them: those are pi's, not niwa's.
+ *
+ * A name pi would read as a pattern is refused with `Unsupported`: the list would reach more tools
+ * than niwa named.
  */
-export function piToolsModeFlags(tools: ToolsMode): string[] {
-  if (tools === "all") return [];
-  return piToolFlags(tools === "niwa-only" ? [] : tools.allow);
+export function piToolFlags(harness: HarnessId, ability: "start" | "resume", allow: readonly string[]): string[] {
+  for (const name of allow) {
+    const why = unliteralToolName(name);
+    if (why !== undefined) {
+      throw new Unsupported(harness, "control", ability, `${describeToolsMode({ allow })}: "${name}" cannot be named to pi exactly: ${why}`);
+    }
+  }
+  return allow.length === 0 ? ["--no-tools"] : ["--tools", allow.join(","), "--no-mcp"];
+}
+
+/**
+ * The flags for a tool mode, or `Unsupported` when pi cannot hold a session to it.
+ *
+ * `niwa-only` is refused: pi's RPC mode takes no MCP server, and the tools niwa would give a
+ * session through an extension of pi are not wired in, so a session of niwa's tools only would have
+ * no tool at all.
+ */
+export function piToolsModeFlags(harness: HarnessId, ability: "start" | "resume", tools: ToolsMode | undefined): string[] {
+  if (tools === undefined || tools === "all") return [];
+  if (tools === "niwa-only") {
+    throw new Unsupported(harness, "control", ability, `${describeToolsMode(tools)}: pi has no way to give a session niwa's tools alone`);
+  }
+  return piToolFlags(harness, ability, tools.allow);
 }
 
 /**
@@ -178,6 +213,18 @@ const MAX_LINE_BYTES = 16 * 1024 * 1024;
 /** How much of stderr is kept to explain a death. */
 const STDERR_TAIL_CHARS = 2_000;
 
+/** How pi is told to queue a message that comes while it works. */
+type StreamingBehavior = "steer" | "followUp";
+
+/** What pi did with a prompt. */
+type Disposition = "started" | "queued" | "handled";
+
+/** What became of a message put into a session: what pi did with it, and how it was asked to queue it. */
+interface Delivery {
+  readonly disposition: Disposition;
+  readonly behavior: StreamingBehavior | undefined;
+}
+
 /** How a request ends: pi answered it, or the process went away before it did. */
 type Settled =
   | { readonly kind: "answer"; readonly incoming: Extract<PiIncoming, { kind: "response" }> }
@@ -221,8 +268,14 @@ class LiveSession {
   busy = false;
   /** Whether the session is on its way out. */
   stopping = false;
-  /** Whether the process is gone. */
+  /** Whether the session is lost: the process is gone, or nothing it says can be trusted any more. */
   ended = false;
+  /** Whether the process has been seen to close; only then is there nothing left to kill. */
+  closed = false;
+  /** The stop of the process, once one has begun: every stop of the session is this one. */
+  stop: Promise<void> | undefined;
+  /** Whether a run ended with the word that pi will retry it: the turn is still open until the retry runs or pi settles. */
+  holding = false;
   /** What stderr said, kept for the error that explains a death. */
   stderrTail = "";
   /** The answers of pi that are waited for. */
@@ -296,6 +349,10 @@ export class PiControl implements PiSessionControl {
   readonly #owned = new Set<LiveSession>();
   /** The file of every session this side has seen, so a session can be opened again. */
   readonly #files = new Map<string, string>();
+  /** The starts of processes that have not returned one yet: a dispose waits for them. */
+  readonly #spawning = new Set<Promise<unknown>>();
+  /** The last open of each session id: opens of one id run one after another. */
+  readonly #opening = new Map<string, Promise<void>>();
   #disposed = false;
 
   constructor(options: PiControlOptions) {
@@ -316,10 +373,9 @@ export class PiControl implements PiSessionControl {
   // -- the side -------------------------------------------------------------
 
   async start(options: StartOptions): Promise<StartedSession> {
-    if (this.#disposed) {
-      throw new Unavailable(this.#harness, "control", "start", "the control side is disposed");
-    }
+    this.#requireOpen("start");
     this.#refuseSeen("start", options.visible, options.servers);
+    const toolFlags = piToolsModeFlags(this.#harness, "start", options.tools);
     const mode = modeOf(options.mode, this.#options.mode, PI_LAUNCH);
     requireLaunch(this.#harness, PI_LAUNCH, {
       model: options.model ?? this.#options.model,
@@ -328,7 +384,8 @@ export class PiControl implements PiSessionControl {
     });
     const cwd = resolve(options.cwd ?? this.#options.cwd ?? process.cwd());
     // pi names the session in its answer to `get_state`, before any prompt.
-    const session = await this.#spawn(cwd, undefined, "start", options.model, options.effort, options);
+    const session = await this.#spawn(cwd, undefined, "start", options.model, options.effort, toolFlags, options);
+    await this.#publish(session, "start");
     const id = makeSessionId(this.#harness, session.nativeId);
     // The prompt is the first turn, delivered like a send: the start waits for pi to take it,
     // never for the run to end.
@@ -339,14 +396,26 @@ export class PiControl implements PiSessionControl {
     } catch (error) {
       // pi refused the first message: the session was never given its work, and nobody holds
       // its id to stop it later.
-      this.#sessions.delete(session.nativeId);
+      this.#unpublish(session);
       await this.#stopSession(session);
       throw error;
     }
   }
 
   async resume(id: SessionId, options?: ResumeOptions): Promise<void> {
+    this.#requireOpen("resume");
     this.#refuseSeen("resume", options?.visible, options?.servers);
+    const text = options?.prompt === undefined ? "" : promptText(options.prompt);
+    // Only the opening of the process is serialized, never the run that follows: two resumes of one
+    // id find one process, and a resume with a prompt does not hold up the next for the length of a turn.
+    const { session, fresh } = await this.#exclusive(id.native, () => this.#open(id, options));
+    if (fresh) await this.#firstTurn(session, text);
+    else if (text.trim().length > 0) await this.#deliver(session, text, true);
+  }
+
+  /** The process that serves a session: the one that is held, or the one that opens its file. */
+  async #open(id: SessionId, options: ResumeOptions | undefined): Promise<{ session: LiveSession; fresh: boolean }> {
+    this.#requireOpen("resume");
     // A session whose process ended is remembered for its file only: it is not held, and a
     // resume that took it for held would report a session nothing is running.
     const known = this.#sessions.get(id.native);
@@ -357,10 +426,13 @@ export class PiControl implements PiSessionControl {
       }
       // The one who resumes names where the dialogs go from now on.
       if (options?.reverse !== undefined) held.reverse = options.reverse;
-      const text = options?.prompt === undefined ? "" : promptText(options.prompt);
-      if (text.trim().length > 0) await this.#deliver(held, text, true);
-      return;
+      return { session: held, fresh: false };
     }
+    const toolFlags = piToolsModeFlags(this.#harness, "resume", options?.tools);
+    requireLaunch(this.#harness, PI_LAUNCH, { mode: modeOf(options?.mode, this.#options.mode, PI_LAUNCH) });
+    // The directory the session was started in, when the caller says it, is where its file is
+    // looked for and where pi is run again.
+    const cwd = resolve(options?.cwd ?? this.#options.cwd ?? process.cwd());
     // A session is opened again by its file: pi's `--session`. The file is the one pi named,
     // and it is remembered; when it is not, it is looked for in the way pi names its files.
     // pi writes no file until a turn has run, so a remembered name proves nothing: the file must
@@ -369,7 +441,7 @@ export class PiControl implements PiSessionControl {
     const file =
       remembered !== undefined && (await stat(remembered).then(() => true, () => false))
         ? remembered
-        : await this.#findFile(id.native);
+        : await this.#findFile(id.native, cwd);
     if (file === undefined) {
       throw new Unavailable(
         this.#harness,
@@ -378,14 +450,10 @@ export class PiControl implements PiSessionControl {
         `the session "${id.native}" has no file to be opened again by: pi writes one only after a turn has run`,
       );
     }
-    requireLaunch(this.#harness, PI_LAUNCH, { mode: modeOf(options?.mode, this.#options.mode, PI_LAUNCH) });
-    const cwd = resolve(this.#options.cwd ?? process.cwd());
-    const session = await this.#spawn(cwd, file, "resume", options?.model, undefined, options ?? {});
+    const session = await this.#spawn(cwd, file, "resume", options?.model, undefined, toolFlags, options ?? {});
     // pi opened the file it was given; a session it names otherwise is not the one that was
     // asked for, and holding it under the old id would continue a conversation that is not it.
     if (session.nativeId !== id.native) {
-      // The spawn filed it under the id it named: that id is not held by it either.
-      if (this.#sessions.get(session.nativeId) === session) this.#sessions.delete(session.nativeId);
       await this.#stopSession(session);
       throw new Unavailable(
         this.#harness,
@@ -394,7 +462,8 @@ export class PiControl implements PiSessionControl {
         `pi opened the session "${session.nativeId}", not the session "${id.native}" that was asked for`,
       );
     }
-    await this.#firstTurn(session, options?.prompt === undefined ? "" : promptText(options.prompt));
+    await this.#publish(session, "resume");
+    return { session, fresh: true };
   }
 
   /**
@@ -420,30 +489,65 @@ export class PiControl implements PiSessionControl {
     // The runs counted before the message goes out: pi may begin the run in the same read as
     // its answer, and the receipt of a run it starts names that run, not the one after it.
     const before = session.turn;
-    if (session.busy) {
-      // The queueing is pi's own `prompt` with a `streamingBehavior`: pi decides, atomically,
-      // whether it is working. A bare `steer` or `follow_up` sent after the run ended in the
-      // same read would be kept by an idle pi and never delivered; this one just starts a run.
-      if (options?.into === "turn") {
-        // Only a caller that asks for it gets its message into the running turn.
-        await this.#call(session, "prompt", { message, streamingBehavior: "steer" });
-        return { status: "delivered", turn: session.turn, at };
-      }
-      // The default: pi keeps the message for the answer that comes after the running one.
-      await this.#call(session, "prompt", { message, streamingBehavior: "followUp" });
-      return { status: "queued", turn: session.turn + 1, at };
+    const delivery = await this.#put(session, message, options?.into);
+    switch (delivery.disposition) {
+      // An extension of pi took the message as a command of its own: no run began, and none will
+      // for it. It reached the session, and it names no turn.
+      case "handled":
+        return { status: "delivered", at };
+      // The caller does not wait for the end of the run; the signs of life report it.
+      case "started":
+        return { status: "started", turn: before + 1, at };
+      case "queued":
+        // Only a caller that asks for it gets its message into the running turn; otherwise pi keeps
+        // the message for the answer that comes after the running one.
+        return delivery.behavior === "steer"
+          ? { status: "delivered", turn: session.turn, at }
+          : { status: "queued", turn: session.turn + 1, at };
+      default:
+        return assertNever(delivery.disposition, "pi prompt disposition");
     }
+  }
+
+  /**
+   * Puts a message into a session, and says what pi did with it.
+   *
+   * The queueing is pi's own `prompt` with a `streamingBehavior`: pi decides, atomically, whether
+   * it is working. A bare `steer` or `follow_up` sent after the run ended in the same read would be
+   * kept by an idle pi and never delivered; this one just starts a run. A session seen busy is
+   * queued from the start. One not seen busy gets a bare prompt, and when pi refuses it because it
+   * is working after all (the side has not seen the run begin yet), the refusal is taken at its
+   * word and the message is queued, the way the caller asked for.
+   *
+   * Only an answer that is a refusal of this very command, with the reason pi gives for being busy,
+   * allows the second write. Any other failure may have left the first one in pi's hands.
+   */
+  async #put(
+    session: LiveSession,
+    message: string,
+    into: SendOptions["into"],
+  ): Promise<Delivery> {
+    const queued: StreamingBehavior = into === "turn" ? "steer" : "followUp";
+    if (session.busy) return { disposition: await this.#prompt(session, message, queued), behavior: queued };
     try {
-      await this.#call(session, "prompt", { message });
+      return { disposition: await this.#prompt(session, message, undefined), behavior: undefined };
     } catch (error) {
-      // pi refuses a bare prompt while it is working. The side may not have seen the run begin
-      // yet, so the refusal is taken at its word and the message is queued instead.
       if (!isBusyRefusal(error)) throw error;
-      await this.#call(session, "prompt", { message, streamingBehavior: "followUp" });
-      return { status: "queued", turn: session.turn + 1, at };
+      return { disposition: await this.#prompt(session, message, queued), behavior: queued };
     }
-    // The caller does not wait for the end of the run; the signs of life report it.
-    return { status: "started", turn: before + 1, at };
+  }
+
+  /**
+   * One `prompt`, and what pi says it did: started a run, queued the message, or handled it with no
+   * run. A pi that predates the dispositions says nothing, and the side's own reading of what it
+   * asked for stands in.
+   */
+  async #prompt(session: LiveSession, message: string, behavior: StreamingBehavior | undefined): Promise<Disposition> {
+    const response = await this.#call(session, "prompt", behavior === undefined ? { message } : { message, streamingBehavior: behavior });
+    if (response.command !== "prompt") {
+      throw new Unavailable(this.#harness, "control", "prompt", `pi answered "${response.command}" to the command "prompt"`);
+    }
+    return response.data?.disposition ?? (behavior === undefined ? "started" : "queued");
   }
 
   async interrupt(id: SessionId): Promise<void> {
@@ -511,23 +615,79 @@ export class PiControl implements PiSessionControl {
   async stop(id: SessionId): Promise<void> {
     const session = this.#sessions.get(id.native);
     if (session === undefined) return;
-    this.#sessions.delete(id.native);
+    this.#unpublish(session);
     await this.#stopSession(session);
   }
 
   async dispose(): Promise<void> {
     this.#disposed = true;
     this.#sessions.clear();
+    // A process that is still being started stops itself the moment it is returned, and the dispose
+    // does not end before that has happened.
+    await Promise.allSettled([...this.#spawning]);
     for (const session of [...this.#owned]) {
       await this.#stopSession(session);
     }
+  }
+
+  // -- the owner ------------------------------------------------------------
+
+  /** A disposed side starts and opens nothing. */
+  #requireOpen(ability: "start" | "resume"): void {
+    if (this.#disposed) {
+      throw new Unavailable(this.#harness, "control", ability, "the control side is disposed");
+    }
+  }
+
+  /** Runs `work` once the earlier work for the same key has ended. */
+  async #exclusive<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.#opening.get(key) ?? Promise.resolve();
+    let release: () => void = () => undefined;
+    const mine = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => mine);
+    this.#opening.set(key, tail);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+      if (this.#opening.get(key) === tail) this.#opening.delete(key);
+    }
+  }
+
+  /**
+   * Makes a process the holder of the id pi named for it. A process that was started is held only
+   * once its id is known to be the right one, and never in the place of another that is alive.
+   */
+  async #publish(session: LiveSession, ability: "start" | "resume"): Promise<void> {
+    const holder = this.#sessions.get(session.nativeId);
+    const refusal =
+      this.#disposed
+        ? "the control side is disposed"
+        : holder !== undefined && holder !== session && !holder.ended && !holder.stopping
+          ? `another process of this side holds the session "${session.nativeId}"`
+          : undefined;
+    if (refusal !== undefined) {
+      await this.#stopSession(session);
+      throw new Unavailable(this.#harness, "control", ability, refusal);
+    }
+    this.#sessions.set(session.nativeId, session);
+  }
+
+  /** Lets go of the id a process holds, when it is the holder. */
+  #unpublish(session: LiveSession): void {
+    if (this.#sessions.get(session.nativeId) === session) this.#sessions.delete(session.nativeId);
   }
 
   // -- the session ----------------------------------------------------------
 
   /** The environment pi is run in. */
   #env(): Record<string, string> {
-    const env: Record<string, string> = { ...this.#options.env };
+    // Every process of this side is niwa's: it says so, and which installation it belongs to, to the
+    // extension inside it, so a session niwa started is not reported as one opened by hand.
+    const env: Record<string, string> = { ...this.#options.env, [NIWA_SESSION_ENV]: "1", [PI_INSTANCE_ENV]: this.#harness };
     const home = this.#options.home;
     if (home !== undefined) {
       // pi reads its own home from the environment: its settings, its extensions and the
@@ -557,15 +717,34 @@ export class PiControl implements PiSessionControl {
    * Starts pi and waits until it says what its session is.
    *
    * The first request is `get_state`: pi has no greeting, and this is the answer that names the
-   * session and its file. That file is what a later start opens again.
+   * session and its file. That file is what a later start opens again. The process is owned from the
+   * moment it exists, but it is held under no id yet: the caller publishes it once it is the one
+   * that was asked for.
    */
-  async #spawn(
+  #spawn(
     cwd: string,
     file: string | undefined,
-    ability: string,
+    ability: "start" | "resume",
     model: string | undefined,
     effort: string | undefined,
-    plan: Pick<StartOptions, "env" | "tools" | "box" | "reverse">,
+    toolFlags: readonly string[],
+    plan: Pick<StartOptions, "env" | "box" | "reverse">,
+  ): Promise<LiveSession> {
+    const starting = this.#launch(cwd, file, ability, model, effort, toolFlags, plan);
+    this.#spawning.add(starting);
+    const done = (): void => void this.#spawning.delete(starting);
+    starting.then(done, done);
+    return starting;
+  }
+
+  async #launch(
+    cwd: string,
+    file: string | undefined,
+    ability: "start" | "resume",
+    model: string | undefined,
+    effort: string | undefined,
+    toolFlags: readonly string[],
+    plan: Pick<StartOptions, "env" | "box" | "reverse">,
   ): Promise<LiveSession> {
     const binary = this.#options.binary ?? "pi";
     const args = ["--mode", "rpc"];
@@ -574,7 +753,7 @@ export class PiControl implements PiSessionControl {
     if (chosen !== undefined) args.push("--model", chosen);
     const chosenEffort = effort ?? this.#options.effort;
     if (chosenEffort !== undefined) args.push("--thinking", chosenEffort);
-    if (plan.tools !== undefined) args.push(...piToolsModeFlags(plan.tools));
+    args.push(...toolFlags);
 
     const child = await spawnAgent({
       harness: this.#harness,
@@ -595,9 +774,16 @@ export class PiControl implements PiSessionControl {
       session.stderrTail = (session.stderrTail + chunk).slice(-STDERR_TAIL_CHARS);
     });
     child.on("error", (error: Error) => this.#gone(session, error));
-    child.on("close", (code: number | null) =>
-      this.#gone(session, new Error(`pi: the process ended with code ${String(code)}`)),
-    );
+    child.on("close", (code: number | null) => {
+      session.closed = true;
+      this.#gone(session, new Error(`pi: the process ended with code ${String(code)}`));
+    });
+
+    // A side disposed while the process was being started does not keep it: nobody could stop it later.
+    if (this.#disposed) {
+      await this.#stopSession(session);
+      throw new Unavailable(this.#harness, "control", ability, "the control side is disposed");
+    }
 
     try {
       const state = await this.#state(session);
@@ -611,7 +797,6 @@ export class PiControl implements PiSessionControl {
       session.sessionFile = state.sessionFile ?? null;
       // The file is remembered, so the session can be opened again by it.
       if (session.sessionFile !== null) this.#files.set(native, session.sessionFile);
-      this.#sessions.set(native, session);
       // The dialogs pi asked before it named the session can be handed over now.
       const early = session.early;
       session.early = [];
@@ -644,6 +829,8 @@ export class PiControl implements PiSessionControl {
    * legitimately be inside a JSON string.
    */
   #read(session: LiveSession, chunk: string): void {
+    // A session whose wire was given up on is read no more: what it still says proves nothing.
+    if (session.ended) return;
     let buffer = session.buffer + chunk;
     let newline = buffer.indexOf("\n");
     while (newline !== -1) {
@@ -654,8 +841,12 @@ export class PiControl implements PiSessionControl {
     }
     session.buffer = buffer;
     if (session.buffer.length > MAX_LINE_BYTES) {
-      // A line that never ends is not pi's. The session is lost, and it is said so.
+      // A line that never ends is not pi's. The session is lost, and it is said so; what is buffered
+      // is let go of, and the process is ended: nothing reads it any more, and nobody could stop it
+      // once the session is gone.
+      session.buffer = "";
       this.#gone(session, new Error("pi: a line of the wire did not end"));
+      void this.#stopSession(session);
     }
   }
 
@@ -726,13 +917,30 @@ export class PiControl implements PiSessionControl {
     switch (event.type) {
       case "agent_start": {
         session.busy = true;
+        if (session.holding) {
+          // The run pi retries is the turn that is still open, not a new one.
+          session.holding = false;
+          session.emit({ kind: "activity", at: Date.now(), detail: event.type });
+          return;
+        }
         session.turn += 1;
         session.emit({ kind: "turn-started", turn: session.turn, at: Date.now() });
         return;
       }
       case "agent_end": {
-        session.busy = false;
-        session.emit({ kind: "turn-ended", turn: session.turn, at: Date.now() });
+        if (event.willRetry === true) {
+          // pi runs the same request again by itself: the turn goes on, and the session is not idle between the tries.
+          session.holding = true;
+          session.emit({ kind: "activity", at: Date.now(), detail: "agent_end (pi will retry)" });
+          return;
+        }
+        this.#endTurn(session);
+        return;
+      }
+      case "agent_settled": {
+        // pi gave up the retry it announced (an abort, or a retry that was cancelled): the turn it held open ends here.
+        if (session.holding) this.#endTurn(session);
+        else session.emit({ kind: "activity", at: Date.now(), detail: event.type });
         return;
       }
       // Everything else is a step of the run, or something pi says about its session. Each is a sign
@@ -746,7 +954,6 @@ export class PiControl implements PiSessionControl {
       case "tool_execution_start":
       case "tool_execution_update":
       case "tool_execution_end":
-      case "agent_settled":
       case "queue_update":
       case "compaction_start":
       case "compaction_end":
@@ -765,6 +972,13 @@ export class PiControl implements PiSessionControl {
       default:
         return assertNever(event, "pi event");
     }
+  }
+
+  /** The turn that is open ends: nothing of it is in flight any more. */
+  #endTurn(session: LiveSession): void {
+    session.holding = false;
+    session.busy = false;
+    session.emit({ kind: "turn-ended", turn: session.turn, at: Date.now() });
   }
 
   /**
@@ -883,9 +1097,7 @@ export class PiControl implements PiSessionControl {
       else this.#emitUnknown(session, variant);
       throw new Unavailable(this.#harness, "control", command, detail);
     }
-    if (!response.success) {
-      throw new PiRefusal(this.#harness, "control", command, response.error);
-    }
+    // An answer to another command is neither this command's success nor its refusal.
     if (response.command !== command) {
       throw new Unavailable(
         this.#harness,
@@ -893,6 +1105,9 @@ export class PiControl implements PiSessionControl {
         command,
         `pi answered "${response.command}" to the command "${command}"`,
       );
+    }
+    if (!response.success) {
+      throw new PiRefusal(this.#harness, "control", command, response.error);
     }
     return response;
   }
@@ -914,17 +1129,19 @@ export class PiControl implements PiSessionControl {
    */
   async #deliver(session: LiveSession, message: string, wait: boolean): Promise<void> {
     const ended = wait ? this.#waitForEnd(session) : null;
+    let delivery: Delivery;
     try {
-      if (session.busy) {
-        await this.#call(session, "prompt", { message, streamingBehavior: "followUp" });
-      } else {
-        await this.#call(session, "prompt", { message });
-      }
+      delivery = await this.#put(session, message, undefined);
     } catch (error) {
       ended?.cancel();
       throw error;
     }
     if (ended === null) return;
+    // No run began for a message an extension handled: there is no end to wait for.
+    if (delivery.disposition === "handled") {
+      ended.cancel();
+      return;
+    }
     await withTimeout(
       ended.done,
       this.#options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
@@ -974,6 +1191,7 @@ export class PiControl implements PiSessionControl {
     if (session.ended) return;
     session.ended = true;
     session.busy = false;
+    session.holding = false;
     session.abortDialogs();
     for (const settle of session.pending.values()) {
       const tail = session.stderrTail.trim();
@@ -1008,25 +1226,36 @@ export class PiControl implements PiSessionControl {
     try {
       await this.#deliver(session, text, true);
     } catch (error) {
-      this.#sessions.delete(session.nativeId);
+      this.#unpublish(session);
       await this.#stopSession(session);
       throw error;
     }
   }
 
-  /** Stops a session and the process it owns. */
-  async #stopSession(session: LiveSession): Promise<void> {
+  /**
+   * Stops a session and the process it owns.
+   *
+   * A session that is lost (its wire could not be trusted) still has a process, and it is ended
+   * here: only a process seen to close, or one that exited, has nothing left to kill. Every stop of
+   * a session is the same stop.
+   */
+  #stopSession(session: LiveSession): Promise<void> {
     this.#owned.delete(session);
-    if (session.ended) return;
-    session.stopping = true;
-    const grace = this.#options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
-    session.child.kill("SIGTERM");
-    const gone = await Promise.race([
-      new Promise<boolean>((resolve) => session.child.once("close", () => resolve(true))),
-      delay(grace).then(() => false),
-    ]);
-    if (!gone) {
-      session.child.kill("SIGKILL");
+    session.stop ??= this.#terminate(session);
+    return session.stop;
+  }
+
+  async #terminate(session: LiveSession): Promise<void> {
+    const child = session.child;
+    if (!session.closed && child.exitCode === null && child.signalCode === null) {
+      session.stopping = true;
+      const grace = this.#options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
+      const closing = new Promise<boolean>((resolve) => {
+        child.once("close", () => resolve(true));
+      });
+      child.kill("SIGTERM");
+      const gone = await Promise.race([closing, delay(grace).then(() => false)]);
+      if (!gone) child.kill("SIGKILL");
     }
     this.#gone(session, new Error("pi: the process was stopped"));
   }
@@ -1037,8 +1266,7 @@ export class PiControl implements PiSessionControl {
    * pi names a session file `<time>_<id>.jsonl` in the directory of the project, and the
    * directory is named after the working directory.
    */
-  async #findFile(native: string): Promise<string | undefined> {
-    const cwd = resolve(this.#options.cwd ?? process.cwd());
+  async #findFile(native: string, cwd: string): Promise<string | undefined> {
     const directory = this.#sessionDirectory(cwd);
     const names = await readdir(directory).catch(() => [] as string[]);
     for (const name of names.sort().reverse()) {
@@ -1149,10 +1377,13 @@ function projectOf(cwd: string): string {
   return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
-/** Whether pi refused a command because it was working. */
+/**
+ * Whether pi refused a prompt because it was working: its answer to that prompt was a failure that
+ * says so. A line this side could not read, or an answer it does not know, may say the same words
+ * and is no refusal: the prompt may have been taken.
+ */
 function isBusyRefusal(error: unknown): boolean {
-  if (!(error instanceof Unavailable)) return false;
-  return error.message.includes("already processing");
+  return error instanceof PiRefusal && error.message.includes("already processing");
 }
 
 /** Waits for a promise, or gives up on it. */

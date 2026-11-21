@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 import type { Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 
-import { promptFromText, harnessId } from "@niwa-labs/harness";
+import { promptFromText, harnessId, Unsupported } from "@niwa-labs/harness";
 import type { SessionControl } from "@niwa-labs/harness";
 import {
   homePath,
@@ -215,7 +215,7 @@ test("a box that cannot run stops the launch before any process exists", async (
 
 // -- the harnesses -----------------------------------------------------------
 
-/** A fake `pi --mode rpc` that names its session. */
+/** A fake `pi --mode rpc` that names its session after its process: every start is a session of its own. */
 const FAKE_PI = `#!/usr/bin/env bun
 let buffer = "";
 process.stdin.on("data", (chunk) => {
@@ -223,7 +223,7 @@ process.stdin.on("data", (chunk) => {
   for (let nl = buffer.indexOf("\\n"); nl !== -1; nl = buffer.indexOf("\\n")) {
     const frame = JSON.parse(buffer.slice(0, nl));
     buffer = buffer.slice(nl + 1);
-    if (frame.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: frame.id, command: "get_state", success: true, data: { sessionId: "s1" } }) + "\\n");
+    if (frame.type === "get_state") process.stdout.write(JSON.stringify({ type: "response", id: frame.id, command: "get_state", success: true, data: { sessionId: "s" + process.pid } }) + "\\n");
   }
 });
 `;
@@ -252,18 +252,19 @@ async function fake(name: string, source: string): Promise<string> {
 
 const empty = promptFromText("");
 
-test("pi's launch carries the tool allowlist; nothing allowed and only niwa's tools switch every tool off", async () => {
-  expect(piToolFlags(["read", "grep"])).toEqual(["--tools", "read,grep"]);
-  expect(piToolFlags([])).toEqual(["--no-tools"]);
+test("pi's launch carries the tool allowlist exactly, and nothing allowed switches every tool off; niwa's tools alone are refused", async () => {
+  expect(piToolFlags(harnessId("pi-fake"), "start", ["read", "grep"])).toEqual(["--tools", "read,grep", "--no-mcp"]);
+  expect(piToolFlags(harnessId("pi-fake"), "start", [])).toEqual(["--no-tools"]);
 
   const pi = new PiControl({ mode: "full", harness: "pi-fake", binary: await fake("pi", FAKE_PI) });
   controls.push(pi);
   await pi.start({ prompt: empty, cwd: dir, tools: { allow: ["read", "grep"] } });
-  await pi.start({ prompt: empty, cwd: dir, tools: "niwa-only" });
+  await expect(pi.start({ prompt: empty, cwd: dir, tools: "niwa-only" })).rejects.toBeInstanceOf(Unsupported);
+  await pi.start({ prompt: empty, cwd: dir, tools: { allow: [] } });
   await pi.start({ prompt: empty, cwd: dir, tools: "all" });
   await pi.start({ prompt: empty, cwd: dir });
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
-    ["--mode", "rpc", "--tools", "read,grep"],
+    ["--mode", "rpc", "--tools", "read,grep", "--no-mcp"],
     ["--mode", "rpc", "--no-tools"],
     ["--mode", "rpc"],
     ["--mode", "rpc"],

@@ -31,6 +31,10 @@ export const PI_KIND = "pi";
  * mode. It cannot ask: pi asks its questions through its own extension protocol, so a question
  * cannot be put to a pi session from here. Its `ask` returns no structured value either. What pi
  * asks in the middle of a run (the dialogs of its extensions) is routed as reverse requests.
+ *
+ * A session can be held to an allow-list of pi's own tools, but not to niwa's tools alone: pi's RPC
+ * mode takes no MCP server, and the tools niwa would bring through an extension of pi are not wired
+ * in, so such a session would have no tool at all. The role asking for it falls back to another kind.
  */
 export const piSides: SideCapabilities = {
   reading: { list: true, read: true, watch: false },
@@ -42,7 +46,7 @@ export const piSides: SideCapabilities = {
     ask: false,
     structuredOutput: false,
     launch: PI_LAUNCH,
-    tools: { niwaOnly: true, allow: true },
+    tools: { niwaOnly: false, allow: true },
   },
 };
 
@@ -60,7 +64,7 @@ export const PI_CAPABILITIES: KindCapabilities = {
     ask: UNSUPPORTED,
     structuredOutput: UNSUPPORTED,
     launch: { model: VERIFIED, effort: PI_LAUNCH.effort, modes: PI_LAUNCH.modes },
-    tools: { niwaOnly: ADMITTED, allow: ADMITTED },
+    tools: { niwaOnly: UNSUPPORTED, allow: ADMITTED },
   },
   insert: { nested: UNSUPPORTED, compaction: VERIFIED, manualOpen: VERIFIED, permission: VERIFIED },
 };
