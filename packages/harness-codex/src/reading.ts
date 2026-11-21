@@ -675,7 +675,7 @@ export class CodexReading implements SessionReading {
         if (wantTitle && lines <= TITLE_LINES && mattersForTitle(line.bytes)) {
           for (const record of this.#recordsOf(line, recordState)) {
             if (record.kind !== "user" || INSTRUCTIONS_PREAMBLE.test(record.text)) continue;
-            firstMessage = titleFromText(record.text);
+            firstMessage = titleFromText(record.text, INSERTION_TAGS);
             if (firstMessage !== undefined) break;
           }
         }

@@ -330,16 +330,19 @@ export const TITLE_LENGTH = 60;
 /**
  * A readable title made from the text of a message.
  *
- * What a harness or niwa wrapped in a tag of its own (`<system-reminder>…</system-reminder>`,
- * `<environment_context>…</environment_context>`, …) is not what the person said, so it is cut
- * out. Whitespace is collapsed and the rest is cut to about 60 characters, at a word when one is
- * near. `undefined` when nothing is left.
+ * What a harness or niwa wrapped in a tag of its own is not what the person said, so it is cut
+ * out: `tags` names those tags, as for `insertedRanges`, and a tag it does not name is the
+ * person's own and stays in the title. Whitespace is collapsed and the rest is cut to about 60
+ * characters, at a word when one is near. `undefined` when nothing is left.
  */
-export function titleFromText(text: string): string | undefined {
-  const said = text
-    .replace(/<([A-Za-z][\w-]*)\b[^>]*>[\s\S]*?<\/\1>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+export function titleFromText(text: string, tags: Readonly<Record<string, InsertionOrigin>> = {}): string | undefined {
+  let rest = "";
+  let at = 0;
+  for (const range of insertedRanges(text, tags)) {
+    rest += `${text.slice(at, range.from)} `;
+    at = range.to;
+  }
+  const said = `${rest}${text.slice(at)}`.replace(/\s+/g, " ").trim();
   if (said.length === 0) return undefined;
   if (said.length <= TITLE_LENGTH) return said;
   const head = said.slice(0, TITLE_LENGTH);
@@ -355,18 +358,19 @@ const TITLE_RECORDS = 50;
  * The title of a session made from its first message from a person, among its first records.
  *
  * A message that is not what a person said can be passed over with `skip` (a harness's own
- * preamble, for one). Reading stops at the first message that gives a title.
+ * preamble, for one); `tags` are the wrappers of insertions to cut out of it (`titleFromText`). Reading stops at the first message that gives a title.
  */
 export async function firstMessageTitle(
   records: AsyncIterable<SessionRecord>,
   skip?: (text: string) => boolean,
+  tags?: Readonly<Record<string, InsertionOrigin>>,
 ): Promise<string | undefined> {
   let seen = 0;
   for await (const record of records) {
     if (seen >= TITLE_RECORDS) return undefined;
     seen += 1;
     if (record.kind !== "user" || (skip?.(record.text) ?? false)) continue;
-    const title = titleFromText(record.text);
+    const title = titleFromText(record.text, tags);
     if (title !== undefined) return title;
   }
   return undefined;

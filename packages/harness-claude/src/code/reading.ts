@@ -423,7 +423,7 @@ export class ClaudeCodeReading implements SessionReading {
         if (out.firstMessage === undefined && record.type === "user" && record.isCompactSummary !== true) {
           for (const block of readBlocks(record.message?.content)) {
             if (block.type !== "text") continue;
-            const title = titleFromText(block.text);
+            const title = titleFromText(block.text, INSERTION_TAGS);
             if (title === undefined) continue;
             out.firstMessage = title;
             break;

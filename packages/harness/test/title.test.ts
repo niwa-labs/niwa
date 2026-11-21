@@ -6,15 +6,23 @@ import { expect, test } from "bun:test";
 import { TITLE_LENGTH, firstMessageTitle, titleFromText } from "@niwa-labs/harness";
 import type { SessionRecord } from "@niwa-labs/harness";
 
-test("a title is the text without machine tags, collapsed, and cut at a word", () => {
+const TAGS = { "system-reminder": "harness", "command-name": "command", environment_context: "harness" } as const;
+
+test("a title is the text without the tags the harness lists, collapsed, and cut at a word", () => {
   expect(titleFromText("  fix   the\nbuild ")).toBe("fix the build");
-  expect(titleFromText("<system-reminder>\nbe brief\n</system-reminder>\nfix the build")).toBe("fix the build");
-  expect(titleFromText("<command-name>/clear</command-name>")).toBeUndefined();
+  expect(titleFromText("<system-reminder>\nbe brief\n</system-reminder>\nfix the build", TAGS)).toBe("fix the build");
+  expect(titleFromText("<command-name>/clear</command-name>", TAGS)).toBeUndefined();
   expect(titleFromText("   ")).toBeUndefined();
   const long = titleFromText("word ".repeat(40));
   expect(long?.endsWith("…")).toBe(true);
   expect((long?.length ?? 0) <= TITLE_LENGTH + 1).toBe(true);
   expect(long).not.toContain("wor…");
+});
+
+test("markup the person wrote is part of the title, and only the listed tags are cut", () => {
+  expect(titleFromText("<task>Review tests</task>")).toBe("<task>Review tests</task>");
+  expect(titleFromText("<task>Review tests</task>", TAGS)).toBe("<task>Review tests</task>");
+  expect(titleFromText("<system-reminder>r</system-reminder><task>Review tests</task>", TAGS)).toBe("<task>Review tests</task>");
 });
 
 test("the first message that gives a title is taken, and a skipped one is passed over", async () => {
@@ -25,6 +33,6 @@ test("the first message that gives a title is taken, and a skipped one is passed
     yield { kind: "user", text: "# preamble of the harness", locator: "l2", ...base } as SessionRecord;
     yield { kind: "user", text: "ship it", locator: "l3", ...base } as SessionRecord;
   };
-  expect(await firstMessageTitle(records(), (text) => text.startsWith("# preamble"))).toBe("ship it");
-  expect(await firstMessageTitle(records())).toBe("# preamble of the harness");
+  expect(await firstMessageTitle(records(), (text) => text.startsWith("# preamble"), TAGS)).toBe("ship it");
+  expect(await firstMessageTitle(records(), undefined, TAGS)).toBe("# preamble of the harness");
 });

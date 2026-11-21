@@ -106,6 +106,13 @@ test("a session with no title of its own is titled by the first message of the p
   expect(infos[0]?.title).toBe("Please rewrite the reading side of the codex harness so that…");
 });
 
+test("a title keeps the markup the person wrote", async () => {
+  writeFileSync(logPath(), user("<task>Review tests</task>"));
+  const infos = [];
+  for await (const info of reading().list()) infos.push(info);
+  expect(infos[0]?.title).toBe("<task>Review tests</task>");
+});
+
 test("maps the common kinds: the message, the answer, the call and its answer", async () => {
   writeFileSync(
     logPath(),

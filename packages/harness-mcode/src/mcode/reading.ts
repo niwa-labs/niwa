@@ -848,7 +848,7 @@ export class McodeReading implements SessionReading {
       seen += 1;
       if (seen > 50) return STOP;
       if (turn.record?.message.role !== "user") return undefined;
-      return titleFromText(textOf(turn.record.message.content));
+      return titleFromText(stripHarnessNoise(textOf(turn.record.message.content)));
     });
   }
 
