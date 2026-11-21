@@ -18,6 +18,9 @@ import { join } from "node:path";
 import { grantId } from "../grant.ts";
 import { principalSchema } from "../access.ts";
 import { IntegrityError, LostOwnership, WriterBusy } from "../errors.ts";
+import { holds } from "../filter.ts";
+import { isFamily } from "../record-query.ts";
+import type { ResolvedQuery } from "../record-query.ts";
 import { realClock } from "../clock.ts";
 import type { Clock } from "../clock.ts";
 import { recordId, recordTypeName, seq as seqOf, stableJson, streamId, timestamp } from "../record.ts";
@@ -258,6 +261,20 @@ function differingFields(existing: StoredRecord, rec: NewRecord): string[] {
   return differing;
 }
 
+/** How many rows a filtered query reads at a time. */
+const QUERY_CHUNK = 1000;
+
+/** The SQL test of one type selector: a name is equal, a family (`wf.*`) is the range of names under its prefix. */
+function typeClause(selector: string, params: SQLQueryBindings[]): string {
+  if (!isFamily(selector)) {
+    params.push(selector);
+    return "type = ?";
+  }
+  const prefix = selector.slice(0, -1);
+  params.push(prefix, `${prefix.slice(0, -1)}${String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1)}`);
+  return "(type >= ? AND type < ?)";
+}
+
 class SqliteJournal implements Journal {
   readonly instance: string;
   readonly epoch: number;
@@ -408,19 +425,45 @@ class SqliteJournal implements Journal {
       .map(decode);
   }
 
+  query(q: ResolvedQuery, limit?: number): StoredRecord[] {
+    this.assertOpen();
+    const where = ["seq > ?"];
+    const params: SQLQueryBindings[] = [];
+    if (q.types !== undefined && q.types.length > 0) {
+      const one = q.types.map((selector) => typeClause(selector, params));
+      where.push(`(${one.join(" OR ")})`);
+    }
+    if (q.stream !== undefined) {
+      where.push("stream = ?");
+      params.push(q.stream);
+    }
+    const statement = this.db.query<RecordRow, SQLQueryBindings[]>(
+      `SELECT * FROM records WHERE ${where.join(" AND ")} ORDER BY seq LIMIT ?`,
+    );
+    // The filter is equality on paths of the data, read the same way everywhere: the rows of the
+    // types and the stream are read a chunk at a time and the filter is applied to each.
+    const found: StoredRecord[] = [];
+    let cursor: number = q.from ?? 0;
+    for (;;) {
+      const want = q.filter === undefined && limit !== undefined ? limit - found.length : QUERY_CHUNK;
+      const rows = statement.all(cursor, ...params, want);
+      for (const row of rows) {
+        const record = decode(row);
+        if (q.filter !== undefined && !holds(record.data, q.filter)) continue;
+        found.push(record);
+        if (limit !== undefined && found.length >= limit) return found;
+      }
+      const last = rows.at(-1);
+      if (last === undefined || rows.length < want) return found;
+      cursor = last.seq;
+    }
+  }
+
   find(q: JournalQuery): StoredRecord[] {
     this.assertOpen();
     const where: string[] = [];
     const params: SQLQueryBindings[] = [];
-    if (q.type.endsWith(".*")) {
-      // A family (`wf.*`): every type under the prefix.
-      const prefix = q.type.slice(0, -1);
-      where.push("type >= ? AND type < ?");
-      params.push(prefix, `${prefix.slice(0, -1)}${String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1)}`);
-    } else {
-      where.push("type = ?");
-      params.push(q.type);
-    }
+    where.push(typeClause(q.type, params));
     if (q.field !== undefined && q.equals !== undefined) {
       where.push("json_extract(data, ?) = ?");
       params.push(`$.${q.field}`, q.equals);

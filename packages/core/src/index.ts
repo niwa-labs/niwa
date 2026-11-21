@@ -16,6 +16,7 @@ export * from "./outcome.ts";
 export * from "./action.ts";
 export * from "./record-filter.ts";
 export * from "./filter.ts";
+export * from "./record-query.ts";
 export * from "./types.ts";
 export * from "./access.ts";
 export * from "./denied.ts";

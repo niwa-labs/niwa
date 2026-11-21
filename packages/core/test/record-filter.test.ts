@@ -5,7 +5,7 @@
 import { expect, test } from "bun:test";
 
 import type { JournalReader, StoredRecord } from "../src/index.ts";
-import { readFiltered, recordId, recordTypeName, seq, streamId, timestamp } from "../src/index.ts";
+import { matchesQuery, readFiltered, recordId, recordTypeName, seq, streamId, timestamp } from "../src/index.ts";
 
 /** A journal in memory that counts the records its reads hand out. */
 function journalOf() {
@@ -20,6 +20,7 @@ function journalOf() {
       return chunk;
     },
     find: (query) => records.filter((record) => record.type === query.type),
+    query: (query) => records.filter((record) => matchesQuery(query, record)),
     last: () => seq(records.length),
   };
   const add = (type: string, data: object, root?: StoredRecord["root"]): StoredRecord => {

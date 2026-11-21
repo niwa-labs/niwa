@@ -4,6 +4,7 @@
 import type { z } from "zod";
 
 import type { JsonSchemaValue } from "./question.ts";
+import type { ResolvedQuery } from "./record-query.ts";
 
 /** Domain identifiers. Branded: a bare string is not accepted where one of these is expected. */
 type Brand<T, B extends string> = T & { readonly __brand: B };
@@ -577,6 +578,8 @@ export interface JournalReader {
   /** Records with seq > from, ascending; optionally only these types, optionally at most `limit`. */
   since(from: Seq, types?: RecordTypeName[], limit?: number, stream?: StreamId): StoredRecord[];
   find(q: JournalQuery): StoredRecord[];
+  /** The records that answer a query, in commit order; at most `limit` of them when it is given. */
+  query(q: ResolvedQuery, limit?: number): StoredRecord[];
   /** Highest committed seq, 0 when empty. */
   last(): Seq;
 }
