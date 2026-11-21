@@ -121,7 +121,7 @@ import {
 } from "./records.ts";
 import type { EmittedRecord, FlowCall, Subscription, WorkflowId } from "./records.ts";
 import { builtinOf, declaredBy, dependentsOf, flowActionName, readersOf, versionOf, workflowIdsOf, workflowsOf } from "./registry.ts";
-import { storedEntry, storedVersion, storeVersion } from "./store.ts";
+import { storedEntry, storedVersion, storeVersion, workflowsDir } from "./store.ts";
 import type { RegisteredWorkflow } from "./registry.ts";
 import { decide } from "./revise.ts";
 import type { CurrentCall, RecordedCall, RevisionReport } from "./revise.ts";
@@ -324,7 +324,11 @@ export function workflow(opts: WorkflowOptions = {}) {
     /** The box of a script process, when the run is boxed. */
     const boxFor = (boxed: boolean | undefined): ScriptBox | undefined =>
       boxed === true
-        ? { sandbox: opts.sandbox ?? "srt", denyRead: [join(api.home(), OWNER_TOKEN_FILE), join(api.home(), HOST_KEY_FILE)] }
+        ? {
+            sandbox: opts.sandbox ?? "srt",
+            denyRead: [join(api.home(), OWNER_TOKEN_FILE), join(api.home(), HOST_KEY_FILE)],
+            read: [workflowsDir(api.home())],
+          }
         : undefined;
 
     /** The box a run or an installation asked for, or else the module's own choice. */

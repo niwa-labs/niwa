@@ -92,12 +92,18 @@ function writeManifest(path: string, manifest: Manifest): void {
   renameSync(aside, path);
 }
 
+/**
+ * The folder of the stored copies in a home. A box that runs a copy may read it: the copy finds the packages
+ * it imports by name by looking for `node_modules` in the folders above it, up to the link in this one.
+ */
+export const workflowsDir = (home: string): string => join(home, WORKFLOWS_DIR);
+
 /** Link `<home>/workflows/node_modules` to the packages niwa runs with, when it is not that link already. */
 function linkPackages(home: string): void {
   const modules = modulesDir();
   if (modules === undefined) return;
   const target = realpathSync(modules);
-  const link = join(home, WORKFLOWS_DIR, "node_modules");
+  const link = join(workflowsDir(home), "node_modules");
   const present = lstatSync(link, { throwIfNoEntry: false });
   if (present?.isSymbolicLink() === true && readlinkSync(link) === target) return;
   mkdirSync(dirname(link), { recursive: true });

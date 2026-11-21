@@ -5,8 +5,9 @@
 // read them.
 
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, realpathSync } from "node:fs";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { nono } from "@niwa-labs/sandbox";
@@ -41,9 +42,16 @@ const SCRIPT = [
   "});",
 ].join("\n");
 
+/** A home under the user's home, removed with the others. */
+function userHome(): { path: string; cleanup(): Promise<void> } {
+  const path = mkdtempSync(join(homedir(), ".niwa-flow-home-"));
+  return { path, cleanup: () => rm(path, { recursive: true, force: true }) };
+}
+
 /** Register the script from a folder that finds packages where a script in niwa's tree does, and run it. */
 async function registerAndRun(box: boolean): Promise<{ home: string; id: string; version: string; outcome: unknown }> {
-  const temp = await tempHome();
+  // nono reads the temp area by default, so it cannot close the host's keys in a home there: a boxed home is under the user's.
+  const temp = box ? userHome() : await tempHome();
   homes.push(temp);
   const host = createNiwa({ home: temp.path });
   host.use(requests(), timers([]), workflow(box ? { box: true, sandbox: "nono" } : {}));
