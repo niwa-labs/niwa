@@ -74,8 +74,8 @@ test("the task ends in time: the script sleeps and finishes", async () => {
   );
   await clock.advance(5 * MINUTE);
   await eventually(() => hasFinished(niwa), 10_000, "the run should finish");
-  expect(await resultOf(niwa)).toEqual({ status: "done", task });
-});
+  expect(await resultOf(niwa)).toEqual({ status: "done: result", task });
+}, 30_000);
 
 test("the task is slow and the owner says no: the script gives up", async () => {
   const home = await tempHome();
@@ -95,4 +95,4 @@ test("the task is slow and the owner says no: the script gives up", async () => 
   } finally {
     await owner.close().catch(() => {});
   }
-});
+}, 30_000);

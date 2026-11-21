@@ -8,6 +8,7 @@
 // generates the types of the actions from what the host describes.
 
 import type { ScriptApi } from "@niwa-labs/script";
+import { taskDone } from "@niwa-labs/tasks/records";
 
 declare const workflow: ScriptApi["workflow"];
 declare const z: ScriptApi["z"];
@@ -36,8 +37,9 @@ export default workflow(
       { label: "create" },
     );
 
-    // Wait for a record of this task. "An answer or a timeout" is the `timeout` option: no waitAny.
-    const done = await wait("task.done", { filter: { task: task.id }, timeout: "30m" });
+    // Wait for the end of this task: `taskDone` from the records entry of the tasks plugin is the type and the
+    // filter, so `done.data` is typed by the record. "An answer or a timeout" is the `timeout` option: no waitAny.
+    const done = await wait(taskDone(task.id), { timeout: "30m" });
     if ("timedOut" in done) {
       // Ask the owner at the moment of need. A cancelled question or none answered within the timeout
       // throws AskCancelled or AskExpired (the `name` of the error): the script catches it, and here
@@ -53,6 +55,6 @@ export default workflow(
 
     // The moment of waking is recorded on the first pass; a replay does not sleep again.
     await sleep("5m");
-    return { status: "done", task: task.id };
+    return { status: "timedOut" in done ? "done" : `done: ${done.data.outcome.status}`, task: task.id };
   },
 );

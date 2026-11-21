@@ -1,7 +1,10 @@
 // A workflow that niwa itself starts on records. `on` lists what starts it: a record type, or a
 // type with a filter, so niwa does not start a process for a record that cannot matter. The filter
 // is equality on fields of the data of the record (a dotted path goes into nested data), written as
-// a literal. The function gets the record as its argument; its author gets no rights from it.
+// a literal. The header is read as text without running the script, so its types are names: a
+// type imported by reference (`TaskDone` from "@niwa-labs/tasks/records") is for `wait` and
+// `read.records` in the body. The function gets the record as its argument; its author gets no
+// rights from it.
 // test/workflow-subscriptions.test.ts installs it on a host.
 //
 // Installing it, from a client or from another script. The profile `wf:<sub-…>` is made as
