@@ -96,6 +96,20 @@ async function until(condition: () => boolean): Promise<void> {
 
 const timing = { pollMs: 5, pauseMs: 60_000, endMs: 120_000 };
 
+test("a write that fails while the host runs is tried again, and the watch stays on until it is stopped", async () => {
+  const h = host({ harnesses: [{ instance, reading: reading([checklist(1, 1, 2)]) }], timing });
+  open.push(h.stop);
+  let refused = 0;
+  h.gate.write = (type) => {
+    if (type === "session.progress" && refused++ < 3) throw new Error("the journal is busy");
+  };
+  await h.call("history.watch", { session: ID });
+  await until(() => h.types().includes("session.progress"));
+  expect(refused).toBe(4);
+  expect(await h.call("history.unwatch", { session: ID })).toEqual({ stopped: true });
+  expect(h.types()).toEqual(["session.progress", "history.session.unwatched"]);
+});
+
 test("what a watch is writing lands before the end that stops it, not after", async () => {
   const h = host({ harnesses: [{ instance, reading: reading([checklist(1, 1, 2)]) }], timing });
   open.push(h.stop);

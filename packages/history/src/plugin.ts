@@ -31,7 +31,7 @@ import {
   historyWatch,
 } from "./records.ts";
 import type { EndSignal } from "./records.ts";
-import { watchSession } from "./watch.ts";
+import { DEFAULT_WATCH_TIMING, SYSTEM_CLOCK, watchSession } from "./watch.ts";
 import type { Progress, WatchClock, WatchTiming } from "./watch.ts";
 
 export interface HistoryOptions {
@@ -125,6 +125,8 @@ export function history(options: HistoryOptions): Plugin {
     const bindings = bindingsOf(options);
     /** The watches that are on: the signal that stops one, and the task that settles when it has stopped writing. */
     const watches = new Map<string, { readonly controller: AbortController; finished: Promise<void> }>();
+    const clock = options.clock ?? SYSTEM_CLOCK;
+    const timing = options.timing ?? DEFAULT_WATCH_TIMING;
 
     /** Where each watch stands, from the journal. */
     const standingNow = () => standingOf(api.journal?.()?.since(seq(0), HISTORY_TYPES.map((type) => type.name)) ?? []);
@@ -182,11 +184,20 @@ export function history(options: HistoryOptions): Plugin {
       return true;
     };
 
-    /** Write a record the watch learned, unless the watch was stopped meanwhile. */
+    /**
+     * Write a record the watch learned. A write that fails while the host runs is tried again, so a
+     * watch does not end with the journal still saying it is on; a stop ends the trying.
+     */
     const publish = async (signal: AbortSignal, write: () => Promise<unknown>): Promise<boolean> => {
-      if (signal.aborted) return false;
-      await write();
-      return true;
+      while (!signal.aborted) {
+        try {
+          await write();
+          return true;
+        } catch {
+          await clock.sleep(timing.pollMs, signal);
+        }
+      }
+      return false;
     };
 
     /** Follow a session; what it learns is written as records until it ends or the watch stops. */
@@ -202,8 +213,8 @@ export function history(options: HistoryOptions): Plugin {
         try {
           const events = watchSession(reading, id, {
             signal: controller.signal,
-            ...(options.timing === undefined ? {} : { timing: options.timing }),
-            ...(options.clock === undefined ? {} : { clock: options.clock }),
+            timing,
+            clock,
             ...(standing.from === undefined ? {} : { from: standing.from }),
             ...(standing.progress === undefined ? {} : { progress: standing.progress }),
             // A session niwa runs ends when niwa says so: its quiet is a wait for the next turn.
