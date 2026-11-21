@@ -52,6 +52,14 @@ export const WorktreeReserved = record(
 /** A worktree was made. */
 export const WorktreeCreated = record("git.worktree.created", Worktree);
 
+export const WorktreeCoordinates = Worktree.pick({id: true, path: true, repo: true});
+
+/** The git plugin attests the checkout as the host before publishing its creation. */
+export const CheckoutVerified = record("git.worktree.verified", WorktreeCoordinates.extend({
+  creation: z.string().min(1),
+  directories: z.array(z.string()).length(3),
+}));
+
 /** A worktree was removed: its directory and its branch are gone. */
 export const WorktreeRemoved = record(
   "git.worktree.removed",
@@ -116,4 +124,4 @@ export const RemoteUpdated = record(
 );
 
 /** Every record type of the git module. */
-export const GIT_TYPES = [WorktreeReserved, WorktreeCreated, WorktreeRemoved, HeadMoved, RemoteUpdated] as const;
+export const GIT_TYPES = [WorktreeReserved, CheckoutVerified, WorktreeCreated, WorktreeRemoved, HeadMoved, RemoteUpdated] as const;

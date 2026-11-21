@@ -110,9 +110,10 @@ test("a worktree created before reservations can still be named and its create r
   const { journal, actions, repo } = await setup();
   const operation = "old-create";
   const made = await run<Worktree>(actions, journal, "git.worktree.create", { repo, ...NOTE }, operation);
-  const [birth, created] = journal.records;
+  const [birth] = journal.of("git.worktree.reserved");
+  const [created] = journal.of("git.worktree.created");
   if (birth === undefined || created === undefined) throw new Error("the create must write both records");
-  journal.records.splice(0, 2, { ...created, id: birth.id, seq: birth.seq });
+  journal.records.splice(0, journal.records.length, { ...created, id: birth.id, seq: birth.seq });
 
   await expect(run(actions, journal, "git.worktree.get", { id: made.id }, "get")).resolves.toMatchObject({ id: made.id });
   await expect(run(actions, journal, "git.worktree.create", { repo, ...NOTE }, operation)).resolves.toEqual(made);
@@ -125,9 +126,10 @@ test("removal can find the repository when a recorded linked source has gone", a
   const source = join(repo, "linked");
   gitIn(repo, "worktree", "add", "-q", "-b", "source", source);
   const made = await run<Worktree>(actions, journal, "git.worktree.create", { repo: source, ...NOTE }, "old-source");
-  const [birth, created] = journal.records;
+  const [birth] = journal.of("git.worktree.reserved");
+  const [created] = journal.of("git.worktree.created");
   if (birth === undefined || created === undefined) throw new Error("the create must write both records");
-  journal.records.splice(0, 2, { ...created, id: birth.id, seq: birth.seq, data: { ...made, repo: source } });
+  journal.records.splice(0, journal.records.length, { ...created, id: birth.id, seq: birth.seq, data: { ...made, repo: source } });
   gitIn(repo, "worktree", "remove", source);
   commitIn(made.path, "child.txt");
 

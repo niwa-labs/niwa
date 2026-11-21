@@ -9,7 +9,7 @@
 
 import { agents as agentsModule } from "@niwa-labs/agent";
 import type { AgentOptions } from "@niwa-labs/agent";
-import { git } from "@niwa-labs/git";
+import { git, registeredWorktree } from "@niwa-labs/git";
 import type { GitOptions } from "@niwa-labs/git";
 import type { HarnessInstanceRegistry } from "@niwa-labs/harness";
 import { history } from "@niwa-labs/history";
@@ -69,6 +69,7 @@ export function defaultComposition(options: DefaultCompositionOptions): Plugin[]
   const made = sessions({
     harnesses: options.harnesses,
     sandbox: boxes,
+    worktreeFor: registeredWorktree,
     ...(options.box?.sessions === undefined ? {} : { box: options.box.sessions }),
     niwaMcp: { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
   });
@@ -87,7 +88,7 @@ export function defaultComposition(options: DefaultCompositionOptions): Plugin[]
     history({ harnesses: options.harnesses }),
     insertPlugin(),
     made,
-    proc({ sandbox: boxes, ...(options.box?.proc === undefined ? {} : { box: options.box.proc }) }),
+    proc({ sandbox: boxes, worktreeFor: registeredWorktree, ...(options.box?.proc === undefined ? {} : { box: options.box.proc }) }),
     boxRules(),
     agents,
     workflow(options.workflow),

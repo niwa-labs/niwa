@@ -23,6 +23,8 @@
  * The signs of life the control side reports are written as `session.*` records.
  */
 
+import type { PluginApi } from "@niwa-labs/plugin";
+import type { PlanInput } from "@niwa-labs/sandbox";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -224,6 +226,8 @@ export interface SessionsOptions {
    * so every other box finds that installation's places closed. Default: the catalog alone.
    */
   readonly sandbox?: SandboxHost;
+  /** Trusted host lookup for Git metadata required by a managed checkout. */
+  readonly worktreeFor?: (api: Pick<PluginApi, "home" | "journal">, cwd: string) => PlanInput["worktree"];
   /**
    * What a session's box has when its start asks for nothing: `allow` (the default
    * `["project", "toolchains"]`) or `only`. Every session runs in a box, with the profile of its
@@ -872,18 +876,19 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       const adapter = sandboxOf(boxes.adapter ?? "srt");
       await requireSandbox(adapter);
       const temp = realpathSync(mkdtempSync(join(tmpdir(), "niwa-box-")));
-      const plan = boxes.plan({
-        cwd: cwd ?? process.cwd(),
-        ...(cwd === undefined ? { noProject: "the session names no working directory" } : {}),
-        defaults,
-        request,
-        owner: harness,
-        writes: [{ path: temp, from: "temp" }],
-        closed: [...closedPlacesOf(api.home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
-        network: true,
-      });
       const rights = api.rights(caller);
       try {
+        const plan = boxes.plan({
+          cwd: cwd ?? process.cwd(),
+          worktree: cwd === undefined ? undefined : options.worktreeFor?.(api, cwd),
+          ...(cwd === undefined ? { noProject: "the session names no working directory" } : {}),
+          defaults,
+          request,
+          owner: harness,
+          writes: [{ path: temp, from: "temp" }],
+          closed: [...closedPlacesOf(api.home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
+          network: true,
+        });
         const admitted = admit(plan, adapter, (needed) => heldRule(rights, needed), { sockets: [api.socket()] });
         return { ...(tools === undefined ? {} : { tools }), box: { sandbox: adapter, spec: admitted.spec }, plan, rules: admitted.rules, temp };
       } catch (error) {

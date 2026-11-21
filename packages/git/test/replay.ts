@@ -34,6 +34,13 @@ export function module(journal: MemoryJournal, home: string): ReadonlyMap<string
   const actions = new Map<string, Action<any, any>>();
   const api = {
     home: () => home,
+    emit: async (type: RecordType<any>, data: unknown, opts: {id: string}) => {
+      const existing = journal.reader().get(opts.id as StoredRecord["id"]);
+      if (existing) return existing;
+      const row = {id: opts.id, data, type: type.name, actor: {kind: "host"}, seq: journal.records.length + 1} as StoredRecord;
+      journal.records.push(row);
+      return row;
+    },
     journal: () => journal.reader(),
     action: (made: Action<any, any>) => void actions.set(made.name, made),
     offer: () => {},

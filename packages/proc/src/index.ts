@@ -31,6 +31,8 @@
  * itself dies is not stopped by it.
  */
 
+import type { PluginApi } from "@niwa-labs/plugin";
+import type { PlanInput } from "@niwa-labs/sandbox";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -62,6 +64,8 @@ export interface ProcOptions {
    * keeps closed. Default: the catalog alone.
    */
   readonly sandbox?: SandboxHost;
+  /** Trusted host lookup for Git metadata required by a managed checkout. */
+  readonly worktreeFor?: (api: Pick<PluginApi, "home" | "journal">, cwd: string) => PlanInput["worktree"];
   /** What a run's box has when the call asks for nothing. Default `{ allow: ["toolchains"] }`. */
   readonly box?: BoxAccess;
   /** The most bytes of output kept in an artifact. Default: 16 MiB. */
@@ -233,8 +237,9 @@ export function proc(options: ProcOptions = {}): Plugin {
           ctx.signal?.throwIfAborted();
           // The temp files go inside the directory, where the box lets the command write.
           const temp = join(cwd, `.niwa-tmp-${randomUUID()}`);
-          const plan = boxes.plan({
+          const plan = await beforeStart(async () => boxes.plan({
             cwd,
+            worktree: options.worktreeFor?.(api, cwd),
             defaults: boxDefault,
             request: input.box,
             writes: [
@@ -243,7 +248,7 @@ export function proc(options: ProcOptions = {}): Plugin {
             ],
             closed: [...closedPlacesOf(home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
             network: false,
-          });
+          }));
           const rights = api.rights(ctx.caller);
           const env = { ...baseEnv(), TMPDIR: temp, TMP: temp, TEMP: temp, ...input.env };
           const admitted = await beforeStart(async () =>

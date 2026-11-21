@@ -48,7 +48,9 @@ import {
 } from "./actions.ts";
 import type { WorktreeEntity, WorktreeState } from "./actions.ts";
 import { aheadOf, branchOf, commitOf, commonDirOf, copyIncluded, currentBase, gitOut, gitRun, headOf, isDirty, repoOf, topOf, verifiedRemote } from "./git.ts";
-import { HeadMoved, RemoteUpdated, WorktreeCreated, WorktreeRemote, WorktreeRemoved, WorktreeReserved } from "./record-types.ts";
+import { verifyCheckout } from "./registration.ts";
+export { registeredWorktree } from "./registration.ts";
+import { CheckoutVerified, HeadMoved, RemoteUpdated, WorktreeCreated, WorktreeRemote, WorktreeRemoved, WorktreeReserved } from "./record-types.ts";
 import type { Worktree, WorktreeId } from "./record-types.ts";
 
 const DAY_MS = 86_400_000;
@@ -428,7 +430,7 @@ export function git(options: GitOptions = {}): Plugin {
     const place: Place = { journal, store: () => join(api.home(), "worktrees"), bootedAt };
     const entries = () => fold(journal());
 
-    api.declare(WorktreeReserved, WorktreeCreated, WorktreeRemoved, HeadMoved, RemoteUpdated);
+    api.declare(CheckoutVerified, WorktreeReserved, WorktreeCreated, WorktreeRemoved, HeadMoved, RemoteUpdated);
 
     api.action(
       action(gitWorktreeCreate, {
@@ -457,11 +459,19 @@ export function git(options: GitOptions = {}): Plugin {
             reserved = { id, description: input.description, repo, path, branch: id, base, baseSha, ...(repo === source ? {} : { source }) };
           } else {
             reserved = WorktreeReserved.schema.parse(earlier.data);
+            const top = await topOf(resolve(input.repo));
+            if (top === undefined || reserved.id !== id || reserved.branch !== id ||
+                reserved.path !== join(real(api.home()), "worktrees", id) ||
+                reserved.repo !== real((await repoOf(real(top))) ?? top) ||
+                (reserved.source ?? reserved.repo) !== real(top)) {
+              throw new WorktreeRefusal("changed", "the reserved checkout differs from the requested repository");
+            }
           }
           await ctx.emit(WorktreeReserved, reserved);
           const { source, ...worktree } = reserved;
           await checkout(worktree, earlier !== undefined);
           await copyIncluded(source ?? worktree.repo, worktree.path);
+          await verifyCheckout(api, worktree, `${ctx.operationId}/emit/2`);
           await ctx.emit(WorktreeCreated, worktree);
           return worktree;
         },
