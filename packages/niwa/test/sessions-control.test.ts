@@ -702,6 +702,7 @@ test("signs of life become session records, once per session, saying only that t
   expect(typesOf(records)).toEqual([
     "session.started",
     "session.marked",
+    "session.input.sending",
     "session.marked",
     "session.turn-started",
     "session.activity",
@@ -961,14 +962,21 @@ test("the start returns with the receipt of its first turn, and the signs of tha
   control.firstTurn = true;
   const { niwa, records } = await serve(control, installation());
   // The start does not wait for the first turn: it returns while that turn runs, and says so.
-  const started = await call<{ session: string; ref: string; receipt?: unknown }>(niwa, "session.start", { harness: HARNESS, prompt: "go" });
-  expect(started).toEqual({ session: expect.stringMatching(/^s-/), ref: SESSION, receipt: { status: "started", turn: 1 } });
+  const started = await call<{ session: string; ref: string; receipt?: unknown; operation: string }>(niwa, "session.start", { harness: HARNESS, prompt: "go" });
+  expect(started).toEqual({ session: expect.stringMatching(/^s-/), ref: SESSION, receipt: { status: "started", turn: 1 }, operation: expect.any(String) });
 
   // The turn began before the stream of life was opened, and its end comes after: both are
   // written, after the record that the session started.
   control.pushLife({ kind: "turn-ended", turn: 1 });
   await eventually(() => typesOf(records).includes("session.turn-ended"));
-  expect(typesOf(records)).toEqual(["session.started", "session.marked", "session.turn-started", "session.turn-ended"]);
+  expect(typesOf(records)).toEqual([
+    "session.started",
+    "session.marked",
+    "session.input.sending",
+    "session.input.settled",
+    "session.turn-started",
+    "session.turn-ended",
+  ]);
 });
 
 test("a session the control side reports as over is written as ended, and so is one that was stopped with the host", async () => {

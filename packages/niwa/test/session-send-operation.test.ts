@@ -143,3 +143,41 @@ test("a send cut off between its record and its outcome is taken for possibly se
   await call(after.niwa, "session.send", { session, message: "go" });
   expect(third.sent).toEqual(["go"]);
 });
+
+/** A control side whose start delivers its prompt as the first turn, as a harness that names the session with it does. */
+class FirstTurn extends ScriptedSend {
+  starts = 0;
+  override async start(options?: { prompt: { sections: { text: string }[] } }): Promise<StartedSession> {
+    this.starts += 1;
+    const text = options?.prompt.sections.map((section) => section.text).join("") ?? "";
+    return { session: sessionId(harnessId(HARNESS), `native-${String(this.starts)}`), ...(text === "" ? {} : { first: { status: "started", turn: 1 } }) };
+  }
+}
+
+const ofType = (records: readonly StoredRecord[], type: string) => records.filter((row) => row.type === type).map((row) => row.data);
+
+test("the first prompt of a start is recorded under the operation of the start with what became of it", async () => {
+  const control = new FirstTurn([]);
+  const { niwa, records } = await serve(control);
+  const started = await call<{ session: string; ref: string; operation: string }>(niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" });
+  expect(started.operation).toBe("start-1");
+  const all = await records();
+  expect(ofType(all, "session.input.sending")).toEqual([{ session: started.ref, operation: "start-1", digest: expect.any(String) }]);
+  expect(ofType(all, "session.input.settled")).toEqual([{ session: started.ref, operation: "start-1", outcome: { status: "accepted", receipt: { status: "started", turn: 1 } } }]);
+
+  // Without one, the operation is the start's own.
+  const other = await call<{ ref: string; operation: string }>(niwa, "session.start", { harness: HARNESS, prompt: "again" });
+  expect(other.operation.length).toBeGreaterThan(0);
+  expect(ofType(await records(), "session.input.settled")).toContainEqual({ session: other.ref, operation: other.operation, outcome: { status: "accepted", receipt: { status: "started", turn: 1 } } });
+});
+
+test("a start retried under its operation answers the session it made, and another prompt under it is a conflict", async () => {
+  const control = new FirstTurn([]);
+  const { niwa } = await serve(control);
+  const first = await call<{ session: string; ref: string; receipt: DeliveryReceipt }>(niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" });
+  const again = await call<{ session: string; ref: string; receipt: DeliveryReceipt }>(niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" });
+  expect(again).toEqual(first);
+  expect(control.starts).toBe(1);
+  await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "stop", operation: "start-1" })).rejects.toMatchObject({ code: "operation-conflict" });
+  expect(control.starts).toBe(1);
+});

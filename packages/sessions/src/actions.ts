@@ -256,7 +256,7 @@ export const harnessGet = actionRef("harness.get", {
 
 export const sessionStart = actionRef("session.start", {
   description:
-    "Starts a session. With `worktree` it runs in a new git worktree of the repository (`cwd` by default), which stays until it is removed. It returns as soon as the harness has named the session; until then there is a start in progress, not a session. The prompt becomes the first turn, delivered like a send: the receipt says whether it started or was queued, and the end of that turn is not waited for. The block named after the harness's kind (`claude` for Claude Code) holds the options of that kind for the whole life of the session; the block of another kind is refused.",
+    "Starts a session. With `worktree` it runs in a new git worktree of the repository (`cwd` by default), which stays until it is removed. It returns as soon as the harness has named the session; until then there is a start in progress, not a session. The prompt becomes the first turn, delivered like a send: the receipt says whether it started or was queued, and the end of that turn is not waited for. Give `operation` to make a retry safe: the same id with the same prompt answers the session it made. The block named after the harness's kind (`claude` for Claude Code) holds the options of that kind for the whole life of the session; the block of another kind is refused.",
   input: z.object({
     /** The harness to start the session on. */
     harness: z.string().min(1),
@@ -283,6 +283,11 @@ export const sessionStart = actionRef("session.start", {
      * harness's own). A harness that cannot hold a session to it refuses the start.
      */
     tools: ToolsModeSchema.optional(),
+    /**
+     * The caller's own id of this start: the prompt is recorded as an input under it with what became of it, and a
+     * retry with it answers the session it made instead of making another. Default: the operation of the call.
+     */
+    operation: z.string().min(1).max(200).optional(),
   }).extend(OptionBlocks.shape),
   output: z.object({
     /** The id niwa gave the session: what every session action takes. */
@@ -293,6 +298,8 @@ export const sessionStart = actionRef("session.start", {
     ref: z.string().min(1),
     /** What became of the prompt: the first turn started or queued. Absent when there was none. */
     receipt: DeliveryReceiptSchema.optional(),
+    /** The operation the prompt is recorded under: the one given, or the call's own. */
+    operation: z.string().min(1),
   }),
 });
 

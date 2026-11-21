@@ -69,7 +69,7 @@ import {
   requireTools,
   supports,
 } from "@niwa-labs/harness";
-import { gitWorktreeCreate } from "@niwa-labs/git/records";
+import { WorktreeCreated, gitWorktreeCreate } from "@niwa-labs/git/records";
 import { readTranscript, searchSession } from "@niwa-labs/history";
 import type { Worktree, WorktreeOption } from "@niwa-labs/git/records";
 import type {
@@ -887,6 +887,44 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       return settled === undefined ? { digest: sent.digest } : { digest: sent.digest, outcome: settled };
     };
 
+    /**
+     * The start whose prompt was an input under an operation, from the journal: the digest of the input, and what
+     * the start answered. A send under the operation is an input too, with another digest.
+     */
+    const startUnder = (operation: string): { digest: string; answer?: z.output<typeof sessionStart.output> } | undefined => {
+      const journal = api.journal?.();
+      if (journal === undefined) return undefined;
+      const sent = journal
+        .find({ type: SessionInputSending.name, field: "operation", equals: operation })
+        .flatMap((stored) => {
+          const parsed = SessionInputSending.schema.safeParse(stored.data);
+          return parsed.success ? [parsed.data] : [];
+        })
+        .at(0);
+      if (sent === undefined) return undefined;
+      const issued = sessionIdsOf(journal).find((entry) => entry.ref === sent.session);
+      const outcome = inputOf(sent.session, operation)?.outcome;
+      // An input under the operation that is not the prompt of a start niwa made answers nothing but its conflict.
+      if (issued === undefined) return { digest: sent.digest };
+      const cwd = startedOf(sent.session)?.cwd;
+      const made = cwd === undefined
+        ? undefined
+        : journal.find({ type: WorktreeCreated.name, field: "path", equals: cwd }).flatMap((stored) => {
+            const parsed = WorktreeCreated.schema.safeParse(stored.data);
+            return parsed.success ? [parsed.data] : [];
+          }).at(-1);
+      return {
+        digest: sent.digest,
+        answer: {
+          session: issued.id,
+          ref: sent.session,
+          ...(outcome?.status === "accepted" ? { receipt: outcome.receipt } : {}),
+          ...(made === undefined ? {} : { worktree: { id: made.id, path: made.path, branch: made.branch } }),
+          operation,
+        },
+      };
+    };
+
     /** The number of the last turn the journal holds for a session. */
     const lastTurnOf = (ref: SessionRef): number =>
       Math.max(
@@ -992,6 +1030,16 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         // that nothing knows of, so it is not made again.
         recovery: "do-not-repeat",
         run: async (input, ctx) => {
+          // The prompt is an input under an operation: a retry with it answers the session it made.
+          const operation = input.operation ?? ctx.operationId;
+          const digest = createHash("sha256").update(JSON.stringify(["start", input.harness, input.prompt])).digest("hex");
+          const before = startUnder(operation);
+          if (before !== undefined) {
+            if (before.digest !== digest || before.answer === undefined) {
+              throw new SessionRefusal("operation-conflict", `operation "${operation}" was another input of a session`);
+            }
+            return before.answer;
+          }
           const control = controlFor(bindings, input.harness, "start");
           // A model or an effort the kind cannot apply is refused here, before anything is made.
           const instance = instanceOf(bindings, input.harness);
@@ -1048,12 +1096,17 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
           });
           await ctx.emit(SessionMarked, { session: ref, mark });
+          // The session has a name only now, so the input of its prompt is written once the harness took it; a start
+          // without a prompt is written too, so a retry of it finds the session it made.
+          await ctx.emit(SessionInputSending, { session: ref, operation, digest });
+          if (first !== undefined) await ctx.emit(SessionInputSettled, { session: ref, operation, outcome: { status: "accepted", receipt: first } });
           follow(control, ref, id);
           return {
             session: issued,
             ref,
             ...(first === undefined ? {} : { receipt: first }),
             ...(worktree === undefined ? {} : { worktree: { id: worktree.id, path: worktree.path, branch: worktree.branch } }),
+            operation,
           };
         },
       }),
