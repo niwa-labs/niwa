@@ -490,3 +490,69 @@ test("every entry type and every message role of pi's file is mapped on purpose:
   // A line that is none of pi's entries stays whole under unknown, as before.
   expect(await kindsOf("alien", entry({ type: "hologram", id: "z" }))).toEqual(["unknown"]);
 });
+
+test("a locator taken from a half-written line yields the line's records once it is whole", async () => {
+  const file = sessionFile("growing");
+  const half = assistant("the finished answer");
+  writeFileSync(file, header("growing") + user("hello") + half.slice(0, 20));
+
+  const tail = (await all(reading().read(idOf("growing")))).at(-1)!;
+  expect(tail.incomplete).toBe(true);
+
+  appendFileSync(file, half.slice(20));
+  // The tail stood for nothing final: the whole line is read from its first record.
+  const resumed = await all(reading().read(idOf("growing"), tail.locator));
+  expect(resumed).toMatchObject([{ kind: "assistant", text: "the finished answer", incomplete: false }]);
+});
+
+test("a complete object that only lacks its line feed keeps its place when the feed comes", async () => {
+  const file = sessionFile("unfed");
+  const whole = assistant("done");
+  writeFileSync(file, header("unfed") + user("hello") + whole.trimEnd());
+
+  const records = await all(reading().read(idOf("unfed")));
+  expect(records.map((record) => [record.kind, record.incomplete])).toEqual([
+    ["user", false],
+    ["assistant", true],
+  ]);
+  appendFileSync(file, "\n");
+  // The record was delivered whole, as the one record of its line: nothing follows it.
+  expect(await all(reading().read(idOf("unfed"), records[1]!.locator))).toEqual([]);
+});
+
+/** The file of a session of a run of subagents that began at `at`. */
+function lateRunFile(parent: string, child: string, at: string): void {
+  const dir = join(home, PROJECT, `2026-10-27T09-15-00-000Z_${parent}`, "run-1", "run-0");
+  mkdirSync(dir, { recursive: true });
+  const stamped = header(child).replace("2026-10-27T09:15:00.000Z", at);
+  writeFileSync(join(dir, "session.jsonl"), stamped + user("work in the child"));
+}
+
+test("a session spawned after the reader has gone past the parent is read from the place it left", async () => {
+  writeFileSync(sessionFile("parent-late"), header("parent-late") + user("hello") + assistant("on it"));
+  const seen = await all(reading().read(idOf("parent-late")));
+  expect(seen.map((record) => record.kind)).toEqual(["user", "assistant"]);
+  const saved = seen.at(-1)!.locator;
+
+  lateRunFile("parent-late", "child-late", "2026-10-27T09:15:03.000Z");
+
+  const resumed = await all(reading().read(idOf("parent-late"), saved));
+  expect(resumed).toMatchObject([{ kind: "nested", child: idOf("child-late") }]);
+  expect((await reading().coverage(idOf("parent-late"), saved)).status).toBe("not-scanned");
+  // A read from the start sees the same session in the order it happened.
+  expect((await all(reading().read(idOf("parent-late")))).map((record) => record.kind)).toEqual(["user", "assistant", "nested"]);
+  // And once the reader has the child, it gets nothing twice.
+  const again = (await all(reading().read(idOf("parent-late")))).at(-1)!;
+  expect(await all(reading().read(idOf("parent-late"), again.locator))).toEqual([]);
+});
+
+test("a session spawned between two lines sits between their records", async () => {
+  writeFileSync(sessionFile("parent-mid"), header("parent-mid") + user("hello") + assistant("on it"));
+  lateRunFile("parent-mid", "child-mid", "2026-10-27T09:15:01.500Z");
+
+  const records = await all(reading().read(idOf("parent-mid")));
+  expect(records.map((record) => record.kind)).toEqual(["user", "nested", "assistant"]);
+  // Reading on from the user's record gives the child and the answer; from the child, the answer alone.
+  expect((await all(reading().read(idOf("parent-mid"), records[0]!.locator))).map((record) => record.kind)).toEqual(["nested", "assistant"]);
+  expect((await all(reading().read(idOf("parent-mid"), records[1]!.locator))).map((record) => record.kind)).toEqual(["assistant"]);
+});

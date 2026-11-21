@@ -645,6 +645,13 @@ function atField(at: number | undefined): { readonly at?: number } {
 
 /* ----------------------------------------------------------------- state */
 
+/** A record in its place: the line it belongs to, and how many records of that place are up to and including it. */
+type Placed = {
+  readonly record: Unlocated;
+  readonly line: RawLine;
+  readonly after: number;
+};
+
 /** A session file that was found. */
 type Resolved = {
   /** The path of the file. */
@@ -826,6 +833,67 @@ export function piReading(options: PiReadingOptions): SessionReading {
   };
 
   /**
+   * The records of a session, each with the place of the line that holds it, from `resume` on.
+   *
+   * A sequence of records belongs to a line: its own records, then the sessions spawned while it was
+   * the last line written. A spawned session is placed by the moment it began, which is stable: it
+   * follows the last complete line whose time it does not precede, so a place a client has read
+   * past never gains a record that was not there when it was read. Only a complete line holds
+   * spawned sessions; the half-written tail does not, and they come before it.
+   *
+   * The record of a half-written line that is not JSON yet stands for nothing that is final: it
+   * counts for no place (`after` is 0), so the line, once whole, is read from its first record.
+   */
+  async function* walk(session: Resolved, resume: Position | undefined): AsyncGenerator<Placed> {
+    const children = (await childrenOf(session)).sort((a, b) => (a.at ?? -1) - (b.at ?? -1));
+    let next = 0;
+    let host: { line: RawLine; count: number } | undefined;
+    const skipOf = (line: RawLine): number => (resume !== undefined && line.byte === resume.offset ? resume.after : 0);
+
+    /** The sessions that began before `limit` (all of them without one), placed after the last complete line. */
+    const settle = (limit: number | undefined): Placed[] => {
+      const placed: Placed[] = [];
+      while (next < children.length) {
+        const child = children[next]!;
+        if (limit !== undefined && (child.at ?? -1) >= limit) break;
+        next += 1;
+        // A session that began before the place the read starts at is behind the reader.
+        if (host === undefined) continue;
+        host.count += 1;
+        if (host.count <= skipOf(host.line)) continue;
+        const [record] = recordsOfLine([child], false);
+        placed.push({ record: record!, line: host.line, after: host.count });
+      }
+      return placed;
+    };
+
+    let first = true;
+    for await (const line of scanLines(session.path, resume?.offset ?? 0)) {
+      const text = line.bytes.toString("utf8");
+      const value = text.trim().length === 0 ? null : parseJson(text);
+      const at = line.complete && value !== null ? timeOf(value) : undefined;
+      // The sessions that began before this line go behind the line before it.
+      if (!line.complete) yield* settle(undefined);
+      else if (at !== undefined) yield* settle(at);
+      const temporary = !line.complete && value === null && text.trim().length > 0;
+      const records = recordsOfLine(draftsOfLine(line), !line.complete);
+      const skip = temporary && line.byte === resume?.offset ? Infinity : skipOf(line);
+      for (const [index, record] of records.entries()) {
+        if (index < skip) continue;
+        yield { record, line, after: temporary ? 0 : index + 1 };
+      }
+      if (!line.complete) continue;
+      host = { line, count: records.length };
+      if (first && resume === undefined) {
+        // The first line of the file is where the sessions that began with it, or before any line, are put.
+        yield* settle(at === undefined ? undefined : at + 1);
+      }
+      first = false;
+    }
+    yield* settle(undefined);
+  }
+
+  /**
    * The title made from the first message of the person, among the first records of a file: the
    * title of a session the owner gave no name.
    */
@@ -932,18 +1000,10 @@ export function piReading(options: PiReadingOptions): SessionReading {
           `pi: the locator no longer names a record of "${id.native}": its file was rewritten`,
         );
       }
-      const resume = position;
-      // The sessions spawned inside this one are told once, at the place the session begins. They
-      // are found on every read, because the locator of a nested record counts them.
-      const nested = await childrenOf(session);
-      for await (const line of scanLines(session.path, resume?.offset ?? 0)) {
-        const drafts = [...(line.byte === 0 ? nested : []), ...draftsOfLine(line)];
-        const records = recordsOfLine(drafts, !line.complete);
-        const skip = resume !== undefined && line.byte === resume.offset ? resume.after : 0;
-        for (const [index, record] of records.entries()) {
-          if (index < skip) continue;
-          yield { ...record, locator: makeLocator(session.path, head, line, index + 1) } as SessionRecord;
-        }
+      // The sessions spawned inside this one are found on every read, because the locator of a
+      // nested record counts them.
+      for await (const { record, line, after } of walk(session, position)) {
+        yield { ...record, locator: makeLocator(session.path, head, line, after) } as SessionRecord;
       }
     },
     async raw(id: SessionId, locator: Locator): Promise<unknown> {
@@ -979,16 +1039,11 @@ export function piReading(options: PiReadingOptions): SessionReading {
         //
         // The sessions spawned inside this one are counted too: they are records of this session,
         // and a range that holds them is not empty.
-        const nested = await childrenOf(session);
         const resume =
           position !== undefined && (await positionHolds(session.path, position))
             ? position
             : undefined;
-        for await (const line of scanLines(session.path, resume?.offset ?? 0)) {
-          const skip = resume !== undefined && line.byte === resume.offset ? resume.after : 0;
-          const drafts = [...(line.byte === 0 ? nested : []), ...draftsOfLine(line)];
-          if (recordsOfLine(drafts, !line.complete).length > skip) return NOT_SCANNED;
-        }
+        for await (const _placed of walk(session, resume)) return NOT_SCANNED;
         return EMPTY;
       } catch (error) {
         return failedCoverage(
