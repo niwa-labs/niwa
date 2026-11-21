@@ -12,7 +12,7 @@ import type { ComponentType } from "react";
 import type { HostClient } from "./host-client.ts";
 import type { PathParams, SearchParams } from "./paths.ts";
 import type { StoredRecord } from "./records.ts";
-import type { RecordStream } from "./record-stream.ts";
+import type { RecordFeed } from "./record-stream.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Who is looking
@@ -42,6 +42,10 @@ export function createViewer(spec: { id: string; owner: boolean; actions: Iterab
 // ---------------------------------------------------------------------------------------------
 // Pages
 
+/**
+ * What a page receives. The query is given as strings, as written in the address; the cockpit
+ * does not turn `?n=1` into a number, the page parses what it needs.
+ */
 export type PageProps<P extends string = string> = {
   params: PathParams<P>;
   search: SearchParams;
@@ -146,9 +150,20 @@ export type EntitySpec = {
   /** The address of an entity's page. */
   href: (id: string) => string;
   /** A chip of its own in place of the plain id chip. */
-  chip?: ComponentType<{ id: string }> | undefined;
+  chip?: ComponentType<EntityChipProps> | undefined;
   /** A short preview, for hover cards and lists. */
   card?: ComponentType<{ id: string }> | undefined;
+};
+
+/** What a kind's own chip receives: the link is resolved and navigation handled by the cockpit. */
+export type EntityChipProps = {
+  id: string;
+  href: string;
+  /** Navigate inside the cockpit; call it from a plain click instead of following the link. */
+  navigate: () => void;
+  label?: string | undefined;
+  short?: boolean | undefined;
+  className?: string | undefined;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -158,7 +173,7 @@ export interface PluginContext {
   readonly plugin: { readonly id: string };
   readonly viewer: Viewer;
   readonly host: HostClient;
-  readonly records: RecordStream;
+  readonly records: RecordFeed;
   readonly pages: {
     add<P extends string>(page: PageSpec<P>): void;
   };

@@ -10,6 +10,7 @@ export {
   isCockpitPlugin,
   PLUGIN_ID,
   type CockpitPlugin,
+  type EntityChipProps,
   type EntityRef,
   type EntitySpec,
   type NavEntry,
@@ -73,3 +74,29 @@ export {
   type StreamState,
   type StreamStatus,
 } from "./record-stream.ts";
+
+export {
+  CockpitContext,
+  CockpitProvider,
+  useCockpit,
+  useHost,
+  useNavigate,
+  useRegistry,
+  useViewer,
+  type CockpitNavigator,
+  type CockpitRuntime,
+} from "./runtime.tsx";
+export { FaultNotice, PluginBoundary, type PluginBoundaryProps } from "./boundary.tsx";
+export {
+  EntityLink,
+  PageLink,
+  PageView,
+  Slot,
+  SlotItem,
+  SlotPart,
+  useEntityHref,
+  useSlot,
+  type EntityLinkProps,
+  type SlotProps,
+} from "./slots.tsx";
+export { callKey, useAction, useCall, useProjection, useStreamStatus, type UseCallOptions } from "./hooks.ts";
