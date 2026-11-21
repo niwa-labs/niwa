@@ -1690,11 +1690,12 @@ class Niwa implements Host {
     this.journal = journal;
     try {
       journal.setGuards([...this.types.values()]);
+      // The state is a projection of the journal: folded from it here, so a restart sees it.
+      this.states.bind({ journal, append: (recs) => this.append(recs) });
+      this.requireActionNeeds();
       this.openDoors(journal);
       // Before anything loads a plugin file again: the copies of files no installation is made from are taken away.
       await removeStaleCopies(journal);
-      // The state is a projection of the journal: folded from it here, so a restart sees it.
-      this.states.bind({ journal, append: (recs) => this.append(recs) });
       this.positions.clear();
       this.kept.clear();
       this.active.clear();
@@ -1928,10 +1929,6 @@ class Niwa implements Host {
         if (handler.trigger === undefined || declared.has(handler.type.name) || CORE_TYPE_NAMES.has(handler.type.name)) continue;
         throw new MissingProvider(name, handler.name, handler.type.name, handler.trigger.provider ?? handler.type.provider);
       }
-      // What the plugin as a whole needs: the actions its own registrations and the others' declare, the types any plugin declares.
-      for (const needed of entry.needs.actions) {
-        if (!this.actions.has(actionName(needed))) throw new MissingNeed(name, "action", needed);
-      }
       for (const needed of entry.needs.types) {
         if (!declared.has(needed) && !CORE_TYPE_NAMES.has(needed)) throw new MissingNeed(name, "type", needed);
       }
@@ -1941,6 +1938,19 @@ class Niwa implements Host {
           if (declared.has(needed.name) || CORE_TYPE_NAMES.has(needed.name)) continue;
           throw new MissingProvider(name, handler.name, needed.name, needed.provider, "needs");
         }
+      }
+    }
+  }
+
+  /** Catalogs can derive actions from persisted records, once journal and state are available. */
+  private requireActionNeeds(): void {
+    let catalog: Set<ActionName> | undefined;
+    for (const [plugin, entry] of this.plugins) {
+      for (const need of entry.needs.actions) {
+        const name = actionName(need);
+        if (this.actions.has(name)) continue;
+        catalog ??= new Set(this.catalogued().map(({action}) => action.name));
+        if (!catalog.has(name)) throw new MissingNeed(plugin, "action", name);
       }
     }
   }
