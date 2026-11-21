@@ -352,7 +352,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       boxed === true
         ? {
             sandbox: opts.sandbox ?? "srt",
-            denyRead: [join(api.home(), OWNER_TOKEN_FILE), join(api.home(), HOST_KEY_FILE)],
+            closed: [join(api.home(), OWNER_TOKEN_FILE), join(api.home(), HOST_KEY_FILE)],
             read: [workflowsDir(api.home()), ...scriptPackages().roots],
           }
         : undefined;

@@ -2,9 +2,9 @@
  * The `spawnAgent` funnel: the one place an agent process is born.
  *
  * Every harness starts its process here. The funnel builds the environment (the inherited one plus
- * the session's additions), and when the launch asks for a box it takes the box's sandbox, adds
- * what the harness needs to live in it to the spec, records the manifest, and launches through
- * the sandbox. A sandbox that is required and unavailable stops the start: the error is
+ * the session's additions), and when the launch asks for a box it takes the box's sandbox, records
+ * the manifest, and launches through the sandbox. What the harness needs inside the box is in the
+ * spec already: its profile was resolved with the rest of the box. A sandbox that is required and unavailable stops the start: the error is
  * `SandboxUnavailable` and no process exists.
  */
 
@@ -28,7 +28,8 @@ export type BoxSandboxName = "srt" | "nono";
 
 /** A box a session must run in: the sandbox and what it may reach. */
 export interface BoxRequest {
-  readonly sandbox: BoxSandboxName;
+  /** The sandbox by its name, or the sandbox itself for a host that made its own. */
+  readonly sandbox: BoxSandboxName | Sandbox;
   readonly spec: BoxSpecInput;
   /** Whoever asked for the box, so the manifest of its launch can be told from another's: it goes on to the record. */
   readonly mark?: string;
@@ -105,8 +106,8 @@ export interface BoxRecord {
   readonly harness: string;
   /** The mark of the request, when it had one. */
   readonly mark?: string;
-  readonly sandbox: BoxSandboxName;
-  /** The spec with the harness's needs added. */
+  readonly sandbox: SandboxName;
+  /** The spec, with the environment the process is started with. */
   readonly spec: BoxSpec;
   readonly manifest: SandboxManifest;
 }
@@ -131,7 +132,10 @@ export function onBoxManifest(listener: (record: BoxRecord) => void | Promise<vo
 
 const sandboxes = new Map<BoxSandboxName, Sandbox>();
 
-function sandboxOf(name: BoxSandboxName): Sandbox {
+/** The sandbox a request names: the one it holds, or the one the funnel keeps under its name. */
+export function sandboxOf(named: BoxSandboxName | Sandbox): Sandbox {
+  if (typeof named !== "string") return named;
+  const name = named;
   let found = sandboxes.get(name);
   if (found === undefined) {
     found = name === "srt" ? srt() : nono();
@@ -163,26 +167,20 @@ function inherited(unset: readonly string[]): Record<string, string> {
   return env;
 }
 
-function unique(items: readonly string[]): string[] {
-  return [...new Set(items)];
-}
-
 /**
- * The spec a box is given: the grant's spec with the harness's needs added, so nothing the
- * sandbox allows is hidden. The environment is only what is listed: `HOME` and `PATH` so the
- * harness can find itself, then the spec's own, then the session's additions.
+ * The spec a box is given: the request's, with the environment of the launch. The environment is
+ * only what is listed: `HOME` and `PATH` so the harness can find itself, then the spec's own, then
+ * the session's additions.
  */
 function boxedSpec(launch: AgentLaunch, box: BoxRequest): BoxSpec {
   const given = boxSpec(box.spec);
   const needs = launch.needs ?? { write: [], net: [] };
   return boxSpec({
+    ...given,
     cwd: launch.cwd ?? given.cwd,
-    read: given.read,
-    write: unique([...given.write, ...needs.write]),
-    denyRead: given.denyRead,
-    net: unique([...given.net, ...needs.net]),
+    write: [...new Set([...given.write, ...needs.write])],
+    net: [...new Set([...given.net, ...needs.net])],
     env: { HOME: homedir(), PATH: process.env["PATH"] ?? "/usr/bin:/bin", ...given.env, ...launch.env },
-    sockets: given.sockets,
   });
 }
 
@@ -344,14 +342,14 @@ function announce(launch: AgentLaunch, argv: readonly string[], sandbox: Sandbox
   for (const listener of spawnListeners) listener(event);
 }
 
-/** The spec with the needs, the manifest made from it, and the listeners told: all before anything starts. */
+/** The spec with its environment, the manifest made from it, and the listeners told: all before anything starts. */
 async function admitBox(launch: AgentLaunch, request: BoxRequest): Promise<{ sandbox: Sandbox; spec: BoxSpec }> {
   const sandbox = sandboxOf(request.sandbox);
   const spec = boxedSpec(launch, request);
   const record: BoxRecord = {
     harness: launch.harness,
     ...(request.mark === undefined ? {} : { mark: request.mark }),
-    sandbox: request.sandbox,
+    sandbox: sandbox.name,
     spec,
     manifest: sandbox.manifest(spec),
   };

@@ -1,8 +1,9 @@
 /**
  * The BoxSpec: what a sandboxed process may reach.
  *
- * Writing and the network are allow-lists. The spec itself has no default prohibitions: `denyRead` is
- * empty unless the caller sets it (a session's box sets the owner's token and the host key). The environment is only what is listed; `process.env` is never inherited.
+ * Writing and the network are allow-lists. The spec itself has no default prohibitions: `closed` is
+ * empty unless the caller sets it (a box resolved from profiles closes the places of the profiles it
+ * did not take). The environment is only what is listed; `process.env` is never inherited.
  */
 
 import { z } from "zod";
@@ -35,8 +36,11 @@ export const BoxSpecSchema = z.object({
   read: z.array(BoxPathSchema).default([]),
   /** The only places the process may write. */
   write: z.array(BoxPathSchema).default([]),
-  /** Places the process may not read. Empty unless the caller sets it. */
-  denyRead: z.array(BoxPathSchema).default([]),
+  /**
+   * Places the process may neither read nor write, whatever else the spec lists: the sandbox keeps
+   * them closed or refuses the spec. Empty unless the caller sets it.
+   */
+  closed: z.array(BoxPathSchema).default([]),
   /** The only hosts the process may reach. Empty: no network. */
   net: z.array(NetHostSchema).default([]),
   /** The whole environment of the process. */

@@ -19,7 +19,7 @@ import { chmod, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, spawnAgent, spawnAgentNow, srt, useSandbox } from "@niwa-labs/sandbox";
+import { SandboxUnavailable, BoxRefused, boxSpec, nono, spawnAgent, spawnAgentNow, srt, useSandbox } from "@niwa-labs/sandbox";
 import type { AgentProcess, LaunchedBox, Sandbox } from "@niwa-labs/sandbox";
 import { tempDir } from "@niwa-labs/testing";
 
@@ -217,10 +217,10 @@ test("a listener that comes after the box ended is told of the exit and the clos
 
 test("relative paths of a spec are read from its working directory, for the flags and for the check", () => {
   const cwd = "/niwa-absent-base/work";
-  expect(() => nono().manifest(boxSpec({ cwd, denyRead: ["secret"] }))).toThrow(SandboxUnsupported);
-  expect(() => nono().manifest(boxSpec({ cwd, write: ["out"], denyRead: ["out/key"] }))).toThrow(SandboxUnsupported);
+  expect(() => nono().manifest(boxSpec({ cwd, closed: ["secret"] }))).toThrow(BoxRefused);
+  expect(() => nono().manifest(boxSpec({ cwd, write: ["out"], closed: ["out/key"] }))).toThrow(BoxRefused);
   // Away from the cwd it is not in the way, wherever the host is.
-  expect(() => nono().manifest(boxSpec({ cwd, denyRead: ["../secret"] }))).not.toThrow();
+  expect(() => nono().manifest(boxSpec({ cwd, closed: ["../secret"] }))).not.toThrow();
 
   const flags = nono().manifest(boxSpec({ cwd, read: ["lib"], write: ["out"], sockets: ["run/host.sock"] })).flags;
   expect(flags).toEqual([
@@ -232,14 +232,14 @@ test("relative paths of a spec are read from its working directory, for the flag
     "--block-net",
   ]);
 
-  const settings = srt().manifest(boxSpec({ cwd, write: ["out", "~/.claude"], denyRead: ["secret"], sockets: ["run/host.sock"] })).settings;
+  const settings = srt().manifest(boxSpec({ cwd, write: ["out", "~/.claude"], closed: ["secret"], sockets: ["run/host.sock"] })).settings;
   expect(settings.filesystem).toEqual({
     denyRead: [{ path: `${cwd}/secret`, literal: true }],
     allowWrite: [
       { path: `${cwd}/out`, literal: true },
       { path: "~/.claude", literal: true },
     ],
-    denyWrite: [],
+    denyWrite: [{ path: `${cwd}/secret`, literal: true }],
   });
   expect(settings.network.allowUnixSockets).toEqual([`${cwd}/run/host.sock`]);
 });

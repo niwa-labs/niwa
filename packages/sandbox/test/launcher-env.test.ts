@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
 
-import { SandboxUnsupported, boxSpec, nono, srt } from "@niwa-labs/sandbox";
+import { BoxRefused, boxSpec, nono, srt } from "@niwa-labs/sandbox";
 import type { Sandbox } from "@niwa-labs/sandbox";
 import { tempDir } from "@niwa-labs/testing";
 
@@ -89,7 +89,7 @@ test("the command is found by the PATH the spec lists, and gets no variable of t
 
 test("a program whose name `env` would read as a variable is refused", async () => {
   for (const { sandbox, dir } of await wrapped()) {
-    await expect(sandbox.launch(boxSpec({ cwd: dir }), ["FOO=bar", "x"])).rejects.toBeInstanceOf(SandboxUnsupported);
+    await expect(sandbox.launch(boxSpec({ cwd: dir }), ["FOO=bar", "x"])).rejects.toBeInstanceOf(BoxRefused);
   }
 });
 

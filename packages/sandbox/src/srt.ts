@@ -7,7 +7,9 @@
  *
  * srt adds places of its own to what a spec lists, and the manifest's policy says so: the temp
  * directory it hands the process and a few places under the home are always writable, and reads
- * are open but for `denyRead`.
+ * are open but for the spec's `closed` places, which are denied to reading and writing alike. A
+ * denied place wins over anything granted inside it, so a place the spec grants inside a closed one
+ * is refused rather than left unreachable.
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -15,7 +17,8 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 import type { BoxPolicy, Sandbox, SandboxManifest } from "./sandbox.ts";
-import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
+import { BoxRefused, SandboxUnavailable } from "./sandbox.ts";
+import type { BoxRefusal } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
@@ -85,7 +88,7 @@ const SRT_DEVICES = ["/dev/stdout", "/dev/stderr", "/dev/null", "/dev/tty", "/de
 /** The temp directory srt gives every process, writable whatever the settings say. */
 const SRT_TEMP = ["/tmp/claude", "/private/tmp/claude"];
 
-/** Places under the home srt makes writable unless a `denyRead` covers them. */
+/** Places under the home srt makes writable unless a closed place covers them. */
 const SRT_HOME_WRITES = [".npm/_logs", ".claude/debug"];
 
 function homeExpanded(path: string): string {
@@ -93,9 +96,14 @@ function homeExpanded(path: string): string {
 }
 
 /** What srt will let a process reach: the spec's places, and the ones srt adds of its own. */
+/** Is `path` the place `root` names, or under it? */
+function covers(root: string, path: string): boolean {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+}
+
 function srtPolicy(spec: BoxSpec): BoxPolicy {
-  const denied = spec.denyRead.map(homeExpanded);
-  const covered = (path: string) => denied.some((root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep));
+  const denied = spec.closed.map(homeExpanded);
+  const covered = (path: string) => denied.some((root) => covers(root, path));
   const home = SRT_HOME_WRITES.map((place) => join(homedir(), place)).filter((path) => !covered(path));
   return {
     write: [...new Set([...spec.write.map(homeExpanded), ...SRT_TEMP, ...home])],
@@ -113,11 +121,18 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
   // Relative paths are read from the box's working directory, where srt is run, not from the host's.
   const manifest = (given: BoxSpec): SrtManifest => {
     const spec = anchoredSpec(given);
+    const reasons: BoxRefusal[] = [];
     // On Linux srt cannot filter a socket by its path: the list is ignored, and the box would run
     // with the socket the spec promises it closed to the process.
     if (platform === "linux" && spec.sockets.length > 0) {
-      throw new SandboxUnsupported("srt", "on Linux it cannot allow a unix socket by its path");
+      reasons.push({ code: "adapter", message: "srt on Linux cannot allow a unix socket by its path" });
     }
+    const closed = spec.closed.map((path) => ({ path, place: homeExpanded(path) }));
+    for (const place of [spec.cwd, ...spec.read, ...spec.write, ...spec.sockets]) {
+      const within = closed.find((one) => covers(one.place, homeExpanded(place)));
+      if (within !== undefined) reasons.push({ code: "adapter", message: `srt cannot open ${place} inside ${within.path}, which is closed: a denied place wins over what lies in it` });
+    }
+    if (reasons.length > 0) throw new BoxRefused(reasons, "srt");
     return {
       sandbox: "srt",
       cwd: spec.cwd,
@@ -125,7 +140,7 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
       policy: srtPolicy(spec),
       settings: {
         network: { allowedDomains: spec.net, deniedDomains: [], allowUnixSockets: spec.sockets },
-        filesystem: { denyRead: literally(spec.denyRead), allowWrite: literally(spec.write), denyWrite: [] },
+        filesystem: { denyRead: literally(spec.closed), allowWrite: literally(spec.write), denyWrite: literally(spec.closed) },
       },
     };
   };

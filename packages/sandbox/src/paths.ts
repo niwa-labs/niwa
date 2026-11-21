@@ -27,5 +27,5 @@ export function workingDirectory(cwd: string): string {
 export function anchoredSpec(spec: BoxSpec): BoxSpec {
   const cwd = workingDirectory(spec.cwd);
   const within = (paths: readonly string[]) => paths.map((path) => anchored(path, cwd));
-  return boxSpec({ ...spec, cwd, read: within(spec.read), write: within(spec.write), denyRead: within(spec.denyRead), sockets: within(spec.sockets) });
+  return boxSpec({ ...spec, cwd, read: within(spec.read), write: within(spec.write), closed: within(spec.closed), sockets: within(spec.sockets) });
 }

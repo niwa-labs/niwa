@@ -31,7 +31,7 @@ import { harnessId, harnessKind, machineId } from "@niwa-labs/harness";
 import type { BoxRecord, LaunchedBox, Sandbox, SandboxName, SpawnEvent } from "@niwa-labs/sandbox";
 import {
   SandboxUnavailable,
-  SandboxUnsupported,
+  BoxRefused,
   boxSpec,
   homePath,
   nono,
@@ -216,13 +216,13 @@ test("write and net rules are the box; its cwd is the session's, and tools ride 
       write: ["/work/out", "/tmp/scratch"],
       net: ["registry.npmjs.org"],
       sockets: ["/niwa-absent-home/.niwa/niwa.sock"],
-      denyRead: KEYS,
+      closed: KEYS,
     },
   });
   // A net rule alone makes a box too, with nothing writable.
   expect(launchOf(grant(["net:gitlab.example.com"]), { ...plan, cwd: "/w", sandbox: "nono" }).box).toEqual({
     sandbox: "nono",
-    spec: { cwd: "/w", write: [], net: ["gitlab.example.com"], sockets: ["/niwa-absent-home/.niwa/niwa.sock"], denyRead: KEYS },
+    spec: { cwd: "/w", write: [], net: ["gitlab.example.com"], sockets: ["/niwa-absent-home/.niwa/niwa.sock"], closed: KEYS },
   });
 });
 
@@ -233,12 +233,12 @@ test("every box closes the owner's token and the host key, whatever the grant sa
       const box = launchOf(grant(rules), { ...plan, sandbox }).box;
       if (box === undefined) throw new Error("a box was expected");
       const spec = boxSpec(box.spec);
-      expect(keys(spec.denyRead)).toEqual(KEYS);
+      expect(keys(spec.closed)).toEqual(KEYS);
       if (sandbox === "srt") {
         expect(srt().manifest(spec).settings.filesystem.denyRead.map((entry) => entry.path)).toEqual(KEYS);
       } else if (rules.includes("write:*")) {
         // nono reads by allow-list: a key under a place the box may write cannot be carved out, so the box is refused.
-        expect(() => nono().manifest(spec)).toThrow(SandboxUnsupported);
+        expect(() => nono().manifest(spec)).toThrow(BoxRefused);
       } else {
         expect(nono().manifest(spec).flags).not.toContain("/niwa-absent-home/.niwa/owner.token");
       }
@@ -254,7 +254,7 @@ test("a mask a box cannot say is refused, not widened or dropped", () => {
 
 test("`net:*` is no list of hosts: it is refused as unsupported by the sandbox, whichever it is", () => {
   for (const sandbox of ["srt", "nono"] as const) {
-    expect(() => launchOf(grant(["write:/work/*", "net:*"]), { ...plan, sandbox })).toThrow(SandboxUnsupported);
+    expect(() => launchOf(grant(["write:/work/*", "net:*"]), { ...plan, sandbox })).toThrow(BoxRefused);
   }
   // A rule that asks grants nothing at launch, so it names no host.
   expect(launchOf(grant([{ do: "net:*", ask: true }]), plan).box?.spec.net).toEqual([]);
@@ -283,7 +283,7 @@ test("session.start gives the control side the tools and the box of the grant, a
     write: [],
     net: ["example.com"],
     sockets: [`${home}/niwa.sock`],
-    denyRead: [`${home}/owner.token`, `${home}/host.key`],
+    closed: [`${home}/owner.token`, `${home}/host.key`],
   });
   expect(plain?.tools).toBeUndefined();
   expect(plain?.box).toBeUndefined();

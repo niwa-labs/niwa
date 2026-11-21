@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 
 import { CatchableError } from "@niwa-labs/core";
-import { SandboxUnavailable, SandboxUnsupported, srt } from "@niwa-labs/sandbox";
+import { BoxRefused, SandboxUnavailable, srt } from "@niwa-labs/sandbox";
 import type { Sandbox } from "@niwa-labs/sandbox";
 
 import { ProcRefusal } from "../src/index.ts";
@@ -32,7 +32,7 @@ const sh = (script: string) => ["/bin/sh", "-c", script];
 const unsupported: Sandbox = {
   ...recordingSandbox(),
   async launch() {
-    throw new SandboxUnsupported("nono", "reads are an allow-list there");
+    throw new BoxRefused([{ code: "adapter", message: "reads are an allow-list there" }], "nono");
   },
 };
 const wrapperGone: Sandbox = {
@@ -69,7 +69,7 @@ test("a sandbox whose policy does not hold a run to its directory refuses the ca
 test("a box that cannot be had refuses the call before anything starts", async () => {
   for (const [sandbox, message] of [
     [absentSandbox, /sandbox nono is not available/],
-    [unsupported, /cannot express this spec/],
+    [unsupported, /was refused/],
     [wrapperGone, /the wrapper cannot be started/],
   ] as const) {
     const bench = await procActions({ sandbox });

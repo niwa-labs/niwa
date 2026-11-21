@@ -8,8 +8,40 @@
 
 export { BoxPathSchema, BoxSpecSchema, EnvNameSchema, NetHostSchema, boxSpec } from "./spec.ts";
 export type { BoxPath, BoxSpec, BoxSpecInput, EnvName, NetHost } from "./spec.ts";
-export { SandboxUnavailable, SandboxUnsupported, requireSandbox } from "./sandbox.ts";
-export type { BoxPolicy, LaunchedBox, Sandbox, SandboxClass, SandboxManifest, SandboxName } from "./sandbox.ts";
+export { BoxRefused, SandboxUnavailable, requireSandbox } from "./sandbox.ts";
+export type { BoxPolicy, BoxRefusal, LaunchedBox, Sandbox, SandboxClass, SandboxManifest, SandboxName } from "./sandbox.ts";
+export {
+  ALWAYS_CLOSED,
+  AccessItemSchema,
+  BoxAccessSchema,
+  BoxManifestSchema,
+  BoxPolicySchema,
+  admit,
+  boxManifest,
+  itemOf,
+  itemText,
+  placeTarget,
+  sandbox,
+  planSpec,
+} from "./access.ts";
+export type {
+  AccessItem,
+  AccessItemInput,
+  BoxAccess,
+  BoxAccessInput,
+  BoxManifest,
+  BoxPlan,
+  BoxProfiles,
+  Origin,
+  PathNeed,
+  PlanInput,
+  ProfileName,
+  SandboxHost,
+  SandboxOptions,
+  Skipped,
+} from "./access.ts";
+export { programPaths, realPlace, resolveProfile } from "./profile.ts";
+export type { BoxProfile, ProfileContext, ProfilePaths, ResolvedProfile } from "./profile.ts";
 export { srt } from "./srt.ts";
 export type { SrtManifest, SrtOptions, SrtSettings } from "./srt.ts";
 export { nono } from "./nono.ts";
@@ -20,6 +52,7 @@ export {
   onBoxManifest,
   onSpawn,
   requireBox,
+  sandboxOf,
   spawnAgent,
   spawnAgentNow,
   useSandbox,

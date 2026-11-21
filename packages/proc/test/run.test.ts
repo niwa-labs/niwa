@@ -53,7 +53,7 @@ test("a run asks for a box that writes only in its cwd, reaches nothing, and hol
     expect(spec?.net).toEqual([]);
     expect(Object.keys(spec?.env ?? {}).sort()).toEqual(["HOME", "MODE", "PATH", "TEMP", "TMP", "TMPDIR"]);
     const home = realpathSync(host.home);
-    expect(spec?.denyRead).toEqual(expect.arrayContaining([join(home, "owner.token"), join(home, "host.key"), join(home, "secrets")]));
+    expect(spec?.closed).toEqual(expect.arrayContaining([join(home, "owner.token"), join(home, "host.key"), join(home, "secrets")]));
     expect(result.box).toEqual({ sandbox: "nono", write: [cwd], devices: ["/dev/null"], read: [cwd, "/usr/lib"], net: [] });
     const seen = outputOf(host, result.output);
     expect(seen).toContain("MODE=ci");

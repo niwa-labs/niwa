@@ -89,12 +89,30 @@ export class SandboxUnavailable extends Error {
   }
 }
 
-/** The sandbox cannot express this spec. Silently weakening it would be worse than refusing. */
-export class SandboxUnsupported extends Error {
-  readonly sandbox: SandboxName;
-  constructor(sandbox: SandboxName, reason: string) {
-    super(`sandbox ${sandbox} cannot express this spec: ${reason}`);
-    this.name = "SandboxUnsupported";
+/** Why a box was refused: one reason, with what it is about. */
+export interface BoxRefusal {
+  /**
+   * `unknown-profile`: a name no profile has. `closed`: a place another box's profile or the closed
+   * list keeps. `not-granted`: wider than the host's default, and no rule of the grant covers it.
+   * `no-network`: a host asked of a box that reaches none. `adapter`: the sandbox cannot say it.
+   */
+  readonly code: "unknown-profile" | "closed" | "not-granted" | "no-network" | "adapter";
+  readonly message: string;
+  /** The rule of a grant that would cover what was refused. */
+  readonly rule?: string;
+}
+
+/**
+ * A box that cannot be had as it was asked for, with every reason at once. Silently widening or
+ * narrowing it would be worse than refusing: nothing was started.
+ */
+export class BoxRefused extends Error {
+  readonly reasons: readonly BoxRefusal[];
+  readonly sandbox: SandboxName | undefined;
+  constructor(reasons: readonly BoxRefusal[], sandbox?: SandboxName) {
+    super(`${sandbox === undefined ? "the box" : `sandbox ${sandbox}`} was refused: ${reasons.map((reason) => reason.message).join("; ")}`);
+    this.name = "BoxRefused";
+    this.reasons = reasons;
     this.sandbox = sandbox;
   }
 }

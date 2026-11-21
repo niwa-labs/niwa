@@ -1,16 +1,16 @@
 // The sandbox manifest and the gate.
 //
 // What it proves:
-//   1. a BoxSpec has no default prohibitions: denyRead is empty unless the user sets it, and write,
+//   1. a BoxSpec has no default prohibitions: closed is empty unless the user sets it, and write,
 //      net and sockets are empty lists, not wide-open ones
 //   2. the manifest is pure and deterministic, and carries exactly what the spec says
-//   3. srt's settings are write/net/denyRead/sockets of the spec and nothing else; srt's PATH need is visible
+//   3. srt's settings are write/net/closed/sockets of the spec and nothing else; srt's PATH need is visible
 //   4. nono's flags are the spec's write, net and sockets; an empty net is a blocked net
-//   5. nono drops a denyRead it never granted, and refuses one it would have to carve out of a granted place
+//   5. nono drops a closed place it never granted, and refuses one it would have to carve out of a granted place
 //   6. a sandbox that is not available stops the session before it starts
 //   7. nono's manifest carries the profile it is run with: the default one without the groups that
 //      grant the temp areas and the user's tools, and a nono that resolves it to more is not available;
-//      a denyRead that a granted socket would open is refused
+//      closing a socket the box is granted would open is refused
 //   8. each manifest says the policy the sandbox applies: nono's is the spec's places and the
 //      system's, srt's adds its own writes and leaves reads open
 //
@@ -22,7 +22,7 @@ import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, requireSandbox, srt } from "@niwa-labs/sandbox";
+import { SandboxUnavailable, BoxRefused, boxSpec, nono, requireSandbox, srt } from "@niwa-labs/sandbox";
 import type { Sandbox } from "@niwa-labs/sandbox";
 import { tempDir } from "@niwa-labs/testing";
 
@@ -36,7 +36,7 @@ const spec = boxSpec({
 
 test("a spec has no default prohibitions and no default reach", () => {
   const bare = boxSpec({ cwd: "/work/repo" });
-  expect(bare.denyRead).toEqual([]);
+  expect(bare.closed).toEqual([]);
   expect(bare.write).toEqual([]);
   expect(bare.net).toEqual([]);
   expect(bare.sockets).toEqual([]);
@@ -58,7 +58,7 @@ test("the manifest is pure and says what the spec says", () => {
   }
 });
 
-test("srt settings are the spec's write, net, denyRead and sockets", () => {
+test("srt settings are the spec's write, net, closed places and sockets", () => {
   const manifest = srt().manifest(spec);
   expect(manifest.settings).toEqual({
     network: { allowedDomains: ["api.anthropic.com", "registry.npmjs.org"], deniedDomains: [], allowUnixSockets: ["~/.niwa/host.sock"] },
@@ -72,8 +72,9 @@ test("srt settings are the spec's write, net, denyRead and sockets", () => {
       denyWrite: [],
     },
   });
-  const user = srt().manifest(boxSpec({ cwd: "/work/repo", denyRead: ["~/.ssh"] }));
+  const user = srt().manifest(boxSpec({ cwd: "/work/repo", closed: ["~/.ssh"] }));
   expect(user.settings.filesystem.denyRead).toEqual([{ path: "~/.ssh", literal: true }]);
+  expect(user.settings.filesystem.denyWrite).toEqual([{ path: "~/.ssh", literal: true }]);
   expect(user.settings.network.allowedDomains).toEqual([]);
 });
 
@@ -94,36 +95,36 @@ test("nono flags are the spec's write, net and sockets; no net is a blocked net"
   expect(nono().manifest(spec).env).toEqual({ NIWA_TOKEN: "k3f9" });
 });
 
-test("nono needs no flag for a denyRead it never granted, and refuses one it would have to carve out", () => {
-  const closed = nono().manifest(boxSpec({ cwd: "/x", denyRead: ["~/.ssh", "~/.niwa/owner.token"] }));
+test("nono needs no flag for a closed place it never granted, and refuses one it would have to carve out", () => {
+  const closed = nono().manifest(boxSpec({ cwd: "/x", closed: ["~/.ssh", "~/.niwa/owner.token"] }));
   expect(closed.flags).toEqual(nono().manifest(boxSpec({ cwd: "/x" })).flags);
-  expect(() => nono().manifest(boxSpec({ cwd: "/x", denyRead: ["/x/secret"] }))).toThrow(SandboxUnsupported);
-  expect(() => nono().manifest(boxSpec({ cwd: "/x", write: ["/home/.niwa"], denyRead: ["/home/.niwa/host.key"] }))).toThrow(
-    SandboxUnsupported,
+  expect(() => nono().manifest(boxSpec({ cwd: "/x", closed: ["/x/secret"] }))).toThrow(BoxRefused);
+  expect(() => nono().manifest(boxSpec({ cwd: "/x", write: ["/home/.niwa"], closed: ["/home/.niwa/host.key"] }))).toThrow(
+    BoxRefused,
   );
-  expect(() => nono().manifest(boxSpec({ cwd: "/home", denyRead: ["/home/.niwa/host.key"] }))).toThrow(SandboxUnsupported);
-  expect(() => nono().manifest(boxSpec({ cwd: "/x", read: ["/home"], denyRead: ["/home/.niwa/host.key"] }))).toThrow(SandboxUnsupported);
+  expect(() => nono().manifest(boxSpec({ cwd: "/home", closed: ["/home/.niwa/host.key"] }))).toThrow(BoxRefused);
+  expect(() => nono().manifest(boxSpec({ cwd: "/x", read: ["/home"], closed: ["/home/.niwa/host.key"] }))).toThrow(BoxRefused);
 });
 
-test("nono refuses a denyRead inside a place its profile grants without being asked", () => {
+test("nono refuses a closed place inside a place its profile grants without being asked", () => {
   // The profile lets the box read /usr/share: a flag cannot close a file there, and leaving the
   // entry out would only make it look closed.
   for (const platform of ["darwin", "linux"] as const) {
-    expect(() => nono({ platform }).manifest(boxSpec({ cwd: "/x", denyRead: ["/usr/share/niwa-secret"] }))).toThrow(SandboxUnsupported);
+    expect(() => nono({ platform }).manifest(boxSpec({ cwd: "/x", closed: ["/usr/share/niwa-secret"] }))).toThrow(BoxRefused);
   }
 });
 
 test("srt on Linux refuses a socket it would silently leave closed", () => {
   const sockets = boxSpec({ cwd: "/x", sockets: ["~/.niwa/host.sock"] });
-  expect(() => srt({ platform: "linux" }).manifest(sockets)).toThrow(SandboxUnsupported);
+  expect(() => srt({ platform: "linux" }).manifest(sockets)).toThrow(BoxRefused);
   expect(srt({ platform: "linux" }).manifest(boxSpec({ cwd: "/x" })).settings.network.allowUnixSockets).toEqual([]);
   expect(srt({ platform: "darwin" }).manifest(sockets).settings.network.allowUnixSockets).toEqual(["~/.niwa/host.sock"]);
 });
 
-test("a socket nono grants is a place the box may read, so a denyRead on it is refused", () => {
+test("a socket nono grants is a place the box may read, so closing it is refused", () => {
   const socket = "~/.niwa/host.sock";
-  expect(() => nono().manifest(boxSpec({ cwd: "/x", sockets: [socket], denyRead: [socket] }))).toThrow(SandboxUnsupported);
-  expect(() => nono().manifest(boxSpec({ cwd: "/x", sockets: [socket], denyRead: ["~/.niwa/host.key"] }))).not.toThrow();
+  expect(() => nono().manifest(boxSpec({ cwd: "/x", sockets: [socket], closed: [socket] }))).toThrow(BoxRefused);
+  expect(() => nono().manifest(boxSpec({ cwd: "/x", sockets: [socket], closed: ["~/.niwa/host.key"] }))).not.toThrow();
 });
 
 test("nono is run with the default profile less the groups that grant places of their own, the system places named instead", () => {
@@ -187,7 +188,7 @@ test("srt's policy adds its own temp directory and home places to the writes, an
   expect(policy.write).toEqual(["/work/repo", "/tmp", join(home, ".claude"), ...places(getDefaultWritePaths())]);
   expect(policy.devices).toEqual(devices(getDefaultWritePaths()));
   expect(policy.read).toEqual({ except: [] });
-  const denied = srt().manifest(boxSpec({ cwd: "/x", denyRead: ["~/.npm"] })).policy;
+  const denied = srt().manifest(boxSpec({ cwd: "/x", closed: ["~/.npm"] })).policy;
   expect(denied.write).toEqual(places(getDefaultWritePaths({ denyRead: ["~/.npm"], allowRead: [] })));
   expect(denied.read).toEqual({ except: [join(home, ".npm")] });
 });
@@ -204,13 +205,13 @@ test("a working directory under the home directory is expanded once, and the pat
   expect(nono().manifest(boxSpec({ cwd: "~/project", write: ["out"] })).flags).toContain(join(home, "project", "out"));
 });
 
-test("nono sees through a link: a denyRead under a place reached by a link is refused too", async () => {
+test("nono sees through a link: a closed place under a place reached by a link is refused too", async () => {
   const dir = await tempDir("nono-link");
   await mkdir(join(dir, "home"));
   await symlink(join(dir, "home"), join(dir, "alias"));
   // The box may use the alias, and the key lies in the real directory it points to.
-  expect(() => nono().manifest(boxSpec({ cwd: join(dir, "alias"), denyRead: [join(dir, "home", "host.key")] }))).toThrow(
-    SandboxUnsupported,
+  expect(() => nono().manifest(boxSpec({ cwd: join(dir, "alias"), closed: [join(dir, "home", "host.key")] }))).toThrow(
+    BoxRefused,
   );
 });
 

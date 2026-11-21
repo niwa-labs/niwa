@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE, rule, specsOf } from "@niwa-labs/core";
 import type { Grant, Rule, RuleSpec, Verb } from "@niwa-labs/core";
 import type { ToolAllowance, ToolsMode } from "@niwa-labs/harness";
-import { SandboxUnsupported } from "@niwa-labs/sandbox";
+import { BoxRefused } from "@niwa-labs/sandbox";
 import type { BoxRequest, BoxSandboxName, BoxSpecInput } from "@niwa-labs/sandbox";
 
 import { SessionRefusal } from "./refusal.ts";
@@ -77,7 +77,7 @@ function placeOf(name: string): string {
 
 /** A host a `net:` mask stands for: a host. Any host (`*`) is no allow-list, and no sandbox says it. */
 function hostOf(name: string, sandbox: BoxSandboxName): string {
-  if (name === "*") throw new SandboxUnsupported(sandbox, "net:* cannot be said as a list of hosts: name the hosts");
+  if (name === "*") throw new BoxRefused([{ code: "adapter", message: "net:* cannot be said as a list of hosts: name the hosts" }], sandbox);
   if (name.endsWith("*")) throw new SessionRefusal("net-mask", `net:${name} cannot be a host: use a host`);
   return name;
 }
@@ -119,7 +119,7 @@ export function launchOf(given: Grant, plan: LaunchPlan): GrantLaunch {
     net: nets.filter((each) => !each.ask).map((each) => hostOf(each.name, plan.sandbox)),
     sockets: [plan.socket],
     // Whatever the grant says, a box never reads the keys that make a caller the owner or sign tokens.
-    denyRead: [join(plan.home, OWNER_TOKEN_FILE), join(plan.home, HOST_KEY_FILE)],
+    closed: [join(plan.home, OWNER_TOKEN_FILE), join(plan.home, HOST_KEY_FILE)],
   };
   const box: BoxRequest = { sandbox: plan.sandbox, spec };
   return tools === undefined ? { box } : { tools, box };

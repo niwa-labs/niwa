@@ -38,7 +38,7 @@ import { HOST_KEY_FILE, OWNER_TOKEN_FILE, RECORD_DATA_LIMIT, action } from "@niw
 import type { ActionContext } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin } from "@niwa-labs/plugin";
-import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, requireSandbox } from "@niwa-labs/sandbox";
+import { BoxRefused, SandboxUnavailable, boxSpec, nono, requireSandbox } from "@niwa-labs/sandbox";
 import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 
 import { OutputCapture } from "./artifact.ts";
@@ -123,7 +123,7 @@ function directoryOf(cwd: string, authorized: string | undefined): string {
 function boxOf(sandbox: Sandbox, spec: BoxSpec): BoxUsed {
   const policy = sandbox.manifest(spec).policy;
   const refuse = (why: string): never => {
-    throw new SandboxUnsupported(sandbox.name, `${why}, and a run may write only in its directory, read only what it is given and reach no network`);
+    throw new BoxRefused([{ code: "adapter", message: `${why}, and a run may write only in its directory, read only what it is given and reach no network` }], sandbox.name);
   };
   if (policy === undefined) return refuse("it does not say what a box lets a process reach");
   if (!("only" in policy.read)) return refuse("its reads are open but for the places it is told to close");
@@ -210,7 +210,7 @@ async function beforeStart<T>(start: () => Promise<T>): Promise<T> {
   try {
     return await start();
   } catch (error) {
-    if (error instanceof SandboxUnavailable || error instanceof SandboxUnsupported) throw new ProcRefusal("no-sandbox", error.message);
+    if (error instanceof SandboxUnavailable || error instanceof BoxRefused) throw new ProcRefusal("no-sandbox", error.message);
     throw error;
   }
 }
@@ -289,13 +289,13 @@ export function proc(options: ProcOptions = {}): Plugin {
           const sandbox = await beforeStart(sandboxOf);
           // Cancelled while the sandbox was being found: nothing was started, and nothing will be.
           ctx.signal?.throwIfAborted();
-          const denyRead = [
+          const closedPlaces = [
             join(home(), OWNER_TOKEN_FILE),
             join(home(), HOST_KEY_FILE),
             api.secrets.dir,
             ...CREDENTIAL_PLACES.map((place) => join(homedir(), place)),
           ];
-          const closed = denyRead.map(realOr);
+          const closed = closedPlaces.map(realOr);
           // The home and temp files go inside the directory, where the box lets the command write; the call may name others.
           const own = runDirectoriesIn(cwd);
           const capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
@@ -306,7 +306,7 @@ export function proc(options: ProcOptions = {}): Plugin {
               write: [cwd],
               net: [],
               env: { ...baseEnv(), HOME: own.home, TMPDIR: own.temp, TMP: own.temp, TEMP: own.temp, ...input.env },
-              denyRead,
+              closed: closedPlaces,
             });
             const box = await beforeStart(async () => boxOf(sandbox, spec));
             const child = await beforeStart(() => sandbox.launch(spec, input.cmd, { detached: true }));

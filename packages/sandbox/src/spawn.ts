@@ -3,7 +3,7 @@
 import { existsSync, statSync } from "node:fs";
 import { constants } from "node:os";
 
-import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
+import { BoxRefused, SandboxUnavailable } from "./sandbox.ts";
 import type { LaunchOptions, LaunchedBox, SandboxName } from "./sandbox.ts";
 
 /** Where a wrapper finds the system's tools: the host's choice, never the spec's. */
@@ -35,9 +35,9 @@ export function insideBox(
   argv: readonly string[],
 ): { readonly command: string[]; readonly carried: Record<string, string> } {
   const program = argv[0];
-  if (program === undefined) throw new SandboxUnsupported(sandbox, "there is no program to run");
+  if (program === undefined) throw new BoxRefused([{ code: "adapter", message: "there is no program to run" }], sandbox);
   if (program.includes("=")) {
-    throw new SandboxUnsupported(sandbox, `the program ${JSON.stringify(program)} would be read by env as a variable`);
+    throw new BoxRefused([{ code: "adapter", message: `the program ${JSON.stringify(program)} would be read by env as a variable` }], sandbox);
   }
   const names = Object.keys(guest.env);
   const unset = [...Object.keys(launcher), ...SHELL_ADDED].filter((name) => !(name in guest.env)).flatMap((name) => ["-u", name]);

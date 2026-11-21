@@ -3,7 +3,8 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./profiles": "./src/profiles.ts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.83",

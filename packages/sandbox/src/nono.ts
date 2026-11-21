@@ -2,11 +2,13 @@
  * nono: the process class, a capability sandbox.
  *
  * nono is deny-by-default: nothing is readable or writable until it is granted. The manifest is
- * the flag list nono is run with. Writing, the network and sockets map one to one. Reading is an
- * allow-list in nono, so a `denyRead` entry needs no flag: what was never granted is already closed.
- * Carving a hole out of a granted directory cannot be said, so a `denyRead` that overlaps a place the
- * box may read or write is refused rather than weakened, and that includes the system places the
- * profile grants: a read it would allow is not left to look closed.
+ * the flag list nono is run with. Writing, the network and sockets map one to one; a path that is a
+ * file is granted as a file, since nono takes a directory flag only for a directory. Reading is an
+ * allow-list in nono, so a `closed` entry needs no flag: what was never granted is already closed,
+ * and a place granted inside a closed one stays granted. Carving a hole out of a granted directory
+ * cannot be said, so a `closed` place inside a place the box may read or write is refused rather
+ * than weakened, and that includes the system places the profile grants: a read it would allow is
+ * not left to look closed.
  * nono runs with a `HOME` and PATH of its own, the host's; the spec's environment is set on the command inside.
  *
  * Writing is held to `write` exactly and reading to the cwd, `read` and the places a process needs to
@@ -17,13 +19,13 @@
  * is not available.
  */
 
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
 import type { BoxPolicy, Sandbox, SandboxManifest } from "./sandbox.ts";
-import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
+import { BoxRefused, SandboxUnavailable } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
@@ -55,9 +57,20 @@ function covers(root: string, path: string): boolean {
   return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
 }
 
-/** Do two paths share a place: one is the other, or lies under it? */
-function overlap(one: string, other: string): boolean {
-  return covers(one, other) || covers(other, one);
+/** Is the place at this path a file? A path that is not there is taken for a directory to be made. */
+function isFile(path: string): boolean {
+  try {
+    return statSync(homeExpanded(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** The flag that grants a path for reading, or for reading and writing: a file's flag for a file. */
+function grant(path: string, mode: "read" | "write"): string[] {
+  const file = isFile(path);
+  if (mode === "read") return [file ? "--read-file" : "--read", path];
+  return [file ? "--allow-file" : "--allow", path];
 }
 
 /**
@@ -214,11 +227,17 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     const spec = anchoredSpec(given);
     // A socket is granted for reading as well, so it is a place the box may read; so is every place
     // the profile grants on its own.
-    const granted = [...[spec.cwd, ...spec.read, ...spec.write, ...spec.sockets].map(expanded), ...system];
-    const carved = spec.denyRead.find((denied) => granted.some((place) => overlap(expanded(denied), place)));
-    if (carved !== undefined) {
-      throw new SandboxUnsupported("nono", `reads are an allow-list there, so ${carved} cannot be carved out of a place the box may use`);
-    }
+    const granted = [
+      ...[spec.cwd, ...spec.read, ...spec.write, ...spec.sockets].map((place) => ({ place: expanded(place), by: place })),
+      ...system.map((place) => ({ place, by: `${place} (a system place every box reads)` })),
+    ];
+    const carved = spec.closed.flatMap((closed) => {
+      const inside = granted.find(({ place }) => covers(place, expanded(closed)));
+      return inside === undefined
+        ? []
+        : [{ code: "adapter" as const, message: `nono cannot keep ${closed} closed inside ${inside.by}, which the box may use: its reads are an allow-list` }];
+    });
+    if (carved.length > 0) throw new BoxRefused(carved, "nono");
     const net = spec.net.length === 0 ? ["--block-net"] : spec.net.flatMap((host) => ["--allow-domain", host]);
     return {
       sandbox: "nono",
@@ -234,8 +253,8 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
       flags: [
         "--silent",
         "--read", spec.cwd,
-        ...spec.read.flatMap((path) => ["--read", path]),
-        ...spec.write.flatMap((path) => ["--allow", path]),
+        ...spec.read.flatMap((path) => grant(path, "read")),
+        ...spec.write.flatMap((path) => grant(path, "write")),
         ...spec.sockets.flatMap((path) => ["--allow-unix-socket", path]),
         ...net,
       ],

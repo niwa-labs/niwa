@@ -25,7 +25,7 @@ import {
   spawnAgent,
   useSandbox,
   SandboxUnavailable,
-  SandboxUnsupported,
+  BoxRefused,
   boxSpec,
 } from "@niwa-labs/sandbox";
 import type {
@@ -391,11 +391,11 @@ test("a box whose manifest cannot be made, or recorded, stops the start with tha
   const refusing: Sandbox = {
     ...passthrough("nono"),
     manifest() {
-      throw new SandboxUnsupported("nono", "denyRead cannot be said");
+      throw new BoxRefused([{ code: "adapter", message: "closed cannot be said" }], "nono");
     },
   };
   undo.push(useSandbox("nono", refusing));
-  await expect(codex.start({ prompt: empty, cwd: dir, box })).rejects.toBeInstanceOf(SandboxUnsupported);
+  await expect(codex.start({ prompt: empty, cwd: dir, box })).rejects.toBeInstanceOf(BoxRefused);
 
   undo.push(useSandbox("nono", passthrough("nono")));
   undo.push(

@@ -35,7 +35,7 @@ export const BOX_ENV = "NIWA_WORKFLOW_BOX";
 export interface ScriptBox {
   readonly sandbox: BoxSandboxName;
   /** The host's keys: a box never reads them, whatever else it may read. */
-  readonly denyRead: readonly string[];
+  readonly closed: readonly string[];
   /** What the box may read besides the script and the packages niwa runs with: the folder of the stored copies, where a copy finds those packages. */
   readonly read?: readonly string[];
 }
@@ -171,7 +171,7 @@ export async function spawnScriptChild(mode: "run" | "describe", file: string, e
           box: {
             sandbox: box.sandbox,
             // Reading is all the box gives: the child and its modules, and the script.
-            spec: { cwd: dirname(path), read: [...readableRoots(), ...(box.read ?? [])], denyRead: [...box.denyRead] },
+            spec: { cwd: dirname(path), read: [...readableRoots(), ...(box.read ?? [])], closed: [...box.closed] },
             mark: run,
           },
         }),

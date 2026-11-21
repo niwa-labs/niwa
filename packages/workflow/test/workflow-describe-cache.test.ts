@@ -102,7 +102,7 @@ test("a second check of the same code spawns no child, and an edit of the script
 test("a module that could not be read is read again, and a module read in a box is not taken from one that was not", async () => {
   const dir = await tempDir("describe-cache");
   const file = await written(dir, "one.ts", ["export default 1;"]);
-  const box: ScriptBox = { sandbox: "srt", denyRead: [] };
+  const box: ScriptBox = { sandbox: "srt", closed: [] };
   const calls: Array<{ boxed: boolean }> = [];
   let outcome: DescribeResult = { failed: "it threw" };
   const describe = describer({

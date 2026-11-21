@@ -296,7 +296,7 @@ export const SessionBoxManifest = record(
     /** The harness instance that starts the process. */
     harness: z.string().min(1),
     /** The sandbox the process runs in. */
-    sandbox: z.enum(["srt", "nono"]),
+    sandbox: z.string().min(1),
     /** What the process may reach, but its environment: that is `env`. */
     spec: BoxSpecSchema.omit({ env: true }),
     /** The names of the variables the process is started with, as the sandbox sets them. */
