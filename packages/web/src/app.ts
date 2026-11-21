@@ -250,6 +250,34 @@ export class ModuleBuilds {
 
 type Built = { code: string; hash: string } | { problem: string };
 
+/** The package a specifier names: `react/jsx-runtime` is of `react`, `@niwa-labs/ui-kit/x` of `@niwa-labs/ui-kit`. */
+function packageOf(specifier: string): string {
+  const parts = specifier.split("/");
+  return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] ?? specifier);
+}
+
+/**
+ * Leave exactly the shared specifiers as imports. The page's import map names these and no others, so a specifier of a shared
+ * package that the map lacks would build and then fail in the browser; it is refused at the build instead. Bundling it would
+ * give the module a second copy of a package the page already has one of.
+ */
+function sharedImports(shared: readonly string[]): Bun.BunPlugin {
+  const names = new Set(shared);
+  const packages = new Set(shared.map(packageOf));
+  return {
+    name: "niwa-shared-imports",
+    setup(build) {
+      build.onResolve({ filter: /^[^./]/ }, (args) => {
+        if (names.has(args.path)) return { path: args.path, external: true };
+        if (packages.has(packageOf(args.path))) {
+          throw new Error(`${args.path} is not shared by the cockpit: a module imports ${shared.filter((name) => packageOf(name) === packageOf(args.path)).join(", ")} of that package`);
+        }
+        return undefined;
+      });
+    },
+  };
+}
+
 /** Build one module for the browser. The shared modules stay imports, and the page's import map resolves them. */
 async function buildModule(entry: string, shared: readonly string[]): Promise<Built> {
   const result = await Bun.build({
@@ -257,7 +285,7 @@ async function buildModule(entry: string, shared: readonly string[]): Promise<Bu
     entrypoints: [entry],
     target: "browser",
     format: "esm",
-    external: [...shared],
+    plugins: [sharedImports(shared)],
     minify: true,
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     jsx: { runtime: "automatic", importSource: "react", development: false },

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import babel from "@rolldown/plugin-babel";
@@ -7,9 +6,8 @@ import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
-import { entryName, SHARED_MODULES } from "./src/shared-modules.ts";
+import { entryName, entrySource, SHARED_MODULES } from "./src/shared-modules.ts";
 
-const require = createRequire(import.meta.url);
 const PREFIX = "virtual:shared/";
 
 /**
@@ -26,15 +24,7 @@ function sharedModules(): Plugin {
       if (!id.startsWith(`\0${PREFIX}`)) return undefined;
       const wanted = id.slice(`\0${PREFIX}`.length);
       const shared = SHARED_MODULES.find((one) => entryName(one.name) === wanted);
-      if (shared === undefined) return undefined;
-      if (!shared.cjs) return `export * from ${JSON.stringify(shared.source)};\n`;
-      const names = Object.keys(require(shared.source) as Record<string, unknown>).filter((name) => name !== "default" && /^[A-Za-z_$][\w$]*$/.test(name));
-      return [
-        `import shared from ${JSON.stringify(shared.source)};`,
-        "export default shared;",
-        ...names.map((name) => `export const ${name} = shared.${name};`),
-        "",
-      ].join("\n");
+      return shared === undefined ? undefined : entrySource(shared);
     },
   };
 }

@@ -237,3 +237,15 @@ test("without an app the surface serves its pages and no module", async () => {
   expect((await webFetch(`${web.url}${module!.entry}`)).status).toBe(404);
   expect((await webFetch(`${web.url}/assets/app.js`)).status).toBe(404);
 });
+
+test("a module that imports a subpath of a shared package the page does not map is refused at its build", async () => {
+  const { web, dir } = await setup();
+  // The page's map has `react` and `react/jsx-runtime`; `react/compiler-runtime` is not in it.
+  await writeFile(join(dir, "helper.ts"), `import { c } from "react/compiler-runtime";\nexport function helper(value: unknown): unknown { return [c, value]; }\n`);
+  const [module] = ((await (await webFetch(`${web.url}/api/catalogue`)).json()) as Catalogue).modules;
+  const failed = await webFetch(`${web.url}${module!.entry}`);
+  expect(failed.status).toBe(500);
+  const body = await failed.text();
+  expect(body).toContain("react/compiler-runtime is not shared by the cockpit");
+  expect(body).toContain("react/jsx-runtime");
+});
