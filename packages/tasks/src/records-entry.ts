@@ -14,6 +14,8 @@ export {
   TaskKind,
   TaskOutcome,
   TaskUpdated,
+  taskDone,
+  taskUpdates,
 } from "./records.ts";
 export {
   CreateInput,

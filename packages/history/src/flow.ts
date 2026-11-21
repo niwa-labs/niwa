@@ -1,19 +1,37 @@
 // The history entry for workflow scripts: read the transcript of a session in windows that fit a
-// budget, as a step of the script. A step names its call (`label`), so a replay does not read again.
+// budget, and wait for a watched session to end, each as a step of the script. A step names its
+// call (`label`), so a replay does not read or wait again.
 //
-//   import { readSession } from "@niwa-labs/history/flow"
+//   import { readSession, untilSessionEnded } from "@niwa-labs/history/flow"
 //   const win = await readSession("read", { session, mode: "digest", from, budget: 40_000 })
 //   // win.entries, win.next (null at the end), win.files (give it to the next read), win.omitted
+//   const end = await untilSessionEnded("end", { session, timeout: "2h" })
+//   // end.ended, end.certainty ("exact" or "guessed"), end.at (the position to read on from)
 
 import type { z } from "zod";
 
+import type { TypeQuery } from "@niwa-labs/core";
 import type { Brief, DigestEntry, FileIndex } from "@niwa-labs/digest";
-import type { SessionRecord } from "@niwa-labs/harness";
+import type { SessionId, SessionRecord } from "@niwa-labs/harness";
 
-import type { ReadAnswerSchema, historyRead } from "./records.ts";
+import { sessionEnded } from "./records.ts";
+import type { EndSignal, ReadAnswerSchema, historyRead } from "./records.ts";
 
 /** `call` is a global of a workflow script. */
 declare const call: (name: string, input: unknown, opts?: { label?: string; reason?: string }) => Promise<unknown>;
+
+/** A duration as a script writes it: milliseconds, or a text such as "30s", "5m", "2h". */
+export type Duration = number | string;
+
+/** The `wait` of a workflow script, as far as the helpers use it: one query of one type, typed by it. */
+type ScriptWait = <D>(query: TypeQuery<D>, opts: { from?: number; timeout?: Duration; label?: string }) => Promise<{ data: D; at: number } | { timedOut: true }>;
+
+/** The `wait` of the script that calls a helper: a global, read when the helper is called. */
+function scriptWait(): ScriptWait {
+  const wait = (globalThis as { wait?: unknown }).wait;
+  if (typeof wait !== "function") throw new Error('@niwa-labs/history/flow runs inside a workflow script: "wait" is not a global here');
+  return wait as ScriptWait;
+}
 
 /** What a read is given: the session, and what to read of it. */
 export type ReadSessionInput = z.input<typeof historyRead.input>;
@@ -77,4 +95,26 @@ export async function readSession(label: string, input: ReadSessionInput): Promi
     omitted: digest.omitted,
     restarted: digest.restarted,
   };
+}
+
+/** How a watched session ended, with the position of the record that says so; or that it did not end in time. */
+export type SessionEnd =
+  | { readonly ended: true; readonly certainty: "exact" | "guessed"; readonly why?: EndSignal; readonly at: number }
+  | { readonly ended: false };
+
+/**
+ * Waits, as the step `label`, for the end of a session a watch follows (`history.watch`): written
+ * after `from`, or after the wait began. `exact` when niwa or the harness said so, `guessed` when
+ * only a sign points to it. Without a `timeout` it waits for ever; with one it answers
+ * `{ ended: false }` when the time runs out.
+ */
+export async function untilSessionEnded(label: string, opts: { session: SessionId; from?: number; timeout?: Duration }): Promise<SessionEnd> {
+  const waited = await scriptWait()(sessionEnded(opts.session), {
+    ...(opts.from === undefined ? {} : { from: opts.from }),
+    ...(opts.timeout === undefined ? {} : { timeout: opts.timeout }),
+    label,
+  });
+  if ("timedOut" in waited) return { ended: false };
+  const { certainty, why } = waited.data;
+  return { ended: true, certainty, ...(why === undefined ? {} : { why }), at: waited.at };
 }

@@ -5,7 +5,8 @@
 
 import { z } from "zod";
 
-import { actionRef, record } from "@niwa-labs/core";
+import { actionRef, queryOf, record } from "@niwa-labs/core";
+import type { TypeQuery } from "@niwa-labs/core";
 import { BriefSchema, DigestEntrySchema, DigestModeSchema, FileIndexSchema } from "@niwa-labs/digest";
 import {
   AssistantRecordSchema,
@@ -22,6 +23,7 @@ import {
   UnknownRecordSchema,
   UserRecordSchema,
 } from "@niwa-labs/harness";
+import type { SessionId } from "@niwa-labs/harness";
 
 /** How many matches a search answers with when it is not told. */
 export const DEFAULT_SEARCH_LIMIT = 20;
@@ -206,6 +208,14 @@ export const HistorySessionEnded = record(
   "history.session.ended",
   z.object({ session: SessionIdSchema, certainty: z.enum(["exact", "guessed"]), why: EndSignalSchema.optional() }),
 );
+
+/**
+ * The end of one watched session: what a script waits for, a reader reads and a handler subscribes
+ * to. The id of a session has two parts, and the filter holds both.
+ */
+export function sessionEnded(session: SessionId): TypeQuery<z.output<typeof HistorySessionEnded.schema>> {
+  return queryOf(HistorySessionEnded, { "session.harness": session.harness, "session.native": session.native });
+}
 
 /** A watch was stopped before the session ended. */
 export const HistorySessionUnwatched = record("history.session.unwatched", z.object({ session: SessionIdSchema }));

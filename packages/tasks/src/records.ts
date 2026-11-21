@@ -9,8 +9,8 @@
  * The kind of work is an open label: a plain string, never a closed list in the core.
  */
 
-import { Address, EntityDescription, JsonValueSchema, idSchema, record } from "@niwa-labs/core";
-import type { Id } from "@niwa-labs/core";
+import { Address, EntityDescription, JsonValueSchema, idSchema, queryOf, record } from "@niwa-labs/core";
+import type { Id, TypeQuery } from "@niwa-labs/core";
 import { z } from "zod";
 
 import { ResultSchema } from "@niwa-labs/messages/records";
@@ -100,6 +100,19 @@ export const TaskDone = record(
     outcome: TaskOutcome,
   }),
 );
+
+/**
+ * The end of one task: what a script waits for (`wait(taskDone(task.id), { timeout })`), a reader
+ * reads and a handler subscribes to. A text that is not the id of a task is refused here.
+ */
+export function taskDone(task: string): TypeQuery<z.output<typeof TaskDone.schema>> {
+  return queryOf(TaskDone, { task: TaskId.parse(task) });
+}
+
+/** The updates of one task, in the order they were written. */
+export function taskUpdates(task: string): TypeQuery<z.output<typeof TaskUpdated.schema>> {
+  return queryOf(TaskUpdated, { task: TaskId.parse(task) });
+}
 
 /** Every record type of the tasks module. */
 export const TASK_TYPES = [TaskCreated, TaskUpdated, TaskDone] as const;
