@@ -249,6 +249,13 @@ export function lineDecoder(
       if (end === -1) break;
       const line = pending.slice(start, end);
       start = end + 1;
+      if (line.length > maxLineLength) {
+        // The limit holds for a line however the socket cut it: a complete line is judged like its remainder.
+        stopped = true;
+        pending = "";
+        onError?.(new Error(`a wire line longer than ${maxLineLength} characters was refused`), line.slice(0, 200));
+        return;
+      }
       const text = line.trim();
       if (text.length === 0) continue; // a blank line is a keep-alive, not a message
       let value: unknown;
