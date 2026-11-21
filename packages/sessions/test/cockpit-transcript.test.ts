@@ -58,3 +58,14 @@ test("notes name the nested session and keep a sealed thought sealed", () => {
 test("a record without a locator is keyed by its place", () => {
   expect(itemsOf([{ kind: "user", text: "a" }, { kind: "user", text: "b" }]).map((item) => item.key)).toEqual(["#0", "#1"]);
 });
+
+test("a checklist is drawn as how far it is, and a permission as its tool and outcome", () => {
+  const items = itemsOf([
+    { kind: "checklist", items: [{ text: "a", state: "done" }, { text: "b", state: "active" }] },
+    { kind: "permission", tool: "Bash", outcome: "denied" },
+  ]);
+  expect(items.map((item) => (item.kind === "note" ? [item.label, item.text] : item.kind))).toEqual([
+    ["Checklist", "1 of 2 done"],
+    ["Permission", "Bash: denied"],
+  ]);
+});

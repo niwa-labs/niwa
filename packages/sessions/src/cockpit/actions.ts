@@ -36,6 +36,8 @@ export const TranscriptRecord = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("thinking"), text: z.string(), redacted: z.boolean(), ...Base }),
   z.object({ kind: z.literal("tool-call"), callId: z.string(), name: z.string(), input: z.unknown().optional(), ...Base }),
   z.object({ kind: z.literal("tool-result"), callId: z.string(), name: z.string().optional(), output: z.unknown().optional(), ok: z.boolean().optional(), ...Base }),
+  z.object({ kind: z.literal("checklist"), callId: z.string().optional(), items: z.array(z.object({ text: z.string(), state: z.string() })), ...Base }),
+  z.object({ kind: z.literal("permission"), callId: z.string().optional(), tool: z.string().optional(), outcome: z.string(), ...Base }),
   z.object({ kind: z.literal("compaction"), summary: z.string(), ...Base }),
   z.object({ kind: z.literal("nested"), child: z.object({ harness: z.string(), native: z.string() }), ...Base }),
   z.object({ kind: z.literal("unknown"), raw: z.unknown().optional(), ...Base }),

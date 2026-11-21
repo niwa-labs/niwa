@@ -41,6 +41,14 @@ export function itemsOf(records: readonly TranscriptRecord[]): TranscriptItem[] 
         call.state = state;
         return;
       }
+      case "checklist": {
+        const done = record.items.filter((item) => item.state === "done").length;
+        items.push({ kind: "note", key, label: "Checklist", text: `${String(done)} of ${String(record.items.length)} done` });
+        return;
+      }
+      case "permission":
+        items.push({ kind: "note", key, label: "Permission", text: `${record.tool ?? "a tool"}: ${record.outcome}` });
+        return;
       case "compaction":
         items.push({ kind: "note", key, label: "Compacted", text: record.summary });
         return;
