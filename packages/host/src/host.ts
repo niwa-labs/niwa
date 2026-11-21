@@ -172,7 +172,7 @@ import { COCKPIT_MODULE, handlerSource, pluginVersion, pluginName, sealVersion }
 import { catalogOf } from "./cockpit-catalog.ts";
 import { StateStore } from "./state.ts";
 import { artifactStore, secretStore } from "./stores.ts";
-import type { HostMessage, LiveSubscription } from "@niwa-labs/client";
+import type { HostMessage, LiveSubscription, RecordFeed } from "@niwa-labs/client";
 import { isTrigger } from "@niwa-labs/plugin";
 import type { Trigger } from "@niwa-labs/plugin";
 import type { OfferKey, Offered, HandlerOptions, Plugin, PluginNeeds, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionStart } from "@niwa-labs/plugin";
@@ -2546,7 +2546,8 @@ class Niwa implements Host {
   }
 
   readonly records = {
-    since: (query?: RecordQuery<any>): AsyncIterable<StoredRecord> => this.subscribe(resolveQuery(query)),
+    // The host reads its own journal: nothing stands between the call and the subscription, so it is ready as made.
+    since: (query?: RecordQuery<any>): RecordFeed => Object.assign(this.subscribe(resolveQuery(query)), { ready: Promise.resolve() }),
     read: async (query?: RecordReadQuery<any>): Promise<StoredRecord[]> => this.readHistory(resolveQuery(query), query?.limit),
   };
 

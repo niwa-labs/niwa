@@ -479,9 +479,20 @@ function schemaFields(properties: unknown): string[] {
 
 const SSE_TYPE = "text/event-stream; charset=utf-8";
 
-/** Each SSE id is a committed journal position. Reconnecting resumes after it. */
-function journalEvents(api: NiwaApi, query: RecordQuery, streams: Set<() => void>): Response {
-  const iterator = api.records.since(query)[Symbol.asyncIterator]();
+/**
+ * Each SSE id is a committed journal position. Reconnecting resumes after it. The stream opens once the host has accepted
+ * the subscription, with or without a record to send: a connection the grant does not let read the journal is refused here,
+ * before the response is made, and is not told of a stream that is over.
+ */
+async function journalEvents(api: NiwaApi, query: RecordQuery, streams: Set<() => void>): Promise<Response> {
+  const feed = api.records.since(query);
+  const iterator = feed[Symbol.asyncIterator]();
+  try {
+    await feed.ready;
+  } catch (error) {
+    void iterator.return?.().catch(() => undefined);
+    throw error;
+  }
   const encoder = new TextEncoder();
   let end = (_close = true): void => undefined;
   let closed = false;

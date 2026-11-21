@@ -35,7 +35,7 @@ import type {
   TracedRecord,
   Token,
 } from "@niwa-labs/core";
-import type { LiveSubscription, NiwaApi } from "./client-types.ts";
+import type { LiveSubscription, NiwaApi, RecordFeed } from "./client-types.ts";
 import {
   clientMessageSchema,
   decodeHostMessage,
@@ -223,11 +223,22 @@ class WireConnection {
     });
   }
 
-  /** Subscribe to the records that answer a query: the history after its position, then the live ones. */
-  subscribe(query: ResolvedQuery): void {
+  /**
+   * Subscribe to the records that answer a query: the history after its position, then the live ones. Resolves when the host
+   * accepted the subscription, before any record; a refusal ends the connection and rejects.
+   */
+  subscribe(query: ResolvedQuery): Promise<void> {
     const id = this.nextId++;
     this.subscriptionIds.add(id);
-    this.send({ id, op: "since", query: onWire(query) });
+    return new Promise<void>((resolve, reject) => {
+      this.pending.set(id, { resolve: () => resolve(), reject });
+      try {
+        this.send({ id, op: "since", query: onWire(query) });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(asError(error));
+      }
+    });
   }
 
   /**
@@ -382,15 +393,25 @@ class RecordSubscription {
   private resume: (() => void) | null = null;
   /** The wait before the next attempt; a close ends it at once. */
   private readonly pause = new RetryPause();
+  private readonly accepted: Promise<void>;
+  private markReady: () => void = () => undefined;
+  private refuseReady: (error: Error) => void = () => undefined;
 
   constructor(options: SubscriptionOptions) {
     this.options = options;
     this.cursor = options.query.from ?? seq(0);
+    this.accepted = new Promise<void>((resolve, reject) => {
+      this.markReady = resolve;
+      this.refuseReady = reject;
+    });
+    // A subscription nobody waits on for readiness must not report its refusal as unhandled.
+    this.accepted.catch(() => undefined);
   }
 
   /** Return closes the socket even if a next call is waiting for a commit. */
-  iterate(): AsyncIterableIterator<StoredRecord> {
+  iterate(): RecordFeed & AsyncIterableIterator<StoredRecord> {
     const records = this.readRecords();
+    const subscription = this;
     return {
       [Symbol.asyncIterator]() { return this; },
       next: () => records.next(),
@@ -398,13 +419,22 @@ class RecordSubscription {
         this.close();
         return records.return();
       },
+      get ready() {
+        subscription.start();
+        return subscription.accepted;
+      },
     };
+  }
+
+  /** Open the subscription if it is not open: reading a record or asking whether it is ready does. */
+  private start(): void {
+    if (!this.isClosed) this.runner ??= this.run();
   }
 
   /** The records, in order, until the subscription closes. */
   private async *readRecords(): AsyncGenerator<StoredRecord, void, undefined> {
     if (this.isClosed) return;
-    this.runner ??= this.run();
+    this.start();
     try {
       for (;;) {
         const record = this.queue.shift();
@@ -428,6 +458,7 @@ class RecordSubscription {
     this.isClosed = true;
     this.closeConnection();
     this.pause.cancel();
+    this.refuseReady(this.failure ?? new HostError(CLOSED_MESSAGE));
     this.release();
     this.wake();
     this.finish();
@@ -453,7 +484,8 @@ class RecordSubscription {
         this.connection = connection;
         try {
           // A reconnect asks for the same query from where the stream got to: no gap, no duplicate.
-          connection.subscribe({ ...this.options.query, from: this.cursor });
+          await connection.subscribe({ ...this.options.query, from: this.cursor });
+          this.markReady();
           await connection.done;
         } catch {
           // The write failed: the socket is gone; the next round reconnects.
@@ -747,7 +779,7 @@ class Client implements NiwaApi {
     this.token = token;
     this.link = Promise.resolve(connection);
     this.records = {
-      since: (query?: RecordQuery<any>): AsyncIterable<StoredRecord> => {
+      since: (query?: RecordQuery<any>): RecordFeed => {
         if (this.isClosed) throw new HostError(CLOSED_MESSAGE);
         // A query the wire refuses is the caller's mistake: it is told now, not retried as a dropped socket.
         const resolved = resolveQuery(query);

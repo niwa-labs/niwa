@@ -11,6 +11,18 @@ export interface LiveSubscription extends AsyncIterableIterator<LiveFrame> {
   readonly ready: Promise<void>;
 }
 
+/** The records that answer a query, history then live. */
+export interface RecordFeed extends AsyncIterable<StoredRecord> {
+  /**
+   * Resolves once the host has accepted the subscription: it holds the query's reader and its position, and it was not
+   * refused. A grant that does not let the connection read the journal rejects it with the host's refusal, before any
+   * record. The answer does not wait for a first record, so it comes on an empty journal as well. Asking for it opens the
+   * subscription when no record was read yet. Absent in an implementation that has no step between the call and the
+   * subscription to wait for.
+   */
+  readonly ready?: Promise<void>;
+}
+
 /** The API shared by the host and a client. */
 export interface NiwaApi {
   /**
@@ -53,7 +65,7 @@ export interface NiwaApi {
      * The records that answer a query, history then live, no gap, no duplicate: the same records a
      * read of the query gives, and then the ones committed later. Never ends by itself.
      */
-    since(query?: RecordQuery<any>): AsyncIterable<StoredRecord>;
+    since(query?: RecordQuery<any>): RecordFeed;
     /**
      * The history after a position, read once: the records that are committed now, and nothing
      * that comes later.

@@ -6,6 +6,7 @@
 //   4. a name that is no action name is a bad request, and an action nobody declared is the host's refusal
 //   5. the journal feed starts after a position the page chooses, from the end the info names
 //   6. the input of a call is any JSON value: its shape is the action's schema to judge
+//   7. a connection that may not read the journal is refused 403 by the history and the stream, and a stream opens only once accepted
 
 import { afterEach, expect, test } from "bun:test";
 
@@ -177,6 +178,27 @@ test("the journal feed starts after the position the page names, and the info sa
   expect(history.map((record) => record.seq)).toEqual([end - 1, end]);
   expect((await webFetch(`${web.url}/api/events?after=-1`)).status).toBe(400);
   expect((await webFetch(`${web.url}/api/events?after=x`)).status).toBe(400);
+});
+
+test("a connection the grant does not let read the journal is refused 403 by the history and by the stream, before it opens", async () => {
+  const home = await hosted();
+  const web = await served(home);
+  await grantDefault(home, ["access.mine", "niwa.describe"]);
+  expect((await webFetch(`${web.url}/api/history?after=0`)).status).toBe(403);
+  const stream = await webFetch(`${web.url}/api/events?after=0`, { headers: { accept: "text/event-stream" } });
+  expect(stream.status).toBe(403);
+  expect(stream.headers.get("content-type")).not.toContain("text/event-stream");
+
+  // Once the grant lets the connection read, the stream opens, and it does so on a journal with nothing after the position.
+  await grantDefault(home, ["niwa.records.read"]);
+  const abort = new AbortController();
+  const open = await webFetch(`${web.url}/api/events?after=999999`, { headers: { accept: "text/event-stream" }, signal: abort.signal });
+  try {
+    expect(open.status).toBe(200);
+    expect(open.headers.get("content-type")).toContain("text/event-stream");
+  } finally {
+    abort.abort();
+  }
 });
 
 test("a page asks for history and its live continuation with one query", async () => {
