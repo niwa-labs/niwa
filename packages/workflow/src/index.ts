@@ -311,6 +311,9 @@ export function workflow(opts: WorkflowOptions = {}) {
       return [...known.values()];
     };
 
+    /** The version of a record type the host knows: what a script that names the type by reference must name. */
+    const recordVersion = (name: string): number | undefined => (emits.get(name) ?? api.recordType(name))?.version;
+
     /** The schema of the data of a record type the host knows: what a script that waits for it or reads it is typed by. */
     const recordSchema = (name: string): JsonSchema | undefined => {
       const type = emits.get(name) ?? api.recordType(name);
@@ -364,7 +367,7 @@ export function workflow(opts: WorkflowOptions = {}) {
 
     /** The script against the actions its caller may call. */
     const checked = async (ctx: ActionContext, source: { file: string; text: string }, boxed: boolean): Promise<CheckReport> => {
-      const text = await checkScript(source, { ...(await catalogueFor(ctx, api.rights(ctx.caller))), triggers: triggersNow(), records: recordSchema });
+      const text = await checkScript(source, { ...(await catalogueFor(ctx, api.rights(ctx.caller))), triggers: triggersNow(), records: recordSchema, versions: recordVersion });
       return withDeclaration(text, describe, boxFor(boxed));
     };
 

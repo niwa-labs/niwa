@@ -98,6 +98,7 @@ test("the filter and the data of a wait or a read by reference are held to the t
     "});",
   ]);
   expect((await errorsOf(host, wrong)).map(({ line, code }) => ({ line, code }))).toEqual([
+    { line: 3, code: "wait" },
     { line: 3, code: expect.stringMatching(/^TS/) },
     { line: 6, code: "TS2339" },
     { line: 6, code: "TS2339" },
@@ -187,10 +188,43 @@ test("the types of the script package type a wait and a read by reference the sa
     "  return [ping.data.nothing, records[0]?.data.nothing];",
   ]));
   expect((await errorsOf(host, wrong)).map(({ line, code }) => ({ line, code }))).toEqual([
+    { line: 6, code: "wait" },
     { line: 6, code: expect.stringMatching(/^TS/) },
     { line: 9, code: "TS2339" },
     { line: 9, code: "TS2339" },
   ]);
+}, 60_000);
+
+test("the check follows a reference to the type it names: a type the host does not know or writes at another version is refused, and a filter is held to it in JS too", async () => {
+  const { host, home } = await served();
+  const refused = await scriptIn(home, "refused.ts", [
+    importing("PingAhead, Unheard"),
+    'export default workflow({ uses: ["niwa.records.read"] }, async () => {',
+    "  await wait(PingAhead);",
+    '  await wait(Unheard, { timeout: "1m" });',
+    "  await read.records(PingAhead);",
+    "  await read.records({ types: [Unheard] });",
+    "});",
+  ]);
+  expect(await errorsOf(host, refused)).toEqual([
+    { line: 3, code: "wait", message: 'wait PingAhead: the script names version 2 of "ping.sent", and the host writes version 1' },
+    { line: 4, code: "wait", message: 'wait Unheard: the host knows no record type "never.sent", so the wait would never end' },
+    { line: 5, code: "read", message: 'read PingAhead: the script names version 2 of "ping.sent", and the host writes version 1' },
+    { line: 6, code: "read", message: 'read Unheard: the host knows no record type "never.sent"' },
+  ]);
+  const js = (filter: string): string[] => [
+    importing("Ping"),
+    'export default workflow({ uses: ["niwa.records.read"] }, async () => {',
+    `  await wait(Ping, { filter: ${filter} });`,
+    "});",
+  ];
+  expect(await errorsOf(host, await scriptIn(home, "typo.js", js('{ idd: "a" }')))).toEqual([
+    { line: 3, code: "wait", message: expect.stringContaining('wait "ping.sent": the filter names "idd"') },
+  ]);
+  expect(await errorsOf(host, await scriptIn(home, "kind.js", js('{ "to.id": 3 }')))).toEqual([
+    { line: 3, code: "wait", message: expect.stringContaining("cannot hold") },
+  ]);
+  expect(await errorsOf(host, await scriptIn(home, "fine.js", js('{ "to.id": "owner" }')))).toEqual([]);
 }, 60_000);
 
 test("a script that imports a package is not given the errors the package has under the options of the script", async () => {

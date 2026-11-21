@@ -61,7 +61,7 @@ export interface CheckError {
   file: string;
   line: number;
   column: number;
-  /** The code of the type checker (`TS2339`), `workflow` for a script that is not `export default workflow({ ... }, fn)`, `uses` for a mask of `uses` that names no action or an `agent()` call on a harness `uses` does not list, `emit` for a record the script may not write, `on` for an `on` the host cannot serve, `wait` for a filter of a wait no record of its type can hold, `schema` for an `input`, `output` or record of `emits` that is not a JSON Schema, `phases` for phases that are not a list of `{ title, detail? }` with titles of their own, written in the declaration, or `describe` for a module that could not be read. */
+  /** The code of the type checker (`TS2339`), `workflow` for a script that is not `export default workflow({ ... }, fn)`, `uses` for a mask of `uses` that names no action or an `agent()` call on a harness `uses` does not list, `emit` for a record the script may not write, `on` for an `on` the host cannot serve, `wait` for a filter of a wait no record of its type can hold or a type it names by reference that the host does not know or writes at another version, `read` for such a type of a read, `schema` for an `input`, `output` or record of `emits` that is not a JSON Schema, `phases` for phases that are not a list of `{ title, detail? }` with titles of their own, written in the declaration, or `describe` for a module that could not be read. */
   code: string;
   message: string;
 }
@@ -235,9 +235,14 @@ interface Harnesses {
 }
 
 /** What a script's checker says: the errors, and what it could not settle. */
-interface Diagnosis {
+interface Found {
   errors: CheckError[];
   warnings: CheckError[];
+}
+
+/** What the checker says, and the program it read: the script's references are followed in it. */
+interface Diagnosis extends Found {
+  program: Ts.Program;
 }
 
 /** The names a type of a harness can be, or `"dynamic"` when it is text known only when the script runs. Absent when the call names none. */
@@ -258,8 +263,8 @@ function harnessTypes(ts: typeof Ts, type: Ts.Type): string[] | "dynamic" | unde
  * refuses an unlisted harness in a script that is type checked, in the terms of overloads; the error here says which
  * entry of `uses` is missing, and is the only one for a script that is not type checked.
  */
-function harnessUses(ts: typeof Ts, program: Ts.Program, source: ScriptSource, harnesses: Harnesses): Diagnosis {
-  const found: Diagnosis = { errors: [], warnings: [] };
+function harnessUses(ts: typeof Ts, program: Ts.Program, source: ScriptSource, harnesses: Harnesses): Found {
+  const found: Found = { errors: [], warnings: [] };
   const parsed = program.getSourceFile(source.file);
   if (parsed === undefined || harnesses.hosted.size === 0) return found;
   const checker = program.getTypeChecker();
@@ -346,7 +351,7 @@ function diagnose(ts: typeof Ts, source: ScriptSource, typing: string, harnesses
       };
     });
   const uses = harnessUses(ts, program, source, harnesses);
-  return { errors: [...errors, ...uses.errors], warnings: uses.warnings };
+  return { errors: [...errors, ...uses.errors], warnings: uses.warnings, program };
 }
 
 /** What a check needs to know about the host. */
@@ -374,6 +379,8 @@ export interface Catalogue {
    * same answers.
    */
   records?: (type: string) => JsonSchema | undefined;
+  /** The version of a record type the host knows, by its name: what a script that names the type by reference must name. */
+  versions?: (type: string) => number | undefined;
 }
 
 /** Which of the described actions are irreversible: a mask of `uses` does not grant them. */
@@ -603,6 +610,115 @@ function readTypesOf(ts: typeof Ts, source: Ts.SourceFile): string[] {
   return types;
 }
 
+/** A type a wait or a read of the script names by reference, followed to the declaration the reference is made by. */
+interface Referenced {
+  code: "wait" | "read";
+  /** The reference as the script writes it. */
+  written: string;
+  /** The name and the version the declaration gives the type. */
+  name: string;
+  version: number;
+  /** The filter of a wait, when it is written as a literal. */
+  filter?: Record<string, unknown>;
+  line: number;
+  column: number;
+}
+
+/**
+ * The type a reference names: the reference is followed through its import to where it is made, `record("name",
+ * schema, { version })` with the name and the version written as literals. A reference made any other way, and a
+ * record of the script itself (made by its own `record`), name nothing the check can follow: the host refuses
+ * a reference it does not know when the script runs.
+ */
+function referencedType(ts: typeof Ts, checker: Ts.TypeChecker, expression: Ts.Expression): { name: string; version: number } | undefined {
+  const resolved = (node: Ts.Node): Ts.Symbol | undefined => {
+    const symbol = checker.getSymbolAtLocation(node);
+    return symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
+  };
+  const inner = bare(ts, expression);
+  if (!ts.isIdentifier(inner) && !ts.isPropertyAccessExpression(inner)) return undefined;
+  const declaration = resolved(inner)?.valueDeclaration;
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return undefined;
+  const made = bare(ts, declaration.initializer);
+  if (!ts.isCallExpression(made)) return undefined;
+  const callee = ts.isPropertyAccessExpression(made.expression) ? made.expression.name : made.expression;
+  if (!ts.isIdentifier(callee) || callee.text !== "record") return undefined;
+  if ((resolved(callee)?.declarations ?? []).some((one) => one.getSourceFile().fileName === TYPING_FILE)) return undefined;
+  const name = textOf(ts, made.arguments[0]);
+  if (name === undefined) return undefined;
+  const options = made.arguments[2];
+  if (options === undefined) return { name, version: 1 };
+  if (!ts.isObjectLiteralExpression(bare(ts, options))) return undefined;
+  const written = keyOf(ts, options, "version");
+  const version = written === undefined ? 1 : literalOf(ts, written)?.value;
+  return typeof version === "number" ? { name, version } : undefined;
+}
+
+/** The waits and the reads of the script that name a type by reference, each followed to the type it names. */
+function referencesOf(ts: typeof Ts, program: Ts.Program, file: string): Referenced[] {
+  const source = program.getSourceFile(file);
+  if (source === undefined) return [];
+  const checker = program.getTypeChecker();
+  const found: Referenced[] = [];
+  const add = (code: Referenced["code"], expression: Ts.Expression, filter?: Ts.Expression): void => {
+    if (textOf(ts, expression) !== undefined) return;
+    const type = referencedType(ts, checker, expression);
+    if (type === undefined) return;
+    const written = filter === undefined ? undefined : literalOf(ts, filter)?.value;
+    const fields = typeof written === "object" && written !== null && !Array.isArray(written) ? (written as Record<string, unknown>) : undefined;
+    found.push({ code, written: bare(ts, expression).getText(source), ...type, ...(fields === undefined ? {} : { filter: fields }), ...placeOf(ts, source, expression) });
+  };
+  const visit = (node: Ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const [first, second] = node.arguments;
+      if (ts.isIdentifier(node.expression) && node.expression.text === "wait" && first !== undefined) {
+        add("wait", first, keyOf(ts, second, "filter"));
+      } else if (
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "read" &&
+        node.expression.name.text === "records" &&
+        first !== undefined
+      ) {
+        const list = keyOf(ts, first, "types");
+        const types = list === undefined ? undefined : bare(ts, list);
+        if (types !== undefined && ts.isArrayLiteralExpression(types)) for (const element of types.elements) add("read", element);
+        else if (list === undefined) add("read", first);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/**
+ * The errors of the types a script names by reference: one the host does not know, so a wait for it would never end,
+ * or one at a version the host does not write; and a filter of a wait no record of the type can hold.
+ */
+function referenceErrors(file: string, references: readonly Referenced[], catalogue: Catalogue): CheckError[] {
+  const errors: CheckError[] = [];
+  for (const reference of references) {
+    const place = { file, line: reference.line, column: reference.column, code: reference.code };
+    const said = `${reference.code} ${reference.written}`;
+    const schema = catalogue.records?.(reference.name);
+    if (catalogue.records !== undefined && schema === undefined) {
+      const never = reference.code === "wait" ? ", so the wait would never end" : "";
+      errors.push({ ...place, message: `${said}: the host knows no record type "${reference.name}"${never}` });
+      continue;
+    }
+    const version = catalogue.versions?.(reference.name);
+    if (version !== undefined && version !== reference.version) {
+      errors.push({ ...place, message: `${said}: the script names version ${String(reference.version)} of "${reference.name}", and the host writes version ${String(version)}` });
+      continue;
+    }
+    if (reference.code === "wait" && schema !== undefined) {
+      errors.push(...filterErrors(file, "wait", { type: reference.name, ...(reference.filter === undefined ? {} : { filter: reference.filter }), line: reference.line, column: reference.column }, schema));
+    }
+  }
+  return errors;
+}
+
 /**
  * The record types the typing of a script describes, with the schema of their data: the types it may start on, and the
  * types it waits for or reads by name that the host knows. A record of a script that no schema describes carries data
@@ -700,6 +816,7 @@ async function check(source: ScriptSource, catalogue: Catalogue): Promise<TextCh
   const typing = scriptTyping(catalogue.actions, allowed, described.filter((trigger) => listed.includes(trigger.name)), records, catalogue.blocks, titles);
   const harnessesOf = (names: readonly string[]) => new Set(names.flatMap((name) => harnessOfAction(name) ?? []));
   const diagnosis = diagnose(ts, source, typing.declarations, { hosted: harnessesOf(catalogue.actions.map((action) => action.name)), allowed: harnessesOf(allowed) });
+  errors.push(...referenceErrors(source.file, referencesOf(ts, diagnosis.program, source.file), catalogue));
   errors.push(...diagnosis.errors);
   return { file: source.file, ok: errors.length === 0, errors, warnings: diagnosis.warnings, readable: declaration !== undefined && "object" in declaration, places };
 }
