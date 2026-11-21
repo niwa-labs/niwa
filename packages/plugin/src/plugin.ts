@@ -80,8 +80,11 @@ export function handlerSource(id: string, run: Handler<any>): string {
   return `${id}\n${run.toString()}`;
 }
 
-/** What each plugin made here does with the handlers its setup registered. */
-const sealers = new WeakMap<Plugin, (handlers: readonly string[]) => void>();
+/**
+ * The key of the method a plugin made by `plugin()` carries to finish its default version. It is
+ * a registry symbol, so the host finds it on a plugin built by another copy of this package.
+ */
+export const SEAL_VERSION: unique symbol = Symbol.for("niwa.plugin.sealVersion") as never;
 
 /**
  * Finish the default version of a plugin once its setup has run: it then covers the handlers too.
@@ -90,7 +93,7 @@ const sealers = new WeakMap<Plugin, (handlers: readonly string[]) => void>();
  * Until the setup has run the version is the hash of the setup text alone.
  */
 export function sealVersion(source: Plugin, handlers: readonly string[]): void {
-  sealers.get(source)?.(handlers);
+  source[SEAL_VERSION]?.(handlers);
 }
 
 interface PluginOptions {
@@ -123,20 +126,19 @@ export function plugin(
   }
   const explicit = opts?.version === undefined ? undefined : pluginVersion(opts.version);
   let derived: PluginVersion | undefined;
-  const made: Plugin = {
+  return {
     kind: "plugin",
     name: pluginName(name),
     get version() {
       return explicit ?? derived ?? hashOfCode([setup.toString()]);
     },
     setup,
+    ...(explicit === undefined && {
+      [SEAL_VERSION]: (handlers: readonly string[]) => {
+        derived = hashOfCode([setup.toString(), ...handlers]);
+      },
+    }),
   };
-  if (explicit === undefined) {
-    sealers.set(made, (handlers) => {
-      derived = hashOfCode([setup.toString(), ...handlers]);
-    });
-  }
-  return made;
 }
 
 /**

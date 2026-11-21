@@ -1,5 +1,6 @@
 // The contracts of a plugin: what a plugin is given and what it hands over.
 import type { z } from "zod";
+import type { SEAL_VERSION } from "./plugin.ts";
 
 import type {
   Action,
@@ -278,4 +279,6 @@ export interface Plugin {
   /** Explicit version or a hash of the setup function's source. */
   version: PluginVersion;
   setup(api: PluginApi): void;
+  /** Finishes the default version once the setup has run (`sealVersion`); absent when explicit. */
+  readonly [SEAL_VERSION]?: (handlers: readonly string[]) => void;
 }
