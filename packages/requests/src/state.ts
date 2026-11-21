@@ -128,6 +128,11 @@ export class RequestLedger {
     });
   }
 
+  /** A record of the journal by its id, when the host is serving and holds it. */
+  recordOf(id: RecordId): StoredRecord | undefined {
+    return this.reader()?.get(id);
+  }
+
   /** The state of every request, up to the last record of the journal. */
   requests(): ReadonlyMap<RequestId, RequestState> {
     this.catchUp();

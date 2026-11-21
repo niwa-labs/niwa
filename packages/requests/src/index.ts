@@ -17,7 +17,7 @@
 import { z } from "zod";
 
 import { action, isSuspend, recordId, stableJson, Address } from "@niwa-labs/core";
-import type { Action, Caller, OperationId, RecordId } from "@niwa-labs/core";
+import type { Action, Answer, Caller, OperationId, RecordId, RecordType, Timestamp } from "@niwa-labs/core";
 import { COCKPIT_MODULE, plugin, bindingOf } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import type { CallerBinding, Plugin } from "@niwa-labs/plugin";
@@ -190,8 +190,50 @@ function answerer(caller: Caller, bind: CallerBinding, to: Address): Address | u
   return by;
 }
 
+/**
+ * What the actions need of the host's time: its clock, and the write that ends a request whose
+ * deadline has passed. The clock is absent until the host serves.
+ */
+export interface Expiry {
+  now(): Timestamp | undefined;
+  /** End the request as expired: the one record a request has for it, whoever writes it. */
+  expire(id: RequestId): Promise<void>;
+}
+
+/**
+ * The request an earlier try of this operation already ended with a record of this type, when there
+ * is one. The record of an action takes its id from the operation, so a try made again finds it,
+ * whatever it called the request by.
+ */
+function writtenBefore<T extends { id: RequestId }>(ledger: RequestLedger, operation: OperationId, type: RecordType<T>): RequestId | undefined {
+  const stored = ledger.recordOf(createdRecordOf(operation));
+  if (stored?.type !== type.name) return undefined;
+  const data = type.schema.safeParse(stored.data);
+  return data.success ? data.data.id : undefined;
+}
+
 /** The actions that read and write the state of requests, from the facts and the binding. */
-export function requestActions(ledger: RequestLedger, bind: CallerBinding, resolvers: ResolverRegistry) {
+export function requestActions(ledger: RequestLedger, bind: CallerBinding, resolvers: ResolverRegistry, expiry: Expiry) {
+  /**
+   * Whether the request is open and its deadline has passed by the clock of the host. It is
+   * ended as expired then, before the timer gets to it, so no answer is taken between the two.
+   */
+  const expiredNow = async (id: RequestId): Promise<boolean> => {
+    const state = ledger.requests().get(id);
+    const now = expiry.now();
+    if (state?.status !== "open" || now === undefined) return false;
+    const { deadline } = state.created;
+    if (deadline === undefined || deadline > now) return false;
+    await expiry.expire(id);
+    return true;
+  };
+
+  /** Whether the answer written for the request is the one that stands: nothing ended it first. */
+  const stands = (id: RequestId, answer: Answer): boolean => {
+    const state = ledger.requests().get(id);
+    return state?.status === "answered" && stableJson(state.answer) === stableJson(answer);
+  };
+
   const answer = action(requestAnswer, {
     // The answer is written under the id of the operation, and the first answer stands:
     // a call that was cut off may be made again, and the same answer stands.
@@ -199,6 +241,10 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     effect: "record",
     world: "niwa",
     async run(input, ctx) {
+      // A try that was cut off after its answer was written finds it: the request is named by the
+      // record of this operation, not by what the call said, which may be a run with no open ask now.
+      const answered = writtenBefore(ledger, ctx.operationId, RequestAnswered);
+      if (answered !== undefined) return { id: answered, accepted: true };
       const by = bind(ctx.caller);
       const id = ledger.named(input, (request) => by !== undefined && (by.kind === "owner" || sameAddress(by, request.to)));
       const verdict = decideAnswer(id, ledger.requests().get(id), by, input.answer);
@@ -207,7 +253,14 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
         // told why its answer does not stand instead of being refused.
         return { id, accepted: false, reason: verdict.reason };
       }
-      if (verdict.kind === "write") await ctx.emit(RequestAnswered, { id, answer: input.answer, ...(by === undefined ? {} : { by }) });
+      if (verdict.kind === "write") {
+        // An answer that comes after the deadline comes too late, whether or not the timer has run.
+        if (await expiredNow(id)) return { id, accepted: false, reason: "expired" };
+        await ctx.emit(RequestAnswered, { id, answer: input.answer, ...(by === undefined ? {} : { by }) });
+        // Something may have ended the request while this was written: the first end stands.
+        const ended = ledger.requests().get(id);
+        if (ended?.status === "cancelled" || ended?.status === "expired") return { id, accepted: false, reason: ended.status };
+      }
       return { id, accepted: true };
     },
   });
@@ -219,6 +272,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     effect: "record",
     world: "niwa",
     async run(input, ctx) {
+      const cancelled = writtenBefore(ledger, ctx.operationId, RequestCancelledRecord);
+      if (cancelled !== undefined) return { id: cancelled };
       // A client is held to its binding; a handler or the host, in-process, may say who cancels.
       const by = bind(ctx.caller) ?? (ctx.caller.kind === "client" ? undefined : input.by);
       const id = ledger.named(input, (request) => by !== undefined && (by.kind === "owner" || [request.to, request.from].some((party) => party !== undefined && sameAddress(by, party))));
@@ -286,6 +341,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     effect: "record",
     world: "niwa",
     async run(input, ctx) {
+      // A try that was cut off after its answer was written finds it, whoever gave the answer.
+      if (writtenBefore(ledger, ctx.operationId, RequestAnswered) !== undefined) return { answered: true };
       const bound = bind(ctx.caller);
       const id = ledger.named(
         { id: input.id },
@@ -304,6 +361,7 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
         return { answered: true };
       }
       if (state?.status !== "open") return { answered: false };
+      if (await expiredNow(id)) return { answered: false };
       const { question: name, input: asked, to, from } = state.created;
       // An answer given with the resolve is the answer of the request: it is checked against
       // the schema of the question, as the answer of the addressee is.
@@ -318,11 +376,24 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
           ...(info?.area === undefined ? {} : { area: info.area }),
           ...(info?.source === undefined ? {} : { source: info.source }),
         });
-        return { answered: true };
+        return { answered: stands(id, input.answer) };
       }
       for (const resolver of resolvers.resolversFor(name)) {
         const result = await resolver({ question: name, input: asked, to, ...(from === undefined ? {} : { from }) });
         if (!result.answered) continue;
+        // The request went on while the resolver worked: what ended it first stands.
+        const current = ledger.requests().get(id);
+        if (current?.status !== "open") return { answered: false };
+        if (await expiredNow(id)) return { answered: false };
+        // The answer of a resolver must fit the question as the answer of anyone does; one that
+        // does not is no answer, and the request stays open for the next resolver or its addressee.
+        try {
+          checkAnswer(current.created, result.answer);
+        } catch (error) {
+          if (!(error instanceof RequestRefusal)) throw error;
+          console.error(`niwa: a resolver of "${name}" gave an answer that does not fit the request "${id}": ${error.message}`);
+          continue;
+        }
         // The answer is the answer of the request: the asker parses it against the schema of
         // its question. How the resolver found it is told apart from it, so that the way it
         // was found does not have to pass the schema of the answer.
@@ -334,7 +405,7 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
           ...(info?.area === undefined ? {} : { area: info.area }),
           ...(info?.source === undefined ? {} : { source: info.source }),
         });
-        return { answered: true };
+        return { answered: stands(id, result.answer) };
       }
       return { answered: false };
     },
@@ -354,7 +425,16 @@ export function requests(opts: RequestsOptions = {}): Plugin {
     api.declare(...REQUEST_TYPES);
     const types = REQUEST_TYPES.map((type) => type.name);
     const ledger = new RequestLedger(types, () => api.journal?.());
-    const written = requestActions(ledger, bind, resolvers);
+    // The clock of the host, known once the service runs: an answer is held to the deadline by it.
+    let clock: (() => Timestamp) | undefined;
+    const expiry: Expiry = {
+      now: () => clock?.(),
+      // The id of the expiry is a function of the request, so the timer and an answer that finds the deadline passed write the same record.
+      expire: async (id) => {
+        await api.emit(RequestExpiredRecord, { id }, { id: expiryId(id) });
+      },
+    };
+    const written = requestActions(ledger, bind, resolvers, expiry);
     api.summarize(() => ({ open: [...ledger.requests().values()].filter((state) => state.status === "open").length }));
 
     api.action(askWith(bind, ledger));
@@ -444,11 +524,13 @@ export function requests(opts: RequestsOptions = {}): Plugin {
       };
 
       rearm = () => arm(false);
+      clock = () => ctx.now();
       // The requests that were already past their deadline when the host started end now.
       arm(false);
       return () => {
         stopped = true;
         rearm = undefined;
+        clock = undefined;
         cancel?.();
         cancel = undefined;
       };
