@@ -275,6 +275,29 @@ test("a box whose working directory nobody chose is not given it to write, and s
   expect(plan.skipped).toEqual([{ place: at("work"), from: "project", why: "the session names no working directory" }]);
 });
 
+test("a box that writes its directory gets what git keeps of it outside: a worktree's own git directory, and the shared objects and refs", () => {
+  const main = at("main");
+  mkdirSync(join(main, ".git", "worktrees", "wt1"), { recursive: true });
+  for (const part of ["objects", "refs", "logs"]) mkdirSync(join(main, ".git", part), { recursive: true });
+  writeFileSync(join(main, ".git", "worktrees", "wt1", "commondir"), "../..\n");
+  const tree = at("trees", "wt1");
+  mkdirSync(tree, { recursive: true });
+  writeFileSync(join(tree, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt1")}\n`);
+  const plan = host().plan({ cwd: tree, defaults: { allow: ["project"] }, network: false });
+  expect(plan.paths).toContainEqual({ path: join(main, ".git", "worktrees", "wt1"), mode: "write", from: "repository" });
+  expect(plan.paths).toContainEqual({ path: join(main, ".git"), mode: "read", from: "repository" });
+  for (const part of ["objects", "refs", "logs"]) expect(plan.paths).toContainEqual({ path: join(main, ".git", part), mode: "write", from: "repository" });
+  // Its configuration and hooks are read, never written.
+  expect(allows(plan, join(main, ".git"), "write")).toBe(false);
+  // A box that only reads its directory gets nothing of the repository.
+  const reading = host().plan({ cwd: tree, defaults: { allow: [{ read: "." }] }, network: false });
+  expect(reading.paths.some((need) => need.from === "repository")).toBe(false);
+  // A directory inside a checkout gets the checkout's git directory.
+  mkdirSync(join(main, "pkg"));
+  const inner = host().plan({ cwd: join(main, "pkg"), defaults: { allow: ["project"] }, network: false });
+  expect(inner.paths).toContainEqual({ path: join(main, ".git"), mode: "write", from: "repository" });
+});
+
 test("the toolchains read what every profile a box may ask for reads, and nothing it writes", () => {
   const plan = host().plan({ cwd: at("work"), defaults: { allow: ["toolchains"] }, owner: "pi", network: false });
   expect(plan.paths).toContainEqual({ path: at("tool.conf"), mode: "read", from: "toolchains" });

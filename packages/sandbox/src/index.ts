@@ -21,6 +21,7 @@ export {
   itemOf,
   itemText,
   placeTarget,
+  repositoryOf,
   sandbox,
   planSpec,
 } from "./access.ts";

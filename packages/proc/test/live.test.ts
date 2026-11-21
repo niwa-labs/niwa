@@ -112,6 +112,35 @@ for (const sandbox of [nono()]) {
       }
     }, 60_000);
 
+    test.skipIf(!present)("commits in a git worktree, whose git directory lies in the main repository", async () => {
+      const host = await procHost({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
+      try {
+        const main = realpathSync(dirIn(host.home, "repo"));
+        const git = (cwd: string, ...args: string[]) => {
+          const done = Bun.spawnSync(["git", "-c", "user.name=niwa", "-c", "user.email=niwa@example.com", ...args], { cwd, stderr: "pipe" });
+          if (done.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${done.stderr.toString()}`);
+        };
+        git(main, "init", "-q", "-b", "main");
+        git(main, "commit", "-q", "--allow-empty", "-m", "first");
+        const tree = join(host.home, "worktrees", "wt-1");
+        git(main, "worktree", "add", "-q", "-b", "lane", tree);
+        const cwd = realpathSync(tree);
+        const committed = await host.niwa.call(procRun, {
+          cmd: ["/bin/sh", "-c", "echo x > made.txt && git add made.txt && git -c user.name=niwa -c user.email=niwa@example.com commit -q -m made && git rev-parse --abbrev-ref HEAD && git log --format=%s -1"],
+          cwd,
+          timeout: 30_000,
+        });
+        expect(outputOf(host, committed.output).trim().split("\n").slice(-2)).toEqual(["lane", "made"]);
+        expect(committed.exit).toBe(0);
+        expect(committed.box.paths).toContainEqual({ path: join(main, ".git", "worktrees", "wt-1"), mode: "write", from: "repository" });
+        // The main checkout itself stays closed to it.
+        const peek = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", `ls ${main}`], cwd, timeout: 20_000 });
+        expect(peek.exit).not.toBe(0);
+      } finally {
+        await host.stop();
+      }
+    }, 90_000);
+
     test.skipIf(!present)("cannot read the owner token of its host", async () => {
       // A home under the user's home, as the host's is.
       const host = await procHost({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));

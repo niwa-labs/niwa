@@ -18,9 +18,9 @@
  * caller holds them against the grant, since the sandbox knows nothing of grants.
  */
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -399,6 +399,10 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     }
   }
   for (const write of input.writes ?? []) paths.push({ path: realPlace(write.path, home), mode: "write", from: write.from });
+  // A box that writes its working directory may commit there: what git keeps of it outside, it gets.
+  if (paths.some((need) => need.mode === "write" && covers(need.path, cwd))) {
+    for (const need of repositoryOf(cwd)) if (!paths.some((one) => one.mode === "write" && covers(one.path, need.path))) paths.push(need);
+  }
 
   return { cwd: given, request, paths: distinctNeeds(paths), net: distinctHosts(net), closed, skipped, rules, refusals };
 }
@@ -417,6 +421,43 @@ function distinctNeeds(needs: readonly PathNeed[]): PathNeed[] {
 function distinctHosts(hosts: readonly { host: string; from: Origin }[]): { host: string; from: Origin }[] {
   const seen = new Set<string>();
   return hosts.filter((one) => (seen.has(one.host) ? false : (seen.add(one.host), true)));
+}
+
+/**
+ * What git needs of the repository a directory is in, where it lies outside the directory: the
+ * repository's own git directory to write (a worktree's lies in the main repository's), and of the
+ * directory it shares with the main checkout the objects, the refs and their logs to write and the
+ * rest (its configuration, its hooks) to read. Found on disk, without running git.
+ */
+export function repositoryOf(dir: string): PathNeed[] {
+  for (let at = dir; ; at = dirname(at)) {
+    const dot = join(at, ".git");
+    let found: ReturnType<typeof lstatSync> | undefined;
+    try {
+      found = lstatSync(dot);
+    } catch {
+      found = undefined;
+    }
+    if (found !== undefined) {
+      let gitDir = dot;
+      if (found.isFile()) {
+        const named = /^gitdir:\s*(.+)$/m.exec(readFileSync(dot, "utf8"))?.[1]?.trim();
+        if (named === undefined) return [];
+        gitDir = realPlace(resolve(at, named));
+      }
+      const pointer = join(gitDir, "commondir");
+      const common = existsSync(pointer) ? realPlace(resolve(gitDir, readFileSync(pointer, "utf8").trim())) : gitDir;
+      const outside = (path: string) => !covers(dir, path);
+      const needs: PathNeed[] = [];
+      if (outside(gitDir)) needs.push({ path: gitDir, mode: "write", from: "repository" });
+      if (common !== gitDir && outside(common)) {
+        needs.push({ path: common, mode: "read", from: "repository" });
+        for (const part of ["objects", "refs", "logs"]) needs.push({ path: join(common, part), mode: "write", from: "repository" });
+      }
+      return needs;
+    }
+    if (dirname(at) === at) return [];
+  }
 }
 
 /** The places `toolchains` reads: the PATH, Homebrew, and the programs of every profile a box may ask for. */
