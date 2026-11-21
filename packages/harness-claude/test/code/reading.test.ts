@@ -157,6 +157,35 @@ test("a call is named by its category and its target, whatever Claude Code calls
   ]);
 });
 
+test("a TodoWrite call leaves the checklist it wrote, right after the call", async () => {
+  const todos = [
+    { content: "read the spec", status: "completed", activeForm: "Reading" },
+    { content: "write the code", status: "in_progress", activeForm: "Writing" },
+    { content: "ship", status: "pending", activeForm: "Shipping" },
+  ];
+  writeFileSync(
+    logPath(),
+    user("go") +
+      assistant([
+        { type: "tool_use", id: "t1", name: "TodoWrite", input: { todos } },
+        { type: "tool_use", id: "t2", name: "TodoWrite", input: { todos: [{ content: "x", status: "blocked" }] } },
+      ]),
+  );
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(["user", "tool-call", "checklist", "tool-call"]);
+  expect(records[2]).toMatchObject({
+    callId: "t1",
+    items: [
+      { text: "read the spec", state: "done" },
+      { text: "write the code", state: "active" },
+      { text: "ship", state: "pending" },
+    ],
+  });
+  // Reading on from the call gives the checklist again, and from the checklist what follows it.
+  expect((await all(reading().read(ID, records[1]!.locator))).map((r) => r.kind)).toEqual(["checklist", "tool-call"]);
+  expect((await all(reading().read(ID, records[2]!.locator))).map((r) => r.kind)).toEqual(["tool-call"]);
+});
+
 /** What each block type of an answer becomes: every type has its deliberate record. */
 const BLOCK_KINDS: { readonly [K in BlockType]: SessionRecord["kind"] } = {
   text: "assistant",

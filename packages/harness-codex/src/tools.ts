@@ -1,7 +1,9 @@
 /** Codex's own tools, as the common model describes them. */
 
+import { z } from "zod";
+
 import { shapeOf } from "@niwa-labs/harness";
-import type { ToolShape, ToolTable } from "@niwa-labs/harness";
+import type { Checklist, ToolShape, ToolTable } from "@niwa-labs/harness";
 
 /** The tools Codex gives its model. */
 export const CODEX_TOOLS: ToolTable = {
@@ -46,4 +48,20 @@ export function codexToolShape(name: string, input: unknown): ToolShape {
   const patch = typeof input === "string" ? input : typeof input === "object" && input !== null ? Object.getOwnPropertyDescriptor(input, "input")?.value : undefined;
   const first = typeof patch === "string" ? patchedFiles(patch)[0] : undefined;
   return first === undefined ? shape : { ...shape, target: first };
+}
+
+/** The arguments of Codex's `update_plan`: the whole plan, each step with its state. */
+const UpdatePlanArgs = z.object({
+  explanation: z.string().nullish(),
+  plan: z.array(z.object({ step: z.string(), status: z.enum(["pending", "in_progress", "completed"]) })),
+});
+
+const PLAN_STATES = { pending: "pending", in_progress: "active", completed: "done" } as const;
+
+/** The checklist a call leaves, when it is an `update_plan` whose arguments Codex would accept. */
+export function codexChecklist(name: string, input: unknown): Checklist | undefined {
+  if (name !== "update_plan") return undefined;
+  const parsed = UpdatePlanArgs.safeParse(input);
+  if (!parsed.success) return undefined;
+  return { items: parsed.data.plan.map((step) => ({ text: step.step, state: PLAN_STATES[step.status] })) };
 }

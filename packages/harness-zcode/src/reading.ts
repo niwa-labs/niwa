@@ -5,9 +5,10 @@
  *
  * A locator is `zcode:v1:<message>:<part>:<sub>`: the `sequence` of the message, the `sequence`
  * of the part inside it, and which of the part's records it is (a tool part is two: the call,
- * then its result). The sequences are the harness's own order, so a locator names the same place
- * however the session grows. A session spawned inside this one sits where it was created: right
- * after the last part that existed then, with a `sub` of 2 and up.
+ * then its result, and a third, the checklist, when the call wrote one). The sequences are the
+ * harness's own order, so a locator names the same place however the session grows. A session
+ * spawned inside this one sits where it was created: right after the last part that existed
+ * then, with a `sub` of 3 and up.
  *
  * Only the tail of a running session is half written: the last message while its answer has no
  * completion time, and the tool parts of it that still run. Those records are marked incomplete.
@@ -43,7 +44,7 @@ import { isHumanMessage, isRunning, millisOf, modelOf, readMessage, readPart, re
 import type { MessageData } from "./format.ts";
 import { configuredModeOf } from "./config.ts";
 import { dbPathOf } from "./paths.ts";
-import { zcodeToolShape } from "./tools.ts";
+import { zcodeChecklist, zcodeToolShape } from "./tools.ts";
 
 export interface ZcodeReadingOptions {
   /** The id of the installation this side serves. */
@@ -52,8 +53,8 @@ export interface ZcodeReadingOptions {
   readonly home: string;
 }
 
-/** The sub of the first nested session at a place: the parts' own records take 0 and 1. */
-const FIRST_NESTED_SUB = 2;
+/** The sub of the first nested session at a place: the parts' own records take 0 to 2. */
+const FIRST_NESTED_SUB = 3;
 /** How many ids a query names at most; more than that is filtered after the query. */
 const MAX_NAMED = 500;
 
@@ -232,9 +233,13 @@ function recordsOf(
         at: at(part.state.time?.end),
         incomplete: running,
       };
+      const checklist = part.state.status === "completed" ? zcodeChecklist(part.tool, part.state.input) : undefined;
       return [
         { sub: 0, record: call },
         { sub: 1, record: result },
+        ...(checklist === undefined
+          ? []
+          : [{ sub: 2, record: { kind: "checklist" as const, callId: part.callID, items: checklist.items, at: call.at, incomplete: running } }]),
       ];
     }
     case "compaction": {

@@ -47,7 +47,7 @@ import {
   readBlocks,
 } from "./format.ts";
 import type { Block, ParseState } from "./format.ts";
-import { claudeToolShape } from "./tools.ts";
+import { claudeChecklist, claudeToolShape } from "./tools.ts";
 import {
   agentIdOfFile,
   agentIdOfMetaFile,
@@ -562,8 +562,10 @@ function blockRecords(
       return [{ kind: "thinking", text: "", redacted: true, ...base }];
     case "tool_use": {
       const child = children.get(block.id);
+      const checklist = claudeChecklist(block.name, block.input);
       return [
         callRecord(block.id, block.name, block.input, base, state),
+        ...(checklist === undefined ? [] : [{ kind: "checklist" as const, callId: block.id, items: checklist.items, ...base }]),
         ...(child === undefined
           ? []
           : [{ kind: "nested" as const, child: { harness, native: NativeSessionIdSchema.parse(child) }, ...base }]),

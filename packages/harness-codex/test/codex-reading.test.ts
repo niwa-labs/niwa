@@ -207,6 +207,22 @@ test("a call is named by its category and its target; a patch is about the first
   ]);
 });
 
+test("an update_plan call leaves the checklist it wrote; arguments Codex would refuse leave none", async () => {
+  const plan = [
+    { step: "read", status: "completed" },
+    { step: "write", status: "in_progress" },
+  ];
+  rollout(
+    NATIVE,
+    meta(NATIVE) +
+      record(1, "response_item", { type: "function_call", call_id: "p1", name: "update_plan", arguments: JSON.stringify({ plan }) }) +
+      record(2, "response_item", { type: "function_call", call_id: "p2", name: "update_plan", arguments: JSON.stringify({ plan: "x" }) }),
+  );
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(["tool-call", "checklist", "tool-call"]);
+  expect(records[1]).toMatchObject({ callId: "p1", items: [{ text: "read", state: "done" }, { text: "write", state: "active" }] });
+});
+
 test("a subagent that was spawned is a nested record; a compaction is its own kind", async () => {
   rollout(
     NATIVE,

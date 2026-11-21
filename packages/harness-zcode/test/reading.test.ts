@@ -127,6 +127,25 @@ test("a call is named by its category and its target, in ZCode's tool names", as
   ]);
 });
 
+test("a finished TodoWrite call leaves its checklist after its result, and a locator resumes past it", async () => {
+  const todos = [
+    { content: "a", status: "completed" },
+    { content: "b", status: "pending" },
+  ];
+  writeSession(db, "sess_c", [
+    {
+      id: "m1",
+      data: { role: "assistant", time: { created: 2000, completed: 2100 } },
+      parts: [{ type: "tool", callID: "t1", tool: "TodoWrite", state: { status: "completed", input: { todos }, output: "", time: { start: 1, end: 2 } } }],
+    },
+    user("m2", "next"),
+  ]);
+  const records = await all(reading().read(id("sess_c")));
+  expect(records.map((r) => r.kind)).toEqual(["tool-call", "tool-result", "checklist", "user"]);
+  expect(records[2]).toMatchObject({ callId: "t1", items: [{ text: "a", state: "done" }, { text: "b", state: "pending" }] });
+  expect((await all(reading().read(id("sess_c"), records[2]!.locator))).map((r) => r.kind)).toEqual(["user"]);
+});
+
 test("only the tail of a running session is incomplete; an older unfinished message is whole", async () => {
   writeSession(db, "sess_a", [
     user("m1", "go"),

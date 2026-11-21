@@ -168,6 +168,24 @@ test("a call is named by its category and its target, in MiniMax Code's tool nam
   ]);
 });
 
+test("a todowrite call leaves its checklist without the cancelled items; an unknown state leaves none", async () => {
+  const path = journalOf("mvs_run1");
+  const todo = (content: string, status: string) => ({ content, status, priority: "high" });
+  writeFileSync(
+    path,
+    line({
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "t1", name: "todowrite", arguments: { todos: [todo("a", "completed"), todo("b", "cancelled"), todo("c", "in_progress")] } },
+        { type: "toolCall", id: "t2", name: "todowrite", arguments: { todos: [todo("a", "paused")] } },
+      ],
+    }),
+  );
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(["tool-call", "checklist", "tool-call"]);
+  expect(records[1]).toMatchObject({ callId: "t1", items: [{ text: "a", state: "done" }, { text: "c", state: "active" }] });
+});
+
 test("compaction is its own kind; an unfamiliar role is unknown with raw kept", async () => {
   const path = journalOf("mvs_run1");
   writeFileSync(

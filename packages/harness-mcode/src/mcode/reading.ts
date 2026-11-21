@@ -73,7 +73,7 @@ import {
   subdirsOf,
 } from "./paths.ts";
 import { runtimeStatePathOf, sessionTitles } from "./titles.ts";
-import { mcodeToolShape } from "./tools.ts";
+import { mcodeChecklist, mcodeToolShape } from "./tools.ts";
 
 export interface McodeReadingOptions {
   /** The id of the installation this side serves. */
@@ -948,6 +948,8 @@ function assistantRecords(message: McodeMessage, base: RecordBase, raw: unknown)
         ...(block.arguments === undefined ? {} : { input: jsonOf(block.arguments) }),
         ...base,
       });
+      const checklist = mcodeChecklist(block.name, block.arguments);
+      if (checklist !== undefined) records.push({ kind: "checklist", callId: block.id, items: checklist.items, ...base });
     } else {
       // A thought, or a call without an id that cannot be paired: kept whole.
       records.push(unknownRecord(block, base));

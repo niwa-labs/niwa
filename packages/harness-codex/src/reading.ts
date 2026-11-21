@@ -72,7 +72,7 @@ import {
 } from "./format.ts";
 import type { NativeRecord } from "./format.ts";
 import { baseOfArtifact, isCompressedName, nativeIdOfFileName } from "./paths.ts";
-import { codexToolShape } from "./tools.ts";
+import { codexChecklist, codexToolShape } from "./tools.ts";
 
 export interface CodexReadingOptions {
   /** The id of the installation this side serves. */
@@ -815,6 +815,7 @@ export class CodexReading implements SessionReading {
       if (typeof name === "string" && name.length > 0) state.toolNames.set(callId, name);
       const input = kind === "custom_tool_call" ? payload["input"] : argumentsOf(payload["arguments"]);
       const tool = typeof name === "string" && name.length > 0 ? name : "unknown";
+      const checklist = codexChecklist(tool, input);
       return [
         {
           kind: "tool-call",
@@ -824,6 +825,7 @@ export class CodexReading implements SessionReading {
           ...(input === undefined ? {} : { input: jsonOf(input) }),
           ...base,
         },
+        ...(checklist === undefined ? [] : [{ kind: "checklist" as const, callId, items: checklist.items, ...base }]),
       ];
     }
     if (kind === "function_call_output" || kind === "custom_tool_call_output") {
