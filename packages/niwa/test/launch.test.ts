@@ -39,7 +39,7 @@ import type {
 } from "@niwa-labs/sandbox";
 import { claudeCodeControl, ClaudeSdkControl } from "@niwa-labs/harness-claude";
 import type { SdkQuery } from "@niwa-labs/harness-claude";
-import { CODEX_FIXED_TOOLS, codexControl, codexToolFlags } from "@niwa-labs/harness-codex";
+import { codexControl } from "@niwa-labs/harness-codex";
 import { mcodeControl } from "@niwa-labs/harness-mcode";
 import { zcodeControl } from "@niwa-labs/harness-zcode";
 import { PiControl, piToolFlags } from "@niwa-labs/harness-pi";
@@ -271,39 +271,15 @@ test("pi's launch carries the tool allowlist exactly, and nothing allowed switch
   ]);
 });
 
-test("codex's launch switches off what an allow-list leaves out, and refuses a mode it cannot hold before it spawns", async () => {
-  const everyOther = [
-    "-c", "tools.update_plan.enabled=false",
-    "-c", "features.view_image=false",
-    "-c", "features.sleep_tool=false",
-    "-c", "features.image_generation=false",
-    "-c", "features.multi_agent=false",
-    "-c", "features.multi_agent_v2=false",
-    "-c", "features.tool_suggest=false",
-  ];
-  expect(codexToolFlags([])).toEqual(["-c", "features.shell_tool=false", "-c", 'web_search="disabled"', ...everyOther]);
-  expect(codexToolFlags(["shell"])).toEqual(["-c", 'web_search="disabled"', ...everyOther]);
-  expect(
-    codexToolFlags(["shell", "web_search", "update_plan", "view_image", "sleep", "image_generation", "spawn_agent", "tool_suggest", "apply_patch"]),
-  ).toEqual([]);
-
+test("Codex accepts default and all tools and refuses exact selections before launch", async () => {
   const codex = codexControl({ harness: "codex-fake", binary: await fake("codex", FAKE_CODEX) });
   controls.push(codex);
-  await codex.start({ prompt: empty, cwd: dir, tools: { allow: ["web_search", ...CODEX_FIXED_TOOLS] } });
   await codex.start({ prompt: empty, cwd: dir });
-  // apply_patch comes with the model and no flag switches it off: neither mode can be held.
-  await expect(codex.start({ prompt: empty, cwd: dir, tools: "niwa-only" })).rejects.toMatchObject({
-    code: "Unsupported",
-    message: expect.stringContaining("apply_patch"),
-  });
-  await expect(codex.start({ prompt: empty, cwd: dir, tools: { allow: ["web_search"] } })).rejects.toMatchObject({
-    code: "Unsupported",
-    message: expect.stringContaining("Codex cannot switch apply_patch off"),
-  });
-  expect(spawns.map((event) => event.argv.slice(1))).toEqual([
-    ["app-server", "--stdio", "-c", "features.shell_tool=false", ...everyOther],
-    ["app-server", "--stdio"],
-  ]);
+  await codex.start({ prompt: empty, cwd: dir, tools: "all" });
+  for (const tools of ["niwa-only", { allow: ["web_search", "apply_patch"] }] as const) {
+    await expect(codex.start({ prompt: empty, cwd: dir, tools })).rejects.toMatchObject({ code: "Unsupported" });
+  }
+  expect(spawns.map((event) => event.argv.slice(1))).toEqual([["app-server", "--stdio"], ["app-server", "--stdio"]]);
 });
 
 test("the Claude SDK's query gets the tool allowlist, and its process is born in the funnel", async () => {

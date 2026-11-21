@@ -18,7 +18,7 @@ import type { ActionName, Answer, StoredRecord } from "@niwa-labs/core";
 import type { Host } from "@niwa-labs/host";
 import { harnessId, harnessKind, machineId, promptFromText } from "@niwa-labs/harness";
 import type { Harness, ReverseHandler, ReverseRequest, SessionId } from "@niwa-labs/harness";
-import { CODEX_FIXED_TOOLS, CODEX_LAUNCH, codexControl } from "@niwa-labs/harness-codex";
+import { CODEX_LAUNCH, codexControl } from "@niwa-labs/harness-codex";
 import type { CodexSessionControl } from "@niwa-labs/harness-codex";
 import { requests } from "@niwa-labs/requests";
 import { sessions } from "@niwa-labs/sessions";
@@ -475,15 +475,12 @@ test("an elicitation of a kind niwa cannot ask stays declined", async () => {
 
 const HARNESS = "codex-fake";
 
-/** A grant that names tools must name the ones Codex cannot switch off, or the start is refused. */
-const CODEX_KEPT = CODEX_FIXED_TOOLS.map((tool) => `tool:${tool}`);
-
 const installation: Harness = {
   id: harnessId(HARNESS),
   kind: harnessKind("codex"),
   machine: machineId("machine-1"),
   home: "/tmp/fake-home",
-  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: true, launch: CODEX_LAUNCH, tools: { niwaOnly: false, allow: true } } },
+  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: true, launch: CODEX_LAUNCH, tools: { niwaOnly: false, allow: false } } },
 };
 
 async function stack(script: readonly Step[], niwaMcp?: { command: string; args: readonly string[] }): Promise<{ niwa: Host; records: StoredRecord[] }> {
@@ -576,9 +573,9 @@ test("allow always is for the same command only", async () => {
   expect(records.filter((entry) => entry.type === "request.created").length).toBe(2);
 });
 
-test("a tool the grant covers is allowed with no request", async () => {
+test("a tool under an unrestricted tool grant is allowed with no request", async () => {
   const { niwa, records } = await stack([command("a", { command: "ls" }), { wait: "a" }]);
-  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:commandExecution", ...CODEX_KEPT] } });
+  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:*"] } });
   await eventually(replied(1));
   expect((await repliesOf())[0]?.result).toEqual({ decision: "accept" });
   expect(records.filter((entry) => entry.type === "request.created")).toEqual([]);
@@ -668,14 +665,12 @@ test.skipIf(!live || Bun.which("codex") === null)(
   300_000,
 );
 
-test("an MCP tool a grant covers is allowed with no request; another is asked of the starter", async () => {
-  const { niwa, records } = await stack([toolApproval("a", "github", "create_issue"), { wait: "a" }, toolApproval("b", "other", "do"), { wait: "b" }]);
-  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:mcp__github__create_issue", ...CODEX_KEPT] } });
+test("an unrestricted Codex grant covers an installed MCP tool", async () => {
+  const { niwa, records } = await stack([toolApproval("a", "fixture", "read"), { wait: "a" }]);
+  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:*"] } });
   await eventually(replied(1));
   expect((await repliesOf())[0]?.result).toMatchObject({ action: "accept" });
-  const open = await nextRequest(niwa);
-  expect(open.input.title).toContain("other");
-  expect(records.filter((entry) => entry.type === "request.created").length).toBe(1);
+  expect(records.filter((entry) => entry.type === "request.created")).toEqual([]);
   expect(records.find((entry) => entry.type === "session.reverse.answered")?.data).toMatchObject({ by: "grant" });
 });
 

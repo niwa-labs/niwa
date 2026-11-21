@@ -644,11 +644,11 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
   ): Promise<LiveSession> {
     if (disposed) throw unavailable("start", "the control side is disposed");
     // A tool mode Codex cannot hold is refused before the child exists.
-    const toolFlags = codexToolsModeFlags(harnessId, ability, plan.tools);
+    requireCodexTools(harnessId, ability, plan.tools);
     const creating = spawnAgent({
       harness: harnessId,
       program: binary,
-      args: ["app-server", "--stdio", ...toolFlags],
+      args: ["app-server", "--stdio"],
       cwd,
       // Its own process group, so a stop reaches everything Codex started and nothing else.
       detached: true,
@@ -1219,46 +1219,14 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
 }
 
 /**
- * The built-in tools Codex can switch off, by the name an allow-list gives them, and the `-c` that
- * does it: its shell, its web search, its plan, its image viewer, and the tools of the features it
- * has on by default (sleep, image generation, the agents it spawns, its plugin suggestions). A
- * feature key a build does not know is only warned about, so an older Codex starts all the same.
+ * app-server can disable individual features, but a feature can register several
+ * tools and installed MCP servers contribute their own. Its thread API supplies
+ * no exact filter over the effective catalog.
  */
-const CODEX_SWITCHES: ReadonlyArray<{ tool: string; flag: readonly string[] }> = [
-  { tool: "shell", flag: ["-c", "features.shell_tool=false"] },
-  { tool: "web_search", flag: ["-c", 'web_search="disabled"'] },
-  { tool: "update_plan", flag: ["-c", "tools.update_plan.enabled=false"] },
-  { tool: "view_image", flag: ["-c", "features.view_image=false"] },
-  { tool: "sleep", flag: ["-c", "features.sleep_tool=false"] },
-  { tool: "image_generation", flag: ["-c", "features.image_generation=false"] },
-  // Codex has two implementations of the agents it spawns; each has its own switch, and either one alone leaves the other's tools registered.
-  { tool: "spawn_agent", flag: ["-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false"] },
-  { tool: "tool_suggest", flag: ["-c", "features.tool_suggest=false"] },
-];
-
-/** The tools Codex gives every session that no flag switches off: `apply_patch` comes with the model. */
-export const CODEX_FIXED_TOOLS: readonly string[] = ["apply_patch"];
-
-/** The flags for a tool allowance: each switchable tool that is not allowed is switched off. */
-export function codexToolFlags(allow: readonly string[]): string[] {
-  return CODEX_SWITCHES.filter(({ tool }) => !allow.includes(tool)).flatMap(({ flag }) => flag);
-}
-
-/**
- * The flags for a tool mode, or `Unsupported` when Codex cannot hold a session to it: a session
- * of niwa's tools only would still have `apply_patch`, and an allow-list must name every tool
- * Codex cannot switch off.
- */
-export function codexToolsModeFlags(harness: HarnessId, ability: "start" | "resume", tools: ToolsMode | undefined): string[] {
-  if (tools === undefined || tools === "all") return [];
-  if (tools === "niwa-only") {
-    throw new Unsupported(harness, "control", ability, `${describeToolsMode(tools)}: Codex cannot switch ${CODEX_FIXED_TOOLS.join(", ")} off`);
-  }
-  const kept = CODEX_FIXED_TOOLS.filter((tool) => !tools.allow.includes(tool));
-  if (kept.length > 0) {
-    throw new Unsupported(harness, "control", ability, `${describeToolsMode(tools)}: Codex cannot switch ${kept.join(", ")} off`);
-  }
-  return codexToolFlags(tools.allow);
+function requireCodexTools(harness: HarnessId, ability: "start" | "resume", tools: ToolsMode | undefined): void {
+  if (tools === undefined || tools === "all") return;
+  throw new Unsupported(harness, "control", ability,
+    `${describeToolsMode(tools)}: Codex app-server cannot enforce an exact tool list`);
 }
 
 /** Whether two Codex configs say the same thing; the same config is no change at all. */

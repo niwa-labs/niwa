@@ -858,15 +858,16 @@ test("a tool Codex cannot switch off is refused by name", async () => {
   await codex.dispose();
 });
 
-test("an allow-list switches off both implementations of the agents Codex spawns", async () => {
-  process.env.FAKE_MODE = "hold";
-  const codex = control();
-  await codex.start({ prompt: promptFromText(""), tools: { allow: ["apply_patch"] } });
-
-  const [spawned] = await spawns();
-  expect(spawned?.argv).toContain("features.multi_agent=false");
-  expect(spawned?.argv).toContain("features.multi_agent_v2=false");
-  await codex.dispose();
+test("exact tool requests fail before starting or resuming an app-server", async () => {
+  await writeFile(join(dir, "config.toml"), '[mcp_servers.local_fixture]\ncommand = "false"\n');
+  const codex = control({ home: dir });
+  const prompt = promptFromText("test");
+  for (const tools of ["niwa-only", { allow: ["apply_patch"] }, { allow: ["apply_patch", "spawn_agent"] }] as const) {
+    await expect(codex.start({ prompt, tools })).rejects.toBeInstanceOf(Unsupported);
+    await expect(codex.resume(cold, { prompt, tools })).rejects.toBeInstanceOf(Unsupported);
+  }
+  expect(await spawns()).toEqual([]);
+  expect(await requests()).toEqual([]);
 });
 
 test("a thread with nothing to set is given no config at all", async () => {

@@ -49,14 +49,11 @@ import { boxRules } from "@niwa-labs/proc";
 import { workflow, workflowCancel, workflowStart } from "@niwa-labs/workflow";
 import { sessionStart, sessionEnd, sessionOpenQuestions } from "@niwa-labs/sessions/records";
 import { ClaudeSdkControl } from "@niwa-labs/harness-claude";
-import { CODEX_FIXED_TOOLS, codexControl, codexToolFlags } from "@niwa-labs/harness-codex";
+import { codexControl } from "@niwa-labs/harness-codex";
 import { mcodeControl } from "@niwa-labs/harness-mcode";
 import { PiControl } from "@niwa-labs/harness-pi";
 
 const START = actionName("session.start");
-
-/** A grant that names tools must name the ones Codex cannot switch off, or the start is refused. */
-const CODEX_KEPT = CODEX_FIXED_TOOLS.map((tool) => `tool:${tool}`);
 
 const spawns: SpawnEvent[] = [];
 const undo: Array<() => void> = [];
@@ -287,7 +284,7 @@ test("a child of a limited caller is never wider: it takes the tools it did not 
   expect(control.starts[3]?.box).toBeDefined();
 });
 
-test("pi and codex are launched with the flags of the grant", async () => {
+test("Pi launches with an exact grant and Codex requires an unrestricted tool set", async () => {
   const dir = await workdir();
   const pi = new PiControl({ mode: "full", harness: "pi-fake", binary: await fake(dir, "pi", FAKE_PI) });
   const codex = codexControl({ harness: "codex-fake", binary: await fake(dir, "codex", FAKE_CODEX) });
@@ -303,13 +300,12 @@ test("pi and codex are launched with the flags of the grant", async () => {
 
   await host.call(START, { harness: "pi-fake", prompt: "", cwd: dir, visible: { actions: ["tool:read", "tool:grep"] } });
   await host.call(START, { harness: "pi-fake", prompt: "", cwd: dir });
-  await host.call(START, { harness: "codex-fake", prompt: "", cwd: dir, visible: { actions: ["tool:web_search", ...CODEX_KEPT] } });
+  await expect(host.call(START, { harness: "codex-fake", prompt: "", cwd: dir, visible: { actions: ["tool:web_search", "tool:apply_patch"] } })).rejects.toThrow("exact tool list");
   await host.call(START, { harness: "codex-fake", prompt: "", cwd: dir, visible: { actions: ["tool:*"] } });
 
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
     ["--mode", "rpc", "--tools", "read,grep", "--no-mcp"],
     ["--mode", "rpc"],
-    ["app-server", "--stdio", ...codexToolFlags(["web_search", ...CODEX_FIXED_TOOLS])],
     ["app-server", "--stdio"],
   ]);
 });
@@ -353,7 +349,7 @@ test("a codex grant whose tools leave out what Codex cannot switch off refuses t
   const host = await served([{ instance: { ...instance("codex-fake"), sides: { control: { ...instance("codex-fake").sides.control!, tools: { niwaOnly: false, allow: true } } } }, control: codex }]);
 
   await expect(host.call(START, { harness: "codex-fake", prompt: "go", cwd: dir, visible: { actions: ["tool:web_search"] } })).rejects.toThrow(
-    "Codex cannot switch apply_patch off",
+    "exact tool list",
   );
   // Only niwa's tools is refused by the installation itself, before the side is asked.
   await expect(host.call(START, { harness: "codex-fake", prompt: "go", cwd: dir, tools: "niwa-only" })).rejects.toThrow("tools niwa-only");
@@ -466,7 +462,7 @@ test("a resume that names its own visible actions is launched from them, not fro
   expect(second.resumes[0]?.tools).toEqual({ allow: ["Grep"] });
 });
 
-test("codex resumed after a restart is born again with the tool flags, the box manifest and the NIWA_ID of its grant", async () => {
+test("Codex resumed after a restart keeps its unrestricted tools, box manifest and session grant", async () => {
   const dir = await workdir();
   const binary = await fake(dir, "codex", FAKE_CODEX);
   const manifests: BoxRecord[] = [];
@@ -479,7 +475,7 @@ test("codex resumed after a restart is born again with the tool flags, the box m
     harness: "codex-fake",
     prompt: "",
     cwd: dir,
-    visible: { actions: ["tool:web_search", ...CODEX_KEPT] },
+    visible: { actions: ["tool:*"] },
     box: { allow: [{ net: "registry.npmjs.org" }] },
   })) as { session: string };
   await host.close();
@@ -492,7 +488,7 @@ test("codex resumed after a restart is born again with the tool flags, the box m
 
   expect(spawns).toHaveLength(2);
   expect(spawns[1]?.argv.slice(1)).toEqual(spawns[0]?.argv.slice(1));
-  expect(spawns[1]?.argv).toContain("features.shell_tool=false");
+  expect(spawns[1]?.argv.slice(1)).toEqual(["app-server", "--stdio"]);
   expect(spawns.map((event) => event.sandbox)).toEqual(["srt", "srt"]);
   expect(spawns[0]?.env["NIWA_ID"]).toBeDefined();
   expect(spawns[1]?.env["NIWA_ID"]).toBeDefined();
