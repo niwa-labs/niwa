@@ -515,6 +515,12 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   /** The sessions this control side owns, by native id. */
   const sessions = new Map<string, LiveSession>();
 
+  /** The children being born, so `dispose` can wait for them: one that is not owned yet cannot be stopped. */
+  const starting = new Set<Promise<LiveSession>>();
+
+  /** The resume in flight per session id. */
+  const resuming = new Map<string, Promise<(() => Promise<void>) | undefined>>();
+
   /** Every child this control side started, including those still starting. */
   const owned = new Set<LiveSession>();
   let disposed = false;
@@ -922,7 +928,65 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       ...claudeEnv({ ...options.claude, ...plan.claude }),
     };
 
-    const child = await spawnAgent({
+    /**
+     * Take the child that was born: its session, its client and its watchers are made in the same
+     * turn of the event loop as the spawn settles, so `dispose` always finds it owned and whole.
+     */
+    const attach = (child: AgentProcess): LiveSession => {
+      const session = new LiveSession(child);
+      owned.add(session);
+      let stderrTail = "";
+      session.client = new AcpClient({
+        write: (line) => writeLine(session, line),
+        onRequest: (request) => answerAgentRequest(session, request),
+        onNotification: (notification) => handleNotification(session, notification),
+        onUnreadable: (_line, error) =>
+          session.emit({ kind: "activity", at: Date.now(), detail: `a line of the output stream could not be read: ${String(error)}` }),
+        onOverflow: () => {
+          // One line longer than the budget is a transport failure, not a session.
+          session.end("a line of the output stream was longer than the frame budget");
+          void stopSession(session);
+        },
+        callTimeoutMs,
+        maxLineBytes: MAX_FRAME_BYTES,
+      });
+
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => session.client.feed(chunk));
+
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk: string) => {
+        // stderr is where a failure before any frame shows: not signed in, unknown flag.
+        stderrTail = `${stderrTail}${chunk}`.slice(-STDERR_TAIL_CHARS);
+        const detail = chunk.trim();
+        if (detail === "") return;
+        session.emit({ kind: "activity", at: Date.now(), detail: `stderr: ${detail}` });
+      });
+
+      // A write to a dead child is reported by the closing child, not thrown as an unhandled event.
+      child.stdin?.on("error", () => {});
+
+      child.on("error", (error) => {
+        owned.delete(session);
+        session.end(`the session process failed: ${error.message}`);
+      });
+
+      child.on("close", () => {
+        owned.delete(session);
+        // Whatever the agent started may outlive it; the group is the unit of cleanup.
+        if (child.pid !== undefined) signalGroup(session, child.pid, "SIGKILL");
+        session.end(
+          session.stopping
+            ? "the session was stopped"
+            : stderrTail.trim() === ""
+              ? "the session process closed"
+              : stderrTail.trim(),
+        );
+      });
+      return session;
+    };
+
+    const spawning = spawnAgent({
       harness: harnessId,
       program,
       args,
@@ -938,58 +1002,19 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       if (error instanceof SandboxUnavailable) throw error;
       const cause = error instanceof Error ? error.message : String(error);
       throw new Unavailable(harnessId, "control", ability, `${[program, ...args].join(" ")}: ${cause}`);
-    });
-
-    const session = new LiveSession(child);
-    owned.add(session);
-    let stderrTail = "";
-    session.client = new AcpClient({
-      write: (line) => writeLine(session, line),
-      onRequest: (request) => answerAgentRequest(session, request),
-      onNotification: (notification) => handleNotification(session, notification),
-      onUnreadable: (_line, error) =>
-        session.emit({ kind: "activity", at: Date.now(), detail: `a line of the output stream could not be read: ${String(error)}` }),
-      onOverflow: () => {
-        // One line longer than the budget is a transport failure, not a session.
-        session.end("a line of the output stream was longer than the frame budget");
-        void stopSession(session);
-      },
-      callTimeoutMs,
-      maxLineBytes: MAX_FRAME_BYTES,
-    });
-
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => session.client.feed(chunk));
-
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => {
-      // stderr is where a failure before any frame shows: not signed in, unknown flag.
-      stderrTail = `${stderrTail}${chunk}`.slice(-STDERR_TAIL_CHARS);
-      const detail = chunk.trim();
-      if (detail === "") return;
-      session.emit({ kind: "activity", at: Date.now(), detail: `stderr: ${detail}` });
-    });
-
-    // A write to a dead child is reported by the closing child, not thrown as an unhandled event.
-    child.stdin?.on("error", () => {});
-
-    child.on("error", (error) => {
-      owned.delete(session);
-      session.end(`the session process failed: ${error.message}`);
-    });
-
-    child.on("close", () => {
-      owned.delete(session);
-      // Whatever the agent started may outlive it; the group is the unit of cleanup.
-      if (child.pid !== undefined) signalGroup(session, child.pid, "SIGKILL");
-      session.end(
-        session.stopping
-          ? "the session was stopped"
-          : stderrTail.trim() === ""
-            ? "the session process closed"
-            : stderrTail.trim(),
-      );
-    });
+    }).then(attach);
+    starting.add(spawning);
+    let session: LiveSession;
+    try {
+      session = await spawning;
+    } finally {
+      starting.delete(spawning);
+    }
+    if (disposed) {
+      // The control side was disposed while the child was being born: nothing it owns outlives it.
+      await stopSession(session);
+      throw new Unavailable(harnessId, "control", ability, "the control side is disposed");
+    }
 
     const initialized = await call(session, "initialize", {
       protocolVersion: 1,
@@ -1131,16 +1156,18 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
    * Deliver a message the way a send does, and say what became of it.
    *
    * A busy session queues the message behind the running turn; an idle one begins a turn with
-   * it. Nothing waits for the turn to end: its end and its failure are signs of life.
+   * it. Nothing waits for the turn to end: its end and its failure are signs of life. The receipt
+   * says `started` only for a prompt that was written: a frame that could not be written leaves
+   * the session as it was and the message is `InputNotSent`, so it is safe to send again.
    */
   function deliver(session: LiveSession, message: string): DeliveryReceipt {
     const at = Date.now();
-    session.turn += 1;
-    const turn = session.turn;
 
     if (session.busy) {
       // A turn is running and the protocol forbids two prompts at once, so the message waits
       // behind it. The queue is a FIFO: the second message must never overwrite the first.
+      session.turn += 1;
+      const turn = session.turn;
       session.queue.push({ text: message, turn });
       return { status: "queued", turn, at };
     }
@@ -1148,8 +1175,12 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     // The session is idle: the message begins a turn. The prompt goes out now and the turn
     // ends when the agent answers it; the receipt does not wait for the answer. A turn that
     // fails is reported through the signs of life, so it is not an unhandled rejection.
+    const turn = session.turn + 1;
+    const sent = startPrompt(session, message, turn);
+    if (sent.unsent !== undefined) throw new InputNotSent(harnessId, "send", sent.unsent);
+    session.turn = turn;
     beginTurn(session, turn);
-    void prompt(session, message, turn).catch(() => {});
+    void sent.finish().catch(() => {});
     return { status: "started", turn, at };
   }
 
@@ -1301,59 +1332,21 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     },
 
     async resume(id: SessionId, resumeOptions?: ResumeOptions): Promise<void> {
-      const text = resumeOptions?.prompt === undefined ? "" : promptText(resumeOptions.prompt);
-
-      // A session this control side already holds continues in the child it already owns: a
-      // second child would be a second writer.
-      const held = sessions.get(id.native);
-      if (held !== undefined && !held.ended && !held.stopping) {
-        if (resumeOptions?.tools !== undefined || resumeOptions?.box !== undefined) {
-          throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
-        }
-        // The session was given its tools when it was started or loaded, and a running one
-        // cannot take another set: the same set is no change, a different one is refused.
-        const wanted = resumeOptions?.visible?.disabledTools;
-        if (wanted !== undefined && !sameTools(wanted, held.disabledTools)) {
-          throw new Unsupported(harnessId, "control", "resume", "a running session cannot take another tool set");
-        }
-        // The one who resumes names where its reverse requests go from now on.
-        if (resumeOptions?.reverse !== undefined) held.reverse = resumeOptions.reverse;
-        // Its first turn, or another, may still run: the prompt waits behind it.
-        if (text !== "") await turnOn(held, text, "resume");
-        return;
-      }
-
-      // A session this control side does not hold is reattached by the id the agent gave it.
-      const session = await spawnSession(resumeOptions?.cwd, "resume", resumeOptions ?? {});
+      // One load per session id: a resume that comes while another loads the same session waits
+      // for it and then finds the session held, as any later one does. Two loads would be two
+      // processes writing one session, and only the last would be reachable.
+      const previous = resuming.get(id.native);
+      const run = (previous ?? Promise.resolve()).catch(() => {}).then(() => resumeOnce(id, resumeOptions));
+      resuming.set(id.native, run);
+      let finished: (() => Promise<void>) | undefined;
       try {
-        const disabled = resumeOptions?.visible?.disabledTools ?? [];
-        const loaded = await call(session, "session/load", {
-          sessionId: id.native,
-          cwd: resumeOptions?.cwd ?? process.cwd(),
-          mcpServers: mcpServersOf(resumeOptions?.servers),
-          ...sessionMetaOf(disabled, resumeOptions?.tools, defaultEffort, resumeOptions?.reverse, resumeOptions?.servers),
-        });
-        if (!loaded.ok) {
-          throw unavailable("resume", loaded.error ?? "the agent did not resume the session");
-        }
-        session.disabledTools = disabled;
-        session.reverse = resumeOptions?.reverse;
-        const nativeId = sessionIdOf(loaded.result);
-        if (nativeId !== undefined && nativeId !== id.native) {
-          // A session that came back under another id is not the session that was asked for.
-          throw unavailable("resume", "the agent resumed a different session");
-        }
-
-        session.nativeId = id.native;
-        sessions.set(id.native, session);
-        // The adapter chooses its own model when it loads the session: the one the session ran stays.
-        if (resumeOptions?.model !== undefined) await setModel(session, id.native, resumeOptions.model, "resume");
-        await setMode(session, id.native, modeOf(resumeOptions?.mode, options.mode, CLAUDE_CODE_LAUNCH), "resume");
-        if (text !== "") await runTurn(session, text, "resume");
-      } catch (error) {
-        await abandon(session);
-        throw error;
+        finished = await run;
+      } finally {
+        if (resuming.get(id.native) === run) resuming.delete(id.native);
       }
+      // The turn of the prompt is waited for outside the line: the next resume needs the session
+      // loaded, not its turn over.
+      await finished?.();
     },
 
     async send(id: SessionId, message: string, sendOptions?: SendOptions): Promise<DeliveryReceipt> {
@@ -1478,9 +1471,83 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     async dispose(): Promise<void> {
       disposed = true;
       sessions.clear();
+      // A child that is being born becomes owned first, and is then stopped with the others.
+      await Promise.allSettled([...starting]);
       await Promise.all([...owned].map((session) => stopSession(session)));
     },
   };
+
+  /**
+   * Resume a session: continue it in the process that holds it, or reattach it by the id the agent
+   * gave it. When the resume has a prompt, what it returns waits for that turn to be over.
+   */
+  async function resumeOnce(id: SessionId, resumeOptions?: ResumeOptions): Promise<(() => Promise<void>) | undefined> {
+    const text = resumeOptions?.prompt === undefined ? "" : promptText(resumeOptions.prompt);
+
+    // A session this control side already holds continues in the child it already owns: a
+    // second child would be a second writer.
+    const held = sessions.get(id.native);
+    if (held !== undefined && !held.ended && !held.stopping) {
+      if (resumeOptions?.tools !== undefined || resumeOptions?.box !== undefined) {
+        throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
+      }
+      // The session was given its tools when it was started or loaded, and a running one
+      // cannot take another set: the same set is no change, a different one is refused.
+      const wanted = resumeOptions?.visible?.disabledTools;
+      if (wanted !== undefined && !sameTools(wanted, held.disabledTools)) {
+        throw new Unsupported(harnessId, "control", "resume", "a running session cannot take another tool set");
+      }
+      // The one who resumes names where its reverse requests go from now on.
+      if (resumeOptions?.reverse !== undefined) held.reverse = resumeOptions.reverse;
+      // Its first turn, or another, may still run: the prompt waits behind it.
+      if (text === "") return undefined;
+      const turn = turnOn(held, text, "resume");
+      turn.catch(() => {});
+      return async () => void (await turn);
+    }
+
+    // A session this control side does not hold is reattached by the id the agent gave it.
+    const session = await spawnSession(resumeOptions?.cwd, "resume", resumeOptions ?? {});
+    try {
+      const disabled = resumeOptions?.visible?.disabledTools ?? [];
+      const loaded = await call(session, "session/load", {
+        sessionId: id.native,
+        cwd: resumeOptions?.cwd ?? process.cwd(),
+        mcpServers: mcpServersOf(resumeOptions?.servers),
+        ...sessionMetaOf(disabled, resumeOptions?.tools, defaultEffort, resumeOptions?.reverse, resumeOptions?.servers),
+      });
+      if (!loaded.ok) {
+        throw unavailable("resume", loaded.error ?? "the agent did not resume the session");
+      }
+      session.disabledTools = disabled;
+      session.reverse = resumeOptions?.reverse;
+      const nativeId = sessionIdOf(loaded.result);
+      if (nativeId !== undefined && nativeId !== id.native) {
+        // A session that came back under another id is not the session that was asked for.
+        throw unavailable("resume", "the agent resumed a different session");
+      }
+
+      session.nativeId = id.native;
+      sessions.set(id.native, session);
+      // The adapter chooses its own model when it loads the session: the one the session ran stays.
+      if (resumeOptions?.model !== undefined) await setModel(session, id.native, resumeOptions.model, "resume");
+      await setMode(session, id.native, modeOf(resumeOptions?.mode, options.mode, CLAUDE_CODE_LAUNCH), "resume");
+      if (text === "") return undefined;
+      const turn = runTurn(session, text, "resume");
+      turn.catch(() => {});
+      return async () => {
+        try {
+          await turn;
+        } catch (error) {
+          await abandon(session);
+          throw error;
+        }
+      };
+    } catch (error) {
+      await abandon(session);
+      throw error;
+    }
+  }
 
   /**
    * The last answer segment of the turn.
@@ -1518,21 +1585,58 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
    * it stopped.
    */
   async function prompt(session: LiveSession, message: string, turn: number): Promise<ClaudeAcpTurn> {
+    return await startPrompt(session, message, turn).finish();
+  }
+
+  /**
+   * Write one prompt, and say at once whether the frame went: `unsent` is why it did not, and then
+   * nothing reached the agent, and the turn is not to be finished. Otherwise `finish` ends the turn
+   * with the agent's answer.
+   */
+  function startPrompt(
+    session: LiveSession,
+    message: string,
+    turn: number,
+  ): { readonly unsent: string | undefined; readonly finish: () => Promise<ClaudeAcpTurn> } {
+    // The client settles a call it could not write inside `send`, before it returns.
+    let writing = true;
+    let refused: RpcOutcome | undefined;
+    const answer = new Promise<RpcOutcome>((resolve) => {
+      session.client.send(
+        "session/prompt",
+        { sessionId: session.nativeId, prompt: [{ type: "text", text: message }] },
+        (outcome) => {
+          if (writing) refused = outcome;
+          resolve(outcome);
+        },
+        {
+          timeoutMs: turnTimeoutMs,
+          // The agent answers the cancel of a turn over its time within a call's time, or it is out of step.
+          graceMs: callTimeoutMs,
+          overdue: () => {
+            session.emit({ kind: "activity", at: Date.now(), detail: "the turn did not end in time: it was cancelled" });
+            notify(session, "session/cancel", { sessionId: session.nativeId });
+            session.cancelAsking();
+          },
+        },
+      );
+    });
+    writing = false;
+    const unsent = refused !== undefined && !refused.ok && refused.dispatch === "unsent" ? failureOf(session, refused) : undefined;
+    return { unsent, finish: () => finishPrompt(session, answer, turn) };
+  }
+
+  /** The reason a call failed: why the session went, when it is known, else what the client said. */
+  function failureOf(session: LiveSession, outcome: Extract<RpcOutcome, { ok: false }>): string {
+    return outcome.dispatch === "unsent" && session.failure !== undefined ? session.failure : outcome.error;
+  }
+
+  /** What follows the agent's answer to a prompt: the turn is over, the queue goes on. */
+  async function finishPrompt(session: LiveSession, answer: Promise<RpcOutcome>, turn: number): Promise<ClaudeAcpTurn> {
     // A turn over its time is cancelled, and it ends only when the agent answers the cancelled
     // prompt: until then the agent still holds the prompt and refuses the next one ("a prompt is
-    // already active"), so the queue must not drain. An agent that does not answer the cancel
-    // within the call timeout has the turn failed all the same.
-    const answered = await call(
-      session,
-      "session/prompt",
-      { sessionId: session.nativeId, prompt: [{ type: "text", text: message }] },
-      turnTimeoutMs,
-      () => {
-        session.emit({ kind: "activity", at: Date.now(), detail: "the turn did not end in time: it was cancelled" });
-        notify(session, "session/cancel", { sessionId: session.nativeId });
-        session.cancelAsking();
-      },
-    );
+    // already active"), so the queue must not drain.
+    const answered = await answer;
 
     // The turn is over: nothing it asked is waited for any more.
     session.cancelAsking();
@@ -1543,13 +1647,24 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
 
     session.settleIdle();
     session.emit({ kind: "turn-ended", turn, at: Date.now() });
+
+    if (!answered.ok && answered.unconfirmed === true) {
+      // The agent did not answer the cancel: it still holds a prompt this side has given up on, so
+      // the next input would go to a process that is out of step. It is closed, and whatever waits
+      // is told why.
+      const reason = "the agent did not answer the cancel of a turn that ran out of time";
+      session.end(reason);
+      void stopSession(session);
+      throw unavailable("send", reason);
+    }
+
     // The queue drains when the turn is over, unless the turn was stopped on request: the
     // messages that waited behind it were dropped on purpose.
     if (wasCancelled) session.dropQueue("the turn was interrupted");
     else drainQueue(session);
 
     if (!answered.ok) {
-      const reason = answered.error ?? "the agent refused the prompt";
+      const reason = failureOf(session, answered);
       session.emit({ kind: "activity", at: Date.now(), detail: `the turn failed: ${reason}` });
       throw unavailable("send", reason);
     }

@@ -8,6 +8,7 @@
  */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
@@ -63,6 +64,8 @@ async function fakeAgent(options: {
     `#!/usr/bin/env bun
 import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(join(dir, "spawns.log"))}, process.argv.slice(2).join(" ") + "\\n");
+appendFileSync(${JSON.stringify(join(dir, "pids.log"))}, process.pid + "\\n");
+
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
 if (${options.deadOnStart === true}) { process.stderr.write("not signed in"); process.exit(3); }
 let turn = 0;
@@ -959,4 +962,127 @@ test("a message to a session that is not held, or whose process went, was not se
   await expect(control.send({ ...id, native: "elsewhere" as never }, "two")).rejects.toBeInstanceOf(InputNotSent);
   await control.dispose();
   await expect(control.send(id, "two")).rejects.toBeInstanceOf(InputNotSent);
+});
+
+/**
+ * The stdin of the children that are started while `during` runs. The control side listens for
+ * errors on it as it takes the child, which is where a test can get hold of it.
+ */
+async function stdinsStartedBy(during: () => Promise<void>): Promise<Array<{ write: (...args: unknown[]) => unknown }>> {
+  const found: Array<{ write: (...args: unknown[]) => unknown }> = [];
+  const original = EventEmitter.prototype.on;
+  EventEmitter.prototype.on = function (this: EventEmitter, event: string | symbol, listener: (...args: never[]) => void) {
+    if (event === "error" && this.constructor.name === "WriteStream") found.push(this as unknown as { write: (...args: unknown[]) => unknown });
+    return original.call(this, event, listener);
+  };
+  try {
+    await during();
+  } finally {
+    EventEmitter.prototype.on = original;
+  }
+  return found;
+}
+
+test("a prompt that could not be written is not sent: the receipt is InputNotSent and the session is as it was", async () => {
+  control = claudeCodeControl({ harness: "fake", command: [await fakeAgent({ turnMs: 0 })] });
+  let id: SessionId | undefined;
+  const [stdin] = await stdinsStartedBy(async () => {
+    id = await startIdle(control!, { prompt: promptFromText("one") });
+  });
+  if (stdin === undefined || id === undefined) throw new Error("the stdin of the agent was not found");
+  const seen: LifeEvent[] = [];
+  void (async () => {
+    for await (const event of control!.life(id!)) seen.push(event);
+  })().catch(() => {});
+
+  // The pipe to the agent is gone: the write throws, as it does to a pipe that closed under it.
+  const write = stdin.write;
+  stdin.write = () => {
+    throw new Error("EPIPE: the pipe to the agent is gone");
+  };
+  try {
+    await expect(control.send(id, "two")).rejects.toBeInstanceOf(InputNotSent);
+  } finally {
+    stdin.write = write;
+  }
+  // Nothing of it happened: no second turn began, and the session is idle and takes the message again.
+  await Bun.sleep(50);
+  expect(kinds(seen).filter((sign) => sign.endsWith(":2"))).toEqual([]);
+  expect(await control.state(id)).toBe("idle");
+  expect(await control.send(id, "two")).toMatchObject({ status: "started", turn: 2 });
+});
+
+/** The pids of the agents the fake started. An agent stopped before it ran far enough to write its pid left no line. */
+async function agentPids(): Promise<number[]> {
+  return (await readFile(join(dir, "pids.log"), "utf8").catch(() => ""))
+    .trim()
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => Number(line));
+}
+
+/** The agents the fake started that are still alive. */
+async function agentsAlive(): Promise<number[]> {
+  return (await agentPids()).filter((pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+test("two resumes of one session that is not held load it once: the second waits and finds it held", async () => {
+  const agent = await fakeAgent({ turnMs: 0 });
+  control = claudeCodeControl({ harness: "fake", command: [agent] });
+  const id = await startIdle(control, { prompt: promptFromText("one") });
+  await control.dispose();
+
+  control = claudeCodeControl({ harness: "fake", command: [agent] });
+  const spawnsBefore = (await agentPids()).length;
+  const results = await Promise.allSettled([
+    control.resume(id, {}),
+    control.resume(id, { prompt: promptFromText("two") }),
+    // A running session keeps the tools it was loaded with: asked for others, the second is refused as any live one is.
+    control.resume(id, { tools: "niwa-only" }),
+  ]);
+  expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled", "rejected"]);
+  expect((results[2] as PromiseRejectedResult).reason).toMatchObject({ code: "Unsupported" });
+  const spawnsAfter = (await agentPids()).length;
+  expect(spawnsAfter - spawnsBefore).toBe(1);
+  expect(await control.state(id)).not.toBe("unknown");
+});
+
+test("a start that is under way when the control side is disposed fails, and no process outlives the dispose", async () => {
+  control = claudeCodeControl({ harness: "fake", command: [await fakeAgent({ turnMs: 0 })] });
+  const started = control.start({ prompt: promptFromText("one") }).then(
+    () => "started",
+    (error: unknown) => error,
+  );
+  await control.dispose();
+  expect(await started).toMatchObject({ code: "Unavailable" });
+  // The agent was born while the dispose waited for it, and was stopped before the dispose returned.
+  expect(await agentsAlive()).toEqual([]);
+});
+
+test("a turn over its time whose cancel the agent never answers closes the process, and what waited is told why", async () => {
+  control = claudeCodeControl({
+    harness: "fake",
+    command: [await fakeAgent({ turnMs: 0, firstMs: "never" })],
+    turnTimeoutMs: 100,
+    callTimeoutMs: 400,
+  });
+  const { session: id } = await control.start({ prompt: promptFromText("one") });
+  // The question waits behind the turn that never ends, and is not sent into a process that is out of step.
+  const asked = await control
+    .ask(id, { schema: z.object({ word: z.string() }), prompt: promptFromText("word?") })
+    .then(
+      () => "answered",
+      (error: unknown) => error,
+    );
+  expect(String(asked)).toContain("did not answer the cancel");
+  expect(await control.state(id)).toBe("unknown");
+  for (let waited = 0; waited < 2_000 && (await agentsAlive()).length > 0; waited += 25) await Bun.sleep(25);
+  expect(await agentsAlive()).toEqual([]);
 });
