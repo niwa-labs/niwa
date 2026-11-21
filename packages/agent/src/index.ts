@@ -234,8 +234,9 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
 
     /** Is the main session in a turn now? Its last turn began and has not ended. */
     const inTurn = (session: string): boolean => {
-      const turns = recordsOf(journal(), [SessionTurnStarted.name, SessionTurnEnded.name]).filter((stored) => (stored.data as { session?: unknown }).session === session);
-      return turns.at(-1)?.type === SessionTurnStarted.name;
+      const turns = recordsOf(journal(), ["session.marked", SessionEnded.name, SessionTurnStarted.name, SessionTurnEnded.name]).filter((stored) => (stored.data as { session?: unknown }).session === session);
+      const last = turns.at(-1);
+      return last?.type === SessionTurnStarted.name && last.at >= servedAt;
     };
 
     const statusOf = (name: string): AgentStatus => {

@@ -11,6 +11,7 @@ import { connectAsOwner } from "@niwa-labs/testing";
 import { AGENT_PROMPT_SECTION, PromptSectionInput, PromptSectionOutput, partVersions, AgentDefinition, AgentSessionStarted, AgentTurnQueued, turnText } from "@niwa-labs/agent";
 import { plugin } from "@niwa-labs/plugin";
 
+import { SessionEnded, SessionTurnStarted } from "@niwa-labs/sessions/records";
 import { Unsupported, harnessId } from "@niwa-labs/harness";
 
 import { HARNESS, ScriptedControl, agentHost, dataOf, until } from "./fixtures/agent-host.ts";
@@ -294,6 +295,17 @@ test("an interrupted turn resumes from its start receipt after a new session was
   expect(host.control.sends).toHaveLength(0);
   expect(host.control.resumes).toHaveLength(0);
   expect(dataOf(rows, "agent.turn.delivered")).toEqual([{ agent: "rin", session, turn, receipt: { status: "started", turn: 1 } }]);
+});
+
+test("an unfinished turn stops working when its session ends", async () => {
+  const host = await served({ agents: [RIN] });
+  await asOwner(host, "agent.tell", { agent: "rin", text: "work" });
+  const records = await until(host.records, "agent.turn.delivered");
+  const { session } = dataOf(records, "agent.session.started")[0] as { session: string };
+  await host.host.emit(SessionTurnStarted, { session: session as never, turn: 2 });
+  expect(await call(host, "agent.get", { agent: "rin" })).toMatchObject({ status: "working" });
+  await host.host.emit(SessionEnded, { session: session as never });
+  expect(await call(host, "agent.get", { agent: "rin" })).toMatchObject({ status: "asleep" });
 });
 
 test("one agent waiting for a start does not hold another agent's mailbox", async () => {
