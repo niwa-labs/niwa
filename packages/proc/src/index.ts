@@ -75,13 +75,20 @@ function cwdTarget(cwd: string): string {
   }
 }
 
-/** The directory a command runs in: the real path of an existing directory. */
-function directoryOf(cwd: string): string {
+/**
+ * The directory a command runs in: the real path of an existing directory, and the one the grant
+ * was checked against. `authorized` is the real path the call was matched at: if the path now leads
+ * somewhere else (a link was moved after the check), the command does not start.
+ */
+function directoryOf(cwd: string, authorized: string | undefined): string {
   let real: string;
   try {
     real = realpathSync(cwd);
   } catch {
     throw new ProcRefusal("bad-cwd", `${cwd} does not exist`);
+  }
+  if (authorized !== undefined && real !== authorized) {
+    throw new ProcRefusal("bad-cwd", `${cwd} changed after the call was checked: it was ${authorized}, it is ${real}`);
   }
   if (!statSync(real).isDirectory()) throw new ProcRefusal("bad-cwd", `${cwd} is not a directory`);
   return real;
@@ -98,6 +105,15 @@ export function proc(options: ProcOptions = {}): Plugin {
   const tailBytes = options.tailBytes ?? DEFAULT_TAIL_BYTES;
   const killGraceMs = options.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   const natural = [nono(), srt()];
+  // The host reads the target of a call to match its grant, then runs the action with the same
+  // input object. The real path the target named is kept here, keyed by that object, so the
+  // action starts the command in the directory the grant covered and in no other.
+  const authorized = new WeakMap<object, string>();
+  const targetOf = (input: { readonly cwd: string }): string => {
+    const real = cwdTarget(input.cwd);
+    authorized.set(input, real);
+    return real;
+  };
 
   /** The sandbox of a run: the one given, or the first of the natural ones that can run here. */
   const sandboxOf = async (): Promise<Sandbox> => {
@@ -124,9 +140,9 @@ export function proc(options: ProcOptions = {}): Plugin {
         // Held in a box that writes only its directory, with no network and no credentials.
         effect: "write",
         world: "local",
-        target: (input) => cwdTarget(input.cwd),
+        target: (input) => targetOf(input),
         async run(input, ctx) {
-          const cwd = directoryOf(input.cwd);
+          const cwd = directoryOf(input.cwd, authorized.get(input));
           const sandbox = await sandboxOf();
           const spec: BoxSpec = boxSpec({
             cwd,
@@ -162,9 +178,9 @@ export function proc(options: ProcOptions = {}): Plugin {
         // No box, a network and secrets: nothing says what the command reaches.
         effect: "irreversible",
         world: "external",
-        target: (input) => cwdTarget(input.cwd),
+        target: (input) => targetOf(input),
         async run(input, ctx) {
-          const cwd = directoryOf(input.cwd);
+          const cwd = directoryOf(input.cwd, authorized.get(input));
           // Every secret is resolved before anything starts: one that cannot be given stops the call.
           const values: string[] = [];
           const env: Record<string, string> = { ...baseEnv() };
