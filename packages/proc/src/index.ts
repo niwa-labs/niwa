@@ -49,6 +49,7 @@ import type { ProcFinishedData, ProcResult } from "./records.ts";
 import { launchPlain, supervise } from "./supervise.ts";
 
 export * from "./records.ts";
+export { boxRules } from "./box-rules.ts";
 export { ProcRefusal } from "./refusal.ts";
 export type { ProcRefusalCode } from "./refusal.ts";
 

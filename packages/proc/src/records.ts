@@ -131,6 +131,41 @@ export const procExec = actionRef("proc.exec", {
   output: ProcResult,
 });
 
+/** What a rule of the box answers when it is called: the caller holds it. */
+const Held = z.strictObject({ held: z.literal(true) });
+
+export const boxUse = actionRef("box.use", {
+  description:
+    "A rule, not a tool: `box.use@<profile>` in a grant lets a box take that profile beyond the host's default (`proc.run`, `session.start`). " +
+    "Calling it answers that the caller holds the rule for `profile`; a call the grant does not cover is refused. Class: read, local.",
+  input: z.strictObject({ profile: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/, "a profile name") }),
+  output: Held,
+});
+
+export const boxRead = actionRef("box.read", {
+  description:
+    "A rule, not a tool: `box.read@<path>` in a grant lets a box read that place beyond the host's default; a path a rule cannot hold is written with % and its hex code. " +
+    "Calling it answers that the caller holds the rule for `path` (absolute, its real path is taken); a call the grant does not cover is refused. Class: read, local.",
+  input: z.strictObject({ path: Cwd }),
+  output: Held,
+});
+
+export const boxWrite = actionRef("box.write", {
+  description:
+    "A rule, not a tool: `box.write@<path>` in a grant lets a box write (and read) that place beyond the host's default. " +
+    "Calling it answers that the caller holds the rule for `path` (absolute, its real path is taken); a call the grant does not cover is refused. Class: read, local.",
+  input: z.strictObject({ path: Cwd }),
+  output: Held,
+});
+
+export const boxNet = actionRef("box.net", {
+  description:
+    "A rule, not a tool: `box.net@<host>` in a grant lets a session's box reach that host beyond what its installation and the host's default give (a `proc.run` reaches none). " +
+    "Calling it answers that the caller holds the rule for `host`; a call the grant does not cover is refused. Class: read, local.",
+  input: z.strictObject({ host: z.string().regex(/^[^\s*@:{}/%]+$/, "a host") }),
+  output: Held,
+});
+
 /** A command ended. Written by both actions, once the output is stored. */
 export const ProcFinished = record(
   "proc.finished",

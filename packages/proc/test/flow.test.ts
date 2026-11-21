@@ -1,5 +1,6 @@
 // runCheck in a real script: the check runs with proc.run, passes on a zero exit, and reads the
-// report the command printed at the end of its output.
+// report the command printed at the end of its output. A script names the rules of the box in its
+// `uses` like any action, and a run's box is widened only within them.
 
 import { afterEach, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
@@ -9,7 +10,7 @@ import { join } from "node:path";
 import { createNiwa, requests, tempHome, timers, workflow } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 
-import { proc } from "../src/index.ts";
+import { boxRules, proc } from "../src/index.ts";
 import { reportOf } from "../src/flow.ts";
 import { procOptions, recordingSandbox } from "./support.ts";
 
@@ -19,12 +20,12 @@ afterEach(async () => {
 }, 30_000);
 
 /** Run a script that imports `@niwa-labs/proc/flow`, on a host with the proc module, and answer its result. */
-async function runScript(source: string): Promise<{ result: unknown; sandbox: ReturnType<typeof recordingSandbox>; work: string }> {
+async function runScript(source: string, rules = false): Promise<{ result: unknown; sandbox: ReturnType<typeof recordingSandbox>; work: string }> {
   const temp = await tempHome();
   const home = realpathSync(temp.path);
   const sandbox = recordingSandbox();
   const host: Host = createNiwa({ home });
-  host.use(requests(), timers([]), proc(procOptions({ sandbox })), workflow());
+  host.use(requests(), timers([]), proc(procOptions({ sandbox })), ...(rules ? [boxRules()] : []), workflow());
   await host.serve();
   cleanups.push(async () => {
     await host.close().catch(() => {});
@@ -70,3 +71,19 @@ test("a report is read from the end of the output: JSON on the last line, lcov t
     skipped: 1,
   });
 });
+
+test("a script names the rules of the box in its uses, and its runs are widened only within them", async () => {
+  const script = (uses: string) => `
+    export default workflow({ uses: [${uses}], output: z.json() }, async (): Promise<any> => {
+      try {
+        const run = await call("proc.run", { cmd: ["true"], cwd: "$WORK", timeout: 10000, box: { allow: ["bun"] } }) as any;
+        return { rules: run.box.rules };
+      } catch (error) {
+        return { refused: String(error) };
+      }
+    });`;
+  const granted = await runScript(script(`"proc.run@$WORK", "box.use@bun"`), true);
+  expect(granted.result).toEqual({ rules: ["box.use@bun"] });
+  const narrow = await runScript(script(`"proc.run@$WORK"`), true);
+  expect(String((narrow.result as { refused?: string }).refused)).toContain("box.use@bun");
+}, 60_000);
