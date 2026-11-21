@@ -1488,6 +1488,7 @@ class Niwa implements Host {
     this.intercepts.clear();
     for (const [name, installed] of this.plugins) {
       for (const type of installed.types) {
+        if (type.providerOnly !== undefined && type.providerOnly !== name) throw new TypeError(`"${type.name}" requires provider "${type.providerOnly}"`);
         this.types.set(type.name, type);
         this.typeOwners.set(type.name, name);
         if (type.name.endsWith(".*")) this.families.push(type);
@@ -1900,6 +1901,8 @@ class Niwa implements Host {
     let answer: Permit;
     if (standing.kind === "closed" || standing.kind === "off") {
       answer = permit(standing, "emit", type);
+    } else if (declared?.providerOnly !== undefined) {
+      answer = caller.kind === "handler" && own ? { allowed: true } : { allowed: false, reason: closed };
     } else if (declared === undefined || declared.open === true || own) {
       answer = { allowed: true };
     } else {
@@ -2847,7 +2850,8 @@ class Niwa implements Host {
       if (declared === undefined || !owned?.has(declared.name)) throw new UnknownType(type.name);
       const parsed = declared.schema.safeParse(data);
       if (!parsed.success) throw new ValidationError(`the data of "${type.name}" is not valid`, parsed.error.issues);
-      return { record: { ...place, type: type.name, schema: declared.version, data: parsed.data, actor: caller }, terminalClaimOf };
+      const actor = declared.providerOnly === undefined ? caller : { ...caller, issuedBy: declared.providerOnly };
+      return { record: { ...place, type: type.name, schema: declared.version, data: parsed.data, actor }, terminalClaimOf };
     }), batch);
   }
 

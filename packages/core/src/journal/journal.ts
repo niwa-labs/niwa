@@ -30,7 +30,7 @@ import { CORE_TYPES, newRecordId, recordId, recordTypeName, seq as seqOf, stable
 import { RECORD_DATA_LIMIT, RecordTooLarge } from "../stores.ts";
 import type {
   AppendEntry,
-  Caller,
+  RecordActor,
   ClientId,
   HandlerId,
   InvocationId,
@@ -207,9 +207,10 @@ function claimWriter(db: Database, instance: string, takeover: boolean): number 
   });
 }
 
-function decodeActor(text: string): Caller {
+function decodeActor(text: string): RecordActor {
   const value = JSON.parse(text) as {
     kind?: unknown;
+    issuedBy?: unknown;
     id?: unknown;
     principal?: unknown;
     grant?: unknown;
@@ -217,12 +218,13 @@ function decodeActor(text: string): Caller {
     invocation?: unknown;
   };
   if (value !== null && typeof value === "object") {
-    if (value.kind === "host") return { kind: "host" };
+    const issuer = typeof value.issuedBy === "string" ? { issuedBy: value.issuedBy } : {};
+    if (value.kind === "host") return { kind: "host", ...issuer };
     if (value.kind === "client" && typeof value.id === "string") {
       const principal = principalSchema.safeParse(value.principal);
       const held = typeof value.grant === "string" && value.grant !== "" ? grantId(value.grant) : undefined;
       return {
-        kind: "client",
+        kind: "client", ...issuer,
         id: value.id as ClientId,
         ...(principal.success ? { principal: principal.data } : {}),
         ...(held === undefined ? {} : { grant: held }),
@@ -230,7 +232,7 @@ function decodeActor(text: string): Caller {
     }
     if (value.kind === "handler" && typeof value.handler === "string" && typeof value.invocation === "string") {
       return {
-        kind: "handler",
+        kind: "handler", ...issuer,
         handler: value.handler as HandlerId,
         invocation: value.invocation as InvocationId,
       };

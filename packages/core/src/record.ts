@@ -146,7 +146,7 @@ export function newRecordId(prefix: string): RecordId {
 export function record<T, S = never>(
   name: string,
   schema: z.ZodType<T>,
-  opts?: { version?: number; open?: boolean; guard?: RecordGuard<NoInfer<T>, S> },
+  opts?: { version?: number; open?: boolean; providerOnly?: string; guard?: RecordGuard<NoInfer<T>, S> },
 ): RecordType<T> {
   const version = opts?.version ?? 1;
   if (!Number.isInteger(version) || version < 1) {
@@ -159,6 +159,10 @@ export function record<T, S = never>(
       `record type ${JSON.stringify(name)}: schema must be a zod schema`,
     );
   }
+  if (opts?.providerOnly !== undefined) {
+    requireName(opts.providerOnly, "record provider");
+    if (opts.open) throw new TypeError("a provider-only record cannot be open");
+  }
   if (opts?.guard) requireName(opts.guard.group, "guard group");
   return {
     kind: "record",
@@ -166,8 +170,17 @@ export function record<T, S = never>(
     name: recordTypeName(name),
     version,
     schema,
+    ...(opts?.providerOnly === undefined ? {} : { providerOnly: opts.providerOnly }),
     ...(opts?.open === true ? { open: true } : {}),
   };
+}
+
+/** Whether the host, a provider handler or a host-stamped provider action issued a stored fact. */
+export function providerWrote(record: Pick<StoredRecord, "actor">, provider: string): boolean {
+  const { actor } = record;
+  if (actor.issuedBy !== undefined) return actor.issuedBy === provider;
+  return actor.kind === "host" ||
+    (actor.kind === "handler" && actor.handler.slice(0, actor.handler.lastIndexOf("/")) === provider);
 }
 
 /**

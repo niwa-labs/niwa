@@ -76,6 +76,9 @@ export type Caller =
   | { kind: "client"; id: ClientId; principal?: Principal; grant?: GrantId }
   | { kind: "handler"; handler: HandlerId; invocation: InvocationId };
 
+/** Host-stamped issuing plugin for protected action output. The original caller is retained. */
+export type RecordActor = Caller & { readonly issuedBy?: string };
+
 /** A committed record as stored in the journal. */
 export interface StoredRecord {
   id: RecordId;
@@ -84,7 +87,7 @@ export interface StoredRecord {
   type: RecordTypeName;
   schema: number;
   data: unknown;
-  actor: Caller;
+  actor: RecordActor;
   cause: RecordId | null;
   root: RecordId;
   at: Timestamp;
@@ -97,7 +100,7 @@ export interface NewRecord {
   type: RecordTypeName;
   schema: number;
   data: unknown;
-  actor: Caller;
+  actor: RecordActor;
   cause: RecordId | null;
   root: RecordId;
 }
@@ -129,6 +132,8 @@ export interface RecordType<T> {
    * that declares it writes it.
    */
   open?: boolean;
+  /** Only the named provider may produce this fact, even when a client holds an emit grant. */
+  providerOnly?: string;
 }
 
 /** A JSON Schema, as it travels: a plain document, never a class. */

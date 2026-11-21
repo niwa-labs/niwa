@@ -78,14 +78,15 @@ const tokenSchema = identifier(z.string(), token);
 
 /** Who did something: the actor is bound by the runtime or the transport, never by a payload. */
 export const callerSchema = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("host") }),
+  z.strictObject({ kind: z.literal("host"), issuedBy: z.string().min(1).optional() }),
   z.strictObject({
     kind: z.literal("client"),
     id: clientIdSchema,
+    issuedBy: z.string().min(1).optional(),
     principal: principalSchema.optional(),
     grant: z.string().min(1).transform((id) => grantId(id)).optional(),
   }),
-  z.strictObject({ kind: z.literal("handler"), handler: handlerIdSchema, invocation: invocationIdSchema }),
+  z.strictObject({ kind: z.literal("handler"), issuedBy: z.string().min(1).optional(), handler: handlerIdSchema, invocation: invocationIdSchema }),
 ]);
 
 /** A committed record as it travels over the wire: every field of the stored record. */
