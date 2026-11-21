@@ -172,3 +172,20 @@ test("a resolver that answers after the deadline passed is not taken either", as
   expect(await w.actions.resolve.run({ id: ID }, w.context("op-1", { kind: "host" }))).toEqual({ answered: false });
   expect(w.memory.typesOf()).toEqual([RequestCreated.name, RequestExpiredRecord.name]);
 });
+
+test("a resolve names the request by its whole id: one that does not exist is not taken for a longer id", async () => {
+  const w = world(() => ({ answered: true, answer: { text: "for whom?" } }));
+  born(w.memory, { id: RequestId.parse("req-1234567") });
+  expect(await w.actions.resolve.run({ id: RequestId.parse("req-123456") }, w.context("op-1", { kind: "host" }))).toEqual({ answered: false });
+  expect(w.memory.typesOf()).toEqual([RequestCreated.name]);
+});
+
+test("a try made again after an answer that landed behind a cancel says it did not stand", async () => {
+  const w = world();
+  born(w.memory);
+  w.memory.append(RequestCancelledRecord, { id: ID });
+  // The answer of an earlier try of this operation was written after the cancel: the cancel is the end.
+  w.memory.append(RequestAnswered, { id: ID, answer: { text: "behind" }, by: owner }, "op-1/emit/1");
+  expect(await w.actions.answer.run({ id: ID, answer: { text: "behind" } }, w.context("op-1"))).toEqual({ id: ID, accepted: false, reason: "cancelled" });
+  expect(await w.actions.resolve.run({ id: ID, answer: { text: "behind" } }, w.context("op-1"))).toEqual({ answered: false });
+});

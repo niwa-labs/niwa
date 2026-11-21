@@ -205,11 +205,11 @@ export interface Expiry {
  * is one. The record of an action takes its id from the operation, so a try made again finds it,
  * whatever it called the request by.
  */
-function writtenBefore<T extends { id: RequestId }>(ledger: RequestLedger, operation: OperationId, type: RecordType<T>): RequestId | undefined {
+function writtenBefore<T extends { id: RequestId }>(ledger: RequestLedger, operation: OperationId, type: RecordType<T>): T | undefined {
   const stored = ledger.recordOf(createdRecordOf(operation));
   if (stored?.type !== type.name) return undefined;
   const data = type.schema.safeParse(stored.data);
-  return data.success ? data.data.id : undefined;
+  return data.success ? data.data : undefined;
 }
 
 /** The actions that read and write the state of requests, from the facts and the binding. */
@@ -228,6 +228,12 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     return true;
   };
 
+  /** How the request ended other than by an answer, when it did: an answer written after that does not stand. */
+  const endedBefore = (id: RequestId): "cancelled" | "expired" | undefined => {
+    const status = ledger.requests().get(id)?.status;
+    return status === "cancelled" || status === "expired" ? status : undefined;
+  };
+
   /** Whether the answer written for the request is the one that stands: nothing ended it first. */
   const stands = (id: RequestId, answer: Answer): boolean => {
     const state = ledger.requests().get(id);
@@ -243,8 +249,11 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     async run(input, ctx) {
       // A try that was cut off after its answer was written finds it: the request is named by the
       // record of this operation, not by what the call said, which may be a run with no open ask now.
-      const answered = writtenBefore(ledger, ctx.operationId, RequestAnswered);
-      if (answered !== undefined) return { id: answered, accepted: true };
+      const written = writtenBefore(ledger, ctx.operationId, RequestAnswered);
+      if (written !== undefined) {
+        const reason = endedBefore(written.id);
+        return reason === undefined ? { id: written.id, accepted: true } : { id: written.id, accepted: false, reason };
+      }
       const by = bind(ctx.caller);
       const id = ledger.named(input, (request) => by !== undefined && (by.kind === "owner" || sameAddress(by, request.to)));
       const verdict = decideAnswer(id, ledger.requests().get(id), by, input.answer);
@@ -258,8 +267,8 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
         if (await expiredNow(id)) return { id, accepted: false, reason: "expired" };
         await ctx.emit(RequestAnswered, { id, answer: input.answer, ...(by === undefined ? {} : { by }) });
         // Something may have ended the request while this was written: the first end stands.
-        const ended = ledger.requests().get(id);
-        if (ended?.status === "cancelled" || ended?.status === "expired") return { id, accepted: false, reason: ended.status };
+        const reason = endedBefore(id);
+        if (reason !== undefined) return { id, accepted: false, reason };
       }
       return { id, accepted: true };
     },
@@ -273,7 +282,7 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     world: "niwa",
     async run(input, ctx) {
       const cancelled = writtenBefore(ledger, ctx.operationId, RequestCancelledRecord);
-      if (cancelled !== undefined) return { id: cancelled };
+      if (cancelled !== undefined) return { id: cancelled.id };
       // A client is held to its binding; a handler or the host, in-process, may say who cancels.
       const by = bind(ctx.caller) ?? (ctx.caller.kind === "client" ? undefined : input.by);
       const id = ledger.named(input, (request) => by !== undefined && (by.kind === "owner" || [request.to, request.from].some((party) => party !== undefined && sameAddress(by, party))));
@@ -342,12 +351,11 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
     world: "niwa",
     async run(input, ctx) {
       // A try that was cut off after its answer was written finds it, whoever gave the answer.
-      if (writtenBefore(ledger, ctx.operationId, RequestAnswered) !== undefined) return { answered: true };
-      const bound = bind(ctx.caller);
-      const id = ledger.named(
-        { id: input.id },
-        (request) => ctx.caller.kind !== "client" || (bound !== undefined && (bound.kind === "owner" || sameAddress(bound, request.to))),
-      );
+      const written = writtenBefore(ledger, ctx.operationId, RequestAnswered);
+      if (written !== undefined) return { answered: stands(written.id, written.answer) };
+      // The id is the whole id of a request: a short form is not tried, so a request that does not
+      // exist is never taken for a longer one that starts the same.
+      const id = input.id;
       const state = ledger.requests().get(id);
       // A client that gives an answer is held to its binding as the one who answers is: the
       // addressee, or the owner. `submit-answer` and answers forwarded by another module reach the request here.
