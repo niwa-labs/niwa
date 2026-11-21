@@ -144,6 +144,8 @@ export function proc(options: ProcOptions = {}): Plugin {
         async run(input, ctx) {
           const cwd = directoryOf(input.cwd, authorized.get(input));
           const sandbox = await sandboxOf();
+          // Cancelled while the sandbox was being found: nothing was started, and nothing will be.
+          ctx.signal?.throwIfAborted();
           const spec: BoxSpec = boxSpec({
             cwd,
             write: [cwd],
@@ -159,7 +161,7 @@ export function proc(options: ProcOptions = {}): Plugin {
           const capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
           try {
             const child = await sandbox.launch(spec, input.cmd, { detached: true });
-            const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS });
+            const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
             const result: ProcResult = { ...ended, ...capture.finish() };
             const box: BoxUsed = { sandbox: sandbox.name, write: [...spec.write], net: [...spec.net] };
             await finish(ctx, { action: "proc.run", cwd, program: input.cmd[0] as string, box }, result);
@@ -195,8 +197,9 @@ export function proc(options: ProcOptions = {}): Plugin {
           for (const name of input.secrets ?? []) env[name] = given(name);
           const capture = new OutputCapture({ artifacts: api.artifacts, secrets: values, limit, tailBytes });
           try {
+            ctx.signal?.throwIfAborted();
             const child = launchPlain(input.cmd, cwd, env);
-            const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS });
+            const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
             const result: ProcResult = { ...ended, ...capture.finish() };
             await finish(ctx, { action: "proc.exec", cwd, program: input.cmd[0] as string }, result);
             return result;

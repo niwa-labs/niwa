@@ -19,12 +19,14 @@ export interface SuperviseOptions {
   readonly killGraceMs: number;
   /** How long to wait for the output to be read once the command is over, in milliseconds. */
   readonly drainMs: number;
+  /** Aborted when the call is cancelled: the command is stopped like one that ran out of time. */
+  readonly signal?: AbortSignal | undefined;
 }
 
 /** How the command ended. */
 export interface Ended {
   readonly outcome: ProcOutcome;
-  /** The exit code; null when the command was stopped for its time. */
+  /** The exit code; null when the command was stopped for its time or because the call was cancelled. */
   readonly exit: number | null;
   readonly durationMs: number;
   /**
@@ -90,13 +92,19 @@ export async function supervise(child: LaunchedBox, capture: OutputCapture, opti
     pump(readers[1], (chunk) => capture.feed("err", chunk), state, stop),
   ]);
 
-  let timedOut = false;
+  // The first reason the command is stopped for is the one it ended with.
+  let stopped: "timed-out" | "cancelled" | undefined;
   let killer: ReturnType<typeof setTimeout> | undefined;
-  const timer = setTimeout(() => {
-    timedOut = true;
+  const stopFor = (reason: "timed-out" | "cancelled") => {
+    if (stopped !== undefined) return;
+    stopped = reason;
     signalGroup(child.pid, "SIGTERM");
     killer = setTimeout(() => signalGroup(child.pid, "SIGKILL"), options.killGraceMs);
-  }, options.timeout);
+  };
+  const timer = setTimeout(() => stopFor("timed-out"), options.timeout);
+  const cancel = () => stopFor("cancelled");
+  if (options.signal?.aborted === true) cancel();
+  else options.signal?.addEventListener("abort", cancel, { once: true });
 
   // The command ends with its process. A box that is slow to clean up, or fails to, after the
   // process is gone has not changed how the command ended: the clean-up is waited for apart.
@@ -106,6 +114,7 @@ export async function supervise(child: LaunchedBox, capture: OutputCapture, opti
   );
   clearTimeout(timer);
   clearTimeout(killer);
+  options.signal?.removeEventListener("abort", cancel);
   signalGroup(child.pid, "SIGKILL");
   let drain: ReturnType<typeof setTimeout> | undefined;
   const drained = await Promise.race([
@@ -119,7 +128,7 @@ export async function supervise(child: LaunchedBox, capture: OutputCapture, opti
   await child.exited.catch(() => undefined);
   if (state.failure !== undefined) throw state.failure.error;
 
-  return { outcome: timedOut ? "timed-out" : "exited", exit: timedOut ? null : code, durationMs: Date.now() - started, outputCut: !drained || state.broken };
+  return { outcome: stopped ?? "exited", exit: stopped === undefined ? code : null, durationMs: Date.now() - started, outputCut: !drained || state.broken };
 }
 
 /**

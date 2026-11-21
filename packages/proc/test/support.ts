@@ -4,7 +4,8 @@
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ArtifactRef, ArtifactStore } from "@niwa-labs/core";
+import type { Action, ActionContext, ArtifactRef, ArtifactStore, RecordType } from "@niwa-labs/core";
+import type { PluginApi } from "@niwa-labs/plugin";
 import { SandboxUnavailable } from "@niwa-labs/sandbox";
 import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 import { createNiwa, tempHome } from "@niwa-labs/testing";
@@ -105,4 +106,47 @@ export function alive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The actions of the proc module, called as the core calls them in a step: with a context of the
+ * test's own, so a signal can be given and the records the action writes are kept.
+ */
+export async function procActions(options: ProcOptions = {}) {
+  const home = await tempHome();
+  const niwa = createNiwa({ home: home.path });
+  const actions = new Map<string, Action<any, any>>();
+  const emitted: Array<{ type: string; data: Record<string, unknown> }> = [];
+  const api = {
+    declare: () => {},
+    home: () => home.path,
+    secrets: niwa.secrets,
+    artifacts: niwa.artifacts,
+    action: (found: Action<any, any>) => {
+      actions.set(found.name, found);
+    },
+  } as unknown as PluginApi;
+  proc(options).setup(api);
+  const context = (signal?: AbortSignal): ActionContext =>
+    ({
+      operationId: "op-test",
+      ...(signal === undefined ? {} : { signal }),
+      emit: async <T>(type: RecordType<T>, data: T) => {
+        emitted.push({ type: type.name, data: data as Record<string, unknown> });
+        return {} as never;
+      },
+    }) as unknown as ActionContext;
+  return {
+    home: home.path,
+    emitted,
+    async call(name: "proc.run" | "proc.exec", input: unknown, signal?: AbortSignal): Promise<any> {
+      const found = actions.get(name);
+      if (found === undefined) throw new Error(`no action ${name}`);
+      return await found.run(found.input.parse(input), context(signal));
+    },
+    async stop() {
+      await niwa.close();
+      await home.cleanup();
+    },
+  };
 }

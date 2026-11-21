@@ -45,8 +45,11 @@ const Cwd = z.string().regex(/^\//, "the working directory must be an absolute p
 
 const Timeout = z.number().int().min(1).max(MAX_TIMEOUT_MS);
 
-/** How a command ended: it exited on its own, or it was stopped for running out of time. */
-export const ProcOutcome = z.enum(["exited", "timed-out"]);
+/**
+ * How a command ended: it exited on its own, it was stopped for running out of time, or it was
+ * stopped because the call was cancelled.
+ */
+export const ProcOutcome = z.enum(["exited", "timed-out", "cancelled"]);
 export type ProcOutcome = z.infer<typeof ProcOutcome>;
 
 /**
@@ -55,7 +58,7 @@ export type ProcOutcome = z.infer<typeof ProcOutcome>;
  */
 export const ProcResult = z.strictObject({
   outcome: ProcOutcome,
-  /** The exit code; 128 and more is a signal. Null when the command was stopped for its time. */
+  /** The exit code; 128 and more is a signal. Null when the command was stopped, for its time or by a cancel. */
   exit: z.number().int().nullable(),
   durationMs: z.number().int().nonnegative(),
   /** The end of the output, bounded. The rest is in `output`. */
@@ -84,7 +87,7 @@ export const procRun = actionRef("proc.run", {
   description:
     "Run a command in a box: it may write only in `cwd`, it has no network and no credentials. " +
     "`cmd` is the program and its arguments, run as they are (a shell is [\"sh\", \"-c\", \"…\"]). " +
-    "`timeout` is in milliseconds; a command that runs longer is stopped, with everything it started. " +
+    "`timeout` is in milliseconds; a command that runs longer is stopped, with everything it started, as is one whose call is cancelled. " +
     "`env` is the whole environment besides PATH and HOME. " +
     "The result has the exit code, the end of the output and the whole output as an artifact; a non-zero exit is a result, not an error. " +
     "A grant names the real path of `cwd` (`proc.run@/work/repo`); a space or another character a rule cannot hold is written as % and its hex code (`My%20Project`). " +
