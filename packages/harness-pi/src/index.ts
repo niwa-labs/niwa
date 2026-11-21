@@ -69,10 +69,10 @@ export const PI_CAPABILITIES: KindCapabilities = {
     tools: { niwaOnly: VERIFIED, allow: ADMITTED },
   },
   // The insert is a file in pi's extensions directory. A pi opened by hand that loads it and reports to the
-  // host is proved live (`manualOpen`); a compaction needs a model run and is admitted from pi's documented
-  // event. A question pi asks the person is the person's to answer at pi's prompt: the answer cannot go back
+  // host is proved live (`manualOpen`), and so is the report of a session's end (`end`); a compaction needs a model
+  // run and is admitted from pi's documented event. A question pi asks the person is the person's to answer at pi's prompt: the answer cannot go back
   // from here, so the kind does not claim a permission route.
-  insert: { nested: UNSUPPORTED, compaction: ADMITTED, manualOpen: VERIFIED, permission: UNSUPPORTED, end: ADMITTED },
+  insert: { nested: UNSUPPORTED, compaction: ADMITTED, manualOpen: VERIFIED, permission: UNSUPPORTED, end: VERIFIED },
 };
 
 /** The block a pi session takes at its start: `pi`, with no option of its own yet. */
