@@ -2371,9 +2371,12 @@ class Niwa implements Host {
               error: new UnknownAction(result.action).message,
               effectPossible: false,
             };
+          // The body never started: nothing can have happened.
           case "invalid-input":
-          case "invalid-output":
             return { status: "failed", error: result.message, effectPossible: false };
+          // The body ran and its answer was refused: what it did may have happened.
+          case "invalid-output":
+            return { status: "failed", error: result.message, effectPossible: true };
         }
       },
     });
