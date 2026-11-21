@@ -550,6 +550,15 @@ test("a turn that ends with an error result is a failed turn that says which res
   expect(details).toContain("the turn ended with error_max_turns");
 });
 
+test("a process whose readiness answer is no capabilities report is refused, and left no process behind", async () => {
+  await writeFile(join(dir, "bad-capabilities"), "");
+  await expect(control().start({ prompt: hello, cwd: dir })).rejects.toThrow("no capabilities report");
+  const pid = (await logOf("env.log"))[0]?.["pid"] as number;
+  await Bun.sleep(100);
+  expect(() => process.kill(pid, 0)).toThrow();
+  expect(await requestsOf("session/create")).toEqual([]);
+});
+
 test("a subscription falls back to the older spelling, and a start is refused when the server takes none", async () => {
   await writeFile(join(dir, "old-subscribe"), "");
   const c = control();

@@ -161,6 +161,12 @@ const CommandAckSchema = z.looseObject({
 /** JSON-RPC's code for a method the server does not have. */
 const METHOD_NOT_FOUND = -32601;
 
+/**
+ * What `runtime/capabilities` answers: a report of what the installation offers, one flag each. The
+ * flags are ZCode's to add, so only the shape of the report is required of it.
+ */
+const CapabilitiesSchema = z.looseObject({});
+
 /** What ZCode answers a `session/send` with when it takes the message. */
 const SendAckSchema = z.looseObject({ accepted: z.literal(true), sessionId: z.string() });
 
@@ -788,10 +794,12 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       );
     });
 
+    // Ready is an answer that is a capabilities report: anything else is not an app-server of ZCode.
     const ready = await call(session, "runtime/capabilities", {});
-    if (!ready.ok) {
+    const report = ready.ok ? CapabilitiesSchema.safeParse(ready.result) : undefined;
+    if (!ready.ok || report?.success !== true) {
       await stopSession(session);
-      throw unavailable("start", ready.error ?? "the CLI did not answer the readiness ping");
+      throw unavailable("start", ready.ok ? "the CLI answered the readiness ping with no capabilities report" : (ready.error ?? "the CLI did not answer the readiness ping"));
     }
     return session;
   }
