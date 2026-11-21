@@ -23,9 +23,12 @@ export function clientIdOf(sessionId: SessionId): string {
   return `mcp:${sessionId}`;
 }
 
+/** How the core client of a session is opened: by connecting to the host of the home. */
+export type Connector = (opts: { home: string; id: string; token?: Token }) => Promise<NiwaApi>;
+
 /** Open the core client of one session. */
-export async function bind(opts: { home: string; sessionId: SessionId; token?: Token }): Promise<Binding> {
-  const api = await connect({
+export async function bind(opts: { home: string; sessionId: SessionId; token?: Token; connect?: Connector }): Promise<Binding> {
+  const api = await (opts.connect ?? connect)({
     home: opts.home,
     id: clientIdOf(opts.sessionId),
     ...(opts.token === undefined ? {} : { token: opts.token }),

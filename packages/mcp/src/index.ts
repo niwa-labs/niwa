@@ -7,6 +7,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import type { Readable, Writable } from "node:stream";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -22,7 +23,7 @@ import { z } from "zod";
 import { actionName, JsonSchemaValue, recordTypeName, seq } from "@niwa-labs/core";
 import type { JsonSchema, Token } from "@niwa-labs/core";
 import { HostError, withWorkingDirectory } from "@niwa-labs/client";
-import { bind, type Binding, type SessionId } from "./bind.ts";
+import { bind, type Binding, type Connector, type SessionId } from "./bind.ts";
 import {
   OPEN_QUESTIONS,
   SUBMIT_ANSWER,
@@ -67,6 +68,8 @@ export interface McpServerOptions {
   readonly mark?: string;
   /** Who the server is: the token of the session it serves (`NIWA_ID`), else the owner's. */
   readonly token?: Token;
+  /** How the core client of a session is opened; by default, by connecting to the host of the home. */
+  readonly connect?: Connector;
 }
 
 /** Build the MCP server of one home. */
@@ -83,7 +86,14 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
     const id = sessionId ?? connectionId;
     const known = bindings.get(id);
     if (known !== undefined) return known;
-    const opened = bind({ home: opts.home, sessionId: id, ...(opts.token === undefined ? {} : { token: opts.token }) });
+    // A session that ended opens nothing: its client would never be closed.
+    if (closed) return Promise.reject(new Error("the MCP session is closed"));
+    const opened = bind({
+      home: opts.home,
+      sessionId: id,
+      ...(opts.token === undefined ? {} : { token: opts.token }),
+      ...(opts.connect === undefined ? {} : { connect: opts.connect }),
+    });
     bindings.set(id, opened);
     // A failed connect is not kept: the next call tries again.
     opened.catch(() => bindings.delete(id));
@@ -93,18 +103,19 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
   const closeBindings = async (): Promise<void> => {
     const open = [...bindings.values()];
     bindings.clear();
-    for (const opened of open) {
-      const binding = await opened.catch(() => undefined);
-      await binding?.api.close();
-    }
+    const results = await Promise.allSettled(open.map(async (opened) => (await opened.catch(() => undefined))?.api.close()));
+    const failed = results.find((result) => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   };
 
-  // The transport ending ends the session, whoever closed it.
-  server.onclose = () => {
+  // The session ends once, whoever ends it: the transport or a call to `close`. Both wait for the same cleanup.
+  let cleanup: Promise<void> | undefined;
+  const end = (): Promise<void> => {
     closed = true;
     void watching?.return?.();
-    void closeBindings().catch(() => undefined);
+    return (cleanup ??= closeBindings());
   };
+  server.onclose = () => void end().catch(() => undefined);
 
   // The tools as the session sees them now, and the fingerprint of the last list the server
   // gave out or looked at: the harness caches `tools[]`, so it is told only when this changes.
@@ -166,8 +177,11 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
     server,
     connect: (transport) => server.connect(transport),
     async close(): Promise<void> {
-      await server.close();
-      await closeBindings();
+      try {
+        await server.close();
+      } finally {
+        await end();
+      }
     },
   };
 }
@@ -292,9 +306,29 @@ async function callTool(
   return api.call(action, withWorkingDirectory(input as JsonSchema | undefined, args));
 }
 
-/** Run the MCP server of one home over stdio. */
-export async function serveMcp(opts: McpServerOptions): Promise<McpServer> {
+/** The streams of a stdio server: the process's own unless a caller gives others. */
+export interface StdioStreams {
+  readonly stdin: Readable;
+  readonly stdout: Writable;
+}
+
+/**
+ * Run the MCP server of one home over stdio, until its client goes away.
+ *
+ * The SDK's stdio transport ends on an error of its input but not on its end: the harness closing
+ * the pipe would leave the server, and the connection it holds to the host, running. So the end of the
+ * input ends the server.
+ */
+export async function serveMcp(opts: McpServerOptions, streams: StdioStreams = { stdin: process.stdin, stdout: process.stdout }): Promise<McpServer> {
   const mcp = createMcpServer(opts);
-  await mcp.connect(new StdioServerTransport());
+  await mcp.connect(new StdioServerTransport(streams.stdin, streams.stdout));
+  const gone = (): void => void mcp.close().catch(() => undefined);
+  streams.stdin.once("end", gone);
+  streams.stdin.once("close", gone);
+  mcp.server.onclose = ((previous) => () => {
+    streams.stdin.off("end", gone);
+    streams.stdin.off("close", gone);
+    previous?.();
+  })(mcp.server.onclose);
   return mcp;
 }
