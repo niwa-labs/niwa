@@ -160,6 +160,7 @@ const NIWA_CORE_GRAPH: Record<string, PackageSpec> = {
   "@niwa-labs/mcp": leaf("surface", { "@niwa-labs/client": "*", ...CONTRACTS }),
   "@niwa-labs/web": leaf("surface", { "@niwa-labs/client": "*", ...CONTRACTS }),
   "@niwa-labs/telegram": leaf("surface", {
+    "@niwa-labs/agent": RECORDS,
     "@niwa-labs/client": "*",
     "@niwa-labs/plugin": "*",
     "@niwa-labs/messages": "*",

@@ -3,6 +3,7 @@
 
 import { expect, test } from "bun:test";
 
+import { NotSent } from "@niwa-labs/core";
 import { createBot } from "../src/bot.ts";
 import { chatId } from "../src/index.ts";
 
@@ -68,6 +69,32 @@ test("bot: a body that breaks off while it is read does not leak the token", asy
     expect(message).not.toContain(encodeURIComponent(TOKEN));
     expect(message).toContain("sendMessage");
     expect(message).toContain("connection lost");
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test("a rejected send is unsent and a server failure remains uncertain", async () => {
+  for (const status of [403, 429, 502]) {
+    const server = echoing(() => Response.json({ ok: false, error_code: status, description: "refused" }, { status }));
+    try {
+      const error = await createBot({ token: TOKEN, apiBase: server.base }).sendMessage(chatId(1), "reply").catch((error: unknown) => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(error instanceof NotSent).toBe(status < 500);
+    } finally {
+      server.stop();
+    }
+  }
+});
+
+test("connection refusal is unsent and a connection reset can follow delivery", async () => {
+  const real = globalThis.fetch;
+  try {
+    for (const code of ["ECONNREFUSED", "ECONNRESET"]) {
+      globalThis.fetch = (async () => { throw Object.assign(new Error("network failure"), { code }); }) as typeof fetch;
+      const failure = await createBot({ token: TOKEN }).sendMessage(chatId(1), "reply").catch((error: unknown) => error);
+      expect(failure instanceof NotSent).toBe(code === "ECONNREFUSED");
+    }
   } finally {
     globalThis.fetch = real;
   }

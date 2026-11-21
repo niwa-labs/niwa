@@ -9,6 +9,7 @@
  * exactly what it would have sent to the real one.
  */
 
+import { NotSent } from "@niwa-labs/core";
 import { z } from "zod";
 
 /** Domain identifiers of Telegram. Branded: a bare number is not accepted where one is expected. */
@@ -89,7 +90,7 @@ export interface Bot {
   getUpdates(offset: number, timeoutSeconds: number, signal?: AbortSignal): Promise<Update[]>;
 
   /** Send a text message to a chat. */
-  sendMessage(chat: ChatId, text: string, keyboard?: InlineKeyboard): Promise<SentMessage>;
+  sendMessage(chat: ChatId, text: string, keyboard?: InlineKeyboard, replyTo?: MessageId): Promise<SentMessage>;
 
   /**
    * Tell Telegram a press of a button was seen, with a short word to show the one who pressed it.
@@ -126,6 +127,13 @@ export function createBot(opts: BotOptions): Bot {
       text,
     );
 
+  function failedBeforeConnect(error: unknown): boolean {
+    const codes = ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ConnectionRefused", "DNSLookupFailed"];
+    return [error, error instanceof Error ? error.cause : undefined].some((candidate) =>
+      typeof candidate === "object" && candidate !== null && "code" in candidate &&
+      typeof candidate.code === "string" && codes.includes(candidate.code));
+  }
+
   /** One call to the Bot API. */
   async function call<T>(
     method: string,
@@ -137,12 +145,15 @@ export function createBot(opts: BotOptions): Bot {
     try {
       response = await fetch(url, {
         method: "POST",
+        redirect: "error",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
         ...(signal === undefined ? {} : { signal }),
       });
     } catch (error) {
-      throw new Error(`telegram ${method} failed: ${redact(error instanceof Error ? error.message : String(error))}`);
+      const message = `telegram ${method} failed: ${redact(error instanceof Error ? error.message : String(error))}`;
+      if (failedBeforeConnect(error)) throw new NotSent(message);
+      throw new Error(message);
     }
     let text: string;
     try {
@@ -161,7 +172,11 @@ export function createBot(opts: BotOptions): Bot {
     }
     if (!parsed.ok) {
       const reason = parsed.description === undefined ? `code ${String(parsed.error_code)}` : redact(parsed.description).slice(0, 200);
-      throw new Error(`telegram refused ${method} (${String(response.status)}): ${reason}`);
+      const message = `telegram refused ${method} (${String(response.status)}): ${reason}`;
+      if (parsed.ok === false && parsed.error_code !== undefined && parsed.error_code >= 400 && parsed.error_code < 500 && response.status < 500) {
+        throw new NotSent(message);
+      }
+      throw new Error(message);
     }
     if (parsed.result === undefined) {
       throw new Error(`telegram answered ${method} without a result`);
@@ -178,9 +193,10 @@ export function createBot(opts: BotOptions): Bot {
       );
     },
 
-    async sendMessage(chat, text, keyboard) {
+    async sendMessage(chat, text, keyboard, replyTo) {
       return call<SentMessage>("sendMessage", {
         chat_id: chat,
+        ...(replyTo === undefined ? {} : { reply_parameters: { message_id: replyTo } }),
         text,
         ...(keyboard === undefined ? {} : { reply_markup: keyboard }),
       });

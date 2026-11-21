@@ -26,6 +26,7 @@
 
 import { NotSent, OptionIdSchema, action, client, optionsOf, owner, questionLines, record } from "@niwa-labs/core";
 import type { Action, ActionContext, Answer, Caller, JournalReader, Outcome, RecordType, SpeaksFor } from "@niwa-labs/core";
+import { AgentTurnFailed, AgentTurnQueued, AgentTurnReplied, agentTell } from "@niwa-labs/agent/records";
 import { bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi, ServiceContext } from "@niwa-labs/plugin";
 import { createHash } from "node:crypto";
@@ -42,6 +43,7 @@ import {
   RequestId,
   answeredBy,
   question,
+  operatorAnswered,
   requestAsk,
 } from "@niwa-labs/requests/records";
 
@@ -218,7 +220,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** The record types the polling service restores its offset from. */
 const OFFSET_TYPES = [Received, Ignored, Pressed];
 
+export const TelegramReplyDelivery = record("telegram.reply.delivery", z.object({
+  turn: z.string(), bot: z.string(), chat: chatSchema, replyTo: messageSchema,
+  status: z.enum(["sent", "unsent", "possibly-sent"]), sentParts: z.number().int().nonnegative(),
+  reason: z.string().optional(),
+}));
+
 export interface TelegramOptions {
+  /** The agent whose conversations this bot delivers in both directions. */
+  readonly agent?: string;
   /** The token of the bot: what Telegram gave it. */
   readonly token: string;
   /** The private chat of the owner: its id is the owner's user id, and it is positive. Only this chat is read. */
@@ -509,7 +519,7 @@ export class TelegramService {
 }
 
 /** The input of the action that sends a message. */
-const SendInput = z.object({ text: z.string() });
+const SendInput = z.object({ text: z.string(), replyTo: messageSchema.optional() });
 
 /**
  * The action that sends a message to the owner's chat.
@@ -523,7 +533,7 @@ const SendInput = z.object({ text: z.string() });
 export function telegramSend(opts: {
   bot: Bot;
   owner: ChatId;
-}): Action<z.infer<typeof SendInput>, { messageId: MessageId; chat: ChatId }> {
+}): Action<z.infer<typeof SendInput>, { messageId: MessageId; chat: ChatId }, z.input<typeof SendInput>> {
   return action(TELEGRAM_SEND, {
     description: "Send a text message to the owner's Telegram chat.",
     input: SendInput,
@@ -532,7 +542,8 @@ export function telegramSend(opts: {
     effect: "write",
     world: "external",
     run: async (input) => {
-      const sent = await opts.bot.sendMessage(opts.owner, input.text);
+      if (input.text.length === 0 || (input.text.length > MESSAGE_LIMIT && [...input.text].length > MESSAGE_LIMIT)) throw new NotSent("Telegram text must contain 1 to 4096 characters");
+      const sent = await opts.bot.sendMessage(opts.owner, input.text, undefined, input.replyTo);
       return { messageId: sent.message_id, chat: opts.owner };
     },
   });
@@ -559,6 +570,9 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
   // negative, and a surface told to speak for the owner in one would speak for everyone in it.
   if (!Number.isSafeInteger(opts.owner) || opts.owner <= 0) {
     throw new Error(`the owner of the telegram surface must be a private chat, whose id is positive: got ${String(opts.owner)}`);
+  }
+  if (opts.agent !== undefined && (opts.speaksFor !== "owner" || hooks.toAgent !== undefined)) {
+    throw new Error("A Telegram agent conversation requires an owner binding and a single delivery target");
   }
   const service = new TelegramService(opts, hooks);
   const send = telegramSend({ bot: service.client, owner: opts.owner });
@@ -637,7 +651,34 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
 
   const built = plugin(PLUGIN_NAME, (api: PluginApi) => {
     journal = () => api.journal?.();
-    api.declare(Received, Ignored, Posted, Pressed);
+    api.declare(Received, Ignored, Posted, Pressed, TelegramReplyDelivery);
+    if (opts.agent !== undefined) {
+      api.needs({ actions: [agentTell], types: [AgentTurnQueued, AgentTurnFailed, AgentTurnReplied] });
+      api.on(AgentTurnFailed, { id: "inbox-failure", from: "start" }, async (failed, step) => {
+        if (failed.agent !== opts.agent) return;
+        const row = api.journal?.()?.find({ type: AgentTurnQueued.name, field: "turn", equals: failed.turn }).at(0);
+        const route = AgentTurnQueued.schema.safeParse(row?.data).data?.replyTo;
+        if (route?.channel !== "telegram" || route.bot !== service.botId || route.chat !== opts.owner) return;
+        const status = failed.status === "unsent" ? "The agent did not receive this message" : "Delivery to the agent is uncertain";
+        await step.outcome(send, { text: fit(`${status}: ${failed.reason}`), replyTo: messageSchema.parse(route.message) });
+      });
+      api.on(AgentTurnReplied, { id: "reply", from: "start", concurrency: Number.POSITIVE_INFINITY }, async (reply, step) => {
+        const route = reply.replyTo;
+        if (reply.agent !== opts.agent || route.channel !== "telegram" || route.bot !== service.botId || route.chat !== opts.owner) return;
+        const replyTo = messageSchema.parse(route.message);
+        const destination = { turn: reply.turn, bot: route.bot, chat: opts.owner, replyTo };
+        let sentParts = 0;
+        for (const text of telegramParts(reply.text)) {
+          const outcome = await step.outcome(send, { text, replyTo }, { key: `part-${sentParts}` });
+          if (outcome.status !== "completed") {
+            await step.emit(TelegramReplyDelivery, { ...destination, sentParts, status: mayHaveArrived(outcome) ? "possibly-sent" : "unsent", reason: reasonOf(outcome) });
+            return;
+          }
+          sentParts++;
+        }
+        await step.emit(TelegramReplyDelivery, { ...destination, sentParts, status: "sent" });
+      });
+    }
     api.action(send);
     api.action(postRequest);
     api.action(acknowledge);
@@ -649,7 +690,7 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     // itself: the owner is asked, and only his "retry" delivers again.
     // A message the agent cannot take waits for the owner's word: the messages after it do not.
     api.on(Received, { id: "agent", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
-      if (data.text.trim() === "") return;
+      if (data.bot !== service.botId || data.chat !== opts.owner || data.text.trim() === "") return;
       // A reply to the message that shows a request answers it: it is the owner's answer, not a
       // word to the agent.
       const shown =
@@ -663,14 +704,19 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
         console.error(`niwa: telegram: the request "${shown.request}" was not answered: ${reason}`);
         return void (await step.outcome(send, { text: fit(`Your answer was not accepted: ${reason}`) }));
       }
-      if (toAgent === undefined) return;
+      const agent = opts.agent;
+      if (agent === undefined && toAgent === undefined) return;
       for (;;) {
-        const outcome = await step.outcome(deliver, { text: data.text });
+        const outcome = agent === undefined
+          ? await step.outcome(deliver, { text: data.text })
+          : await step.outcome(agentTell, {
+              agent, text: data.text, replyTo: { channel: "telegram", bot: data.bot, chat: data.chat, message: data.message },
+            });
         if (outcome.status === "completed") return;
         let answer: Answer;
         try {
           ({ answer } = answeredBy(
-            await step(requestAsk, { to: { kind: "owner" }, ...undelivered(data.text, mayHaveArrived(outcome)) }),
+            await step(requestAsk, { to: { kind: "owner" }, answerPolicy: "owner-only", ...undelivered(data.text, mayHaveArrived(outcome)) }),
           ));
         } catch (error) {
           if (error instanceof RequestCancelled) return;
@@ -735,7 +781,9 @@ function ended(api: PluginApi, request: string): boolean {
 }
 
 function endedIn(journal: JournalReader, request: string): boolean {
-  return END_TYPES.some((type) => journal.find({ type, field: "id", equals: request }).length > 0);
+  const onlyOwner = createdOf(journal, request)?.answerPolicy === "owner-only";
+  return END_TYPES.some((type) => journal.find({ type, field: "id", equals: request }).some((row) =>
+    !onlyOwner || type !== RequestAnswered.name || operatorAnswered(row)));
 }
 
 /** The request as it was created, when the journal holds it. */
@@ -792,6 +840,18 @@ async function postedFor(
 
 /** The most a message of Telegram holds, in the units Telegram counts: UTF-16 code units. */
 const MESSAGE_LIMIT = 4096;
+
+/** Split long replies without losing text or cutting a surrogate pair. */
+function* telegramParts(text: string): Generator<string> {
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + MESSAGE_LIMIT, text.length);
+    const last = text.charCodeAt(end - 1);
+    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+    yield text.slice(start, end);
+    start = end;
+  }
+}
 
 /** The text, cut to fit `room` units, with a note where it was cut. */
 export function fit(text: string, room: number = MESSAGE_LIMIT): string {

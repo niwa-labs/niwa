@@ -45,6 +45,7 @@ export {
   MessageInput,
   Question,
   Result,
+  ReplyRoute,
   ResultSchema,
   Update,
 } from "./envelope.ts";
@@ -79,6 +80,7 @@ export const MESSAGE_RECEIVE: ActionName = actionName("message.receive");
  * handlers are in-process and must say who sends.
  */
 function senderOf(caller: Caller, given: Address | undefined, bind: CallerBinding): Address {
+  if (caller.kind === "client" && caller.principal?.kind === "run") return { kind: "client", id: `run:${caller.principal.id}` };
   const bound = bind(caller);
   if (bound !== undefined) return bound;
   if (caller.kind === "client") {
@@ -99,11 +101,15 @@ function senderOf(caller: Caller, given: Address | undefined, bind: CallerBindin
  * messages.
  */
 function envelopeOf(input: MessageInput, from: Address, ctx: ActionContext, ids: IdIndex<"message">): Message {
+  if (input.replyTo !== undefined && (from.kind !== "owner" || input.to.kind !== "agent")) {
+    throw new NotSent("Only an owner message to an agent may carry a reply route");
+  }
   return {
     id: ids.issue(birthOf(ctx)),
     from,
     to: input.to,
     ...(input.task === undefined ? {} : { task: input.task }),
+    ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
     body: input.body,
   };
 }

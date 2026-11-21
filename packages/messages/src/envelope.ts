@@ -112,6 +112,18 @@ export type MessageBody = z.infer<typeof MessageBody>;
 /** The kind of a body: what a message carries. */
 export type MessageBodyType = MessageBody["type"];
 
+/** Where the owner expects a reply to this agent turn. */
+export const ReplyRoute = z.discriminatedUnion("channel", [
+  z.strictObject({ channel: z.literal("cockpit"), conversation: z.string().min(1) }),
+  z.strictObject({
+    channel: z.literal("telegram"),
+    bot: z.string().min(1),
+    chat: z.number().int().positive(),
+    message: z.number().int().positive(),
+  }),
+]);
+export type ReplyRoute = z.infer<typeof ReplyRoute>;
+
 /**
  * A message: an envelope sent to an address.
  *
@@ -125,6 +137,7 @@ export const Message = z.strictObject({
   to: Address,
   /** The task this message belongs to, when it belongs to one. */
   task: TaskRef.optional(),
+  replyTo: ReplyRoute.optional(),
   /** What the message carries. */
   body: MessageBody,
 });
@@ -145,6 +158,7 @@ export const MessageInput = z.strictObject({
   to: Address,
   /** The task this message belongs to, when it belongs to one. */
   task: TaskRef.optional(),
+  replyTo: ReplyRoute.optional(),
   /** What the message carries. */
   body: MessageBody,
 });

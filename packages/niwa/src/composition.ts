@@ -72,9 +72,12 @@ export function defaultComposition(options: DefaultCompositionOptions): Plugin[]
     ...(options.box?.sessions === undefined ? {} : { box: options.box.sessions }),
     niwaMcp: { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
   });
-  const agents = agentsModule(options.agents);
+  const agents = agentsModule({
+    ...options.agents,
+    messages: { bind: (caller) => bind(caller) ?? options.agents?.messages?.bind?.(caller) },
+  });
   const bound = agents.bind(made.bind());
-  const bind = options.bind === undefined ? bound : options.bind(bound);
+  const bind: CallerBinding = options.bind === undefined ? bound : options.bind(bound);
   return [
     messages({ bind }),
     requests({ bind }),

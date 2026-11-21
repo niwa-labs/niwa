@@ -486,6 +486,7 @@
       "name": "@niwa-labs/telegram",
       "version": "0.0.0",
       "dependencies": {
+        "@niwa-labs/agent": "workspace:*",
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
         "@niwa-labs/requests": "workspace:*",

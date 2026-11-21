@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { Address, actionRef, record, stableJson } from "@niwa-labs/core";
+import { ReplyRoute } from "@niwa-labs/messages/records";
 import { offerKey, trigger } from "@niwa-labs/plugin";
 import type { OfferKey, Trigger } from "@niwa-labs/plugin";
 import { DeliveryReceiptSchema } from "@niwa-labs/sessions/records";
@@ -147,6 +148,7 @@ export const AgentTurnQueued = record(
     turn: TurnId,
     kind: z.enum(["message", "fact"]),
     author: TurnAuthor,
+    replyTo: ReplyRoute.optional(),
     text: z.string(),
     source: TurnSource.optional(),
     attachment: z.string().optional(),
@@ -164,6 +166,19 @@ export const AgentTurnDelivered = record(
   "agent.turn.delivered",
   z.object({ agent: AgentName, turn: TurnId, session: SessionRefText, receipt: DeliveryReceiptSchema }),
 );
+
+/** The session accepted a routed turn and answered it. Each turn has one reply. */
+export const AgentTurnReplied = record("agent.turn.replied", z.object({
+  agent: AgentName, turn: TurnId, text: z.string().min(1), replyTo: ReplyRoute,
+}), {
+  guard: {
+    group: "agent.turn.reply",
+    key: (reply) => reply.turn,
+    initial: () => false,
+    admit: (answered) => answered ? { code: "already-answered", reason: "The turn already has a reply" } : undefined,
+    fold: () => true,
+  },
+});
 
 /** A turn did not reach the agent: `unsent` when it surely did not go, `possibly-sent` when it may have. */
 export const AgentTurnFailed = record(
@@ -199,7 +214,7 @@ export const AgentDigestAdvanced = record("agent.digest.advanced", z.object({
 }));
 
 /** The record types the module declares. */
-export const AGENT_TYPES = [AgentCreated, AgentSessionStarted, AgentTurnRouted, AgentTurnQueued, AgentTurnDelivered, AgentTurnFailed, AgentAttached, AgentDetached, AgentDigestDue, AgentAttachmentChanging, AgentDigestAdvanced] as const;
+export const AGENT_TYPES = [AgentCreated, AgentSessionStarted, AgentTurnRouted, AgentTurnQueued, AgentTurnDelivered, AgentTurnReplied, AgentTurnFailed, AgentAttached, AgentDetached, AgentDigestDue, AgentAttachmentChanging, AgentDigestAdvanced] as const;
 
 /**
  * The digests of attached sessions, as they reach an agent: what a plugin that takes them in (a memory)
@@ -285,10 +300,16 @@ export const agentGet = actionRef("agent.get", {
   }),
 });
 
+export const agentReply = actionRef("agent.reply", {
+  description: "Reply once to the owner in the conversation of a turn delivered to this session. Use the turn ID in the incoming message.",
+  input: z.strictObject({ turn: TurnId, text: z.string().min(1) }),
+  output: z.object({ turn: TurnId }),
+});
+
 export const agentTell = actionRef("agent.tell", {
   description:
     "Says something to an agent: a message to its address, from the address the caller speaks as. It becomes a turn of the agent's main session, which wakes for it; the answer is not waited for.",
-  input: z.object({ agent: AgentName, text: z.string().min(1) }),
+  input: z.object({ agent: AgentName, text: z.string().min(1), replyTo: ReplyRoute.optional() }),
   output: z.object({ message: z.string().min(1) }),
 });
 
