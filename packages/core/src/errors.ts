@@ -72,6 +72,25 @@ export class CatchableError extends Error {
 }
 
 /**
+ * An action failed before anything it does left it: the other side never got the request, or
+ * refused it by name. A call that ends with this did nothing, so it may be made again.
+ *
+ * Any other error an action throws leaves the effect possible, because the action may have got
+ * part of the way. An action that knows it sent nothing says so by throwing this, or any error that
+ * carries `effectPossible: false`.
+ */
+export class NotSent extends Error {
+  override name = "NotSent";
+  readonly code: string = "NotSent";
+  readonly effectPossible = false;
+}
+
+/** May the call that ended with this error have had an effect? Only an error that says it had none had none. */
+export function effectPossibleAfter(error: unknown): boolean {
+  return typeof error !== "object" || error === null || (error as { effectPossible?: unknown }).effectPossible !== false;
+}
+
+/**
  * The step was cancelled: the work it stood for was given up, by the code that made it or by the
  * owner. The caller catches it: a cancelled step pauses nothing, and a replay throws it again.
  */

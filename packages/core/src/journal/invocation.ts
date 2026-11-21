@@ -26,7 +26,7 @@ import {
   resolutionOf,
 } from "../outcome.ts";
 import type { StepsCancelled } from "../outcome.ts";
-import { CatchableError, IntegrityError, StepCancelled, UnknownAction } from "../errors.ts";
+import { CatchableError, IntegrityError, StepCancelled, UnknownAction, effectPossibleAfter } from "../errors.ts";
 import { CORE_TYPES, newRecordId, recordId, stableJson, streamId } from "../record.ts";
 import type {
   ActionTarget,
@@ -961,10 +961,11 @@ async function callAction<I, O, In = I>(
     // A nested call of this run paused: the invocation needs a decision about that call, and this
     // call is not failed - it is made again when the decision comes.
     if (nested.paused()) throw error;
+    // A failure leaves the effect possible unless the action says it sent nothing.
     return settle<O>(
       ctx,
       key,
-      { status: "failed", error: messageOf(error), effectPossible: true },
+      { status: "failed", error: messageOf(error), effectPossible: effectPossibleAfter(error) },
       attempt,
     );
   } finally {

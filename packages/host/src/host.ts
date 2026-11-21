@@ -21,6 +21,7 @@ import {
   IntegrityError,
   PluginInstallFailed,
   CatchableError,
+  effectPossibleAfter,
   LostOwnership,
   MissingProvider,
   MissingReader,
@@ -2795,8 +2796,9 @@ class Niwa implements Host {
           // invocation.
           if (error instanceof CatchableError) throw error;
           // An action that throws is a failed outcome, as it is for a step inside an invocation:
-          // the code asked for the outcome, not for an exception.
-          return { status: "failed", error: error instanceof Error ? error.message : String(error), effectPossible: true };
+          // the code asked for the outcome, not for an exception. It may have done something unless it
+          // says it sent nothing.
+          return { status: "failed", error: error instanceof Error ? error.message : String(error), effectPossible: effectPossibleAfter(error) };
         }
         switch (result.kind) {
           case "completed":

@@ -18,7 +18,7 @@
 import { createHash } from "node:crypto";
 
 import type { ActionName, Caller, NewRecord, OperationId, RecordTypeName, Recovery, StoredRecord } from "@niwa-labs/core";
-import { CORE_TYPES, newRecordId, stableJson, streamId } from "@niwa-labs/core";
+import { CORE_TYPES, effectPossibleAfter, newRecordId, stableJson, streamId } from "@niwa-labs/core";
 
 /** A retry under an operation id the journal cannot answer as asked. */
 export class OperationRefusal extends Error {
@@ -130,12 +130,11 @@ export class CallOperations {
       settle({ status: "completed", value: value ?? null });
       return value;
     } catch (error) {
-      const said = (error as { effectPossible?: unknown } | undefined)?.effectPossible;
       settle({
         status: "failed",
         error: error instanceof Error ? error.message : String(error),
         ...(error instanceof Error ? { code: error.name } : {}),
-        effectPossible: said !== false,
+        effectPossible: effectPossibleAfter(error),
       });
       throw error;
     }

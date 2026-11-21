@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { CORE_TYPES, action, deny, recordId, streamId, record } from "../src/index.ts";
+import { CORE_TYPES, NotSent, action, deny, recordId, streamId, record } from "../src/index.ts";
 import type { Action, HandlerId, InvocationId, NewRecord, Recovery, StoredRecord } from "../src/index.ts";
 import { NO_INTERCEPTS, openJournal, runInvocation } from "../src/journal.ts";
 import type { InvocationSpec, Intercepts, RunResult, RunnerDeps } from "../src/journal.ts";
@@ -273,5 +273,39 @@ test("a replayed wait gives back the record as its type reads it", async () => {
   await b.run(handler);
   await b.run(handler);
   expect(kinds).toEqual(["date", "date"]);
+  b.close();
+});
+
+
+test("an action that says nothing was sent fails its step with no effect possible; any other throw leaves one possible", async () => {
+  const b = await bench();
+  const refused = action("step.refused", {
+    description: "fails before anything goes out",
+    input: z.object({}),
+    output: z.object({}),
+    recovery: "do-not-repeat",
+    effect: "write",
+    run: async () => {
+      throw new NotSent("the other side never got it");
+    },
+  });
+  const broke = action("step.broke", {
+    description: "fails after it may have gone out",
+    input: z.object({}),
+    output: z.object({}),
+    recovery: "do-not-repeat",
+    effect: "write",
+    run: async () => {
+      throw new Error("the line dropped");
+    },
+  });
+  const got: unknown[] = [];
+  await b.run(async (_data, step) => {
+    got.push(await step.outcome(refused, {}, { key: "refused" }), await step.outcome(broke, {}, { key: "broke" }));
+  });
+  expect(got).toEqual([
+    { status: "failed", error: "the other side never got it", effectPossible: false },
+    { status: "failed", error: "the line dropped", effectPossible: true },
+  ]);
   b.close();
 });
