@@ -12,8 +12,16 @@ command in the worktree) and `git.worktree.remove`, checks with `runCheck` of `@
 (re-exported here). A run that uses them needs those actions in its grant.
 
 - `inWorktree` removes a worktree its block left clean and keeps one with commits; a block that
-  throws leaves it as it is. `forkSelect` keeps the picked fork and removes the others.
+  throws leaves it as it is. `forkSelect` keeps the picked fork and removes the others; `forkRace`
+  takes the first fork that passes and cancels the rest.
+- The commit a helper reports is read from the worktree after the agent is done, never from the
+  agent's answer, and changes left outside it are a blocking finding: a check must leave the
+  worktree as it found it, or have its output ignored by git.
 - `reviewFix`, `tddLoop`, `debugLoop` and `coverageLoop` return their last result and why they
-  stopped; a check that does not pass is a blocking finding sent back to the author.
-- `diagnoseLoop`, `reviewPanel`, `selfTest`, `implement` (`economy`, `race`, `quality`, `safe`)
+  stopped; a check that does not pass is a blocking finding sent back to the author, and one that
+  does not finish (timed out, cancelled) shows neither a failure nor a pass. A coverage measure that
+  fails before the first round throws `MeasureFailed`.
+- `reviewPanel` lists the reviewers that could not look in `failures`; with it empty the panel is
+  complete.
+- `diagnoseLoop`, `selfTest`, `implement` (`economy`, `race`, `quality`, `safe`)
   and `integrate`.
