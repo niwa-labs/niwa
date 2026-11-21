@@ -177,6 +177,11 @@
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
         "@niwa-labs/sandbox": "workspace:*",
+        "zod": "^4.6.7",
+      },
+      "devDependencies": {
+        "@niwa-labs/testing": "workspace:*",
+        "json-schema-to-zod": "2.8.1",
       },
     },
     "packages/history": {

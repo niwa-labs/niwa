@@ -1,0 +1,241 @@
+{
+ "messages": [
+  {
+   "info": {
+    "agent": "zcode-agent",
+    "messageId": "msg_mwo6jzxj_5d7cb608-42b9-4c10-b77f-4049f884a1fa",
+    "model": {
+     "providerId": "2eafb73d-b2f6-45af-9d68-e81dcc8e53e1",
+     "modelId": "minimax/MiniMax-M3",
+     "options": {
+      "reasoningLevel": "enabled"
+     }
+    },
+    "role": "user",
+    "semantics": {
+     "origin": "real_user",
+     "kind": "user_prompt",
+     "uiVisibility": "visible",
+     "providerVisibility": "visible",
+     "transcriptVisibility": "visible"
+    },
+    "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+    "time": {
+     "created": 1795130844028
+    },
+    "tools": {
+     "Agent": true,
+     "AskUserQuestion": true,
+     "Bash": true,
+     "CronCreate": true,
+     "CronDelete": true,
+     "CronList": true,
+     "CronUpdate": true,
+     "Edit": true,
+     "EnterPlanMode": true,
+     "ExitPlanMode": true,
+     "Read": true,
+     "SendMessage": true,
+     "Skill": true,
+     "TaskOutput": true,
+     "TaskStop": true,
+     "TodoRead": true,
+     "TodoWrite": true,
+     "ToolSearch": true,
+     "WebFetch": true,
+     "WebSearch": true,
+     "Write": true,
+     "SearchPlugins": true,
+     "SuggestPluginInstall": true,
+     "DeferredToolCall": true,
+     "CronPauseSelf": true,
+     "ReadTopicResource": true
+    }
+   },
+   "parts": [
+    {
+     "messageId": "msg_mwo6jzxj_5d7cb608-42b9-4c10-b77f-4049f884a1fa",
+     "partId": "part_mwo6k03g_66353059-08dd-4b3e-810f-149cd00f02aa",
+     "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+     "text": "Run the shell command `echo capture-ok` with the Bash tool, then say done.",
+     "type": "text"
+    }
+   ]
+  },
+  {
+   "info": {
+    "agent": "zcode-agent",
+    "cost": 0,
+    "finish": "tool-calls",
+    "messageId": "msg_mwo6k05e_237edbc4-410a-49ed-8de9-fd7c68fda6a8",
+    "model": {
+     "providerId": "2eafb73d-b2f6-45af-9d68-e81dcc8e53e1",
+     "modelId": "minimax/MiniMax-M3"
+    },
+    "parentMessageId": "msg_mwo6jzxj_5d7cb608-42b9-4c10-b77f-4049f884a1fa",
+    "path": {
+     "cwd": "/tmp/zcap/work-LjZuhQ",
+     "root": "/tmp/zcap/work-LjZuhQ"
+    },
+    "role": "assistant",
+    "semantics": {
+     "origin": "agent_runtime",
+     "kind": "assistant_response",
+     "uiVisibility": "visible",
+     "providerVisibility": "visible",
+     "transcriptVisibility": "visible"
+    },
+    "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+    "time": {
+     "created": 1795130844099,
+     "completed": 1795130851761
+    },
+    "tokens": {
+     "total": 14121,
+     "input": 14073,
+     "output": 48,
+     "reasoning": 0,
+     "cache": {
+      "read": 128,
+      "write": 0
+     }
+    }
+   },
+   "parts": [
+    {
+     "messageId": "msg_mwo6k05e_237edbc4-410a-49ed-8de9-fd7c68fda6a8",
+     "partId": "part_mwo6k05h_c4aff73c-0335-491b-aa5a-1884958e5df5",
+     "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+     "type": "step-start"
+    },
+    {
+     "messageId": "msg_mwo6k05e_237edbc4-410a-49ed-8de9-fd7c68fda6a8",
+     "partId": "part_mwo6k2qe_847c8677-de48-42e6-8c49-8e302b5a903c",
+     "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+     "text": "I'll run that command.",
+     "type": "text"
+    },
+    {
+     "messageId": "msg_mwo6k05e_237edbc4-410a-49ed-8de9-fd7c68fda6a8",
+     "partId": "part_mwo6k2r3_5c6ac60e-d667-430c-a9ed-c2ebdb2853ae",
+     "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+     "callId": "call_8d97fea65ff0bb0175cee485",
+     "metadata": {},
+     "state": {
+      "completedAt": 1795130851743,
+      "input": {
+       "command": "echo capture-ok",
+       "description": "Echo capture-ok"
+      },
+      "metadata": {
+       "schemaVersion": 1,
+       "serialization": {
+        "truncated": false,
+        "originalBytes": 10,
+        "returnedBytes": 10,
+        "budgetStrategy": "artifact"
+       }
+      },
+      "output": "capture-ok",
+      "startedAt": 1795130847851,
+      "status": "completed",
+      "title": "Bash"
+     },
+     "tool": "Bash",
+     "type": "tool"
+    },
+    {
+     "messageId": "msg_mwo6k05e_237edbc4-410a-49ed-8de9-fd7c68fda6a8",
+     "partId": "part_mwo6k627_161c8968-5e45-4fed-9290-985c8d489448",
+     "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+     "cost": 0,
+     "reason": "tool-calls",
+     "tokens": {
+      "total": 14121,
+      "input": 14073,
+      "output": 48,
+      "reasoning": 0,
+      "cache": {
+       "read": 128,
+       "write": 0
+      }
+     },
+     "type": "step-finish"
+    }
+   ]
+  },
+  {
+   "info": {
+    "agent": "zcode-agent",
+    "cost": 0,
+    "finish": "stop",
+    "messageId": "msg_mwo6k62o_f0b6d703-e12c-40ff-ad63-cf432b1843be",
+    "model": {
+     "providerId": "2eafb73d-b2f6-45af-9d68-e81dcc8e53e1",
+     "modelId": "minimax/MiniMax-M3"
+    },
+    "parentMessageId": "msg_mwo6jzxj_5d7cb608-42b9-4c10-b77f-4049f884a1fa",
+    "path": {
+     "cwd": "/tmp/zcap/work-LjZuhQ",
+     "root": "/tmp/zcap/work-LjZuhQ"
+    },
+    "role": "assistant",
+    "semantics": {
+     "origin": "agent_runtime",
+     "kind": "assistant_response",
+     "uiVisibility": "visible",
+     "providerVisibility": "visible",
+     "transcriptVisibility": "visible"
+    },
+    "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+    "time": {
+     "created": 1795130851777,
+     "completed": 1795130852678
+    },
+    "tokens": {
+     "total": 14174,
+     "input": 14162,
+     "output": 12,
+     "reasoning": 0,
+     "cache": {
+      "read": 14080,
+      "write": 0
+     }
+    }
+   },
+   "parts": [
+    {
+     "messageId": "msg_mwo6k62o_f0b6d703-e12c-40ff-ad63-cf432b1843be",
+     "partId": "part_mwo6k62t_b1496927-5366-443d-87df-744b8f4cf777",
+     "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+     "type": "step-start"
+    },
+    {
+     "messageId": "msg_mwo6k62o_f0b6d703-e12c-40ff-ad63-cf432b1843be",
+     "partId": "part_mwo6k6q1_439f2abe-cdad-4c58-836e-467f579abcba",
+     "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+     "text": "Done — the command printed `capture-ok`.",
+     "type": "text"
+    },
+    {
+     "messageId": "msg_mwo6k62o_f0b6d703-e12c-40ff-ad63-cf432b1843be",
+     "partId": "part_mwo6k6q7_6980c520-0d84-42ac-91d9-bd64934caaec",
+     "sessionId": "sess_c42e8179-b142-4431-9615-ebc1272159ec",
+     "cost": 0,
+     "reason": "stop",
+     "tokens": {
+      "total": 14174,
+      "input": 14162,
+      "output": 12,
+      "reasoning": 0,
+      "cache": {
+       "read": 14080,
+       "write": 0
+      }
+     },
+     "type": "step-finish"
+    }
+   ]
+  }
+ ]
+}
