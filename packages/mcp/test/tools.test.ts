@@ -10,7 +10,21 @@ import { expect, test } from "bun:test";
 import { actionName } from "@niwa-labs/core";
 import type { Description } from "@niwa-labs/core";
 
-import { catalogOf, withOpenQuestions } from "../src/tools.ts";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv-provider.js";
+
+import { catalogOf, withAssignedTasks, withOpenQuestions } from "../src/tools.ts";
+import type { Tool } from "../src/tools.ts";
+
+/** Does a client that validates a call against the schema accept this value? */
+function accepts(schema: unknown, value: unknown): boolean {
+  return new AjvJsonSchemaValidator().getValidator(schema as Record<string, unknown>)(value).valid;
+}
+
+const FINISH: Tool = {
+  name: "task_finish",
+  description: "Finish a task.",
+  inputSchema: { type: "object", properties: { task: { type: "string" }, result: {} }, required: ["task", "result"] },
+};
 
 const DESCRIPTION: Description = {
   actions: [
@@ -142,4 +156,42 @@ test("an action the session does not see cannot take the name of one it sees", (
   // When both that make one name are seen, the clash is still reported.
   expect(() => catalogOf(description, ["a.b", "a-b"])).toThrow(/already taken/);
   expect(() => catalogOf(description)).toThrow(/already taken/);
+});
+
+test("a result schema keeps its meaning once it is embedded, whichever dialect writes its references", () => {
+  // Draft 7: `definitions` and a pointer into the schema itself; and the same with the markers of its own document.
+  const draft7 = {
+    type: "object",
+    properties: {
+      label: { $ref: "#/definitions/Label" },
+      other: { $ref: "#/properties/label" },
+      kind: { default: { $ref: "#/nowhere" }, enum: ["a", "b"] },
+    },
+    required: ["label"],
+    definitions: { Label: { type: "string", minLength: 1 } },
+  };
+  const named = { ...draft7, $schema: "http://json-schema.org/draft-07/schema#", $id: "https://example.test/result" };
+  const modern = {
+    type: "object",
+    properties: { label: { $ref: "#/$defs/Label" }, children: { type: "array", items: { $ref: "#" } } },
+    required: ["label"],
+    $defs: { Label: { type: "string", minLength: 1 } },
+  };
+  const samples: unknown[] = [
+    { label: "x" },
+    { label: "" },
+    { label: 1 },
+    { label: "x", other: "y" },
+    { label: "x", other: 1 },
+    { label: "x", kind: "c" },
+    { label: "x", children: [{ label: "y" }] },
+    { label: "x", children: [{ label: 3 }] },
+    {},
+  ];
+  for (const schema of [draft7, named, modern]) {
+    const one = withAssignedTasks(FINISH, [{ task: "task-1", description: "d", result: schema }]);
+    for (const sample of samples) {
+      expect(accepts(one.inputSchema, { task: "task-1", result: sample })).toBe(accepts(schema, sample));
+    }
+  }
 });

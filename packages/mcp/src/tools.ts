@@ -210,29 +210,63 @@ function objectOf(value: JsonValue | undefined): Record<string, JsonValue> {
 }
 
 /**
- * A schema as it is written under `at` in the tool: its own root is `at`, and its definitions are
- * moved to `defs` under names that start with `prefix`, so definitions of two schemas do not meet.
+ * A schema as it is written under `at` in the tool: its own root is `at`, and its definitions (`$defs`, or
+ * `definitions` of the older dialects) are moved to `defs` under names that start with `prefix`, so
+ * definitions of two schemas do not meet. What only names the schema's own document (`$schema`, `$id`)
+ * stays behind: under the tool it would say something about the whole tool.
  */
 function placeSchema(schema: JsonSchema, at: string, prefix: string, defs: Record<string, JsonValue>): JsonValue {
-  const { $defs, ...rest } = schema;
-  if (typeof $defs === "object" && $defs !== null) {
-    for (const [name, definition] of Object.entries($defs)) defs[`${prefix}${name}`] = rebase(definition, at, prefix);
+  const { $defs, definitions, $schema: _schema, $id: _id, ...rest } = schema;
+  const place = { at, prefix };
+  for (const [name, definition] of Object.entries(objectOf($defs))) defs[`${prefix}${name}`] = rebase(definition, place);
+  for (const [name, definition] of Object.entries(objectOf(definitions))) {
+    defs[`${prefix}${LEGACY_DEFS}${name}`] = rebase(definition, place);
   }
-  return rebase(rest, at, prefix);
+  return rebase(rest, place);
+}
+
+/** Where a schema's root and its definitions are in the tool: the root is at `at`, the definitions carry `prefix`. */
+interface Placement {
+  readonly at: string;
+  readonly prefix: string;
 }
 
 const DEFS = "#/$defs/";
+const LEGACY_DEFS_POINTER = "#/definitions/";
+/** The name `definitions` take among the moved ones, so they never meet a `$defs` of the same name. */
+const LEGACY_DEFS = "definitions.";
+
+/** The keywords whose members are named schemas, not keywords: a property called `default` is a property. */
+const SCHEMA_MAPS = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"]);
+
+/** The keywords that hold data, not a schema: a `$ref` in them is a value. */
+const DATA_KEYWORDS = new Set(["enum", "const", "default", "examples", "example"]);
+
+/** Where a reference of a schema points once the schema is placed: its own root, its definitions, or a part of it. */
+function relocate(ref: string, place: Placement): string {
+  if (ref === "#") return place.at;
+  if (ref.startsWith(DEFS)) return `${DEFS}${place.prefix}${ref.slice(DEFS.length)}`;
+  if (ref.startsWith(LEGACY_DEFS_POINTER)) {
+    return `${DEFS}${place.prefix}${LEGACY_DEFS}${ref.slice(LEGACY_DEFS_POINTER.length)}`;
+  }
+  // A pointer into the schema itself: the schema is at `at` now. Anything else (an anchor, another document) is left alone.
+  return ref.startsWith("#/") ? `${place.at}${ref.slice(1)}` : ref;
+}
 
 /** The references of a schema, pointed at where its root and its definitions now are. */
-function rebase(node: JsonValue, at: string, prefix: string): JsonValue {
-  if (Array.isArray(node)) return node.map((item) => rebase(item, at, prefix));
+function rebase(node: JsonValue, place: Placement): JsonValue {
+  if (Array.isArray(node)) return node.map((item) => rebase(item, place));
   if (typeof node !== "object" || node === null) return node;
   const out: Record<string, JsonValue> = {};
   for (const [key, value] of Object.entries(node)) {
     if (key === "$ref" && typeof value === "string") {
-      out[key] = value === "#" ? at : value.startsWith(DEFS) ? `${DEFS}${prefix}${value.slice(DEFS.length)}` : value;
+      out[key] = relocate(value, place);
+    } else if (DATA_KEYWORDS.has(key)) {
+      out[key] = value;
+    } else if (SCHEMA_MAPS.has(key) && typeof value === "object" && value !== null && !Array.isArray(value)) {
+      out[key] = Object.fromEntries(Object.entries(value).map(([name, member]) => [name, rebase(member, place)]));
     } else {
-      out[key] = rebase(value, at, prefix);
+      out[key] = rebase(value, place);
     }
   }
   return out;
