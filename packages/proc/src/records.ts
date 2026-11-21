@@ -71,7 +71,7 @@ export type ProcOutcome = z.infer<typeof ProcOutcome>;
  */
 export const ProcResult = z.strictObject({
   outcome: ProcOutcome,
-  /** The exit code; 128 and more is a signal. Absent when the command was stopped for its time. */
+  /** The exit code; 128 and more is a signal. Null when the command was stopped for its time. */
   exit: z.number().int().nullable(),
   durationMs: z.number().int().nonnegative(),
   /** The end of the output, bounded. The rest is in `output`. */
