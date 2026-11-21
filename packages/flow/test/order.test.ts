@@ -55,13 +55,16 @@ test("rankAll waits for every outcome of a stream, then takes the branch the ran
       });
       await using again = stream("again", { broken: async (): Promise<string> => { throw new Error("no draft"); } });
       const refused = await rankAll(again, async () => "broken" as const).then(() => "picked", (error: Error) => error.message);
-      return { key: best.key, value: best.value, seen: Object.keys(best.all).sort(), refused };
+      await using other = stream("other", { only: async () => "x" });
+      const unknown = await rankAll(other, async () => "constructor" as "only").then(() => "picked", (error: Error) => error.message);
+      return { key: best.key, value: best.value, seen: Object.keys(best.all).sort(), refused, unknown };
     });`);
   expect(resultOf(ended)).toEqual({
     key: "long",
     value: "abcd",
     seen: ["broken", "long", "short"],
     refused: 'rankAll: "broken" failed (no draft), it cannot be picked',
+    unknown: 'rankAll: "constructor" is not a branch of the stream',
   });
 }, 30_000);
 

@@ -65,8 +65,9 @@ export async function graph<N extends GraphNode, R>(
   const ids = [...byId.keys()].sort();
 
   return script().scope(key, opts.concurrency === undefined ? undefined : { concurrency: opts.concurrency }, async (s) => {
-    const results: Record<string, Settled<R>> = {};
-    const done: Record<string, R> = {};
+    // Ids are any keys a branch may have, `constructor` and `__proto__` among them: they are kept in maps, never as properties.
+    const results = new Map<string, Settled<R>>();
+    const done = new Map<string, R>();
     const started = new Set<string>();
     const skipped = new Set<string>();
     let stopped = false;
@@ -76,9 +77,9 @@ export async function graph<N extends GraphNode, R>(
       for (const id of ids) {
         if (started.has(id) || skipped.has(id)) continue;
         const node = byId.get(id) as N;
-        if (!node.needs.every((need) => need in done)) continue;
+        if (!node.needs.every((need) => done.has(need))) continue;
         started.add(id);
-        const given = { ...done };
+        const given = Object.fromEntries(done) as Record<string, R>;
         s.start(id, () => opts.run(node, given));
       }
     };
@@ -88,7 +89,7 @@ export async function graph<N extends GraphNode, R>(
         for (const id of ids) {
           if (started.has(id) || skipped.has(id)) continue;
           const node = byId.get(id) as N;
-          if (node.needs.some((need) => need === failed || skipped.has(need) || (need in results && !(results[need] as Settled<R>).ok))) {
+          if (node.needs.some((need) => need === failed || skipped.has(need) || results.get(need)?.ok === false)) {
             skipped.add(id);
             grew = true;
           }
@@ -100,8 +101,8 @@ export async function graph<N extends GraphNode, R>(
     for (let got = await s.next(); got !== null; got = await s.next()) {
       const settled = got.result as Settled<R>;
       if (!settled.ok && isFatal(settled.error)) throw Object.assign(new Error(settled.error.message), { name: settled.error.name });
-      results[got.key] = settled;
-      if (settled.ok) done[got.key] = settled.value;
+      results.set(got.key, settled);
+      if (settled.ok) done.set(got.key, settled.value);
       else if (onFail === "stop" && !stopped) {
         stopped = true;
         await s.cancel(`the node "${got.key}" failed`);
@@ -109,6 +110,6 @@ export async function graph<N extends GraphNode, R>(
       startReady();
     }
     for (const id of ids) if (!started.has(id)) skipped.add(id);
-    return { results, skipped: ids.filter((id) => skipped.has(id)) };
+    return { results: Object.fromEntries(results) as Record<string, Settled<R>>, skipped: ids.filter((id) => skipped.has(id)) };
   });
 }

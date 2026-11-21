@@ -100,6 +100,17 @@ test("a swarm keeps the valid results, runs a refused worker once more and repor
   expect(resultOf(ended)).toEqual({ results: { good: 10, flaky: 20 }, gaps: ["bad"], dropped: ["bad"], tries: { good: 1, flaky: 2, bad: 2 } });
 }, 30_000);
 
+test("a swarm keeps the result of a brief named like a property every object has", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { swarm } from "@niwa-labs/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const out = await swarm("crew", { briefs: { ["__proto__"]: 1, plain: 2 }, worker: async (brief) => brief * 10 });
+      return { kept: Object.keys(out.results).sort(), gaps: out.gaps };
+    });`);
+  expect(resultOf(ended)).toEqual({ kept: ["__proto__", "plain"], gaps: [] });
+}, 30_000);
+
 test("firstPassing takes the first passing outcome of a stream and leaves the rest to be read", async () => {
   const flow = await host();
   const ended = await flow.run(`
@@ -164,6 +175,26 @@ test("a graph runs a node once what it needs is done, skips below a failure and 
   expect(out.results.broken?.ok).toBe(false);
   expect(out.skipped).toEqual(["site"]);
   expect(out.order.slice(0, 2)).toEqual(["docs", "lib"]);
+}, 30_000);
+
+test("a node named like a property every object has waits for that node, and its result is kept", async () => {
+  const flow = await host();
+  const ended = await flow.run(`
+    import { graph } from "@niwa-labs/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const out = await graph("names", [
+        { id: "constructor", needs: [] },
+        { id: "after", needs: ["constructor", "__proto__"] },
+        { id: "__proto__", needs: [] },
+      ], {
+        run: async (node, done) => {
+          if (node.id !== "after") { await sleep(20); return node.id + "-done"; }
+          return Object.keys(done).sort();
+        },
+      });
+      return { keys: Object.keys(out.results).sort(), after: out.results.after };
+    });`);
+  expect(resultOf(ended)).toEqual({ keys: ["__proto__", "after", "constructor"], after: { ok: true, value: ["__proto__", "constructor"] } });
 }, 30_000);
 
 test("a graph with a missing node, an id given twice or a cycle is refused before it runs", () => {

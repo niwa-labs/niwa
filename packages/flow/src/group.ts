@@ -65,7 +65,7 @@ export async function rankAll<K extends string, T>(
   const all = await s.rest();
   for (const settled of Object.values<Settled<T>>(all)) if (!settled.ok && isFatal(settled.error)) throw errorOf(settled);
   const key = await rank(all);
-  const picked = all[key];
+  const picked = Object.hasOwn(all, key) ? all[key] : undefined;
   if (picked === undefined) throw new Error(`rankAll: "${key}" is not a branch of the stream`);
   if (!picked.ok) throw new Error(`rankAll: "${key}" failed (${picked.error.message}), it cannot be picked`);
   return { key, value: picked.value, all };
@@ -121,18 +121,18 @@ export async function swarm<B, R>(
     }
     return { kept: false as const, refused };
   });
-  const results: Record<string, R> = {};
+  const results = new Map<string, R>();
   const gaps: string[] = [];
   const dropped: string[] = [];
   outcomes.forEach((outcome, index) => {
     const id = ids[index] as string;
-    if (outcome.ok && outcome.value.kept) results[id] = outcome.value.result;
+    if (outcome.ok && outcome.value.kept) results.set(id, outcome.value.result);
     else {
       gaps.push(id);
       if (outcome.ok && outcome.value.refused) dropped.push(id);
     }
   });
-  return { results, gaps, dropped };
+  return { results: Object.fromEntries(results), gaps, dropped };
 }
 
 /** The same work on every seat, then `agree` on the values that came back: null when they do not agree. */

@@ -92,18 +92,18 @@ export async function forkSelect<T>(
         return opts.build(one.seat, wt);
       },
     );
-    const candidates: Record<string, T> = {};
+    const built = new Map<string, T>();
     builds.forEach((build, index) => {
-      if (build.ok) candidates[keys[index] as string] = build.value;
+      if (build.ok) built.set(keys[index] as string, build.value);
     });
-    if (Object.keys(candidates).length === 0) throw new Error(`forkSelect "${key}": no build succeeded`);
-    const id = await opts.pick(candidates);
-    if (!(id in candidates)) throw new Error(`forkSelect "${key}": "${id}" is not a build that succeeded`);
+    if (built.size === 0) throw new Error(`forkSelect "${key}": no build succeeded`);
+    const id = await opts.pick(Object.fromEntries(built));
+    if (!built.has(id)) throw new Error(`forkSelect "${key}": "${id}" is not a build that succeeded`);
     const rejected = keys.filter((one) => one !== id);
     for (const one of rejected) {
       const wt = made.get(one);
       if (wt !== undefined) await removeWorktree(wt, true);
     }
-    return { winner: { id, value: candidates[id] as T, worktree: made.get(id) as Worktree }, rejected };
+    return { winner: { id, value: built.get(id) as T, worktree: made.get(id) as Worktree }, rejected };
   });
 }

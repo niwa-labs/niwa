@@ -69,6 +69,18 @@ test("forkSelect keeps the picked fork and removes the others with their commits
   expect(existsSync(losers[0] as string)).toBe(false);
 }, 30_000);
 
+test("forkSelect refuses a pick that names no build, a name every object has among them", async () => {
+  const flow = await host({ a: (call) => ({ sha: commitFile(dirOf(call), "fork.txt", "a\n") }) });
+  const ended = await flow.run(`
+    import { commitBy, forkSelect } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      forkSelect("race", { seats: ["a"], repo: "$REPO", build: (seat, wt) => commitBy(seat, wt, "Build it"), pick: async () => "constructor" }).then(
+        (picked) => "picked " + typeof picked.winner.value,
+        (error: Error) => error.message,
+      ));`);
+  expect(resultOf(ended)).toBe('forkSelect "race": "constructor" is not a build that succeeded');
+}, 30_000);
+
 test("review and fix sends blocking findings to the author and stops once the reviewers pass", async () => {
   let reviews = 0;
   const flow = await host({
