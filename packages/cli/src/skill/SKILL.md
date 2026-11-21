@@ -70,7 +70,9 @@ harness's own subagents. Your private todo list is not a niwa task.
    new session knows nothing of yours. Give the goal, the files, the constraints and the shape of
    the answer you want. Pass `cwd` (the working directory); `model`, `effort` and `mode`
    (`ask`, `auto`, `full`) when you need other than the instance's. In `visible.actions` list only
-   the actions it needs.
+   the actions it needs. The session runs in a box: the host's default (its project and the
+   toolchains) and its own installation's profile. `box: {"allow": ["bun", {"write": "../out"}]}`
+   gives it more, within your `box.*` rules; `box: {"only": [{"read": "."}]}` gives it less.
 3. `session.start` returns the session id `s-...` and a receipt (delivered, queued, started or handled). A
    receipt is not the answer. Read the session (`session.read`) for the reply.
 4. To continue, `session.send` or `session.resume` the same `s-...`. A new session loses the

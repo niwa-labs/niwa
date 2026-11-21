@@ -11,8 +11,10 @@
  * is made in a scope named by the key, so two checks need two keys and a check may run again in
  * each round of a loop.
  *
- * A check runs with `proc.run`, in a box. A check whose environment holds a secret reference runs
- * with `proc.exec`, which has no box: the run's grant has to name that action.
+ * A check runs with `proc.run`, in a box: the host's default, with what `box` adds (`allow`) or puts
+ * instead (`only`), within the run's `box.*` rules. A check whose environment holds a secret
+ * reference runs with `proc.exec`, which has no box: the run's grant has to name that action, and
+ * such a check takes no `box`.
  */
 
 /** A duration as a script writes it: milliseconds, or "500ms", "30s", "5m", "2h". */
@@ -24,12 +26,17 @@ export type SecretRef = { secret: string };
 /** An artifact of the host: the whole output of a command. */
 export type ArtifactRef = { digest: string; size: number; type: string };
 
-/** A check: the command, where it runs, how long it may take, its environment and the report it prints. */
+/** One thing a box asks for: a profile by its name (`bun`), `"toolchains"`, or a path to read or write. */
+export type BoxItem = string | { read: string } | { write: string };
+
+/** A check: the command, where it runs, how long it may take, its environment, its box and the report it prints. */
 export type Check = {
   cmd: string[];
   cwd: string;
   timeout?: Duration;
   env?: Record<string, string | SecretRef>;
+  /** What the box of the check has besides the host's default (`allow`), or instead of it (`only`). */
+  box?: { allow: BoxItem[] } | { only: BoxItem[] };
   /**
    * The structured report the command prints at the end of its output: `json` its last line, `junit` the
    * counts of its test suites, `lcov` the lines found and hit.
@@ -116,7 +123,14 @@ export async function runCheck(key: string, check: Check): Promise<CheckResult> 
   const g = globals();
   const timeout = check.timeout === undefined ? DEFAULT_TIMEOUT_MS : durationMs(check.timeout);
   const secret = Object.values(check.env ?? {}).some((value) => typeof value !== "string");
-  const input = { cmd: check.cmd, cwd: check.cwd, timeout, ...(check.env === undefined ? {} : { env: check.env }) };
+  if (secret && check.box !== undefined) throw new TypeError(`check "${key}" holds a secret, so it runs with proc.exec, which has no box: drop its box`);
+  const input = {
+    cmd: check.cmd,
+    cwd: check.cwd,
+    timeout,
+    ...(check.env === undefined ? {} : { env: check.env }),
+    ...(check.box === undefined ? {} : { box: check.box }),
+  };
   const answer = (await g.scope(key, undefined, () => g.call(secret ? "proc.exec" : "proc.run", input))) as ProcAnswer;
   const ended =
     answer.outcome === "timed-out" ? `timed out after ${String(timeout)} ms` : answer.outcome === "cancelled" ? "cancelled" : `exited with ${String(answer.exit)}`;

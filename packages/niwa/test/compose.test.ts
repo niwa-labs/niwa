@@ -2,10 +2,12 @@
 // kinds that read skills, and the names the package re-exports.
 
 import { expect, test } from "bun:test";
+import { mkdirSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 
 import { createNiwa } from "@niwa-labs/host";
 import { plugin } from "@niwa-labs/plugin";
-import { tempHome } from "@niwa-labs/testing";
+import { openBoxes, tempHome } from "@niwa-labs/testing";
 
 import * as niwa from "../src/index.ts";
 import { pluginsOf } from "../src/serve.ts";
@@ -44,13 +46,40 @@ test("the default composition holds the base plugins with history and the agents
   const home = await tempHome();
   try {
     const plugins = niwa.defaultComposition({ home: home.path, harnesses: new niwa.HarnessInstanceRegistry(), agents: { default: "rin" } });
-    expect(plugins.map((one) => String(one.name))).toEqual(["messages", "requests", "tasks", "timers", "git", "history", "insert", "sessions", "agents", "workflow"]);
+    expect(plugins.map((one) => String(one.name))).toEqual(["messages", "requests", "tasks", "timers", "git", "history", "insert", "sessions", "proc", "box", "agents", "workflow"]);
     const host = createNiwa({ home: home.path });
     host.use(...plugins);
     await host.serve();
     try {
       const names = (await host.describe()).actions.map((action) => String(action.name));
       for (const name of ["history.list", "history.read", "history.search", "history.watch", "history.signal", "insert.report", "agent.attach", "agent.tell", "workflow.start"]) expect(names).toContain(name);
+    } finally {
+      await host.close();
+    }
+  } finally {
+    await home.cleanup();
+  }
+}, 60_000);
+
+test("a proc.run of the default composition finds every harness installation's places closed, and takes the box the host gives", async () => {
+  const home = await tempHome();
+  try {
+    const codexHome = join(home.path, "codex-home");
+    mkdirSync(codexHome);
+    const kinds = new niwa.HarnessKindRegistry();
+    kinds.register(niwa.codexKind);
+    const harnesses = new niwa.HarnessInstanceRegistry(kinds);
+    harnesses.register(niwa.codexKind.bind({ id: "codex-luna", home: codexHome }));
+    const plugins = niwa.defaultComposition({ home: join(home.path, "niwa"), harnesses, sandbox: openBoxes(), box: { proc: { allow: ["git"] } } });
+    const host = createNiwa({ home: join(home.path, "niwa") });
+    host.use(...plugins);
+    await host.serve();
+    try {
+      const work = join(home.path, "work");
+      mkdirSync(work);
+      const result = (await host.call(niwa.procRun.name, { cmd: ["/usr/bin/true"], cwd: work, timeout: 10_000 })) as { box: { closed: unknown[]; request: unknown } };
+      expect(result.box.closed).toContainEqual({ path: realpathSync(codexHome), from: "harness:codex-luna" });
+      expect(result.box.request).toEqual({ mode: "allow", items: [{ item: "git", from: "host" }] });
     } finally {
       await host.close();
     }

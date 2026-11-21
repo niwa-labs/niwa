@@ -41,6 +41,6 @@ box could be had, is a `ProcRefusal`: nothing ran.
 
 Entries: `@niwa-labs/proc` (the plugin `proc()`), `@niwa-labs/proc/records` (action references, record type,
 `fileTarget()`), which needs core, the box schemas of the sandbox and zod.
-`@niwa-labs/proc/flow` is the script helper `runCheck(key, { cmd, cwd, timeout?, env?, report? })`: it runs a
+`@niwa-labs/proc/flow` is the script helper `runCheck(key, { cmd, cwd, timeout?, env?, box?, report? })`: it runs a
 check with `proc.run` (with `proc.exec` when `env` holds a secret reference), passes on a zero exit, and reads the
 report a command prints last (`json`, `lcov` totals, `junit` suite counts). It imports nothing.

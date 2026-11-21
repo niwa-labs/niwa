@@ -17,7 +17,8 @@ export function unconfined(name: "srt" | "nono" = "srt"): Sandbox {
     name,
     class: "process",
     available: async () => true,
-    manifest: (spec) => ({ sandbox: name, cwd: spec.cwd, env: spec.env }),
+    // It says what it applies as a sandbox does, though nothing holds the process to it.
+    manifest: (spec) => ({ sandbox: name, cwd: spec.cwd, env: spec.env, policy: { write: [...spec.write], devices: [], read: { except: [...spec.closed] }, net: [...spec.net] } }),
     async launch(spec, argv, options): Promise<LaunchedBox> {
       const child = Bun.spawn([...argv], {
         cwd: spec.cwd,

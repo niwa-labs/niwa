@@ -52,3 +52,25 @@ test("--json - reads the whole input from stdin", async () => {
     }),
   ).toEqual(["--question", "q"]);
 });
+
+/** An action that takes a box, as proc.run and session.start do. */
+const BOXED = {
+  name: "demo.run",
+  description: "Runs.",
+  recovery: "do-not-repeat",
+  effect: "write",
+  input: { type: "object", properties: { cwd: { type: "string" }, box: { type: "object" } } },
+  output: { type: "object" },
+} as unknown as ActionDescription;
+
+test("--allow and --only give the items of an action's box, a mode and a place or a name each", () => {
+  expect(inputOf(BOXED, ["--cwd", "/w", "--allow", "bun", "--allow", "write:../artifacts", "--allow", "net:crates.io"])).toEqual({
+    cwd: "/w",
+    box: { allow: ["bun", { write: "../artifacts" }, { net: "crates.io" }] },
+  });
+  expect(inputOf(BOXED, ["--only", "read:."])).toEqual({ box: { only: [{ read: "." }] } });
+  expect(() => inputOf(BOXED, ["--allow", "bun", "--only", "read:."])).toThrow("not both");
+  expect(() => inputOf(BOXED, ["--allow"])).toThrow("needs an item");
+  // An action without a box has no such flags.
+  expect(() => inputOf(ASKING, ["--allow", "bun"])).toThrow('no field "allow"');
+});

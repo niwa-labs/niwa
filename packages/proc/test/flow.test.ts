@@ -87,3 +87,21 @@ test("a script names the rules of the box in its uses, and its runs are widened 
   const narrow = await runScript(script(`"proc.run@$WORK"`), true);
   expect(String((narrow.result as { refused?: string }).refused)).toContain("box.use@bun");
 }, 60_000);
+
+test("a check asks its box for what it needs, and a check that holds a secret takes no box", async () => {
+  const { result, sandbox } = await runScript(`
+    import { runCheck } from "@niwa-labs/proc/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const built = await runCheck("build", { cmd: ["true"], cwd: "$WORK", box: { allow: ["bun"] } });
+      let refused = "";
+      try {
+        await runCheck("secret", { cmd: ["true"], cwd: "$WORK", env: { TOKEN: { secret: "t" } }, box: { only: [] } });
+      } catch (error) {
+        refused = String(error);
+      }
+      return { ok: built.ok, refused };
+    });`);
+  expect((result as { ok: boolean }).ok).toBe(true);
+  expect((result as { refused: string }).refused).toContain("has no box");
+  expect(sandbox.specs[0]?.write.map(String).some((path) => path.endsWith("/install/cache"))).toBe(true);
+}, 30_000);

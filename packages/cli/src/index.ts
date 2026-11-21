@@ -132,6 +132,11 @@ export function homeOf(argv: string[], env: Record<string, string | undefined>):
  * array, object; a string otherwise), and every flag names the field of the same name, so an action
  * with a field called `input` takes `--input`. `--json '{...}'` gives the whole input at once;
  * fields named after it win over it. (`--json -` reads the JSON from stdin: see `withStdinJson`.)
+ *
+ * An action that takes a `box` takes `--allow <item>` and `--only <item>` for it, each as often as
+ * there are items: `--allow bun --allow write:../artifacts` adds to the host's default, `--only read:.`
+ * puts these instead. An item is a profile's name, `project`, `toolchains`, or `read:`, `write:` or
+ * `net:` and a place.
  */
 export function inputOf(action: ActionDescription, args: string[]): Record<string, unknown> {
   const properties = (action.input as { properties?: Record<string, unknown> }).properties;
@@ -155,6 +160,13 @@ export function inputOf(action: ActionDescription, args: string[]): Record<strin
     }
     if (argument === undefined || !argument.startsWith("--")) {
       throw new CliError(`unexpected argument "${String(argument)}"`);
+    }
+    if ((argument === "--allow" || argument === "--only") && properties !== undefined && Object.hasOwn(properties, "box")) {
+      const text = args[index + 1];
+      if (text === undefined || text.startsWith("--")) throw new CliError(`${argument} needs an item: a profile, project, toolchains, read:<path>, write:<path> or net:<host>`);
+      boxItem(input, argument.slice(2) as "allow" | "only", text);
+      index += 1;
+      continue;
     }
     const written = argument.slice(2);
     // `--timeout-ms` is the field `timeoutMs`: the dashed form is the one a command line reads in.
@@ -186,6 +198,16 @@ export function inputOf(action: ActionDescription, args: string[]): Record<strin
     });
   }
   return input;
+}
+
+/** One item of `--allow` or `--only`, added to the `box` of an input. */
+function boxItem(input: Record<string, unknown>, mode: "allow" | "only", text: string): void {
+  const box = (input["box"] ?? {}) as { allow?: unknown[]; only?: unknown[] };
+  const other = mode === "allow" ? "only" : "allow";
+  if (box[other] !== undefined) throw new CliError("a box takes --allow or --only, not both");
+  const kind = /^(read|write|net):(.+)$/.exec(text);
+  const item = kind === null ? text : { [kind[1] as string]: kind[2] };
+  input["box"] = { [mode]: [...(box[mode] ?? []), item] };
 }
 
 /** The arguments with `--json -` replaced by the JSON read from stdin. */
@@ -455,6 +477,8 @@ export async function usage(api?: NiwaApi): Promise<string> {
     "--json, before the command, asks for the machine form.",
     "--field value gives one field of the action; after the command, --json '{...}' (or --json - for stdin)",
     "gives the whole input as JSON.",
+    "An action that takes a box (proc.run, session.start) takes --allow <item> to add to the host's default and",
+    "--only <item> to replace it, once per item: a profile (bun), project, toolchains, read:<path>, write:<path>, net:<host>.",
     "workflow.start runs a script now; workflow.install subscribes one: niwa then starts a run for every matching record.",
   ].join("\n");
 }

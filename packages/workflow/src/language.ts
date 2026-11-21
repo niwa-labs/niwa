@@ -18,6 +18,8 @@ import { WorktreeOption } from "@niwa-labs/git/records";
 import type { WorktreeOptionGiven } from "@niwa-labs/git/records";
 import { SessionModeSchema, withBlocks } from "@niwa-labs/harness";
 import type { SessionMode } from "@niwa-labs/harness";
+import { BoxAccessSchema } from "@niwa-labs/sandbox";
+import type { BoxAccessInput } from "@niwa-labs/sandbox";
 
 import type { Duration } from "@niwa-labs/script";
 
@@ -58,6 +60,8 @@ export interface AgentOptions {
   schema?: z.ZodType;
   /** How long a turn of the session may go with no progress before it counts as stuck. */
   stuckAfter?: Duration;
+  /** What the session's box has besides the host's default (`allow`) or instead of it (`only`). */
+  box?: BoxAccessInput;
   /**
    * The options block of the harness's kind, named after the kind (`claude: { advisor: false }`). Which kinds there
    * are is the host's to say: the typing `workflow.check` makes of a host knows each harness's block, and the host
@@ -136,6 +140,8 @@ export const AgentRequestFields = z.object({
   schema: JsonSchemaValue.optional(),
   /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck. */
   stuckAfter: z.number().int().positive().optional(),
+  /** What the session's box has besides the host's default, or instead of it. */
+  box: BoxAccessSchema.optional(),
 });
 
 /** The names of the fields of an `agent()` request, so the rest of it is known as its blocks. */

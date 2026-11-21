@@ -16,6 +16,7 @@ import { WorktreeOption, gitWorktreeGet, gitWorktreeRemove } from "@niwa-labs/gi
 import type { WorktreeOptionGiven } from "@niwa-labs/git/records";
 import { SessionModeSchema, blocksOf, withBlocks } from "@niwa-labs/harness";
 import type { OptionBlocks } from "@niwa-labs/harness";
+import { BoxAccessSchema } from "@niwa-labs/sandbox";
 import { SUBMIT_ANSWER_ACTION, harnessGet, sessionAsk, sessionStart } from "@niwa-labs/sessions/records";
 import { z } from "zod";
 
@@ -67,6 +68,8 @@ const agentFields = (launch: HarnessLaunch) =>
     schema: JsonSchemaValue.optional(),
     /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck. */
     stuckAfter: z.number().int().positive().optional(),
+    /** What the session's box has besides the host's default (`allow`) or instead of it (`only`). */
+    box: BoxAccessSchema.optional(),
   });
 
 /** Every key of an agent call that is not one of its fields is an options block, an object named after the kind. */
@@ -173,6 +176,7 @@ export function sessionAgent(harness: string, launch: HarnessLaunch = {}): Actio
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         ...(input.worktree === undefined ? {} : { worktree: worktreeAsked(input.worktree, input.label, input.prompt) }),
         ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
+        ...(input.box === undefined ? {} : { box: input.box }),
         ...blocksOfCall(harness, input),
         visible: { actions: [...new Set([...VISIBLE_ACTIONS, ...(input.visible ?? [])])], disabledTools: [] },
       });

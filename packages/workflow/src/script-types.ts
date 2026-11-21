@@ -35,6 +35,10 @@ declare namespace z {
 type NiwaAgentWorktree = { id: string; path: string; branch: string; changed: boolean };
 /** What agent({ worktree }) takes: true, or the repository (default: cwd), the base (default: its current branch) and a description. */
 type NiwaWorktreeOption = true | { repo?: string; base?: string; description?: string };
+/** One thing a box asks for: a profile by its name, "project", "toolchains", or a path or a host. */
+type NiwaBoxItem = string | { read: string } | { write: string } | { net: string };
+/** What agent({ box }) takes: items added to the host's default (allow), or put instead of it (only). Beyond the default takes the run's box.* rules. */
+type NiwaBoxAccess = { allow: NiwaBoxItem[] } | { only: NiwaBoxItem[] };
 /** Start a session in a new git worktree and ask it, with a zod schema of an object for the answer: the answer carries worktree when the worktree was kept. */
 declare function agent<S extends import("zod").z.ZodObject | import("zod").z.ZodRecord>(prompt: string, opts: NiwaAgentOptions & { schema: S; worktree: NiwaWorktreeOption }): Promise<import("zod").z.output<S> & { worktree?: NiwaAgentWorktree }>;
 /** Start a session in a new git worktree and ask it: the answer is { answer }, with worktree when the worktree was kept. */
@@ -186,7 +190,7 @@ function blocksTyping(names: readonly OptionsBlock[], own: OptionsBlock | undefi
  */
 function agentTyping(description: readonly ActionDescription[], callable: ReadonlySet<string>, blocks: ReadonlyMap<string, HarnessBlock>): string {
   const names = blockNames(blocks);
-  const common = `{ label?: string; visible?: string[]; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption; stuckAfter?: NiwaDuration }`;
+  const common = `{ label?: string; visible?: string[]; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption; stuckAfter?: NiwaDuration; box?: NiwaBoxAccess }`;
   const hosted = description.filter((action) => harnessOfAction(action.name) !== undefined);
   const served = hosted.filter((action) => callable.has(action.name));
   const variants =

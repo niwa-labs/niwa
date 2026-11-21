@@ -268,6 +268,7 @@ globals.agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
         ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
         ...(worktree === undefined ? {} : { worktree }),
         ...(stuckAfter === undefined ? {} : { stuckAfter }),
+        ...(opts.box === undefined ? {} : { box: opts.box }),
         ...blocks,
         ...(schema === undefined ? {} : { schema }),
       },

@@ -23,6 +23,9 @@ export interface AgentWorktree {
   changed: boolean;
 }
 
+/** One thing a box asks for: a profile by its name, `"project"`, `"toolchains"`, or a path or a host. */
+export type BoxItem = string | { read: string } | { write: string } | { net: string };
+
 /**
  * What an `agent()` call may ask for besides its schema. The options of the harness's kind go in the
  * block named after the kind; the block of another kind is refused. A kind with no option of its own
@@ -40,6 +43,11 @@ export interface AgentCallOptions {
   stuckAfter?: Duration;
   /** Run the session in a new git worktree; removed at the end when clean with no new commit, else the answer carries `worktree`. */
   worktree?: true | { repo?: string; base?: string; description?: string };
+  /**
+   * What the session's box has besides the host's default (`allow`) or instead of it (`only`): `"project"`,
+   * `"toolchains"`, a profile by its name, `{ read }`, `{ write }`, `{ net }`. Beyond the default takes the run's `box.*` rules.
+   */
+  box?: { allow: BoxItem[] } | { only: BoxItem[] };
   /** Claude Code (`claude-code`, `claude-sdk`): `advisor: false` takes its advisor tool away from the session. */
   claude?: { advisor?: boolean };
   codex?: Record<string, never>;

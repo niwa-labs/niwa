@@ -17,6 +17,7 @@ import { messages } from "@niwa-labs/messages";
 import type { CallerBinding, Plugin } from "@niwa-labs/plugin";
 import { sandbox } from "@niwa-labs/sandbox";
 import type { BoxAccess, SandboxHost } from "@niwa-labs/sandbox";
+import { boxRules, proc } from "@niwa-labs/proc";
 import { requests } from "@niwa-labs/requests";
 import { insertPlugin, sessions } from "@niwa-labs/sessions";
 import { tasks } from "@niwa-labs/tasks";
@@ -41,8 +42,11 @@ export interface DefaultCompositionOptions {
    * Default: srt and the catalog.
    */
   readonly sandbox?: SandboxHost;
-  /** What a session's box has when its start asks for nothing. Default `{ allow: ["project", "toolchains"] }`. */
-  readonly box?: BoxAccess;
+  /**
+   * What a box has when its call asks for nothing: a session's (default `{ allow: ["project", "toolchains"] }`)
+   * and a `proc.run`'s (default `{ allow: ["toolchains"] }`).
+   */
+  readonly box?: { readonly sessions?: BoxAccess; readonly proc?: BoxAccess };
   /** The agents of the host, the harness of each role and the default agent of `niwa agent attach`. */
   readonly agents?: AgentOptions;
   readonly git?: GitOptions;
@@ -57,14 +61,15 @@ export interface DefaultCompositionOptions {
 
 /**
  * The plugins of the default composition: messages, requests, tasks, timers, git, history, the inserts'
- * reports (so a harness can say a session ended), sessions, the agents module and workflow.
+ * reports (so a harness can say a session ended), sessions, proc and the rules that widen a box (sharing
+ * one sandbox, so a run finds every installation's places closed), the agents module and workflow.
  */
 export function defaultComposition(options: DefaultCompositionOptions): Plugin[] {
   const boxes = options.sandbox ?? sandbox();
   const made = sessions({
     harnesses: options.harnesses,
     sandbox: boxes,
-    ...(options.box === undefined ? {} : { box: options.box }),
+    ...(options.box?.sessions === undefined ? {} : { box: options.box.sessions }),
     niwaMcp: { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
   });
   const agents = agentsModule(options.agents);
@@ -79,6 +84,8 @@ export function defaultComposition(options: DefaultCompositionOptions): Plugin[]
     history({ harnesses: options.harnesses }),
     insertPlugin(),
     made,
+    proc({ sandbox: boxes, ...(options.box?.proc === undefined ? {} : { box: options.box.proc }) }),
+    boxRules(),
     agents,
     workflow(options.workflow),
   ];

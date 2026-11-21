@@ -128,6 +128,22 @@ test("stuckAfter of an agent() call is kept in the record of the session it star
   expect(started.map((row) => row.data.stuckAfter)).toEqual([600_000, undefined]);
 }, 30_000);
 
+test("the box an agent() call asks for is the session's: what it adds is in the box, and kept in the record of the session", async () => {
+  const { control, seen } = await run(
+    [
+      "export default workflow({ output: z.json() }, async () => {",
+      '  await agent("boxed", { harness: "claude-sonnet", cwd: "/work", box: { allow: [{ net: "crates.io" }] } });',
+      "  return null;",
+      "});",
+      "",
+    ].join("\n"),
+    (seen) => seen.includes("workflow.run.finished"),
+  );
+  expect(control.starts[0]?.box?.spec.net?.map(String)).toEqual(["crates.io"]);
+  const started = (JSON.parse(seen) as Array<{ type: string; data: { box?: unknown } }>).filter((row) => row.type === "session.started");
+  expect(started.map((row) => row.data.box)).toEqual([{ allow: [{ net: "crates.io" }] }]);
+}, 30_000);
+
 test("the block of another kind fails the call before a session starts, and so does a field the block does not have", async () => {
   const { control, seen } = await run(
     [
