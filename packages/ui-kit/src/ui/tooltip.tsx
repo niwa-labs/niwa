@@ -1,6 +1,6 @@
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 
-import { cn } from "../lib/cn.ts";
+import { cnWith } from "../lib/cn.ts";
 
 /** Shares the open delay between tooltips: once one is open, its neighbours open at once. */
 export function TooltipProvider({ delay = 300, ...props }: TooltipPrimitive.Provider.Props) {
@@ -36,7 +36,7 @@ export function TooltipContent({
       >
         <TooltipPrimitive.Popup
           data-slot="tooltip-content"
-          className={cn(
+          className={cnWith<TooltipPrimitive.Popup.State>(
             "z-50 inline-flex w-fit max-w-xs origin-(--transform-origin) items-center gap-1.5 rounded-md bg-foreground px-3 py-1.5 text-xs text-background transition-opacity data-ending-style:opacity-0 data-starting-style:opacity-0",
             className,
           )}

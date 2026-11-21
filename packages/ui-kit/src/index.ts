@@ -1,7 +1,7 @@
 // The cockpit's shared components. Styles come from Tailwind classes over the tokens of
 // `src/theme.css`, which the application imports into its stylesheet.
 
-export { cn } from "./lib/cn.ts";
+export { cn, cnWith } from "./lib/cn.ts";
 
 export { Badge, badgeVariants, type BadgeProps } from "./ui/badge.tsx";
 export { Button, buttonVariants, type ButtonProps } from "./ui/button.tsx";
