@@ -125,3 +125,32 @@ test("a request whose id is neither a string, a number nor null is unreadable", 
   expect(requests).toEqual([]);
   expect(unreadable).toHaveLength(2);
 });
+
+test("a malformed answer is unreadable and leaves its call waiting for a valid one", async () => {
+  const { acp, unreadable } = client();
+  const call = acp.request("a", {});
+  for (const frame of [
+    '{"jsonrpc":"2.0","id":1,"error":null}',
+    '{"jsonrpc":"2.0","id":1}',
+    '{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-1,"message":"both"}}',
+    '{"jsonrpc":"2.0","id":1,"error":{"message":"no code"}}',
+    '{"jsonrpc":"2.0","id":1,"error":{"code":"-1","message":"string code"}}',
+    '{"jsonrpc":"2.0","id":1,"error":{"code":-1}}',
+    '{"jsonrpc":"2.0","id":1,"error":"busy"}',
+  ]) {
+    acp.receive(frame);
+  }
+  expect(unreadable).toHaveLength(7);
+  expect(acp.waiting).toBe(1);
+  acp.receive('{"jsonrpc":"2.0","id":1,"result":null}');
+  expect(await call).toEqual({ ok: true, result: null });
+  expect(acp.waiting).toBe(0);
+});
+
+test("a malformed answer does not stop the close from settling the call", async () => {
+  const { acp } = client();
+  const call = acp.request("a", {});
+  acp.receive('{"jsonrpc":"2.0","id":1,"error":null}');
+  acp.close("the agent exited");
+  expect(await call).toEqual({ ok: false, error: "the agent exited", dispatch: "uncertain" });
+});

@@ -76,6 +76,21 @@ export interface AcpClientOptions {
 
 const DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024;
 
+/** What an answer says: its result, or the error it carries; why it is neither, when it is not well formed. */
+function answerOf(frame: RpcFrame): RpcOutcome | string {
+  const hasResult = Object.hasOwn(frame, "result");
+  const hasError = Object.hasOwn(frame, "error");
+  if (hasResult === hasError) return "an answer holds exactly one of a result and an error";
+  if (hasResult) return { ok: true, result: frame.result };
+  const error: unknown = frame.error;
+  if (typeof error !== "object" || error === null) return "the error of an answer is not an object";
+  const { code, message } = error as { readonly code?: unknown; readonly message?: unknown };
+  if (typeof code !== "number" || typeof message !== "string") {
+    return "the error of an answer has no numeric code and string message";
+  }
+  return { ok: false, error: message, code, dispatch: "refused" };
+}
+
 function isRequestId(id: unknown): id is RequestId {
   return id === null || typeof id === "number" || typeof id === "string";
 }
@@ -154,18 +169,14 @@ export class AcpClient {
       if (typeof frame.id !== "number") return;
       const settle = this.#pending.get(frame.id);
       if (settle === undefined) return;
-      this.#pending.delete(frame.id);
-      if (frame.error !== undefined) {
-        const code = frame.error.code;
-        settle({
-          ok: false,
-          error: frame.error.message ?? `the agent refused the request with code ${String(code ?? "?")}`,
-          ...(code === undefined ? {} : { code }),
-          dispatch: "refused",
-        });
-      } else {
-        settle({ ok: true, result: frame.result });
+      // The answer is checked before the call is given up: a malformed one settles nothing.
+      const answer = answerOf(frame);
+      if (typeof answer === "string") {
+        this.#options.onUnreadable(line, new Error(answer));
+        return;
       }
+      this.#pending.delete(frame.id);
+      settle(answer);
       return;
     }
     if (frame.method !== undefined) this.#options.onNotification(frame as AgentNotification);
