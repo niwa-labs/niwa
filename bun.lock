@@ -116,6 +116,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@niwa-labs/harness": "workspace:*",
+        "zod": "^4.6.7",
       },
     },
     "packages/flow": {

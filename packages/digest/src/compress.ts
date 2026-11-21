@@ -1,0 +1,219 @@
+/**
+ * The compressor: a reading of a session in the common model, kept whole (`full`), cut to what a
+ * reader needs line by line (`digest`), or summed up (`brief`). It is mechanical: no model reads
+ * anything here, and the same records always give the same result.
+ */
+
+import { createHash } from "node:crypto";
+
+import { checklistProgress } from "@niwa-labs/harness";
+import type { SessionRecord, ToolCategory } from "@niwa-labs/harness";
+
+import type { Brief, CallStatus, DigestEntry, DigestMode, DigestView, Source } from "./entries.ts";
+import { FileIndexer } from "./files.ts";
+import type { FileIndex } from "./files.ts";
+import { cutEnd, cutMiddle } from "./truncate.ts";
+
+/** How long the arguments of a call may be in a digest. */
+export const ARGS_CHARS = 220;
+
+/** How much of a call's result a digest keeps by default, the marker of the cut among it. */
+export const RESULT_CHARS = 1_500;
+
+/** What a compression is told beside the mode. */
+export interface CompressOptions {
+  /** The file index of what was read before, carried on. */
+  readonly files?: FileIndex;
+  /** How much of a call's result a digest keeps. */
+  readonly resultChars?: number;
+}
+
+/** A compressed reading, and the file index as it stands after it. */
+export interface Compressed {
+  readonly view: DigestView;
+  readonly files: FileIndex;
+  /** How many records left nothing in the view: a harness's own insertion, a record niwa does not know. */
+  readonly omitted: number;
+}
+
+/** The source of an entry: the record's locator and a digest of the record. */
+export function sourceOf(record: SessionRecord): Source {
+  const digest = createHash("sha256").update(JSON.stringify(record)).digest("hex").slice(0, 12);
+  return { locator: record.locator, digest };
+}
+
+/**
+ * The text a harness wrapped around what the person said is not what the person said: a block in a
+ * tag whose name has a `-` or `_` (`<system-reminder>`, `<environment_context>`, `<command-name>`),
+ * which is how every harness niwa knows marks its own insertions. A tag of plain letters is left,
+ * since a person may well write HTML.
+ */
+export function withoutInsertions(text: string): string {
+  return text
+    .replace(/<([A-Za-z][\w]*[-_][\w-]*)\b[^>]*>[\s\S]*?<\/\1>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** The text of a value a tool gave or was given: a string as it is, anything else as JSON. */
+function textOf(value: unknown): string {
+  if (value === undefined) return "";
+  return typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+}
+
+function statusOf(ok: boolean | undefined): CallStatus {
+  return ok === false ? "failed" : "done";
+}
+
+/** Compress records read in the harness's order. */
+export function compress(records: readonly SessionRecord[], mode: DigestMode, options: CompressOptions = {}): Compressed {
+  const files = new FileIndexer(options.files);
+  switch (mode) {
+    case "full":
+      return { view: { mode, records: [...records] }, files: files.index(), omitted: 0 };
+    case "digest": {
+      const { entries, omitted } = digestOf(records, files, options.resultChars ?? RESULT_CHARS);
+      return { view: { mode, entries }, files: files.index(), omitted };
+    }
+    case "brief": {
+      const { brief, omitted } = briefOf(records);
+      return { view: { mode, brief }, files: files.index(), omitted };
+    }
+  }
+}
+
+function digestOf(records: readonly SessionRecord[], files: FileIndexer, resultChars: number): { entries: DigestEntry[]; omitted: number } {
+  const entries: DigestEntry[] = [];
+  /** The tool entries whose result has not been read yet, by call id. */
+  const open = new Map<string, Extract<DigestEntry, { kind: "tool" }>>();
+  let omitted = 0;
+  for (const record of records) {
+    const source = sourceOf(record);
+    switch (record.kind) {
+      case "user": {
+        const text = withoutInsertions(record.text);
+        if (text.length === 0) omitted += 1;
+        else entries.push({ kind: "user", text, source });
+        break;
+      }
+      case "assistant":
+        entries.push({ kind: "assistant", text: record.text, source });
+        break;
+      case "thinking":
+        entries.push({ kind: "thinking", text: record.text, redacted: record.redacted, source });
+        break;
+      case "tool-call": {
+        const changed = record.category === "edit";
+        const target = record.target === undefined ? undefined : namedTarget(record.category, record.target, changed, files);
+        const args = record.input === undefined ? undefined : cutEnd(files.refer(textOf(record.input)), ARGS_CHARS);
+        const entry: Extract<DigestEntry, { kind: "tool" }> = {
+          kind: "tool",
+          callId: record.callId,
+          category: record.category,
+          name: record.name,
+          ...(target === undefined ? {} : { target }),
+          ...(args === undefined ? {} : { args }),
+          status: "pending",
+          source,
+        };
+        entries.push(entry);
+        open.set(record.callId, entry);
+        break;
+      }
+      case "tool-result": {
+        const output = textOf(record.output);
+        const result = output.length === 0 ? undefined : cutMiddle(files.refer(output), { keep: resultChars, source: record.locator });
+        const call = open.get(record.callId);
+        if (call !== undefined) {
+          open.delete(record.callId);
+          const index = entries.indexOf(call);
+          entries[index] = { ...call, status: statusOf(record.ok), ...(result === undefined ? {} : { result }), resultSource: source };
+        } else {
+          entries.push({ kind: "result", callId: record.callId, status: statusOf(record.ok), ...(result === undefined ? {} : { result }), source });
+        }
+        break;
+      }
+      case "compaction":
+        entries.push({ kind: "compaction", summary: cutMiddle(record.summary, { keep: resultChars, source: record.locator }), source });
+        break;
+      case "checklist":
+        entries.push({ kind: "checklist", ...checklistProgress(record), items: record.items, source });
+        break;
+      case "permission":
+        entries.push({ kind: "permission", ...(record.tool === undefined ? {} : { tool: record.tool }), outcome: record.outcome, source });
+        break;
+      case "nested":
+        entries.push({ kind: "nested", child: record.child, source });
+        break;
+      case "unknown":
+        omitted += 1;
+        break;
+    }
+  }
+  return { entries, omitted };
+}
+
+/** The target of a call as a digest names it: a path through the file index, anything else as it is. */
+function namedTarget(category: ToolCategory, target: string, changed: boolean, files: FileIndexer): string {
+  const isPath = (category === "read" || category === "edit") && !/\s/.test(target);
+  return isPath ? files.name(target, changed) : files.refer(target);
+}
+
+function briefOf(records: readonly SessionRecord[]): { brief: Brief; omitted: number } {
+  const asked: Brief["asked"] = [];
+  const answered: Brief["answered"] = [];
+  const changed: string[] = [];
+  const calls: Partial<Record<ToolCategory, number>> = {};
+  let failed = 0;
+  let checklist: Brief["checklist"];
+  let omitted = 0;
+  /** The last message of the agent in the turn that is being read. */
+  let answer: Brief["answered"][number] | undefined;
+  /** What spoke last: the agent, or something that waits for it. */
+  let last: "answered" | "working" | "empty" = "empty";
+  for (const record of records) {
+    switch (record.kind) {
+      case "user": {
+        const text = withoutInsertions(record.text);
+        if (text.length === 0) {
+          omitted += 1;
+          break;
+        }
+        if (answer !== undefined) answered.push(answer);
+        answer = undefined;
+        asked.push({ text, source: sourceOf(record) });
+        last = "working";
+        break;
+      }
+      case "assistant":
+        answer = { text: record.text, source: sourceOf(record) };
+        last = "answered";
+        break;
+      case "tool-call":
+        calls[record.category] = (calls[record.category] ?? 0) + 1;
+        if (record.category === "edit" && record.target !== undefined && !changed.includes(record.target)) changed.push(record.target);
+        last = "working";
+        break;
+      case "tool-result":
+        if (record.ok === false) failed += 1;
+        last = "working";
+        break;
+      case "checklist":
+        checklist = { ...checklistProgress(record), items: record.items };
+        break;
+      case "unknown":
+        omitted += 1;
+        break;
+      case "thinking":
+      case "compaction":
+      case "permission":
+      case "nested":
+        break;
+    }
+  }
+  if (answer !== undefined) answered.push(answer);
+  return {
+    brief: { asked, answered, changed, calls, failed, ...(checklist === undefined ? {} : { checklist }), outcome: last },
+    omitted,
+  };
+}
