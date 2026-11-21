@@ -15,6 +15,13 @@ export type ScriptGlobals = Pick<ScriptApi, "z" | "agent" | "call" | "scope" | "
 
 const NEEDED = ["agent", "call", "scope", "parallel", "stream", "wait", "sleep", "now", "random"] as const;
 
+/** The zod of the script: a global of every script process, whether it runs the script or reads its schemas. */
+export function zod(): ScriptGlobals["z"] {
+  const found = (globalThis as unknown as { z?: unknown }).z;
+  if (typeof found !== "object" || found === null) throw new Error('@niwa-labs/flow runs inside a workflow script: "z" is not a global here');
+  return found as ScriptGlobals["z"];
+}
+
 /** The globals of the script that calls a helper. */
 export function script(): ScriptGlobals {
   const globals = globalThis as unknown as Partial<Record<string, unknown>>;

@@ -6,7 +6,7 @@
 import type { Settled } from "@niwa-labs/script";
 import type { z } from "zod";
 
-import { script } from "./script.ts";
+import { zod } from "./script.ts";
 
 export type { Settled };
 
@@ -32,25 +32,26 @@ export const passes = (judged: { verdict: Verdict }): boolean => judged.verdict 
 
 /** The schema of a finding, made with the script's zod. */
 export function FindingSchema() {
-  const { z } = script();
+  const z = zod();
   return z.object({ title: z.string(), evidence: z.string(), severity: z.enum(["blocks", "note"]) });
 }
 
 /** The schema of what a judge answers: a verdict and the findings. */
 export function VerdictSchema() {
-  const { z } = script();
+  const z = zod();
   return z.object({ verdict: z.enum(VERDICTS), findings: z.array(FindingSchema()) });
 }
 
-/** The schema of a judgement. */
+/** The schema of a judgement, with the votes `verify` keeps beside it. */
 export function JudgedSchema() {
-  const { z } = script();
-  return VerdictSchema().extend({ method: z.string() });
+  const z = zod();
+  const judged = VerdictSchema().extend({ method: z.string() });
+  return judged.extend({ votes: z.array(judged).optional() });
 }
 
 /** The schema of an attempt whose value `value` describes: what a script that returns an attempt names as its `output`. */
 export function Attempt<S extends z.ZodType>(value: S) {
-  const { z } = script();
+  const z = zod();
   return z.object({
     value,
     judged: JudgedSchema(),

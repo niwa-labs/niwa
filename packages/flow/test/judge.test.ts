@@ -158,3 +158,15 @@ test("a loop steps until done or its most rounds, and saturation stops when a ro
     found: { items: [1, 2], rounds: 3, saturated: true },
   });
 }, 30_000);
+
+test("a script's output can be the Attempt of a revision judged by verify, votes and all", async () => {
+  const flow = await host({ checker: () => ({ verdict: "PASS", findings: [] }) });
+  const ended = await flow.run(`
+    import { Attempt, revise, verify } from "@niwa-labs/flow";
+    export default workflow({ output: Attempt(z.object({ n: z.number() })) }, async () =>
+      revise("count", {
+        write: async (_feedback, round) => ({ n: round }),
+        judge: ({ n }) => verify("check", { subject: String(n), by: ["checker"] }),
+      }));`);
+  expect(resultOf(ended)).toMatchObject({ value: { n: 1 }, rounds: 1, stopped: "accepted", judged: { verdict: "PASS", votes: [{ verdict: "PASS" }] } });
+}, 30_000);
