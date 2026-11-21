@@ -17,8 +17,8 @@
 
 import { createHash } from "node:crypto";
 
-import type { ActionName, Caller, NewRecord, OperationId, RecordTypeName, Recovery, StoredRecord } from "@niwa-labs/core";
-import { CORE_TYPES, effectPossibleAfter, newRecordId, stableJson, streamId } from "@niwa-labs/core";
+import type { ActionName, ArtifactStore, Caller, NewRecord, OperationId, RecordTypeName, Recovery, StoredRecord } from "@niwa-labs/core";
+import { CORE_TYPES, effectPossibleAfter, keptOutcome, newRecordId, stableJson, storedOutcome, streamId } from "@niwa-labs/core";
 
 /** A retry under an operation id the journal cannot answer as asked. */
 export class OperationRefusal extends Error {
@@ -47,6 +47,8 @@ export interface OperationsHost {
   /** The records of a type written under an operation id, oldest first. */
   find(type: RecordTypeName, operation: OperationId): StoredRecord[];
   commit(records: NewRecord[]): void;
+  /** Where an answer too large for a record is kept: the record holds its reference. */
+  readonly artifacts: ArtifactStore;
 }
 
 /** The operation id a caller's own id stands for. */
@@ -93,7 +95,8 @@ export class CallOperations {
     const began = this.host.find(CORE_TYPES.callBegan, operation).at(-1)?.data as Began | undefined;
     if (began !== undefined) {
       if (began.digest !== digest) throw conflict();
-      const settled = (this.host.find(CORE_TYPES.callSettled, operation).at(-1)?.data as { outcome: Settled } | undefined)?.outcome;
+      const kept = (this.host.find(CORE_TYPES.callSettled, operation).at(-1)?.data as { outcome: unknown } | undefined)?.outcome;
+      const settled = kept === undefined ? undefined : (storedOutcome(kept, this.host.artifacts) as Settled);
       if (settled?.status === "completed") return settled.value;
       const repeatable = recovery === "repeat" || recovery === "repeat-with-key";
       if (settled !== undefined && settled.effectPossible && !repeatable) throw answered(settled);
@@ -120,7 +123,10 @@ export class CallOperations {
   ): Promise<unknown> {
     let began = false;
     const settle = (outcome: Settled): void => {
-      if (began) this.host.commit([this.record(caller, CORE_TYPES.callSettled, { operation, action, digest, outcome })]);
+      if (!began) return;
+      // An answer larger than a record should hold is kept as an artifact, as a step's is.
+      const kept = outcome.status === "completed" ? keptOutcome(outcome, this.host.artifacts) : outcome;
+      this.host.commit([this.record(caller, CORE_TYPES.callSettled, { operation, action, digest, outcome: kept })]);
     };
     try {
       const value = await run(operation, () => {

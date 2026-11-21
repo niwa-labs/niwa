@@ -629,12 +629,17 @@ class Niwa implements Host {
     read: (id) => this.journal?.get(id),
     effectOf: (name) => this.effectOf(name),
   });
+  /** The artifacts of this host: data too large for a record, kept whole by its digest under the home. */
+  readonly artifacts: ArtifactStore = artifactStore(() => this.realHome());
+  /** The secrets of this host's owner, resolved by name where they are used. */
+  readonly secrets: SecretStore = secretStore(() => this.realHome());
   /** The calls clients named with an operation id: a retry under one answers the first call. */
   private readonly operations = new CallOperations({
     find: (type, operation) => this.requireJournal().find({ type, field: "operation", equals: operation }),
     commit: (records) => {
       this.append(records);
     },
+    artifacts: this.artifacts,
   });
   /** The actions of access: the host registers them for itself. */
   private readonly accessActionList = accessActions(this.access, () => this.requireDoors());
@@ -720,10 +725,6 @@ class Niwa implements Host {
   /** What a request to stop does. */
   private readonly onStop: () => void;
 
-  /** The artifacts of this host: data too large for a record, kept whole by its digest under the home. */
-  readonly artifacts: ArtifactStore = artifactStore(() => this.realHome());
-  /** The secrets of this host's owner, resolved by name where they are used. */
-  readonly secrets: SecretStore = secretStore(() => this.realHome());
 
   /** The home with its links resolved, once it exists. */
   private realHome(): string {

@@ -181,3 +181,38 @@ test("a call that was cut off before it ended is not made again under its operat
   await expect(retry.call(SLOW, {}, { operation: "op-1" })).rejects.toMatchObject({ code: "operation-unknown" });
   expect(next.seen.slow).toBe(0);
 });
+
+test("an answer too large for a record is kept as an artifact and given again from it under the operation", async () => {
+  const home = await tempHome();
+  homes.push(home);
+  const host = createNiwa({ home: home.path });
+  let made = 0;
+  const LONG = actionName("long.text");
+  host.use(plugin("long", (api) => {
+    api.action(action(LONG, {
+      description: "Answers with a long text.",
+      input: z.object({}),
+      output: z.object({ text: z.string() }),
+      recovery: "do-not-repeat",
+      effect: "read",
+      run: () => {
+        made += 1;
+        return { text: "x".repeat(300 * 1024) };
+      },
+    }));
+  }));
+  await host.serve();
+  hosts.push(host);
+  const token = host.issueToken(principalOf("session", "reader"), { grant: grant(["long.*"]) });
+  const client = await connect({ home: home.path, id: "session:reader", token });
+  clients.push(client);
+
+  const first = (await client.call(LONG, {}, { operation: "op-long" })) as { text: string };
+  const again = (await client.call(LONG, {}, { operation: "op-long" })) as { text: string };
+  expect(first.text).toHaveLength(300 * 1024);
+  expect(again).toEqual(first);
+  expect(made).toBe(1);
+  const settled = (await host.records.read()).find((row) => row.type === CORE_TYPES.callSettled)?.data as { outcome: { artifact?: unknown; value?: unknown } };
+  expect(settled.outcome.value).toBeUndefined();
+  expect(settled.outcome.artifact).toBeDefined();
+});
