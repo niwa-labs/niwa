@@ -8,14 +8,16 @@
 //   4. nono's flags are the spec's write, net and sockets; an empty net is a blocked net
 //   5. nono drops a denyRead it never granted, and refuses one it would have to carve out of a granted place
 //   6. a sandbox that is not available stops the session before it starts
-//   7. nono's manifest carries the profile it is run with: the default one without the temp areas;
+//   7. nono's manifest carries the profile it is run with: the default one without the groups that
+//      grant the temp areas and the user's tools, and a nono that resolves it to more is not available;
 //      a denyRead that a granted socket would open is refused; what each sandbox holds is said
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
 import { expect, test } from "bun:test";
-import { mkdir, symlink } from "node:fs/promises";
-import { homedir } from "node:os";
+import { realpathSync } from "node:fs";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, requireSandbox, srt } from "@niwa-labs/sandbox";
@@ -101,14 +103,13 @@ test("nono needs no flag for a denyRead it never granted, and refuses one it wou
   expect(() => nono().manifest(boxSpec({ cwd: "/x", read: ["/home"], denyRead: ["/home/.niwa/host.key"] }))).toThrow(SandboxUnsupported);
 });
 
-test.skipIf(process.platform !== "darwin" || !(await nono().available()))(
-  "nono refuses a denyRead inside a place it grants without being asked",
-  () => {
-    // nono's default profile lets the box read /usr/share: a flag cannot close a file there, and
-    // leaving the entry out would only make it look closed.
-    expect(() => nono().manifest(boxSpec({ cwd: "/x", denyRead: ["/usr/share/niwa-secret"] }))).toThrow(SandboxUnsupported);
-  },
-);
+test("nono refuses a denyRead inside a place its profile grants without being asked", () => {
+  // The profile lets the box read /usr/share: a flag cannot close a file there, and leaving the
+  // entry out would only make it look closed.
+  for (const platform of ["darwin", "linux"] as const) {
+    expect(() => nono({ platform }).manifest(boxSpec({ cwd: "/x", denyRead: ["/usr/share/niwa-secret"] }))).toThrow(SandboxUnsupported);
+  }
+});
 
 test("srt on Linux refuses a socket it would silently leave closed", () => {
   const sockets = boxSpec({ cwd: "/x", sockets: ["~/.niwa/host.sock"] });
@@ -123,18 +124,41 @@ test("a socket nono grants is a place the box may read, so a denyRead on it is r
   expect(() => nono().manifest(boxSpec({ cwd: "/x", sockets: [socket], denyRead: ["~/.niwa/host.key"] }))).not.toThrow();
 });
 
-test("nono is run with the default profile less the temp areas, which each platform names in its own group", () => {
+test("nono is run with the default profile less the groups that grant places of their own, the system places named instead", () => {
   const mac = nono({ platform: "darwin" }).manifest(boxSpec({ cwd: "/x" })).profile;
   expect(mac.extends).toBe("default");
-  expect(mac.groups.exclude).toEqual(["system_write_macos"]);
+  expect(mac.groups.exclude).toEqual(["system_read_macos", "system_write_macos", "user_tools", "homebrew_macos"]);
   expect(mac.filesystem.write).toEqual(["/dev"]);
+  expect(mac.filesystem.read).toEqual(expect.arrayContaining(["/usr/lib", "/private/etc", "/etc", "/private/var/db/dyld"]));
   const linux = nono({ platform: "linux" }).manifest(boxSpec({ cwd: "/x" })).profile;
-  expect(linux.groups.exclude).toEqual(["system_write_linux"]);
+  expect(linux.groups.exclude).toEqual(["system_write_linux", "user_tools", "homebrew_linux"]);
   expect(linux.filesystem.write_file).toEqual(expect.arrayContaining(["/dev/null", "/dev/tty"]));
-  // No place of the temp areas is granted back.
+  // No temp area is granted back, for reading or writing, and no place above one.
+  const temp = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders", realpathSync(tmpdir())];
   for (const profile of [mac, linux]) {
-    for (const path of [...profile.filesystem.write, ...profile.filesystem.write_file]) expect(path).not.toMatch(/tmp|var\/folders/);
+    for (const path of [...profile.filesystem.read, ...profile.filesystem.write, ...profile.filesystem.write_file]) {
+      for (const place of temp) expect(place === path || place.startsWith(`${path}/`)).toBe(false);
+    }
   }
+});
+
+test("a nono that resolves the profile to more than is named is not available", async () => {
+  const dir = await tempDir("nono-resolves");
+  const answering = async (name: string, grants: unknown) => {
+    const path = join(dir, name);
+    await writeFile(
+      path,
+      `#!/bin/sh\nif [ "$1" = profile ]; then echo '${JSON.stringify({ filesystem: { grants } })}'; exit 0; fi\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n`,
+    );
+    await chmod(path, 0o755);
+    return nono({ binary: path });
+  };
+  expect(await (await answering("named", [{ access: "read", path: "/usr/share/locale" }, { access: "readwrite", path: "/dev" }])).available()).toBe(
+    process.platform === "darwin",
+  );
+  expect(await (await answering("temp", [{ access: "read", path: "/private" }])).available()).toBe(false);
+  expect(await (await answering("writes", [{ access: "readwrite", path: "/private/tmp" }])).available()).toBe(false);
+  expect(await (await answering("silent", "none")).available()).toBe(false);
 });
 
 test("what a sandbox holds beyond the lists of its spec is said: nono holds writes and reads, srt neither", () => {

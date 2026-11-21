@@ -12,13 +12,15 @@
 //   6. a detached box leads its own process group, and a group signal ends what it started
 //   7. a sandbox that holds exact writes lets a process write no temp area, only what `write` lists
 //      and the devices it needs
+//   8. a sandbox whose reads are an allow-list lets a process read neither the user's temp area nor
+//      a file of the home it was not given, and the system's tools still run
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { boxSpec, nono, srt } from "@niwa-labs/sandbox";
@@ -79,6 +81,30 @@ for (const sandbox of [srt(), nono()]) {
       } finally {
         for (const path of shared) await rm(path, { force: true });
         await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    test.skipIf(!present || !sandbox.guarantees?.closedReads)("reads neither the user's temp area nor the home, and still runs the system's tools", async () => {
+      const cwd = await realpath(await mkdtemp(join(homedir(), ".niwa-box-read-")));
+      const kept = await realpath(await mkdtemp(join(tmpdir(), "niwa-box-kept-")));
+      try {
+        await Bun.write(join(kept, "note"), "temp-secret\n");
+        await Bun.write(join(cwd, "..", `${basename(cwd)}-beside`), "home-secret\n");
+        const spec = boxSpec({ cwd, write: [cwd], env: { PATH: "/usr/bin:/bin", HOME: homedir(), TZ: "Europe/Moscow" } });
+        const temp = await run(sandbox, spec, `cat '${kept}/note'; ls '${kept}'`);
+        expect(temp.code).not.toBe(0);
+        expect(temp.stdout).not.toContain("temp-secret");
+        expect(temp.stdout).not.toContain("note");
+        const home = await run(sandbox, spec, `cat '${cwd}-beside'`);
+        expect(home.code).not.toBe(0);
+        expect(home.stdout).not.toContain("home-secret");
+        const tools = await run(sandbox, spec, "date +%Z && /usr/bin/env sh -c 'echo ok' && ls /usr/share > /dev/null && echo listed");
+        expect(tools.stdout.trim().split("\n")).toEqual(["MSK", "ok", "listed"]);
+        expect(tools.code).toBe(0);
+      } finally {
+        await rm(`${cwd}-beside`, { force: true });
+        await rm(cwd, { recursive: true, force: true });
+        await rm(kept, { recursive: true, force: true });
       }
     });
 

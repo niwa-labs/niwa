@@ -32,7 +32,11 @@ afterEach(() => {
 /** A wrapper that confines nothing: it drops its own flags and runs what follows `--`. */
 async function passthroughBinary(dir: string): Promise<string> {
   const path = join(dir, "wrapper");
-  await writeFile(path, '#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n');
+  // Asked how it resolves its profile, it grants nothing; asked to run, it runs what follows `--`.
+  await writeFile(
+    path,
+    '#!/bin/sh\nif [ "$1" = profile ]; then echo \'{"filesystem":{"grants":[]}}\'; exit 0; fi\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n',
+  );
   await chmod(path, 0o755);
   return path;
 }
