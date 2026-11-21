@@ -281,8 +281,11 @@ for await (const chunk of Bun.stdin.stream()) {
       send({ jsonrpc: "2.0", id: message.id, result: { activeTurn: busy ? { turnId: "t0", busyReason: "turn", locallyOwned: true } : null, latestActivity: null, queue: { pendingCount: 0, paused: false } } });
     }
     else if (message.method === "mcode/session/steer") {
-      if (existsSync("steer-refuse")) { send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "no turn to steer" } }); continue; }
+      // The file "steer-refuse" is what the fork answers a steer it did not deliver: invalid params.
+      if (existsSync("steer-refuse")) { send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Steering was not delivered to the active ACP prompt Turn" } }); continue; }
       appendFileSync(${JSON.stringify(join(dir, "steers.log"))}, JSON.stringify(message.params) + "\\n");
+      // The file "steer-fail" is a steer the fork took and then failed on: an internal error.
+      if (existsSync("steer-fail")) { send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error", data: "the receipt was not written" } }); continue; }
       if (existsSync("steer-hang")) continue;
       send({ jsonrpc: "2.0", id: message.id, result: { turnId: "t1", mode: "steered" } });
     }
@@ -450,6 +453,18 @@ test("a steer that mcode refuses falls through to the queue, once", async () => 
   await control.send(id, "one", { into: "turn" });
   expect(await control.send(id, "two", { into: "turn" })).toMatchObject({ status: "queued", turn: 2 });
   expect(await Bun.file(join(dir, "steers.log")).exists()).toBe(false);
+});
+
+test("a steer that fails after mcode may have taken it is not sent again and is reported as unknown", async () => {
+  control = await fakeControl({ steer: true, files: ["steer-fail"] });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  await control.send(id, "one", { into: "turn" });
+  await expect(control.send(id, "two", { into: "turn" })).rejects.toMatchObject({ code: "InputPossiblySent" });
+  // The steer was the only delivery, and nothing was queued: after the turn the next send runs at once.
+  const steers = (await readFile(join(dir, "steers.log"), "utf8")).trim().split("\n");
+  expect(steers).toHaveLength(1);
+  await Bun.sleep(400);
+  expect(await control.send(id, "three")).toMatchObject({ status: "started", turn: 2 });
 });
 
 test("a steer that gets no reply is not sent again and is reported as unknown", async () => {

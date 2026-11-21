@@ -40,6 +40,7 @@ import {
   sessionId as makeSessionId,
 } from "@niwa-labs/harness";
 import type {
+  Dispatch,
   LaunchCapabilities,
   SessionMode,
   AskAnswer,
@@ -175,16 +176,24 @@ export interface McodeSessionControl extends SessionControl {
   dispose(): Promise<void>;
 }
 
-/** A request got no reply in time: whether the agent acted on it is unknown. */
-class RequestTimeout extends Error {}
+/** A request that failed, and how far it got: only an `uncertain` one may have been done. */
+class RequestFailed extends Error {
+  constructor(
+    message: string,
+    readonly dispatch: Dispatch,
+  ) {
+    super(message);
+  }
+}
 
-/** A refusal the agent sent as a JSON-RPC error, with the code it came with. */
-class AgentRefusal extends Error {
+/** An error the agent answered with, as JSON-RPC, and the code it came with. */
+class AgentRefusal extends RequestFailed {
   constructor(
     message: string,
     readonly code: number | undefined,
+    dispatch: Dispatch,
   ) {
-    super(message);
+    super(message, dispatch);
   }
 }
 
@@ -621,8 +630,8 @@ class AcpSession {
   promptAnswered(turn: number, outcome: RpcOutcome): void {
     if (turn !== this.current || !this.running) return;
     if (!outcome.ok) {
-      // A prompt that was refused is not a turn that ended: it never ran.
-      this.failTurn(outcome.dispatch === "refused" ? new AgentRefusal(outcome.error, outcome.code) : new Error(outcome.error));
+      // A prompt the agent answered with an error is not a turn that ended.
+      this.failTurn(outcome.code === undefined ? new Error(outcome.error) : new AgentRefusal(outcome.error, outcome.code, outcome.dispatch));
       return;
     }
     if (this.overdue !== undefined) {
@@ -1033,9 +1042,10 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   }
 
   /**
-   * Send a request and wait for its reply: a refusal of the agent is an `AgentRefusal` with its
-   * code, an answer that did not come in time a `RequestTimeout` (whether the agent acted on it is
-   * unknown).
+   * Send a request and wait for its reply. A failure is a `RequestFailed` that says how far the
+   * request got: an error of the agent is an `AgentRefusal` with its code, and refused only when the
+   * code says nothing ran; an answer that did not come in time is uncertain, since whether the
+   * agent acted on the request is unknown.
    */
   async function request(
     session: AcpSession,
@@ -1043,12 +1053,12 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     params: Record<string, unknown>,
     label: string,
   ): Promise<Record<string, unknown>> {
-    if (session.ended || session.stopping) throw new Error("the agent process is gone");
+    if (session.ended || session.stopping) throw new RequestFailed("the agent process is gone", "unsent");
     const outcome = await session.client.request(method, params);
     if (outcome.ok) return isRecord(outcome.result) ? outcome.result : {};
-    if (outcome.dispatch === "refused") throw new AgentRefusal(outcome.error, outcome.code);
-    if (outcome.timedOut === true) throw new RequestTimeout(`${label} did not finish in time`);
-    throw new Error(outcome.error);
+    if (outcome.code !== undefined) throw new AgentRefusal(outcome.error, outcome.code, outcome.dispatch);
+    if (outcome.timedOut === true) throw new RequestFailed(`${label} did not finish in time`, "uncertain");
+    throw new RequestFailed(outcome.error, outcome.dispatch);
   }
 
   /** The refusal of an old daemon, which cannot take the mode of a session, as an error that says what to do. */
@@ -1415,17 +1425,20 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       if (sendOptions?.into === "turn" && session.running && session.steerable) {
         // Into the running turn: mcode joins the text to the turn between its tool calls and
         // answers with the turn it joined. If it refuses (the turn ended in the meantime, say),
-        // the message goes the ordinary way below, which starts a turn or queues behind one.
+        // the message goes the ordinary way below, which starts a turn or queues behind one. That
+        // is so only for a refusal that says the message was not taken: any other failure may
+        // have come after mcode took it, and the message is not sent again on a guess.
         const turn = session.current;
         try {
           await request(session, "mcode/session/steer", { sessionId: session.nativeId, text: message }, "the steer");
           return { status: "delivered", turn, at };
         } catch (error) {
-          // The process went with the steer on its way, or no reply came at all: mcode may have
-          // taken the message, so it is not sent again.
+          // The process went with the steer on its way, no reply came at all, or the steer failed
+          // in a way that does not say it was not taken: mcode may have taken the message.
           if (session.ended || session.stopping) throw new InputPossiblySent(harnessId, "send", refusal("send", error).message);
-          if (error instanceof RequestTimeout) {
-            throw new InputPossiblySent(harnessId, "send", `${error.message}; whether the message reached the turn is unknown`);
+          if (!(error instanceof RequestFailed) || error.dispatch === "uncertain") {
+            const reason = error instanceof Error ? error.message : String(error);
+            throw new InputPossiblySent(harnessId, "send", `${reason}; whether the message reached the turn is unknown`);
           }
         }
       }

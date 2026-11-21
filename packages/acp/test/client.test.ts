@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { AcpClient } from "../src/index.ts";
-import type { AcpClientOptions, AgentNotification, AgentRequest } from "../src/index.ts";
+import type { AcpClientOptions, AgentNotification, AgentRequest, RpcOutcome } from "../src/index.ts";
 
 function client(overrides: Partial<AcpClientOptions> = {}) {
   const written: Array<Record<string, unknown>> = [];
@@ -44,8 +44,8 @@ test("an answer settles the call of its id, even when it comes in pieces and out
 test("a call fails by how far it got: refused, never written, unanswered in time, or cut off by the close", async () => {
   const { acp } = client();
   const refused = acp.request("a", {});
-  acp.receive('{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"busy"}}');
-  expect(await refused).toEqual({ ok: false, error: "busy", code: -32000, dispatch: "refused" });
+  acp.receive('{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"busy"}}');
+  expect(await refused).toEqual({ ok: false, error: "busy", code: -32602, dispatch: "refused" });
 
   const unwritable = client({ write: () => "unsent" }).acp;
   expect(await unwritable.request("a", {})).toEqual({ ok: false, error: "the request was not written", dispatch: "unsent" });
@@ -280,4 +280,23 @@ test("a closed client writes nothing more: not a notification, not a reply, not 
   expect(acp.reply(1, {})).toBe("unsent");
   expect(acp.refuse(1, -32601, "no")).toBe("unsent");
   expect(written).toEqual([]);
+});
+
+test("an error answer keeps its code, message and data, and is a refusal only where the code says nothing ran", async () => {
+  const { acp } = client();
+  const answered = async (code: number, data?: unknown) => {
+    const outcomes: RpcOutcome[] = [];
+    const id = acp.send("a", {}, (outcome) => outcomes.push(outcome));
+    const error = { code, message: "no", ...(data === undefined ? {} : { data }) };
+    acp.receive(JSON.stringify({ jsonrpc: "2.0", id, error }));
+    return outcomes[0];
+  };
+  // The codes JSON-RPC reserves for a request that was not understood: nothing was run.
+  for (const code of [-32700, -32600, -32601, -32602]) {
+    expect(await answered(code)).toEqual({ ok: false, error: "no", code, dispatch: "refused" });
+  }
+  // Any other error may come from work that was begun: internal, cancelled, authentication, the agent's own.
+  for (const code of [-32603, -32800, -32000, -32002, 1]) {
+    expect(await answered(code, { why: "late" })).toEqual({ ok: false, error: "no", code, data: { why: "late" }, dispatch: "uncertain" });
+  }
 });

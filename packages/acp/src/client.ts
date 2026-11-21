@@ -7,7 +7,8 @@
  * client only frames, matches and settles.
  *
  * A call that fails says how far it got (`Dispatch`): never written, refused by the agent, or
- * written and never answered. Only the last may have done what it asked. The transport says what
+ * written and not known to have been done. Only the last may have done what it asked; an error
+ * answer is a refusal only when its code says the request was not taken in. The transport says what
  * became of each line it was given (`Written`), and the client believes it.
  */
 
@@ -41,8 +42,10 @@ export type RpcOutcome =
   | {
       readonly ok: false;
       readonly error: string;
-      /** The code of the agent's refusal, when it refused. */
+      /** The code of the agent's error answer, when it answered with one. */
       readonly code?: number;
+      /** The `data` of the agent's error answer, when it came with any. */
+      readonly data?: unknown;
       readonly dispatch: Dispatch;
       /** The answer did not come in time. */
       readonly timedOut?: true;
@@ -84,6 +87,14 @@ export interface AcpClientOptions {
 
 const DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024;
 
+/**
+ * The error codes JSON-RPC reserves for a request the agent did not take in: it could not be
+ * parsed, is not a request, names no method, or has parameters the method does not accept. Nothing
+ * ran, so a call that fails with one is a refusal. Any other error (an internal one, a cancelled
+ * request, the agent's own) can come from work that was begun, and the call is then uncertain.
+ */
+const NOT_RUN_CODES = new Set([-32700, -32600, -32601, -32602]);
+
 /** What an answer says: its result, or the error it carries; why it is neither, when it is not well formed. */
 function answerOf(frame: RpcFrame): RpcOutcome | string {
   const hasResult = Object.hasOwn(frame, "result");
@@ -96,7 +107,14 @@ function answerOf(frame: RpcFrame): RpcOutcome | string {
   if (typeof code !== "number" || typeof message !== "string") {
     return "the error of an answer has no numeric code and string message";
   }
-  return { ok: false, error: message, code, dispatch: "refused" };
+  const data: unknown = (error as { readonly data?: unknown }).data;
+  return {
+    ok: false,
+    error: message,
+    code,
+    ...(data === undefined ? {} : { data }),
+    dispatch: NOT_RUN_CODES.has(code) ? "refused" : "uncertain",
+  };
 }
 
 function isRequestId(id: unknown): id is RequestId {
