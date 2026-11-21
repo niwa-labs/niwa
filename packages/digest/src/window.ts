@@ -19,6 +19,9 @@ const CHARS_PER_TOKEN = 4;
 /** What an entry costs beside its text: its kind, its status, its source. */
 const ENTRY_CHARS = 60;
 
+/** What a brief grows by when a call of a category is counted for the first time, or the first failure is. */
+const COUNTER_CHARS = 16;
+
 /** The tokens a text is about. */
 export function tokensOf(chars: number): number {
   return Math.ceil(chars / CHARS_PER_TOKEN);
@@ -82,6 +85,73 @@ export function charsOf(record: SessionRecord, mode: DigestMode, resultChars: nu
 }
 
 /**
+ * What a brief window has grown by, which `charsOf` cannot say of a record alone: a brief holds each
+ * path an edit named once and each counter once, so only the first of each costs anything.
+ */
+class BriefLedger {
+  readonly #paths = new Set<string>();
+  readonly #categories = new Set<string>();
+  #failed = false;
+
+  /** The characters a group adds to the brief beyond what its messages take, and the means to account for them. */
+  growth(group: readonly SessionRecord[]): { chars: number; commit: () => void } {
+    const paths = new Set<string>();
+    const categories = new Set<string>();
+    let failed = false;
+    let chars = 0;
+    for (const record of group) {
+      if (record.kind === "tool-call") {
+        if (!this.#categories.has(record.category) && !categories.has(record.category)) {
+          categories.add(record.category);
+          chars += COUNTER_CHARS;
+        }
+        if (record.category === "edit" && record.target !== undefined && !this.#paths.has(record.target) && !paths.has(record.target)) {
+          paths.add(record.target);
+          chars += record.target.length + 4;
+        }
+      } else if (record.kind === "tool-result" && record.ok === false && !this.#failed && !failed) {
+        failed = true;
+        chars += COUNTER_CHARS;
+      }
+    }
+    return {
+      chars,
+      commit: () => {
+        for (const path of paths) this.#paths.add(path);
+        for (const category of categories) this.#categories.add(category);
+        if (failed) this.#failed = true;
+      },
+    };
+  }
+}
+
+/**
+ * The record as a brief can use it: what a brief never reads (the arguments and results of calls,
+ * thoughts, summaries, the raw data of what is not known) is dropped once the record is taken, so a
+ * window of a long session does not hold it to its end.
+ */
+function forBrief(record: SessionRecord): SessionRecord {
+  switch (record.kind) {
+    case "tool-call": {
+      const { input: _input, ...rest } = record;
+      return rest;
+    }
+    case "tool-result": {
+      const { output: _output, ...rest } = record;
+      return rest;
+    }
+    case "thinking":
+      return { ...record, text: "" };
+    case "compaction":
+      return { ...record, summary: "" };
+    case "unknown":
+      return { ...record, raw: undefined };
+    default:
+      return record;
+  }
+}
+
+/**
  * Read one window from `records`: those after the locator the previous window gave, in the
  * harness's order. Only what the window takes is read past by one group, and the iteration is
  * closed when the window is full.
@@ -93,13 +163,16 @@ export async function readWindow(records: AsyncIterable<SessionRecord>, options:
   let used = 0;
   let full = false;
   let upto: Locator | null = null;
+  const ledger = new BriefLedger();
 
   /** Take the group read so far, if it fits; say whether the window has room for more. */
   const take = (): boolean => {
     if (group.length === 0) return true;
-    const cost = tokensOf(group.reduce((sum, record) => sum + charsOf(record, options.mode, resultChars), 0));
+    const growth = options.mode === "brief" ? ledger.growth(group) : { chars: 0, commit: () => undefined };
+    const cost = tokensOf(group.reduce((sum, record) => sum + charsOf(record, options.mode, resultChars), growth.chars));
     if (taken.length > 0 && used + cost > options.budget) return false;
-    taken.push(...group);
+    growth.commit();
+    taken.push(...(options.mode === "brief" ? group.map(forBrief) : group));
     used += cost;
     upto = group[group.length - 1]!.locator;
     group = [];

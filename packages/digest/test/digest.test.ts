@@ -164,18 +164,33 @@ test("a record read again in another key order, with an absent field or without 
   expect(sourceOf({ ...record, target: "pwd" })).not.toEqual(sourceOf(record));
 });
 
-test("a cut says how much it removed, and fits the size asked for", () => {
-  const text = "line of text\n".repeat(40);
-  const sizes = [5, 12, 20, 30, 45, 60, 80, 100, 150];
-  for (const keep of sizes) {
-    const out = cutMiddle(text, { keep, source: "L12345" });
-    expect(out.length).toBeLessThanOrEqual(keep);
-    const marker = /…⟨cut (\d+)(?: of (\d+) chars, whole at L12345)?⟩…/.exec(out);
-    if (marker === null) continue;
-    expect(Number(marker[1])).toBe(text.length - out.replace(marker[0], "").length);
+const briefOf = (view: DigestView) => (view.mode === "brief" ? view.brief : undefined);
+
+test("a brief window is charged for the paths and counters it grows, and keeps nothing a brief does not use", async () => {
+  const records: SessionRecord[] = [];
+  for (let n = 0; n < 100; n += 1) {
+    records.push(call(2 * n + 1, `c${String(n)}`, "edit", `/repo/src/file-${String(n)}.ts`, { file_path: `/repo/src/file-${String(n)}.ts` }));
+    records.push(result(2 * n + 2, `c${String(n)}`, "x".repeat(5_000)));
   }
-  // The marker with its source does not fit in 20, the one that only counts does.
-  expect(/cut \d+⟩/.test(cutMiddle(text, { keep: 20, source: "L12345" }))).toBe(true);
+  const window = await readWindow(stream(records), { mode: "brief", budget: 20 });
+  expect(window.next).not.toBeNull();
+  const brief = briefOf(window.view)!;
+  expect(brief.changed.length).toBeGreaterThan(0);
+  expect(brief.changed.length).toBeLessThan(100);
+  // Paths already named cost nothing more.
+  const again = records.map((record, index) => (record.kind === "tool-call" ? call(index + 1, record.callId, "edit", "/repo/same.ts", {}) : record));
+  const same = await readWindow(stream(again), { mode: "brief", budget: 20 });
+  expect(same.next).toBeNull();
+  expect(briefOf(same.view)!.changed).toEqual(["/repo/same.ts"]);
+});
+
+test("a message is cut only of the tags harnesses wrap their insertions in, and is otherwise left as it was written", () => {
+  expect(withoutInsertions("Render <user-card>Ada</user-card> here")).toBe("Render <user-card>Ada</user-card> here");
+  expect(withoutInsertions("  indented\n\n\n\n    code\n")).toBe("  indented\n\n\n\n    code\n");
+  expect(withoutInsertions("<system-reminder>x</system-reminder>\n\n\n<user-card/>hi")).toBe("<user-card/>hi");
+  const only = user(1, "<user-card>Ada</user-card>");
+  expect(entriesOf(compress([only], "digest").view)).toMatchObject([{ kind: "user", text: "<user-card>Ada</user-card>" }]);
+  expect(briefOf(compress([only], "brief").view)!.asked).toHaveLength(1);
 });
 
 test("a path is replaced where the call names it whole, once, and not inside other words or references", () => {
@@ -208,15 +223,18 @@ test("a file index keeps its ids and paths unique, and goes on after the highest
   expect(files.index().files.map((file) => file.id)).toEqual([2, 3]);
 });
 
-const briefOf = (view: DigestView) => (view.mode === "brief" ? view.brief : undefined);
-
-test("a message is cut only of the tags harnesses wrap their insertions in, and is otherwise left as it was written", () => {
-  expect(withoutInsertions("Render <user-card>Ada</user-card> here")).toBe("Render <user-card>Ada</user-card> here");
-  expect(withoutInsertions("  indented\n\n\n\n    code\n")).toBe("  indented\n\n\n\n    code\n");
-  expect(withoutInsertions("<system-reminder>x</system-reminder>\n\n\n<user-card/>hi")).toBe("<user-card/>hi");
-  const only = user(1, "<user-card>Ada</user-card>");
-  expect(entriesOf(compress([only], "digest").view)).toMatchObject([{ kind: "user", text: "<user-card>Ada</user-card>" }]);
-  expect(briefOf(compress([only], "brief").view)!.asked).toHaveLength(1);
+test("a cut says how much it removed, and fits the size asked for", () => {
+  const text = "line of text\n".repeat(40);
+  const sizes = [5, 12, 20, 30, 45, 60, 80, 100, 150];
+  for (const keep of sizes) {
+    const out = cutMiddle(text, { keep, source: "L12345" });
+    expect(out.length).toBeLessThanOrEqual(keep);
+    const marker = /…⟨cut (\d+)(?: of (\d+) chars, whole at L12345)?⟩…/.exec(out);
+    if (marker === null) continue;
+    expect(Number(marker[1])).toBe(text.length - out.replace(marker[0], "").length);
+  }
+  // The marker with its source does not fit in 20, the one that only counts does.
+  expect(/cut \d+⟩/.test(cutMiddle(text, { keep: 20, source: "L12345" }))).toBe(true);
 });
 
 test("only the changes that were not refused are in a brief", () => {
