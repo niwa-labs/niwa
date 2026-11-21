@@ -1048,8 +1048,10 @@ function assistantRecords(message: McodeMessage, base: RecordBase, raw: unknown)
       });
       const checklist = mcodeChecklist(block.name, block.arguments);
       if (checklist !== undefined) records.push({ kind: "checklist", callId: block.id, items: checklist.items, ...base });
+    } else if (block.type === "thinking") {
+      records.push({ kind: "thinking", text: block.thinking ?? "", redacted: block.redacted === true, ...base });
     } else {
-      // A thought, or a call without an id that cannot be paired: kept whole.
+      // A call without an id that cannot be paired, or a block of no known kind: kept whole.
       records.push(unknownRecord(block, base));
     }
   }

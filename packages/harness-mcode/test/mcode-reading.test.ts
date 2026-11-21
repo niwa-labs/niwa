@@ -127,7 +127,8 @@ test("maps a running session: text, tool call, tool result, nested child", async
       line({
         role: "assistant",
         content: [
-          { type: "thinking", thinking: "hm" },
+          { type: "thinking", thinking: "hm", thinkingSignature: "abc" },
+          { type: "thinking", thinking: "", redacted: true },
           { type: "text", text: "ok" },
           { type: "toolCall", id: "c1", name: "task", arguments: { a: 1 } },
         ],
@@ -140,7 +141,12 @@ test("maps a running session: text, tool call, tool result, nested child", async
       }),
   );
   const kinds = (await all(reading().read(ID))).map((r) => r.kind);
-  expect(kinds).toEqual(["user", "unknown", "assistant", "tool-call", "tool-result", "nested"]);
+  expect(kinds).toEqual(["user", "thinking", "thinking", "assistant", "tool-call", "tool-result", "nested"]);
+  const thoughts = (await all(reading().read(ID))).filter((r) => r.kind === "thinking");
+  expect(thoughts[0]).toMatchObject({ text: "hm", redacted: false });
+  expect(thoughts[1]).toMatchObject({ text: "", redacted: true });
+  // The sealed block stays whole behind its locator.
+  expect(await reading().raw(ID, thoughts[1]!.locator)).toMatchObject({ message: { role: "assistant" } });
   const nested = (await all(reading().read(ID))).find((r) => r.kind === "nested");
   expect(nested).toMatchObject({ child: { native: "mvs_child9" } });
 });

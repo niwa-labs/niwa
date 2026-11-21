@@ -127,11 +127,12 @@ test("a session with no journal is read from its ledger", async () => {
   const records = await all(reading().read(ID));
   expect(records.map((r) => r.kind)).toEqual([
     "user",
-    "unknown",
+    "thinking",
     "assistant",
     "tool-call",
     "tool-result",
   ]);
+  expect(records[1]).toMatchObject({ kind: "thinking", text: "the ledger holds the turns", redacted: false });
   expect(records[0]).toMatchObject({ kind: "user", text: "how do I read a ledger", at: 1000 });
   expect(records[2]).toMatchObject({ kind: "assistant", text: "read it line by line" });
   expect(records[3]).toMatchObject({ kind: "tool-call", callId: "call_1", name: "read" });
@@ -214,7 +215,8 @@ test("a ledger of display entries is read when it holds no history", async () =>
   );
 
   const records = await all(reading().read(ID));
-  expect(records.map((r) => r.kind)).toEqual(["user", "unknown", "assistant", "tool-call"]);
+  expect(records.map((r) => r.kind)).toEqual(["user", "thinking", "assistant", "tool-call"]);
+  expect(records[1]).toMatchObject({ kind: "thinking", text: "the answer is short", redacted: false });
   expect(records[0]).toMatchObject({ kind: "user", text: "what is the weather" });
   expect(records[2]).toMatchObject({ kind: "assistant", text: "it is warm" });
   expect(records[3]).toMatchObject({

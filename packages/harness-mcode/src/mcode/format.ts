@@ -12,6 +12,8 @@ const ContentBlockSchema = z.object({
   type: z.string(),
   text: z.string().optional(),
   thinking: z.string().optional(),
+  /** A thought the harness keeps sealed: it carries no text. */
+  redacted: z.boolean().optional(),
   id: z.string().optional(),
   name: z.string().optional(),
   arguments: z.unknown().optional(),
