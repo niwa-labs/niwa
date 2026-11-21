@@ -259,12 +259,20 @@ export function mcodeModelOptionValue(
   if (advertised !== undefined && advertised.length > 0) {
     const exact = advertised.find((option) => option.value === wanted);
     if (exact !== undefined) return exact.value;
-    // The agent offers the same model with other variants. A variant that is empty
-    // (`v:`) means "no thinking", and some models — MiniMax-M3.1-Flash among them — refuse
-    // it with an internal error, so a named variant is preferred over an empty one.
+    // A variant that was named is the variant that is asked for: another one is another model's
+    // behaviour, so it is left to the agent to refuse.
+    if (suffix !== "u") return wanted;
+    // The agent offers the same model, of the provider that was named, with other variants. A
+    // variant that is empty (`v:`) means "no thinking", and some models — MiniMax-M3.1-Flash
+    // among them — refuse it with an internal error, so a named variant is preferred over an
+    // empty one.
     const sameModel = advertised.filter((option) => {
       const parts = option.value.split(":");
-      return parts.length >= 3 && parts[2] === encodeURIComponent(model);
+      return (
+        parts.length >= 3 &&
+        parts[2] === encodeURIComponent(model) &&
+        (provider === "" || parts[1] === encodeURIComponent(provider))
+      );
     });
     const named = sameModel.find((option) => {
       const parts = option.value.split(":");

@@ -1299,3 +1299,20 @@ test("an agent that dies on its own takes the MCP servers it was given with it",
   }
 });
 
+test("a model that is not advertised is never replaced by another provider's or another variant", () => {
+  const advertised = [
+    { value: "m:providerA:model:v:fast" },
+    { value: "m:providerA:model:v:deep" },
+    { value: "m:providerB:model:v:fast" },
+  ];
+  // The variant that was named is the variant that is asked for, or none is.
+  expect(mcodeModelOptionValue("providerB/model#deep", advertised)).toBe("m:providerB:model:v:deep");
+  expect(mcodeModelOptionValue("providerA/model#slow", advertised)).toBe("m:providerA:model:v:slow");
+  // A provider that was named is the provider that is asked for.
+  expect(mcodeModelOptionValue("providerC/model", [{ value: "m:providerA:model:v:fast" }])).toBe("m:providerC:model:u");
+  // Without a variant, a named one of the same provider and model is taken.
+  expect(mcodeModelOptionValue("providerB/model", advertised)).toBe("m:providerB:model:v:fast");
+  // Without a provider, the model alone says which.
+  expect(mcodeModelOptionValue("model", advertised)).toBe("m:providerA:model:v:fast");
+});
+
