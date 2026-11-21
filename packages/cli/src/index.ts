@@ -49,6 +49,9 @@ import {
 } from "./render.ts";
 
 export { INSERT_REPORT, INSERT_USAGE, runInsert } from "./insert.ts";
+export { log } from "./log.ts";
+export { logLine } from "./render.ts";
+export { installedText, skillText } from "./skill/install.ts";
 export { SKILL_USAGE, runSkill } from "./skill/command.ts";
 export type { SkillContext, SkillKind, SkillRoots } from "./skill/command.ts";
 
