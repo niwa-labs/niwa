@@ -240,7 +240,8 @@ test("a corrupt database file does not throw out of the reader: the session read
     const listed: string[] = [];
     for await (const info of reading().list()) listed.push(info.id.native);
     expect(listed).toEqual(["mvs_i"]);
-    expect(await reading().coverage(id("mvs_i"))).toMatchObject({ status: "empty" });
+    // Nothing could be read: that is not an empty session, it is a scan that failed.
+    expect(await reading().coverage(id("mvs_i"))).toMatchObject({ status: "failed" });
   } finally {
     console.warn = warn;
   }
@@ -468,7 +469,7 @@ test("a database locked by a writer is not a failure of the reader: it reads as 
     });
     expect(result.records).toEqual([]);
     expect(result.listed).toEqual(["mvs_r"]);
-    expect(result.coverage).toMatchObject({ status: "empty" });
+    expect(result.coverage).toMatchObject({ status: "failed" });
   } finally {
     db.run("rollback");
   }
@@ -553,4 +554,26 @@ test("a database that cannot be read after a db locator was given: the session f
   expect(result.records.map((r) => r.kind)).toEqual(["user"]);
   expect(result.coverage).toMatchObject({ status: "not-scanned" });
   db = new Database(":memory:");
+});
+
+test("a checkpoint taken from the ledger while the database was unreadable still works once it is back", async () => {
+  const dir = sessionDir("mvs_move", "");
+  writeFileSync(
+    join(dir, "ledger.jsonl"),
+    `${JSON.stringify({ kind: "message.pi_history_appended", sessionId: "mvs_move", messages: [user("one")], seq: 1 })}\n`,
+  );
+  putBatch([full("mvs_move", "seed", [envelope("m1", user("one")), envelope("m2", user("two"))])]);
+  // The database is there but a writer holds it: the session is read from its ledger.
+  db.run("begin exclusive");
+  let checkpoint: Locator;
+  try {
+    const { result } = await quietly(() => all("mvs_move"));
+    checkpoint = result[0]!.locator;
+    expect(checkpoint.startsWith("mcode-ledger:")).toBe(true);
+  } finally {
+    db.run("rollback");
+  }
+  // The database answers again: a locator of the ledger names no record in it, so the read starts over.
+  expect(texts(await all("mvs_move", checkpoint))).toEqual(["one", "two"]);
+  expect(await reading().coverage(id("mvs_move"), checkpoint)).toEqual({ status: "not-scanned" });
 });

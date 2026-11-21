@@ -301,3 +301,54 @@ test("a ledger that is there but cannot be read fails instead of reading as empt
   mkdirSync(join(dir, "ledger.jsonl"));
   await expect(all(reading().read(ID))).rejects.toThrow();
 });
+
+const message = (role: "user" | "assistant", text: string, at: number) => ({
+  role,
+  content: [{ type: "text", text }],
+  timestamp: at,
+});
+
+test("a read from a checkpoint in the ledger gives only what came after it, across entries", async () => {
+  const dir = sessionDir("mvs_led");
+  writeFileSync(
+    join(dir, "ledger.jsonl"),
+    created("mvs_led") +
+      history([message("user", "one", 1000)], 2) +
+      history([message("assistant", "two", 2000)], 3) +
+      history([message("user", "three", 3000)], 4),
+  );
+
+  const full = await all(reading().read(ID));
+  expect(full.map((r) => (r.kind === "user" || r.kind === "assistant" ? r.text : r.kind))).toEqual([
+    "one",
+    "two",
+    "three",
+  ]);
+  const second = await all(reading().read(ID, full[1]?.locator));
+  expect(second.map((r) => (r.kind === "user" ? r.text : r.kind))).toEqual(["three"]);
+  expect(await reading().coverage(ID, full[1]?.locator)).toEqual({ status: "not-scanned" });
+  expect(await reading().coverage(ID, full[2]?.locator)).toEqual({ status: "empty" });
+  expect(await all(reading().read(ID, full[2]?.locator))).toEqual([]);
+});
+
+test("a checkpoint of a ledger that was rewritten starts the read over", async () => {
+  const dir = sessionDir("mvs_led");
+  writeFileSync(
+    join(dir, "ledger.jsonl"),
+    created("mvs_led") + history([message("user", "one", 1000)], 2) + history([message("user", "two", 2000)], 3),
+  );
+  const [, second] = await all(reading().read(ID));
+  writeFileSync(
+    join(dir, "ledger.jsonl"),
+    created("mvs_led") + history([message("user", "other", 1000)], 2) + history([message("user", "again", 2000)], 3),
+  );
+  const again = await all(reading().read(ID, second?.locator));
+  expect(again.map((r) => (r.kind === "user" ? r.text : r.kind))).toEqual(["other", "again"]);
+});
+
+test("the coverage of a ledger that cannot be read is failed, not an error", async () => {
+  const dir = sessionDir("mvs_led");
+  writeFileSync(join(dir, "messages.jsonl"), "");
+  mkdirSync(join(dir, "ledger.jsonl"));
+  expect((await reading().coverage(ID)).status).toBe("failed");
+});

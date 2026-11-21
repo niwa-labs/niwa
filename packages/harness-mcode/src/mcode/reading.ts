@@ -192,6 +192,9 @@ async function positionHolds(handle: FileHandle, position: Position): Promise<bo
   return bytesRead === 1 && before[0] === 0x0a;
 }
 
+/** The tag of a locator of the journal. */
+const JOURNAL_TAG = "mcode";
+
 /**
  * The locator of a record of `line`. The revision hashes the head of the journal, but only the
  * bytes that are final by the end of this line: a journal that grows must not invalidate the
@@ -201,7 +204,7 @@ function makeLocator(head: Buffer, line: RawLine, after: number): Locator {
   const final = line.complete ? line.byte + line.bytes.length + 1 : line.byte;
   const prefix = head.subarray(0, Math.min(final, head.length));
   return LocatorSchema.parse(
-    `mcode:v1:${prefix.length}:${hashOf(prefix)}:${line.byte}:${line.complete ? after : 0}`,
+    `${JOURNAL_TAG}:v1:${prefix.length}:${hashOf(prefix)}:${line.byte}:${line.complete ? after : 0}`,
   );
 }
 
@@ -212,7 +215,7 @@ function decodeLocator(locator: Locator): Position {
   const numbers = [bytes, offset, after].map(Number);
   if (
     parts.length !== 6 ||
-    tag !== "mcode" ||
+    tag !== JOURNAL_TAG ||
     version !== "v1" ||
     hash === undefined ||
     numbers.some((n) => !Number.isSafeInteger(n) || n < 0)
@@ -268,6 +271,60 @@ const DURABLE_TAG = "mcode-db";
 
 function isDurableLocator(locator: Locator): boolean {
   return locator.startsWith(`${DURABLE_TAG}:`);
+}
+
+/** The place a locator was taken from. */
+type LocatorForm = "journal" | "ledger" | "durable";
+
+/** The place a locator was taken from; `undefined` when the locator is none of this side's. */
+function formOf(locator: Locator): LocatorForm | undefined {
+  switch (locator.slice(0, locator.indexOf(":"))) {
+    case JOURNAL_TAG:
+      return "journal";
+    case LEDGER_TAG:
+      return "ledger";
+    case DURABLE_TAG:
+      return "durable";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The locator of a read, refused when it is none of this side's. One taken from another place than
+ * the one the session is read from now (the history moved between the database, the journal and
+ * the ledger) names no record here: such a read starts over, as it does for a rewritten file.
+ */
+function checkedLocator(from: Locator | undefined): void {
+  if (from === undefined) return;
+  switch (formOf(from)) {
+    case "journal":
+      decodeLocator(from);
+      return;
+    case "ledger":
+      decodeLedgerLocator(from);
+      return;
+    case "durable":
+      decodeDurableLocator(from);
+      return;
+    default:
+      throw new Error(`mcode: locator ${from} is not of this side's form`);
+  }
+}
+
+/** The position of a locator of the database, when that is what it is. */
+function durableFrom(from: Locator | undefined): DurablePosition | undefined {
+  return from !== undefined && formOf(from) === "durable" ? decodeDurableLocator(from) : undefined;
+}
+
+/** The position of a locator of the ledger, when that is what it is. */
+function ledgerFrom(from: Locator | undefined): Position | undefined {
+  return from !== undefined && formOf(from) === "ledger" ? decodeLedgerLocator(from) : undefined;
+}
+
+/** The position of a locator of the journal, when that is what it is. */
+function journalFrom(from: Locator | undefined): Position | undefined {
+  return from !== undefined && formOf(from) === "journal" ? decodeLocator(from) : undefined;
 }
 
 function makeDurableLocator(turn: DurableTurn, after: number): Locator {
@@ -400,6 +457,7 @@ export class McodeReading implements SessionReading {
    * session, never both.
    */
   async *read(id: SessionId, from?: Locator): AsyncIterable<SessionRecord> {
+    checkedLocator(from);
     yield* this.#readOf(id, await this.#find(id), from);
   }
 
@@ -421,19 +479,17 @@ export class McodeReading implements SessionReading {
       source = "ledger";
     }
     if (source === "ledger") {
-      // A locator of the database means nothing to a ledger: the database could not be asked, so
-      // the read starts from the ledger's beginning rather than failing on a locator of another form.
-      if (from !== undefined && isDurableLocator(from)) from = undefined;
       yield* this.#readLedger(found, from);
       return;
     }
-    const position = from === undefined || isDurableLocator(from) ? undefined : decodeLocator(from);
+    const position = journalFrom(from);
+    const durable = durableFrom(from);
     const handle = await open(found.logPath, "r");
     try {
       const head = await prefixOf(handle, PREFIX_BYTES);
       const resume =
-        from !== undefined && isDurableLocator(from)
-          ? await resumeAfterMessage(handle, decodeDurableLocator(from))
+        durable !== undefined
+          ? await resumeAfterMessage(handle, durable)
           : position !== undefined && (await positionHolds(handle, position))
             ? position
             : undefined;
@@ -492,11 +548,7 @@ export class McodeReading implements SessionReading {
   }
 
   #inDurable(native: string): boolean {
-    try {
-      return durableHasSession(this.#durablePath, native);
-    } catch {
-      return false;
-    }
+    return durableHasSession(this.#durablePath, native) === true;
   }
 
   /** The active view of a session in the durable history. */
@@ -506,7 +558,7 @@ export class McodeReading implements SessionReading {
 
   /** The records of a session that kept its history in the durable database. */
   async *#readDurable(turns: readonly DurableTurn[], from?: Locator): AsyncIterable<SessionRecord> {
-    const start = durableStart(turns, from === undefined ? undefined : decodeDurableLocator(from));
+    const start = durableStart(turns, durableFrom(from));
     for (const [at, turn] of turns.entries()) {
       if (at < start.turn) continue;
       for (const [index, record] of this.#durableRecordsOf(turn).entries()) {
@@ -533,7 +585,7 @@ export class McodeReading implements SessionReading {
 
   /** The coverage of a session that kept its history in the durable database. */
   #durableCoverage(turns: readonly DurableTurn[], from?: Locator): Coverage {
-    const start = durableStart(turns, from === undefined ? undefined : decodeDurableLocator(from));
+    const start = durableStart(turns, durableFrom(from));
     for (const [at, turn] of turns.entries()) {
       if (at < start.turn) continue;
       const count = this.#durableRecordsOf(turn).length;
@@ -546,26 +598,8 @@ export class McodeReading implements SessionReading {
   async *#readLedger(found: FoundSession, from?: Locator): AsyncIterable<SessionRecord> {
     const content = await this.#ledgerOf(found);
     if (content === null) return;
-    const position = from === undefined ? undefined : decodeLedgerLocator(from);
-    const head = content.head;
-    let currentByte = -1;
-    let delivered = 0;
-    for (const turn of content.turns) {
-      if (turn.line.byte !== currentByte) {
-        currentByte = turn.line.byte;
-        delivered = 0;
-      }
-      const records = ledgerRecordsOf(turn, this.#harness);
-      const skip = position !== undefined && turn.line.byte === position.offset ? position.after : 0;
-      for (const [index, record] of records.entries()) {
-        const at = delivered + index;
-        if (at < skip) continue;
-        yield {
-          ...record,
-          locator: makeLedgerLocator(head, turn.line, at + 1),
-        } as SessionRecord;
-      }
-      delivered += records.length;
+    for (const { record, line, at } of ledgerPending(content, this.#harness, ledgerFrom(from))) {
+      yield { ...record, locator: makeLedgerLocator(content.head, line, at + 1) } as SessionRecord;
     }
   }
 
@@ -654,57 +688,81 @@ export class McodeReading implements SessionReading {
    * read when a caller asks `read`.
    */
   async coverage(id: SessionId, from?: Locator): Promise<Coverage> {
-    const found = await this.#find(id);
-    if (found === null) {
-      const turns = this.#inDurable(id.native) ? this.#durableTurns(id.native) : null;
-      if (turns !== null) return this.#durableCoverage(turns, from);
-      return unavailableCoverage(`mcode: session ${id.native} is not on disk`);
-    }
-    let source = await this.#sourceOf(found);
-    if (source === "durable") {
-      const turns = this.#durableTurns(id.native);
-      if (turns !== null) return this.#durableCoverage(turns, from);
-      source = "ledger";
-    }
-    if (source === "ledger") {
-      if (from !== undefined && isDurableLocator(from)) from = undefined;
-      return this.#ledgerCoverage(found, from);
-    }
-    const position = from === undefined || isDurableLocator(from) ? undefined : decodeLocator(from);
+    checkedLocator(from);
     try {
-      const handle = await open(found.logPath, "r");
-      try {
-        const resume =
-          from !== undefined && isDurableLocator(from)
-            ? await resumeAfterMessage(handle, decodeDurableLocator(from))
-            : position !== undefined && (await positionHolds(handle, position))
-              ? position
-              : undefined;
-        for await (const line of scanLines(handle, resume?.offset ?? 0)) {
-          if (isBlank(line.bytes)) continue;
-          const skip = resume !== undefined && line.byte === resume.offset ? resume.after : 0;
-          if (this.#recordsOf(line).length > skip) return NOT_SCANNED;
-        }
-        return EMPTY;
-      } finally {
-        await handle.close();
-      }
+      return await this.#coverageOf(id, from);
     } catch (error) {
       return failedCoverage(`mcode: session ${id.native} could not be scanned: ${reasonOf(error)}`);
     }
   }
 
-  /** The coverage of a session that kept its history in its ledger. */
-  async #ledgerCoverage(found: FoundSession, from?: Locator): Promise<Coverage> {
-    const content = await this.#ledgerOf(found);
-    // A session with an empty journal and no ledger holds nothing: it is empty, not missing.
-    if (content === null) return EMPTY;
-    const position = from === undefined ? undefined : decodeLedgerLocator(from);
-    for (const turn of content.turns) {
-      const skip = position !== undefined && turn.line.byte === position.offset ? position.after : 0;
-      if (ledgerRecordsOf(turn, this.#harness).length > skip) return NOT_SCANNED;
+  async #coverageOf(id: SessionId, from?: Locator): Promise<Coverage> {
+    const found = await this.#find(id);
+    if (found === null) {
+      const held = this.#durableHolds(id.native);
+      if (held === null) return failedCoverage(`mcode: the durable history of session ${id.native} could not be read`);
+      const turns = held ? this.#durableTurns(id.native) : null;
+      if (turns !== null) return this.#durableCoverage(turns, from);
+      if (held) return failedCoverage(`mcode: the durable history of session ${id.native} could not be read`);
+      return unavailableCoverage(`mcode: session ${id.native} is not on disk`);
     }
+    let source = await this.#sourceOf(found);
+    let durableFailed = false;
+    if (source === "durable") {
+      const turns = this.#durableTurns(id.native);
+      if (turns !== null) return this.#durableCoverage(turns, from);
+      durableFailed = true;
+      source = "ledger";
+    }
+    if (source === "ledger") return this.#ledgerCoverage(found, from, durableFailed);
+    const position = journalFrom(from);
+    const durable = durableFrom(from);
+    const handle = await open(found.logPath, "r");
+    try {
+      const resume =
+        durable !== undefined
+          ? await resumeAfterMessage(handle, durable)
+          : position !== undefined && (await positionHolds(handle, position))
+            ? position
+            : undefined;
+      for await (const line of scanLines(handle, resume?.offset ?? 0)) {
+        if (isBlank(line.bytes)) continue;
+        const skip = resume !== undefined && line.byte === resume.offset ? resume.after : 0;
+        if (this.#recordsOf(line).length > skip) return NOT_SCANNED;
+      }
+      return EMPTY;
+    } finally {
+      await handle.close();
+    }
+  }
+
+  /**
+   * The coverage of a session that kept its history in its ledger. A session with no ledger holds
+   * nothing, unless its history was in a database that could not be read: that is not empty, it is
+   * unknown.
+   */
+  async #ledgerCoverage(found: FoundSession, from: Locator | undefined, durableFailed: boolean): Promise<Coverage> {
+    const content = await this.#ledgerOf(found);
+    if (content === null) {
+      if (durableFailed || (await this.#durableUnreadable(found))) {
+        return failedCoverage(`mcode: the durable history of ${found.dirName} could not be read and it has no ledger`);
+      }
+      return EMPTY;
+    }
+    for (const _ of ledgerPending(content, this.#harness, ledgerFrom(from))) return NOT_SCANNED;
     return EMPTY;
+  }
+
+  /** Whether the database exists and cannot be asked about the session of a directory. */
+  async #durableUnreadable(found: FoundSession): Promise<boolean> {
+    if (!existsSync(this.#durablePath)) return false;
+    const native = await this.#nativeOf(found);
+    return native !== null && durableHasSession(this.#durablePath, native) === null;
+  }
+
+  /** Whether the database holds the session; `null` when it cannot be asked. */
+  #durableHolds(native: string): boolean | null {
+    return durableHasSession(this.#durablePath, native);
   }
 
   async *#discover(): AsyncGenerator<FoundSession> {
@@ -892,6 +950,46 @@ function recordsOfEnvelope(
       return [{ kind: "compaction", summary: message.summary ?? "", ...base }];
     default:
       return [unknownRecord(parsed, base)];
+  }
+}
+
+/** Whether a position taken from a ledger still names a place in it: the head it hashed is the head it has. */
+function ledgerPositionHolds(content: LedgerContent, position: Position): boolean {
+  if (position.offset >= content.size) return false;
+  const prefix = content.head.subarray(0, Math.min(position.prefixBytes, content.head.length));
+  return prefix.length === position.prefixBytes && hashOf(prefix) === position.prefixHash;
+}
+
+/**
+ * The records of a ledger that come after a position: everything on lines before the line of the
+ * position, and the records of that line it did not deliver, are left out. A position of a ledger
+ * that was rewritten names nothing, and the read starts over.
+ */
+function* ledgerPending(
+  content: LedgerContent,
+  harness: HarnessId,
+  position: Position | undefined,
+): Generator<{ readonly record: Unlocated; readonly line: LedgerLine; readonly at: number }> {
+  const held = position !== undefined && ledgerPositionHolds(content, position) ? position : undefined;
+  let currentByte = -1;
+  let delivered = 0;
+  for (const turn of content.turns) {
+    if (turn.line.byte !== currentByte) {
+      currentByte = turn.line.byte;
+      delivered = 0;
+    }
+    const records = ledgerRecordsOf(turn, harness);
+    const skip =
+      held === undefined || turn.line.byte > held.offset
+        ? 0
+        : turn.line.byte < held.offset
+          ? Number.POSITIVE_INFINITY
+          : held.after;
+    for (const [index, record] of records.entries()) {
+      const at = delivered + index;
+      if (at >= skip) yield { record, line: turn.line, at };
+    }
+    delivered += records.length;
   }
 }
 

@@ -130,8 +130,11 @@ function tellOnce(path: string, error: unknown): void {
   console.warn(`mcode: the durable history ${path} cannot be read, it is ignored: ${reason}`);
 }
 
-/** Does the database hold any entry of this session? A database that is not there holds none. */
-export function durableHasSession(path: string, native: string): boolean {
+/**
+ * Does the database hold any entry of this session? A database that is not there holds none;
+ * `null` when it is there and cannot be asked.
+ */
+export function durableHasSession(path: string, native: string): boolean | null {
   if (!existsSync(path)) return false;
   try {
     const db = open(path);
@@ -143,7 +146,7 @@ export function durableHasSession(path: string, native: string): boolean {
     }
   } catch (error) {
     tellOnce(path, error);
-    return false;
+    return null;
   }
 }
 
