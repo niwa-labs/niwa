@@ -358,7 +358,7 @@ test("requests: a handler may say who cancels; a client that says it in the payl
   }
 });
 
-test("an operator ask waits through automatic resolution and a forged raw answer", async () => {
+test("an operator ask stays open for the owner when automatic and raw answers are refused", async () => {
   const resolvers = new ResolverRegistry();
   resolvers.register(ReleaseBranch, () => ({ answered: true, answer: pick("next") }));
   const world = await serve(resolvers);
@@ -369,7 +369,8 @@ test("an operator ask waits through automatic resolution and a forged raw answer
     await eventually(() => of(world.seen, RequestCreated).length === 1);
     const id = RequestCreated.schema.parse(of(world.seen, RequestCreated)[0]?.data).id;
     expect(await world.ownerClient.call(REQUEST_RESOLVE, { id, answer: pick("next") })).toEqual({ answered: false });
-    await writer.emit(RequestAnswered, { id, answer: pick("next"), by: owner });
+    await expect(writer.emit(RequestAnswered, { id, answer: pick("next"), by: owner })).rejects.toMatchObject({ code: "Denied" });
+    expect(await world.host.records.read({ types: [RequestAnswered.name] })).toHaveLength(0);
     expect(await openIds(world.ownerClient)).toContain(id);
     await world.ownerClient.call(REQUEST_ANSWER, { id, answer: pick("main") });
     await eventually(() => of(world.seen, Answered).length === 1);

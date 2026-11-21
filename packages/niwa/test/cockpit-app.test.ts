@@ -182,10 +182,14 @@ run("the cockpit app in a browser", () => {
     await recompute.waitFor();
     await recompute.click();
     await page.waitForSelector('[data-slot="guard-notice"][data-phase="armed"]');
-    expect(await page.textContent('[data-slot="guard-notice"]')).toContain("Starts the run again from the top");
+    const warning = await page.textContent('[data-slot="guard-notice"]');
+    expect(warning).toContain("Restart the run from the top");
+    expect(warning).toContain("may repeat a message or another external change");
+    expect((await host.call(workflowInspect, { run })).origin.requestedAt).toBe(before);
     await recompute.click();
     await page.waitForSelector('[data-slot="guard-notice"][data-phase="pending"]');
     await eventually(async () => (await host.call(workflowInspect, { run })).origin.requestedAt !== before, 15_000, "the run should have been asked for again");
+    expect((await host.call(workflowWait, { run, timeoutMs: 10_000 })).outcome).toMatchObject({ status: "done", result: "done" });
     await page.context().close();
   }, 60_000);
 
