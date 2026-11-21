@@ -12,6 +12,7 @@ import type { z } from "zod";
 
 import { expandHome } from "./home.ts";
 import { channelName, frameFor } from "./live.ts";
+import { RetryPause } from "./pause.ts";
 import { RecordQuerySchema, resolveQuery, seq, targetName } from "@niwa-labs/core";
 import type {
   ActionTarget,
@@ -46,9 +47,6 @@ import {
   tracedRecordSchema,
   type HostMessage,
 } from "./wire.ts";
-
-/** Delay between reconnect attempts of a subscription whose connection dropped. */
-const RECONNECT_INTERVAL_MS = 100;
 
 /**
  * Records a subscription holds for a consumer that reads slowly. Past this the socket is
@@ -369,16 +367,12 @@ class RecordSubscription {
   private finished = false;
   /** Set while the connection is held off because the queue is full. */
   private resume: (() => void) | null = null;
-  /** Resolved when the subscription is closed, so a pending wait ends at once. */
-  private readonly stopPromise: Promise<void>;
-  private resolveStop: () => void = () => undefined;
+  /** The wait before the next attempt; a close ends it at once. */
+  private readonly pause = new RetryPause();
 
   constructor(options: SubscriptionOptions) {
     this.options = options;
     this.cursor = options.query.from ?? seq(0);
-    this.stopPromise = new Promise<void>((resolve) => {
-      this.resolveStop = resolve;
-    });
   }
 
   /** Return closes the socket even if a next call is waiting for a commit. */
@@ -420,7 +414,7 @@ class RecordSubscription {
     if (this.isClosed) return;
     this.isClosed = true;
     this.closeConnection();
-    this.resolveStop();
+    this.pause.cancel();
     this.release();
     this.wake();
     this.finish();
@@ -481,18 +475,17 @@ class RecordSubscription {
 
   /** Wait before the next attempt; false when the subscription was closed. */
   private async waitBeforeRetry(): Promise<boolean> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const delay = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, RECONNECT_INTERVAL_MS);
-    });
-    await Promise.race([delay, this.stopPromise]);
-    clearTimeout(timer);
+    if (this.isClosed) return false;
+    await this.pause.wait();
     return !this.isClosed;
   }
 
   /** Wait until the consumer has drained the queue; false when the subscription was closed. */
   private async waitForRoom(): Promise<boolean> {
-    await Promise.race([new Promise<void>((resolve) => (this.resume = resolve)), this.stopPromise]);
+    if (this.isClosed) return false;
+    await new Promise<void>((resolve) => {
+      this.resume = resolve;
+    });
     return !this.isClosed;
   }
 
@@ -565,14 +558,10 @@ class LiveSubscription {
   private failure: Error | null = null;
   private isClosed = false;
   private finished = false;
-  private readonly stopPromise: Promise<void>;
-  private resolveStop: () => void = () => undefined;
+  private readonly pause = new RetryPause();
 
   constructor(options: LiveSubscriptionOptions) {
     this.options = options;
-    this.stopPromise = new Promise<void>((resolve) => {
-      this.resolveStop = resolve;
-    });
   }
 
   /** Return closes the socket even if a next call is waiting on a quiet channel. */
@@ -613,7 +602,7 @@ class LiveSubscription {
     if (this.isClosed) return;
     this.isClosed = true;
     this.closeConnection();
-    this.resolveStop();
+    this.pause.cancel();
     this.wake();
     this.finish();
   }
@@ -671,12 +660,8 @@ class LiveSubscription {
 
   /** Wait before the next attempt; false when the subscription was closed. */
   private async waitBeforeRetry(): Promise<boolean> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const delay = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, RECONNECT_INTERVAL_MS);
-    });
-    await Promise.race([delay, this.stopPromise]);
-    clearTimeout(timer);
+    if (this.isClosed) return false;
+    await this.pause.wait();
     return !this.isClosed;
   }
 
