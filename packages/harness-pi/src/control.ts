@@ -88,8 +88,8 @@ import type {
   TurnOutcome,
   VisibleActions,
 } from "@niwa-labs/harness";
-import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
-import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
+import { LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
+import type { AgentProcess } from "@niwa-labs/sandbox";
 import { PI_INSTANCE_ENV } from "./insert/insert.ts";
 import { PI_MCP_SERVERS_ENV, encodeServers, piToolPattern } from "./mcp/servers.ts";
 import { PI_PROTOCOL, PiCommandSchema, RequestIdSchema, describeUnknown, parseLine, unknownVariantName } from "./protocol/index.ts";
@@ -110,9 +110,6 @@ import type {
   SessionState as PiSessionState,
   SuccessResponse,
 } from "./protocol/index.ts";
-
-/** What pi needs inside a box: its own directory. Its model endpoint depends on the model, so the grant names it. */
-const PI_NEEDS: HarnessNeeds = { write: [homePath(".pi")], net: [] };
 
 /**
  * Why a name cannot be handed to pi's `--tools`, or `undefined` when it can.
@@ -883,7 +880,6 @@ export class PiControl implements PiSessionControl {
       cwd,
       env: { ...this.#env(), ...(servers.length > 0 ? { [PI_MCP_SERVERS_ENV]: encodeServers(servers) } : {}), ...plan.env },
       box: plan.box,
-      needs: PI_NEEDS,
     });
     const session = new LiveSession(child, plan.reverse);
     this.#owned.add(session);

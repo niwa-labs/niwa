@@ -36,6 +36,9 @@ const DECLARED: KindCapabilities = {
   insert: NO_INSERT,
 };
 
+/** A profile that names nothing: these kinds are never started in a box. */
+const NO_PROFILE = { status: "admitted", of: () => ({}) } as const;
+
 // The sides are never called here: only their presence matters.
 const reading = {} as SessionReading;
 const control = {} as SessionControl;
@@ -47,6 +50,7 @@ function probe(capabilities: KindCapabilities = DECLARED, sides: readonly Harnes
     capabilities,
     implements: sides,
     home: () => "/tmp/probe",
+    profile: NO_PROFILE,
     bind: () => ({ ...(sides.includes("reading") ? { reading } : {}), ...(sides.includes("control") ? { control } : {}) }),
   });
 }
@@ -186,6 +190,7 @@ test("a kind binds each installation to its own id, home and model, with the sid
     capabilities: DECLARED,
     implements: ["reading", "control"],
     home: () => "/tmp/probe-default",
+    profile: NO_PROFILE,
     bind: ({ id, home }) => {
       seen.push({ id, home });
       return { reading, control };
@@ -211,11 +216,11 @@ test("an installation cannot claim what its kind cannot serve: wider sides, a mo
   expect(kind().bind({ id: "probe-1", sides: { reading: base.reading! } }).instance.sides).toEqual({ reading: base.reading });
   const noModel = probe({ ...DECLARED, control: { ...DECLARED.control, launch: { ...DECLARED.control.launch, model: UNSUPPORTED } } });
   expect(() => noModel.bind({ id: "probe-1", model: "big" })).toThrow(/control\.launch\.model/);
-  const forgetful = defineHarnessKind({ name: "probe", capabilities: DECLARED, implements: ["reading", "control"], home: () => "/tmp/probe", bind: () => ({ reading }) });
+  const forgetful = defineHarnessKind({ name: "probe", capabilities: DECLARED, implements: ["reading", "control"], home: () => "/tmp/probe", profile: NO_PROFILE, bind: () => ({ reading }) });
   expect(() => forgetful.bind({ id: "probe-1" })).toThrow(/without its control side/);
   // Default sides beyond the declaration are a kind that does not register.
   expect(() =>
-    defineHarnessKind({ name: "probe", capabilities: DECLARED, implements: ["reading", "control"], sides: { ...base, control: { ...base.control!, interrupt: true } }, home: () => "/tmp/probe", bind: () => ({ reading, control }) }),
+    defineHarnessKind({ name: "probe", capabilities: DECLARED, implements: ["reading", "control"], sides: { ...base, control: { ...base.control!, interrupt: true } }, home: () => "/tmp/probe", profile: NO_PROFILE, bind: () => ({ reading, control }) }),
   ).toThrow(/control\.interrupt/);
 });
 
@@ -227,6 +232,7 @@ test("the registry of instances keeps each installation with its own sides", () 
     capabilities: DECLARED,
     implements: ["reading", "control"],
     home: () => "/tmp/probe",
+    profile: NO_PROFILE,
     bind: ({ id }) => ({ reading, control: id === "probe-b" ? otherControl : control }),
   });
   registry.register(twin.bind({ id: "probe-a" }));
@@ -235,4 +241,31 @@ test("the registry of instances keeps each installation with its own sides", () 
   expect(registry.bindingOf("probe-a").control).toBe(control);
   expect(registry.bindingOf("probe-b").control).toBe(otherControl);
   expect(registry.bindings().map((one) => String(one.instance.id))).toEqual(["probe-a", "probe-b"]);
+});
+
+test("a kind that says nothing of what its sessions need inside a box does not register", () => {
+  const spec = { name: "probe", capabilities: DECLARED, implements: ["reading", "control"] as const, home: () => "/tmp/probe", bind: () => ({ reading, control }) };
+  // A kind written without the type's help: the profile is not there, or not whole.
+  expect(() => defineHarnessKind(spec as unknown as Parameters<typeof defineHarnessKind>[0])).toThrow(/declares no profile/);
+  expect(() => defineHarnessKind({ ...spec, profile: { status: "maybe", of: () => ({}) } } as unknown as Parameters<typeof defineHarnessKind>[0])).toThrow(/declares no profile/);
+  const { profile: _profile, ...bare } = probe();
+  expect(() => new HarnessKindRegistry().register(bare as unknown as ReturnType<typeof probe>)).toThrow(/declares no profile/);
+});
+
+test("an installation's profile is its kind's, from its own options, with the hosts the owner gave it", () => {
+  const kind = defineHarnessKind({
+    name: "probe",
+    capabilities: DECLARED,
+    implements: ["reading", "control"],
+    home: () => "/tmp/probe-default",
+    profile: { status: "verified", of: ({ id, home }) => ({ write: [home], read: [`/opt/${id}`], net: ["api.example.com"] }) },
+    bind: () => ({ reading, control }),
+  });
+  expect(kind.profile.status).toBe("verified");
+  expect(kind.bind({ id: "probe-a" }).profile).toEqual({ write: ["/tmp/probe-default"], read: ["/opt/probe-a"], net: ["api.example.com"] });
+  expect(kind.bind({ id: "probe-b", home: "/tmp/b", net: ["127.0.0.1:10081"] }).profile).toEqual({
+    write: ["/tmp/b"],
+    read: ["/opt/probe-b"],
+    net: ["api.example.com", "127.0.0.1:10081"],
+  });
 });

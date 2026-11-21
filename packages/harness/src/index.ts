@@ -12,6 +12,7 @@ import type { HarnessDetection } from "./discover.ts";
 import type { KindOptions } from "./options.ts";
 import type { HarnessSide, SideCapabilities } from "./capabilities.ts";
 import { CapabilityExceeded, KindCapabilitiesSchema, excessOf, narrowSides, sidesOf } from "./declaration.ts";
+import type { BoxProfile, ProfilePaths } from "@niwa-labs/sandbox";
 import type { KindCapabilities } from "./declaration.ts";
 
 /**
@@ -32,6 +33,11 @@ export interface InstanceOptions {
   readonly model?: string;
   /** The program of the installation, as it was found on the machine. */
   readonly binary?: HarnessBinary;
+  /**
+   * Hosts its model is reached at besides the ones its kind knows: a provider of the owner's own.
+   * They go into the installation's profile, so a box its sessions run in reaches them.
+   */
+  readonly net?: readonly string[];
   /**
    * What the installation claims: what was found on the machine, which may narrow what the kind
    * declares and never widen it. Default: the kind's own sides.
@@ -55,6 +61,22 @@ export interface HarnessBinding extends InstanceSides {
   readonly instance: Harness;
   /** The options block a session of this installation's kind takes at its start. */
   readonly options?: KindOptions;
+  /**
+   * The paths the installation needs inside a box: its program, its sign-in, its sessions, its
+   * configuration and caches. Its sessions take it; every other box finds them closed. A binding
+   * made by hand without one needs nothing of its own.
+   */
+  readonly profile?: BoxProfile;
+}
+
+/**
+ * What a kind says of the box its sessions need. `verified`: a session of the kind ran in a box
+ * closed to reading with nothing but this profile; `admitted`: declared, not yet proven.
+ */
+export interface KindProfile<Options extends InstanceOptions = InstanceOptions> {
+  readonly status: "verified" | "admitted";
+  /** The profile of one installation, from its options with the id and the home settled. */
+  of(options: Options & { readonly id: HarnessId; readonly home: string }): BoxProfile;
 }
 
 /**
@@ -74,6 +96,8 @@ export interface HarnessKindDefinition<Options extends InstanceOptions = Instanc
   readonly detect?: HarnessDetection;
   /** The options block a session of this kind takes at its start: its name and its schema. */
   readonly options?: KindOptions;
+  /** What its installations need inside a box, and whether that is proven: a kind without one does not register. */
+  readonly profile: KindProfile<Options>;
   /**
    * One installation of the kind, with its sides. Refused when it claims what the kind cannot serve:
    * an ability the kind does not support, or a model on a kind that cannot choose one.
@@ -95,6 +119,15 @@ export interface HarnessKindSpec<Options extends InstanceOptions> {
   readonly home: (options: Options) => string;
   /** The sides of one installation, from its options with the id and the home settled. */
   readonly bind: (options: Options & { readonly id: HarnessId; readonly home: string }) => InstanceSides;
+  /** The paths an installation needs inside a box. */
+  readonly profile: KindProfile<Options>;
+}
+
+/** A profile with the hosts the owner gave an installation added to its own. */
+function withHosts(profile: BoxProfile, net: readonly string[] | undefined): BoxProfile {
+  if (net === undefined || net.length === 0) return profile;
+  const add = (paths: ProfilePaths): ProfilePaths => ({ ...paths, net: [...(paths.net ?? []), ...net] });
+  return typeof profile === "function" ? (context) => add(profile(context)) : add(profile);
 }
 
 /** Which sides a kind has code for, as `narrowSides` takes them. */
@@ -112,6 +145,7 @@ const LOCAL_MACHINE = "local";
  */
 export function defineHarnessKind<Options extends InstanceOptions>(spec: HarnessKindSpec<Options>): HarnessKindDefinition<Options> {
   const kind = harnessKind(spec.name);
+  requireProfile(kind, spec.profile);
   const capabilities = KindCapabilitiesSchema.parse(spec.capabilities);
   const implemented = implementedOf(spec.implements);
   const beyond = excessOf(sidesOf(capabilities), capabilities, implemented).filter((line) => line.includes("has no"));
@@ -128,6 +162,7 @@ export function defineHarnessKind<Options extends InstanceOptions>(spec: Harness
     sides,
     ...(spec.detect === undefined ? {} : { detect: spec.detect }),
     ...(spec.options === undefined ? {} : { options: spec.options }),
+    profile: spec.profile,
     bind(options: Options): HarnessBinding {
       const id = harnessId(options.id);
       const claimed = narrowSides(id, kind, capabilities, options.sides ?? sides, implemented);
@@ -136,6 +171,7 @@ export function defineHarnessKind<Options extends InstanceOptions>(spec: Harness
       }
       const home = options.home ?? spec.home(options);
       const bound = spec.bind({ ...options, id, home });
+      const profile = withHosts(spec.profile.of({ ...options, id, home }), options.net);
       const missing = spec.implements.filter((side) => bound[side] === undefined);
       if (missing.length > 0) throw new Error(`harness kind "${kind}" bound "${id}" without its ${missing.join(", ")} side`);
       const instance: Harness = {
@@ -153,9 +189,17 @@ export function defineHarnessKind<Options extends InstanceOptions>(spec: Harness
         ...(bound.control === undefined ? {} : { control: bound.control }),
         ...(bound.insert === undefined ? {} : { insert: bound.insert }),
         ...(spec.options === undefined ? {} : { options: spec.options }),
+        profile,
       };
     },
   };
+}
+
+/** A kind must say what its sessions need inside a box: one that does not, does not register. */
+function requireProfile(kind: HarnessKind, profile: { readonly status?: unknown; readonly of?: unknown } | undefined): void {
+  if (profile === undefined || typeof profile.of !== "function" || (profile.status !== "verified" && profile.status !== "admitted")) {
+    throw new Error(`harness kind "${kind}" declares no profile: what its sessions need inside a box must be said`);
+  }
 }
 
 /**
@@ -175,6 +219,7 @@ export class HarnessKindRegistry {
 
   /** Returns the unregister. */
   register(definition: HarnessKindDefinition): () => void {
+    requireProfile(definition.kind, definition.profile);
     if (this.kinds.has(definition.kind)) {
       throw new Error(`harness kind "${definition.kind}" is already registered`);
     }
@@ -487,6 +532,8 @@ export { controlConformance } from "./conformance/control.ts";
 export type { ControlConformanceSides } from "./conformance/control.ts";
 
 export { insertConformance } from "./conformance/insert.ts";
+export { profileConformance } from "./conformance/profile.ts";
+export type { ProfileConformanceOptions, ProfileConformanceResult } from "./conformance/profile.ts";
 export type { InsertConformanceSides } from "./conformance/insert.ts";
 
 export {

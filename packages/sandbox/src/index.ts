@@ -63,6 +63,5 @@ export type {
   BoxRecord,
   BoxRequest,
   BoxSandboxName,
-  HarnessNeeds,
   SpawnEvent,
 } from "./launch.ts";

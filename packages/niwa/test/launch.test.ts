@@ -140,7 +140,7 @@ test("the funnel's environment is the inherited one, less what is unset, plus th
   ]);
 });
 
-test("a boxed launch adds the harness's needs to the spec, records the manifest first, and gives the process only what is listed", async () => {
+test("a boxed launch runs in the spec it is given, records the manifest first, and gives the process only what is listed", async () => {
   process.env["LAUNCH_SECRET"] = "s3";
   const launched: string[][] = [];
   undo.push(useSandbox("srt", passthrough("srt", launched)));
@@ -153,7 +153,6 @@ test("a boxed launch adds the harness's needs to the spec, records the manifest 
       cwd: dir,
       env: { NIWA_ID: "k3f9" },
       box,
-      needs: { write: [homePath(".thing")], net: ["api.example.com"] },
     });
     const env = JSON.parse(await output(child)) as Record<string, string>;
 
@@ -164,12 +163,12 @@ test("a boxed launch adds the harness's needs to the spec, records the manifest 
     expect(env["PATH"]).toBe(process.env["PATH"]!);
     expect(env["LAUNCH_SECRET"]).toBeUndefined();
 
-    // The needs are in the spec the manifest was made from, not hidden.
+    // The spec the manifest was made from is the one given: nothing is added to it out of sight.
     expect(manifests).toHaveLength(1);
     const record = manifests[0]!;
     expect(record.sandbox).toBe("srt");
-    expect(record.spec.write.map(String)).toEqual([dir, homePath(".thing")]);
-    expect(record.spec.net.map(String)).toEqual(["registry.npmjs.org", "api.example.com"]);
+    expect(record.spec.write.map(String)).toEqual([dir]);
+    expect(record.spec.net.map(String)).toEqual(["registry.npmjs.org"]);
     expect(record.manifest).toEqual({ sandbox: "srt", cwd: dir, env: record.spec.env });
     expect(record.spec).toEqual(boxSpec(record.spec));
 
@@ -365,7 +364,7 @@ test("a start whose box cannot run fails with SandboxUnavailable in every harnes
   expect(manifests).toEqual([]);
 });
 
-test("a codex session starts inside a box: the harness's needs are in the manifest, which is recorded before the process", async () => {
+test("a codex session starts inside the box it is given, whose manifest is recorded before the process", async () => {
   undo.push(useSandbox("nono", passthrough("nono")));
   const codex = codexControl({ harness: "codex-fake", binary: await fake("codex", FAKE_CODEX) });
   controls.push(codex);
@@ -377,8 +376,8 @@ test("a codex session starts inside a box: the harness's needs are in the manife
   });
   expect(String(started.session.native)).toBe("thread-1");
   expect(order).toEqual(["manifest", "spawn"]);
-  expect(manifests[0]!.spec.write.map(String)).toEqual([dir, homePath(".codex")]);
-  expect(manifests[0]!.spec.net.map(String)).toEqual(["api.openai.com", "chatgpt.com"]);
+  expect(manifests[0]!.spec.write.map(String)).toEqual([dir]);
+  expect(manifests[0]!.spec.net.map(String)).toEqual([]);
   expect(Object.entries(manifests[0]!.spec.env)).toContainEqual(["NIWA_ID", "k3f9"]);
   expect(spawns[0]?.sandbox).toBe("nono");
 });

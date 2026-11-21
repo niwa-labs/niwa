@@ -10,8 +10,9 @@
  * insert/; this file names the kind and says where pi's sessions are.
  */
 
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { ADMITTED, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
 import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
@@ -117,6 +118,26 @@ export const piKind = defineHarnessKind<PiInstanceOptions>({
   detect: PI_DETECTION,
   options: PI_OPTIONS,
   home: () => join(homedir(), ".pi", "agent"),
+  // Its launcher, the managed install the launcher runs (beside the launcher's real path) with the
+  // runtime pi's installer put in place, and the agent directory: sign-in, sessions, settings,
+  // extensions. Its model endpoint is the provider's: the installation names it (`net`). A session
+  // ran a turn in a box closed to reading with this profile alone.
+  profile: {
+    status: "verified",
+    of: ({ home, sessionsRoot, control }) => ({ home: user, env, bin }) => {
+      const launcher = bin(control?.binary ?? "pi");
+      const installs = launcher
+        .filter((path) => basename(dirname(path)) === "bin")
+        .map((path) => join(dirname(dirname(path)), "install"))
+        .filter((install) => existsSync(join(install, "current-version")));
+      // The install and the runtime are programs too: through `bin`, so no other box finds them closed.
+      const runtime = join(env["XDG_DATA_HOME"] ?? join(user, ".local", "share"), "pi-node");
+      return {
+        read: [...launcher, ...installs.flatMap((install) => bin(install)), ...bin(runtime), ...bin("node")],
+        write: [home, ...(sessionsRoot === undefined ? [] : [sessionsRoot])],
+      };
+    },
+  },
   bind: ({ id, home, model, sessionsRoot, control }) => {
     const root = sessionsRoot ?? join(home, "sessions");
     return {

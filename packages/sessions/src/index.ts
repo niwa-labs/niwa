@@ -91,7 +91,7 @@ import { EnvNameSchema, onBoxManifest, requireBox } from "@niwa-labs/sandbox";
 import type { BoxRecord, BoxSandboxName } from "@niwa-labs/sandbox";
 import { RequestCreated, requestOpen } from "@niwa-labs/requests/records";
 
-import { inheritedLaunch, isLaunchRule, launchOf, toolsOfSession } from "./box.ts";
+import { inheritedLaunch, isLaunchRule, launchOf, toolsOfSession, withProfile } from "./box.ts";
 import type { GrantLaunch } from "./box.ts";
 import { SessionRefusal } from "./refusal.ts";
 import { REVERSE_TYPES, installReverse } from "./reverse.ts";
@@ -823,8 +823,10 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      * The launch a grant makes: its tools and its box. A box that
      * cannot be had here stops the start: this runs before a mark, a token or a process exists.
      */
-    const launchFor = async (rules: Grant, cwd: string | undefined): Promise<GrantLaunch> => {
-      const launch = launchOf(rules, { home: api.home(), cwd: cwd ?? process.cwd(), socket: api.socket(), sandbox: options.sandbox ?? "srt" });
+    const launchFor = async (rules: Grant, cwd: string | undefined, harness: string): Promise<GrantLaunch> => {
+      const made = launchOf(rules, { home: api.home(), cwd: cwd ?? process.cwd(), socket: api.socket(), sandbox: options.sandbox ?? "srt" });
+      const profile = bindings.find((binding) => binding.instance.id === harness)?.profile;
+      const launch = made.box === undefined || profile === undefined ? made : { ...made, box: withProfile(made.box, profile, harness) };
       await requireBox(launch.box);
       return launch;
     };
@@ -1166,7 +1168,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       // A session asked to run in a worktree gets one made by the git module, and runs in it.
       const worktree = input.worktree === undefined ? undefined : await worktreeFor(ctx, input.harness, input.worktree, input.cwd);
       const cwd = worktree?.path ?? input.cwd;
-      const launch = await launchFor(rules, cwd);
+      const launch = await launchFor(rules, cwd, input.harness);
       // The mode asked for, within the allow-list of the grant: what the grant adds is held too.
       const tools = toolsOfSession(input.tools, launch.tools);
       requireTools(instance.id, instance.sides.control?.tools, tools);
@@ -1269,7 +1271,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             if (gone) restart(ref);
             // The directory the session was started in: a harness that loads a session by it needs the same one.
             const startedIn = restored?.cwd ?? startedOf(ref)?.cwd;
-            const launch = launches ? await launchFor(rules, startedIn) : {};
+            const launch = launches ? await launchFor(rules, startedIn, id.harness) : {};
             // A process launched again keeps the tools the session was started with, within its grant.
             const tools = launches ? toolsOfSession(startedOf(ref)?.tools, launch.tools) : undefined;
             const mark = randomUUID();

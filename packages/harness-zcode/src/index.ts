@@ -93,6 +93,15 @@ export const zcodeKind = defineHarnessKind<ZcodeInstanceOptions>({
   detect: ZCODE_DETECTION,
   options: ZCODE_OPTIONS,
   home: () => join(homedir(), ".zcode"),
+  // Its launcher, the runtime it runs on, and its home (sessions, their database, sign-in and
+  // configuration). Its model endpoint depends on the provider: the installation names it (`net`).
+  profile: {
+    status: "admitted",
+    of: ({ home, control }) => ({ bin }) => ({
+      read: [...bin(control?.binary ?? "zcode"), ...bin("node")],
+      write: [home],
+    }),
+  },
   bind: ({ id, home, model, control }) => ({
     reading: new ZcodeReading({ harness: id, home }),
     control: zcodeControl({ harness: id, home, ...(control ?? {}), ...(model === undefined ? {} : { model }) }),

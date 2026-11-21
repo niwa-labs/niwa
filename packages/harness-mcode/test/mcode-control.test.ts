@@ -16,6 +16,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -37,11 +38,10 @@ import {
   type MinimaxLineage,
 } from "../src/mcode/control.ts";
 import { homeNameOfProfile, homeOfProfile } from "../src/mcode/paths.ts";
-import { mcode } from "../src/mcode/index.ts";
-import { ncode } from "../src/ncode/index.ts";
+import { mcode, mcodeKind } from "../src/mcode/index.ts";
+import { ncode, ncodeKind } from "../src/ncode/index.ts";
 import { eventually, tempDir, live } from "@niwa-labs/testing";
-import { onBoxManifest, useSandbox } from "@niwa-labs/sandbox";
-import type { BoxRecord, LaunchedBox, Sandbox } from "@niwa-labs/sandbox";
+import { resolveProfile } from "@niwa-labs/sandbox";
 
 let dir = "";
 let control: McodeSessionControl | undefined;
@@ -1411,47 +1411,15 @@ test("a question for the person is not handed to a policy function as a tool", a
   expect((await readFile(join(dir, "permission.log"), "utf8")).trim()).toBe(JSON.stringify({ outcome: { outcome: "cancelled" } }));
 });
 
-/** A process sandbox that records the manifest of each box and runs the agent as it is. */
-function recordingBox(): { restore: () => void; records: BoxRecord[] } {
-  const records: BoxRecord[] = [];
-  const nono: Sandbox = {
-    name: "nono",
-    class: "process",
-    available: async () => true,
-    manifest: (spec) => ({ sandbox: "nono", cwd: spec.cwd, env: spec.env }),
-    async launch(spec, argv): Promise<LaunchedBox> {
-      const child = Bun.spawn([...argv], { cwd: spec.cwd, env: { ...spec.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-      return { pid: child.pid, stdin: child.stdin, stdout: child.stdout, stderr: child.stderr, exited: child.exited, kill: () => child.kill() };
-    },
-  };
-  const restore = useSandbox("nono", nono);
-  const forget = onBoxManifest((record) => void records.push(record));
-  return {
-    records,
-    restore: () => {
-      forget();
-      restore();
-    },
-  };
-}
-
-for (const [label, make, expected, forked] of [
-  ["its home", (binary: string, home: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary, home }), (home: string) => home, false],
-  ["the home of its profile", (binary: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary, lineage: "fork", profile: "work" }), () => homeOfProfile("work"), true],
-  ["the default home", (binary: string) => mcodeControl({ mode: "full", harness: harnessId("mcode-fake"), binary }), () => homeOfProfile(undefined), false],
+for (const [label, bound, expected] of [
+  ["its home", (home: string) => mcodeKind.bind({ id: "mcode-fake", home }), (home: string) => home],
+  ["the home of its profile", () => ncodeKind.bind({ id: "mcode-fake", profile: "work" }), () => homeOfProfile("work")],
+  ["the default home", () => mcodeKind.bind({ id: "mcode-fake" }), () => homeOfProfile(undefined)],
 ] as const) {
-  test(`a boxed session may write to the directory the installation keeps its sessions in: ${label}`, async () => {
-    const fake = await fakeControl(forked ? { lineage: "fork" } : {});
-    await fake.dispose();
-    const home = join(dir, "install-home");
-    const box = recordingBox();
-    try {
-      control = make(join(dir, "mcode"), home);
-      await control.start({ prompt: promptFromText(""), cwd: dir, box: { sandbox: "nono", spec: { cwd: dir, write: [dir], env: {} } } });
-      expect(box.records[0]?.spec.write.map(String)).toEqual([dir, expected(home)]);
-    } finally {
-      box.restore();
-    }
+  test(`the profile of an installation writes the directory it keeps its sessions in: ${label}`, () => {
+    const home = "/srv/install-home";
+    const profile = resolveProfile(bound(home).profile ?? {}, "mcode-fake", { home: homedir(), env: {} });
+    expect(profile.write).toEqual([expected(home)]);
   });
 }
 

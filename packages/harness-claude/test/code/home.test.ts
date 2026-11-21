@@ -5,22 +5,35 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { harnessId, promptFromText } from "@niwa-labs/harness";
-import { onSpawn } from "@niwa-labs/sandbox";
+import { onSpawn, resolveProfile } from "@niwa-labs/sandbox";
 import { fakeSdkQuery } from "@niwa-labs/testing";
 
 import { claudeCodeControl } from "../../src/code/control.ts";
-import { claudeHomeEnv, claudeNeeds } from "../../src/code/needs.ts";
+import { claudeCodeKind } from "../../src/code/index.ts";
+import { claudeHomeEnv } from "../../src/code/needs.ts";
+import { claudeSdkKind } from "../../src/sdk/index.ts";
 import { ClaudeSdkControl } from "../../src/sdk/control.ts";
 
 const OTHER = "/tmp/niwa-other-claude-home";
 const DEFAULT = join(homedir(), ".claude");
 
-test("a process is told its installation only when it is not the default one, and a box may write in it", () => {
+test("a process is told its installation only when it is not the default one", () => {
   expect(claudeHomeEnv(undefined)).toEqual({});
   expect(claudeHomeEnv(DEFAULT)).toEqual({});
   expect(claudeHomeEnv(OTHER)).toEqual({ CLAUDE_CONFIG_DIR: OTHER });
-  expect(claudeNeeds(OTHER).write).toEqual([OTHER]);
-  expect(claudeNeeds(undefined).write).toEqual([DEFAULT]);
+});
+
+test("an installation's profile writes its directory, and the configuration file beside the default one", () => {
+  const resolved = (kind: typeof claudeCodeKind | typeof claudeSdkKind, home?: string) =>
+    resolveProfile(kind.bind({ id: "claude-a", ...(home === undefined ? {} : { home }) }).profile ?? {}, "claude-a", { home: homedir(), env: { PATH: "/nowhere" } });
+  for (const kind of [claudeCodeKind, claudeSdkKind]) {
+    expect(resolved(kind, OTHER).write).toEqual([OTHER]);
+    expect(resolved(kind).write).toEqual([DEFAULT, join(homedir(), ".claude.json")]);
+    expect(resolved(kind).net).toEqual(["api.anthropic.com"]);
+    // The runtime niwa's adapter runs on is in it.
+    expect(resolved(kind).read).toContain(process.execPath);
+    expect(kind.profile.status).toBe("admitted");
+  }
 });
 
 test("the ACP adapter is started bound to the installation of its instance", async () => {

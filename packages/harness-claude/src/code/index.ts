@@ -17,6 +17,7 @@ import { CLAUDE_CODE_ADAPTER, claudeCodeControl } from "./control.ts";
 import { CLAUDE_CODE_LAUNCH } from "./launch.ts";
 import type { ClaudeCodeControlOptions } from "./control.ts";
 import { installClaudeCodeInsert } from "./insert/index.ts";
+import { claudeProfile } from "./needs.ts";
 import { CLAUDE_OPTIONS } from "./options.ts";
 import { ClaudeCodeReading } from "./reading.ts";
 
@@ -105,6 +106,7 @@ export const claudeCodeKind = defineHarnessKind<ClaudeCodeInstanceOptions>({
   detect: CLAUDE_CODE_DETECTION,
   options: CLAUDE_OPTIONS,
   home: () => join(homedir(), ".claude"),
+  profile: { status: "admitted", of: ({ home, control }) => claudeProfile(home, control?.executable) },
   bind: ({ id, home, model, control }) => ({
     reading: new ClaudeCodeReading({ harness: id, home }),
     control: claudeCodeControl({ harness: id, ...(control ?? {}), ...(model === undefined ? {} : { model }), home }),

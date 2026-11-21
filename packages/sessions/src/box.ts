@@ -10,13 +10,14 @@
  * wants a box.
  */
 
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE, rule, specsOf } from "@niwa-labs/core";
 import type { Grant, Rule, RuleSpec, Verb } from "@niwa-labs/core";
 import type { ToolAllowance, ToolsMode } from "@niwa-labs/harness";
-import { BoxRefused } from "@niwa-labs/sandbox";
-import type { BoxRequest, BoxSandboxName, BoxSpecInput } from "@niwa-labs/sandbox";
+import { BoxRefused, boxSpec, resolveProfile } from "@niwa-labs/sandbox";
+import type { BoxProfile, BoxRequest, BoxSandboxName, BoxSpecInput } from "@niwa-labs/sandbox";
 
 import { SessionRefusal } from "./refusal.ts";
 
@@ -96,8 +97,8 @@ export function toolsOfSession(asked: ToolsMode | undefined, granted: ToolAllowa
 /**
  * The launch of a grant. `tool:*` and no `tool:` rule at all leave the tools to the harness; the
  * tool names are the harness's own. Any `write:` or `net:` rule makes a box: its writable places
- * and its hosts are the rules, the host's socket is let through so the session can call niwa, and what
- * the harness needs inside is added by the funnel. The owner's token and the host key are never readable
+ * and its hosts are the rules, the host's socket is let through so the session can call niwa, and the
+ * profile of the installation is added to it. The owner's token and the host key are never readable
  * in it.
  */
 export function launchOf(given: Grant, plan: LaunchPlan): GrantLaunch {
@@ -123,4 +124,15 @@ export function launchOf(given: Grant, plan: LaunchPlan): GrantLaunch {
   };
   const box: BoxRequest = { sandbox: plan.sandbox, spec };
   return tools === undefined ? { box } : { tools, box };
+}
+
+/** A box with the profile of the installation its session runs on added: its program, its home, its endpoints. */
+export function withProfile(box: BoxRequest, profile: BoxProfile, harness: string): BoxRequest {
+  const own = resolveProfile(profile, harness, { home: homedir(), env: process.env });
+  const spec = boxSpec(box.spec);
+  const unique = (paths: readonly string[]) => [...new Set(paths)];
+  return {
+    ...box,
+    spec: { ...spec, read: unique([...spec.read, ...own.read, ...own.programs]), write: unique([...spec.write, ...own.write]), net: unique([...spec.net, ...own.net]) },
+  };
 }

@@ -60,8 +60,8 @@ import type {
   ToolsMode,
   VisibleActions,
 } from "@niwa-labs/harness";
-import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
-import type { AgentProcess, BoxRequest, HarnessNeeds } from "@niwa-labs/sandbox";
+import { LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
+import type { AgentProcess, BoxRequest } from "@niwa-labs/sandbox";
 
 import { notificationAction, requestAction } from "./dispatch.ts";
 import type { Answered, TurnEnd } from "./dispatch.ts";
@@ -152,8 +152,6 @@ const STDERR_TAIL_CHARS = 2000;
 /** The subscription kind the server takes, newest spelling first: the enum moved between bundles. */
 const DELIVERY_KINDS = ["desktop-continuous", "desktop"] as const;
 
-/** Where ZCode keeps its files when nothing says otherwise. */
-const DEFAULT_HOME = homePath(".zcode");
 
 /**
  * One envelope: a response, a notification or a request of the server, by which fields are present.
@@ -401,12 +399,11 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   const harnessId = HarnessIdSchema.parse(options.harness);
 
   // The installation is resolved once. The reading side opens its database; the child is told the same
-  // directory and database (a child left to itself uses `~/.zcode`), and a box is given the same
-  // directory to write: ZCode's model endpoint depends on the provider, so the grant names no host.
+  // directory and database (a child left to itself uses `~/.zcode`). What a box gives it is the
+  // installation's profile, resolved with the rest of the box.
   const home = options.home === undefined ? undefined : resolve(options.home);
   const installationEnv: Readonly<Record<string, string>> =
     home === undefined ? {} : { ZCODE_STORAGE_DIR: home, ZCODE_SESSION_DB_PATH: dbPathOf(home) };
-  const needs: HarnessNeeds = { write: [home ?? DEFAULT_HOME], net: [] };
 
   /** The sessions by id; `owned` also holds those still starting. */
   const sessions = new Map<string, LiveSession>();
@@ -796,7 +793,6 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       // The installation comes last: a child that kept to another one would write where the reader does not look.
       env: { ...plan.env, ...installationEnv },
       box: plan.box,
-      needs,
     });
     const session = new LiveSession(child);
     owned.add(session);

@@ -1,9 +1,12 @@
-/** What Claude Code needs inside a box, shared by its ACP and SDK harnesses. */
+/** What Claude Code needs inside a box and of its environment, shared by its ACP and SDK harnesses. */
 
 import { BUILTIN_TOOL_NAMES } from "@anthropic-ai/claude-agent-sdk";
 
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { homePath } from "@niwa-labs/sandbox";
-import type { HarnessNeeds } from "@niwa-labs/sandbox";
+import type { BoxProfile } from "@niwa-labs/sandbox";
 
 /** The directory Claude Code keeps its files in when nothing says otherwise. */
 const DEFAULT_HOME = homePath(".claude");
@@ -11,13 +14,37 @@ const DEFAULT_HOME = homePath(".claude");
 /** The variable that tells Claude Code where its directory is. */
 const CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR";
 
+/** The root of an installed package, from the module it resolves to. */
+function packageRootOf(specifier: string): string[] {
+  try {
+    const entry = fileURLToPath(import.meta.resolve(specifier));
+    const at = entry.lastIndexOf(`/node_modules/${specifier}/`);
+    return at < 0 ? [] : [entry.slice(0, at + `/node_modules/${specifier}`.length)];
+  } catch {
+    return [];
+  }
+}
+
 /**
- * Its own directory and the endpoint of its model: the directory of the installation the instance
- * is bound to (`~/.claude` by default). Only directories: nono takes a file by another flag, so a
- * file such as `~/.claude.json` is for the grant's spec to name.
+ * What a Claude Code installation needs inside a box: the `claude` it runs, the runtime and the
+ * packages niwa's own adapter runs on, its directory (sign-in, sessions, settings, plugins) and,
+ * for the default directory, the configuration file beside it, and the endpoint of its model.
+ *
+ * Its sign-in on macOS is in the Keychain, which is no path: no profile can keep another box from
+ * asking the Keychain for it, and none can give it to this one.
  */
-export function claudeNeeds(home: string | undefined): HarnessNeeds {
-  return { write: [home ?? DEFAULT_HOME], net: ["api.anthropic.com"] };
+export function claudeProfile(home: string, executable: string | undefined): BoxProfile {
+  return ({ bin }) => ({
+    // Programs and the packages they run, all through `bin`: they are never closed to another box.
+    read: [
+      ...bin(executable ?? "claude"),
+      ...bin(process.execPath),
+      ...bin(fileURLToPath(new URL("../..", import.meta.url))),
+      ...packageRootOf("@anthropic-ai/claude-agent-sdk").flatMap((root) => bin(root)),
+    ],
+    write: [home, ...(home === DEFAULT_HOME ? [join(dirname(home), ".claude.json")] : [])],
+    net: ["api.anthropic.com"],
+  });
 }
 
 /**

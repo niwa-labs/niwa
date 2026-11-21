@@ -101,6 +101,17 @@ export const codexKind = defineHarnessKind<CodexInstanceOptions>({
   detect: CODEX_DETECTION,
   options: CODEX_OPTIONS,
   home: defaultHome,
+  // Its program (a launcher that runs the app's own build), its home (sign-in, rollouts, history,
+  // configuration, caches) and the endpoints of its model and its sign-in. A session ran a turn in a
+  // box closed to reading with this profile alone.
+  profile: {
+    status: "verified",
+    of: ({ home, sessionsDir, control }) => ({ bin }) => ({
+      read: bin(control?.binary ?? "codex"),
+      write: [home, ...(sessionsDir === undefined ? [] : [sessionsDir])],
+      net: ["api.openai.com", "chatgpt.com"],
+    }),
+  },
   bind: ({ id, home, model, sessionsDir, control }) => ({
     reading: new CodexReading({ harness: id, home, ...(sessionsDir === undefined ? {} : { sessionsDir }) }),
     control: codexControl({ ...(control ?? {}), ...(model === undefined ? {} : { model }), harness: id, home }),

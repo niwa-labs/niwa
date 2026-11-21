@@ -24,7 +24,7 @@ import {
   sessionId,
 } from "@niwa-labs/harness";
 import type { Harness, LifeEvent, ReverseHandler, SessionId } from "@niwa-labs/harness";
-import { homePath, onBoxManifest, onSpawn, useSandbox } from "@niwa-labs/sandbox";
+import { onBoxManifest, onSpawn, useSandbox } from "@niwa-labs/sandbox";
 import type { BoxRecord, LaunchedBox, Sandbox } from "@niwa-labs/sandbox";
 import { ZCODE_FAKE as FAKE, tempDir } from "@niwa-labs/testing";
 
@@ -846,7 +846,7 @@ function plainNono(): Sandbox {
   };
 }
 
-test("a session starts inside a box: the directory of ZCode is added to the manifest, which is recorded before the process", async () => {
+test("a session starts inside the box it is given, whose manifest is recorded before the process", async () => {
   const records: BoxRecord[] = [];
   const restore = useSandbox("nono", plainNono());
   const forget = onBoxManifest((record) => void records.push(record));
@@ -859,7 +859,7 @@ test("a session starts inside a box: the directory of ZCode is added to the mani
       box: { sandbox: "nono", spec: { cwd: dir, write: [dir], env: {} } },
     });
     expect(String(started.session.native)).toBe("sess_fake-1");
-    expect(records[0]?.spec.write.map(String)).toEqual([dir, homePath(".zcode")]);
+    expect(records[0]?.spec.write.map(String)).toEqual([dir]);
     expect(Object.entries(records[0]?.spec.env ?? {})).toContainEqual(["NIWA_ID", "k3f9"]);
     expect((await logOf("env.log"))[0]).toMatchObject({ id: "k3f9" });
   } finally {
@@ -875,8 +875,8 @@ test("the child, the box and the reader all use the installation the control sid
   const forget = onBoxManifest((record) => void records.push(record));
   try {
     await control({ home }).start({ prompt: hello, cwd: dir, box: { sandbox: "nono", spec: { cwd: dir, write: [dir], env: {} } } });
-    // The grant names the installation, not `~/.zcode`; the child keeps its sessions where the reader looks.
-    expect(records[0]?.spec.write.map(String)).toEqual([dir, home]);
+    // The box is the one given, the installation's profile in it; the child keeps its sessions where the reader looks.
+    expect(records[0]?.spec.write.map(String)).toEqual([dir]);
     expect((await logOf("env.log"))[0]).toMatchObject({ storage: home, db: dbPathOf(home) });
   } finally {
     forget();

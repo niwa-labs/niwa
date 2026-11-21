@@ -64,7 +64,7 @@ import type {
   ReverseHandler,
 } from "@niwa-labs/harness";
 import { LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
-import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
+import type { AgentProcess } from "@niwa-labs/sandbox";
 
 import { AcpClient, acpVariant, answerText, readVariant } from "@niwa-labs/acp";
 import type { AgentNotification, AgentRequest, RequestId, RpcOutcome, UnknownVariant } from "@niwa-labs/acp";
@@ -128,15 +128,6 @@ export const PROFILE_SUPPORT: Readonly<Record<MinimaxLineage, boolean>> = {
   upstream: false,
   fork: true,
 };
-
-/**
- * What mcode needs inside a box: the directory of the installation, where its sessions, logs and
- * sign-in live. It depends on the installation and its profile, not on the program. Its model
- * endpoint depends on the profile too, so the grant names it.
- */
-function mcodeNeeds(home: string): HarnessNeeds {
-  return { write: [home], net: [] };
-}
 
 export interface McodeControlOptions {
   /** The harness instance id: half of a session's identity. */
@@ -1091,7 +1082,6 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       env: { MCODE_DISABLE_TELEMETRY: "1", MCODE_SERVER_MODE: "off", ...plan.env },
       detached: true,
       box: plan.box,
-      needs: mcodeNeeds(home),
     });
     if (disposed) {
       // The control side was closed while the process was being started: nothing owns it yet, so it goes here.

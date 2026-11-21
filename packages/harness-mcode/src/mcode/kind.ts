@@ -10,7 +10,7 @@ import { existsSync } from "node:fs";
 import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
 import type { HarnessDetection, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
-import { MCODE_LAUNCH, mcodeControl } from "./control.ts";
+import { DEFAULT_BINARIES, MCODE_LAUNCH, mcodeControl } from "./control.ts";
 import type { McodeControlOptions, MinimaxLineage } from "./control.ts";
 import { durablePathOf } from "./durable.ts";
 import { DEFAULT_PROFILE, homeOfProfile } from "./paths.ts";
@@ -104,6 +104,17 @@ export function minimaxKind(spec: MinimaxKindSpec) {
     detect: spec.detect,
     options: kindOptions(spec.name, NoOptions),
     home: (options) => homeOfProfile(profileNamed(options)),
+    // Its program, the runtime the program runs on, and the home of its profile (sign-in, sessions,
+    // logs, configuration). Its model endpoint depends on the profile: the installation names it (`net`).
+    // The published build ran a turn in a box closed to reading with this profile alone; the fork
+    // has not been run so yet.
+    profile: {
+      status: spec.lineage === "upstream" ? "verified" : "admitted",
+      of: (options) => ({ bin }) => ({
+        read: [...bin(options.control?.binary ?? DEFAULT_BINARIES[spec.lineage]), ...bin("node")],
+        write: [options.home],
+      }),
+    },
     bind: (options) => ({
       reading: new McodeReading({ harness: options.id, home: options.home }),
       control: mcodeControl({

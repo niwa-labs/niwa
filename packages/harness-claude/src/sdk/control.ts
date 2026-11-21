@@ -59,7 +59,7 @@ import type {
 import { LIVE_PROCESS_REFUSAL, requireBox, spawnAgentNow } from "@niwa-labs/sandbox";
 
 import { localClaude } from "../code/control.ts";
-import { claudeHomeEnv, claudeNeeds } from "../code/needs.ts";
+import { claudeHomeEnv } from "../code/needs.ts";
 import { claudeBlockOf, claudeEnv } from "../code/options.ts";
 import type { ClaudeOptions } from "../code/options.ts";
 
@@ -769,7 +769,6 @@ export class ClaudeSdkControl implements SessionControl {
       env: additions,
       unset: Object.keys(process.env).filter((name) => !(name in spawnOptions.env)),
       box: plan.box,
-      needs: claudeNeeds(this.#home),
     });
     // The SDK reads no stderr; an undrained pipe would stall the process.
     child.stderr.resume();

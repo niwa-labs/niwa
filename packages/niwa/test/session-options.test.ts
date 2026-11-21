@@ -271,6 +271,7 @@ const claudeLike = (control: SessionControl, declared = CLAUDE_CODE_CAPABILITIES
     implements: ["control"],
     options: CLAUDE_OPTIONS,
     home: () => "/tmp/fake-home",
+    profile: { status: "admitted", of: () => ({}) },
     bind: () => ({ control }),
   });
 

@@ -283,8 +283,8 @@ export const SessionMarked = record(
  * before the process exists.
  *
  * The mark is the one the session was started with, and `session.marked` pairs it with the
- * session once the harness has named it. The spec is the one the sandbox was given, with what
- * the harness needs inside the box added. The environment of the process is kept by its names
+ * session once the harness has named it. The spec is the one the sandbox was given, the
+ * installation's profile in it. The environment of the process is kept by its names
  * only: its values hold the session's token and the keys a harness is given for its provider,
  * and the journal keeps neither.
  */

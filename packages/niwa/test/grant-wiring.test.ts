@@ -291,6 +291,18 @@ test("session.start gives the control side the tools and the box of the grant, a
   expect(all?.box).toBeUndefined();
 });
 
+test("a session's box takes the profile of its installation: its program, its places and its hosts", async () => {
+  const control = new Recording();
+  const profile = { read: ["/opt/rec/bin"], write: ["/srv/rec-home"], net: ["api.rec.example"] };
+  const host = await served([{ instance: instance("rec"), control, profile }]);
+  undo.push(useSandbox("srt", passthrough("srt", () => host)));
+  await host.call(START, { harness: "rec", prompt: "go", cwd: "/work", visible: { actions: ["write:/work/*", "net:example.com"] } });
+  const spec = control.starts[0]?.box?.spec;
+  expect(spec?.read).toEqual(["/opt/rec/bin"]);
+  expect(spec?.write).toEqual(["/work", "/srv/rec-home"]);
+  expect(spec?.net).toEqual(["example.com", "api.rec.example"]);
+});
+
 test("the sandbox the host names is the one a box is made in", async () => {
   const control = new Recording();
   const host = await served([{ instance: instance("rec"), control }], { sandbox: "nono" });
@@ -448,7 +460,9 @@ test("a grant with write and net starts the process in a box whose manifest is r
   const manifests: BoxRecord[] = [];
   const journalAtLaunch: string[][] = [];
   undo.push(onSpawn((event) => spawns.push(event)), onBoxManifest((made) => void manifests.push(made)));
-  const host = await served([{ instance: instance("codex-fake"), control: codex }]);
+  // The installation's profile: what Codex keeps in its home and the endpoints it reaches.
+  const profile = { write: [homePath(".codex")], net: ["api.openai.com", "chatgpt.com"] };
+  const host = await served([{ instance: instance("codex-fake"), control: codex, profile }]);
   undo.push(useSandbox("srt", passthrough("srt", () => host, journalAtLaunch)));
 
   const { ref: session } = (await host.call(START, {
@@ -471,7 +485,7 @@ test("a grant with write and net starts the process in a box whose manifest is r
   expect(data.harness).toBe("codex-fake");
   expect(data.sandbox).toBe("srt");
 
-  // It matches the spec the funnel made: the grant's places and hosts, then what codex needs inside.
+  // It matches the spec the funnel made: the grant's places and hosts, then the installation's profile.
   expect(data.spec.write.map(String)).toEqual([dir, homePath(".codex")]);
   expect(data.spec.net.map(String)).toEqual(["registry.npmjs.org", "api.openai.com", "chatgpt.com"]);
   expect(String(data.spec.cwd)).toBe(dir);

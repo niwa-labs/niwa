@@ -11,6 +11,7 @@ import { ADMITTED, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@
 import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CLAUDE_OPTIONS } from "../code/options.ts";
+import { claudeProfile } from "../code/needs.ts";
 import { ClaudeCodeReading } from "../code/reading.ts";
 import { CLAUDE_SDK_LAUNCH, ClaudeSdkControl } from "./control.ts";
 import type { ClaudeSdkControlOptions } from "./control.ts";
@@ -103,6 +104,7 @@ export const claudeSdkKind = defineHarnessKind<ClaudeSdkInstanceOptions>({
   detect: CLAUDE_SDK_DETECTION,
   options: CLAUDE_OPTIONS,
   home: () => join(homedir(), ".claude"),
+  profile: { status: "admitted", of: ({ home, executable }) => claudeProfile(home, executable) },
   bind: ({ id, home, model, effort, executable, mode, permissions, claude }) => ({
     reading: new ClaudeCodeReading({ harness: id, home }),
     control: new ClaudeSdkControl({

@@ -35,14 +35,6 @@ export interface BoxRequest {
   readonly mark?: string;
 }
 
-/** What a harness needs to live inside a box, apart from what the grant gives. Added to the spec, visibly. */
-export interface HarnessNeeds {
-  /** The harness's own directories, absolute: its logs and authorisation live there. */
-  readonly write: readonly string[];
-  /** The hosts of its model endpoint, where the harness has a fixed one. */
-  readonly net: readonly string[];
-}
-
 /** Why a resume that reuses a running process cannot take new tools or a new box. */
 export const LIVE_PROCESS_REFUSAL = "a running session keeps the tools and the box its process was born with";
 
@@ -65,8 +57,6 @@ export interface AgentLaunch {
   readonly detached?: boolean;
   /** Run inside a sandbox. */
   readonly box?: BoxRequest;
-  /** What the harness needs inside a box. */
-  readonly needs?: HarnessNeeds;
 }
 
 /**
@@ -174,12 +164,9 @@ function inherited(unset: readonly string[]): Record<string, string> {
  */
 function boxedSpec(launch: AgentLaunch, box: BoxRequest): BoxSpec {
   const given = boxSpec(box.spec);
-  const needs = launch.needs ?? { write: [], net: [] };
   return boxSpec({
     ...given,
     cwd: launch.cwd ?? given.cwd,
-    write: [...new Set([...given.write, ...needs.write])],
-    net: [...new Set([...given.net, ...needs.net])],
     env: { HOME: homedir(), PATH: process.env["PATH"] ?? "/usr/bin:/bin", ...given.env, ...launch.env },
   });
 }

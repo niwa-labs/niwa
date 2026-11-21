@@ -79,7 +79,7 @@ import {
   ClaudeAgentRequest,
   claudeToolName,
 } from "./protocol.ts";
-import { claudeHomeEnv, claudeNeeds, claudeToolsOff } from "../needs.ts";
+import { claudeHomeEnv, claudeToolsOff } from "../needs.ts";
 
 /**
  * The adapter's mode for each working mode. The adapter takes no `auto`: it answers "Invalid Mode"
@@ -1003,7 +1003,6 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       unset: options.unsetEnv,
       env: childEnv,
       box: plan.box,
-      needs: claudeNeeds(options.home),
     }).catch((error: unknown) => {
       if (error instanceof SandboxUnavailable) throw error;
       const cause = error instanceof Error ? error.message : String(error);

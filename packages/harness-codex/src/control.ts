@@ -52,8 +52,8 @@ import {
   HarnessIdSchema,
   sessionId as makeSessionId,
 } from "@niwa-labs/harness";
-import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
-import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
+import { LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
+import type { AgentProcess } from "@niwa-labs/sandbox";
 
 import { incomingOf, incomingOfDrifted } from "./incoming.ts";
 import type { EndedTurn, Incoming } from "./incoming.ts";
@@ -93,9 +93,9 @@ export interface CodexControlOptions {
   readonly binary?: string;
   /**
    * The home of the installation its sessions belong to: every process is started with it as
-   * `CODEX_HOME`, and a box lets it write there. A kind sets it from the home it reads, so a
-   * session started here is one that is listed and read there. Without it the process keeps the
-   * environment it inherits, and a box lets it write in `~/.codex`.
+   * `CODEX_HOME`. A kind sets it from the home it reads, so a session started here is one that is
+   * listed and read there, and its profile gives a box that home. Without it the process keeps the
+   * environment it inherits.
    */
   readonly home?: string;
   /** The model sessions talk to, when the caller does not choose one per start. */
@@ -650,7 +650,6 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         DO_NOT_TRACK: "1",
       },
       box: plan.box,
-      needs: needs(options.home),
     });
     spawning.add(creating);
     let child: AgentProcess;
@@ -1204,14 +1203,6 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       await Promise.all([...owned].map((session) => stopSession(session)));
       sessions.clear();
     },
-  };
-}
-
-/** What Codex needs inside a box: its own directory and the endpoints of its model and its sign-in. */
-function needs(home: string | undefined): HarnessNeeds {
-  return {
-    write: [home ?? homePath(".codex")],
-    net: ["api.openai.com", "chatgpt.com"],
   };
 }
 
