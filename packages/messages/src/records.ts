@@ -115,7 +115,7 @@ export function messagesOf(journal: JournalReader | undefined): Message[] {
  * line of the text, cut to fit.
  */
 export function describeMessage(message: Message): EntityDescription {
-  const first = message.body.text.split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const first = message.body.text.split(/[\r\n]/, 1)[0]?.trim() ?? "";
   const line = `${message.body.type}: ${first}`.trim();
   const cut = line.length <= 60 ? line : `${line.slice(0, 59).trimEnd()}…`;
   return EntityDescription.parse(cut);
