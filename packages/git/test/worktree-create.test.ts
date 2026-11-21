@@ -60,3 +60,15 @@ test("the remote shown is the one a push of the base goes to, and every push URL
   gitIn(repo, "remote", "set-url", "--add", "--push", "fork", "git@forge.example:other/app.git");
   expect(await verifiedRemote(repo, "main")).toBeUndefined();
 });
+
+test("an unconfigured branch pushes to the only remote even when it is not origin", async () => {
+  const repo = await makeRepo();
+  gitIn(repo, "remote", "add", "fork", "git@forge.example:me/app.git");
+  expect(await verifiedRemote(repo, "main")).toEqual({ name: "fork", host: "forge.example", path: "me/app" });
+
+  gitIn(repo, "remote", "add", "upstream", "https://forge.example/acme/app.git");
+  expect(await verifiedRemote(repo, "main")).toBeUndefined();
+
+  gitIn(repo, "remote", "add", "origin", "https://forge.example/acme/app.git");
+  expect(await verifiedRemote(repo, "main")).toEqual({ name: "origin", host: "forge.example", path: "acme/app" });
+});

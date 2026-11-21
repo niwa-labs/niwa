@@ -160,13 +160,15 @@ async function configured(repo: string, key: string): Promise<string> {
 
 /**
  * The remote a push of `base` goes to, by the rules git pushes by: the push remote of the branch, else
- * `remote.pushDefault`, else the remote the branch tracks, else `origin`. A branch that tracks a local branch
- * (remote ".") goes to no remote.
+ * `remote.pushDefault`, else the remote the branch tracks, else the only remote or `origin`. A branch that
+ * tracks a local branch (remote ".") goes to no remote.
  */
 async function pushRemoteOf(repo: string, base: string): Promise<string | undefined> {
   const named = (await configured(repo, `branch.${base}.pushRemote`)) || (await configured(repo, "remote.pushDefault"));
-  const name = named || (await configured(repo, `branch.${base}.remote`)) || "origin";
-  return name === "." ? undefined : name;
+  const name = named || (await configured(repo, `branch.${base}.remote`));
+  if (name !== "") return name === "." ? undefined : name;
+  const remotes = (await gitRun(repo, ["remote"])).stdout.trim().split("\n");
+  return remotes.length === 1 && remotes[0] !== "" ? remotes[0] : "origin";
 }
 
 /**
