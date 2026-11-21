@@ -168,6 +168,10 @@ interface ChoiceFields {
  * The tool, with `key` one of the ids of the choices and `value` the schema of the one choice, or any
  * of them when there are several. A tool layer that reads the schema then passes a number as a
  * number, not as text. With no choice the tool is returned as it is.
+ *
+ * With several choices the value is also bound to its id: the schemas of the choices are listed
+ * once under `value`, and a chain of `if`/`then`/`else` at the root of the tool picks the one the
+ * id names. A combinator such as `anyOf` at the root is refused by some model APIs, a conditional is not.
  */
 function withChoices(tool: Tool, choices: readonly Choice[], fields: ChoiceFields): Tool {
   const [first] = choices;
@@ -197,11 +201,30 @@ function withChoices(tool: Tool, choices: readonly Choice[], fields: ChoiceField
         [fields.value]: one ? (placed[0] ?? null) : { anyOf: placed },
       },
       required: [fields.key, fields.value],
+      ...(one ? {} : bound(choices, fields, place)),
       ...(Object.keys(defs).length === 0
         ? {}
         : { $defs: { ...rootDefs, ...defs } }),
     },
   };
+}
+
+/**
+ * The root of a tool that holds each value to the schema of its id: for the id of the first choice the
+ * value is its schema, else for the id of the next one, and so on. The last choice needs no test of its
+ * own, because the ids are the only ones the key takes.
+ */
+function bound(choices: readonly Choice[], fields: ChoiceFields, place: string): Record<string, JsonValue> {
+  const schemaOf = (at: number): JsonValue => ({ properties: { [fields.value]: { $ref: `${place}/anyOf/${at}` } } });
+  let chain = schemaOf(choices.length - 1);
+  for (let at = choices.length - 2; at >= 0; at -= 1) {
+    chain = {
+      if: { properties: { [fields.key]: { const: choices[at]?.id ?? null } }, required: [fields.key] },
+      then: schemaOf(at),
+      else: chain,
+    };
+  }
+  return objectOf(chain);
 }
 
 /** The members of a JSON object; nothing when the value is anything else. */

@@ -190,8 +190,63 @@ test("a result schema keeps its meaning once it is embedded, whichever dialect w
   ];
   for (const schema of [draft7, named, modern]) {
     const one = withAssignedTasks(FINISH, [{ task: "task-1", description: "d", result: schema }]);
+    const two = withAssignedTasks(FINISH, [
+      { task: "task-1", description: "d", result: schema },
+      { task: "task-2", description: "e", result: modern },
+    ]);
     for (const sample of samples) {
       expect(accepts(one.inputSchema, { task: "task-1", result: sample })).toBe(accepts(schema, sample));
+      expect(accepts(two.inputSchema, { task: "task-1", result: sample })).toBe(accepts(schema, sample));
     }
   }
+});
+
+test("a value is held to the schema of the id it is given with", () => {
+  const tool: Tool = {
+    name: "submit_answer",
+    description: "",
+    inputSchema: { type: "object", properties: { question: { type: "string" }, value: {} }, required: ["question", "value"] },
+  };
+  const shown = withOpenQuestions(tool, [
+    { request: "req_text", schema: { type: "string" } },
+    { request: "req_count", schema: { type: "integer" } },
+    { request: "req_flag", schema: { type: "boolean" } },
+  ]).inputSchema;
+  const given = (question: string, value: unknown) => accepts(shown, { question, value });
+  expect(given("req_text", "yes")).toBe(true);
+  expect(given("req_count", 12)).toBe(true);
+  expect(given("req_flag", false)).toBe(true);
+  // The value of another question is not an answer to this one.
+  expect(given("req_text", 12)).toBe(false);
+  expect(given("req_count", "yes")).toBe(false);
+  expect(given("req_flag", 12)).toBe(false);
+  // The id is still one of the open ones, and both fields are still required.
+  expect(given("req_other", "yes")).toBe(false);
+  expect(accepts(shown, { question: "req_text" })).toBe(false);
+  // No combinator at the root, which some model APIs refuse.
+  for (const keyword of ["anyOf", "oneOf", "allOf"]) expect(Object.keys(shown)).not.toContain(keyword);
+});
+
+test("the schemas of several choices keep their own references and definitions", () => {
+  const tool: Tool = {
+    name: "task_finish",
+    description: "",
+    inputSchema: { type: "object", properties: { task: { type: "string" }, result: {} }, required: ["task", "result"] },
+  };
+  const tree = {
+    type: "object",
+    properties: { kids: { type: "array", items: { $ref: "#" } }, thing: { $ref: "#/$defs/Thing" } },
+    $defs: { Thing: { type: "object", properties: { x: { type: "number" } }, required: ["x"] } },
+  };
+  const loose = { type: "object", properties: { label: { type: "string" } }, required: ["label"] };
+  const shown = withAssignedTasks(tool, [
+    { task: "task-1", description: "a", result: tree },
+    { task: "task-2", description: "b", result: loose },
+  ]).inputSchema;
+  expect(accepts(shown, { task: "task-1", result: { kids: [{ thing: { x: 1 } }] } })).toBe(true);
+  expect(accepts(shown, { task: "task-1", result: { kids: [{ thing: { x: "no" } }] } })).toBe(false);
+  expect(accepts(shown, { task: "task-1", result: { label: "x" } })).toBe(true);
+  expect(accepts(shown, { task: "task-2", result: { label: "x" } })).toBe(true);
+  expect(accepts(shown, { task: "task-2", result: { label: 1 } })).toBe(false);
+  expect(accepts(shown, { task: "task-2", result: {} })).toBe(false);
 });
