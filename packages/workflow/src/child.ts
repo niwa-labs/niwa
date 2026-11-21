@@ -329,20 +329,44 @@ function typeNamed(type: unknown, call: string): { name: string; version?: numbe
   throw new TypeError(`${call}: a type is a name, or a record type imported from the records entry of a plugin`);
 }
 
-globals.wait = (type: unknown, opts: { filter?: Record<string, unknown>; from?: number; timeout?: Duration; label?: string } = {}): Promise<unknown> => {
-  let named: { name: string; version?: number };
+/** What a wait is given besides its type. */
+interface WaitOptions {
+  filter?: Record<string, unknown>;
+  from?: number;
+  timeout?: Duration;
+  label?: string;
+}
+
+/**
+ * The type of a wait and what it is given: a type, or a query of one type, as a plugin's query builder gives it, whose
+ * filter and position are the wait's (the options say the position when they say one).
+ */
+function waitOf(first: unknown, opts: WaitOptions): { named: { name: string; version?: number }; filter?: Record<string, unknown>; from?: number } {
+  const query = typeof first === "object" && first !== null && "types" in first ? (first as { types?: unknown; filter?: Record<string, unknown>; from?: number; stream?: unknown }) : undefined;
+  if (query === undefined) {
+    return { named: typeNamed(first, "wait(type)"), ...(opts.filter === undefined ? {} : { filter: opts.filter }), ...(opts.from === undefined ? {} : { from: opts.from }) };
+  }
+  if (!Array.isArray(query.types) || query.types.length !== 1) throw new TypeError("wait(query): a wait waits for one type, and the query names " + (Array.isArray(query.types) ? String(query.types.length) : "none"));
+  if (query.stream !== undefined) throw new TypeError("wait(query): a wait looks at every stream, and the query names one");
+  const filter = query.filter === undefined && opts.filter === undefined ? undefined : { ...query.filter, ...opts.filter };
+  const from = opts.from ?? query.from;
+  return { named: typeNamed(query.types[0], "wait(query)"), ...(filter === undefined ? {} : { filter }), ...(from === undefined ? {} : { from }) };
+}
+
+globals.wait = (type: unknown, opts: WaitOptions = {}): Promise<unknown> => {
+  let wanted: ReturnType<typeof waitOf>;
   try {
-    named = typeNamed(type, "wait(type)");
+    wanted = waitOf(type, opts);
   } catch (error) {
     return Promise.reject(error);
   }
   return request(
     {
       op: "wait",
-      type: named.name,
-      ...(named.version === undefined ? {} : { version: named.version }),
-      ...(opts.filter === undefined ? {} : { filter: opts.filter }),
-      ...(opts.from === undefined ? {} : { from: opts.from }),
+      type: wanted.named.name,
+      ...(wanted.named.version === undefined ? {} : { version: wanted.named.version }),
+      ...(wanted.filter === undefined ? {} : { filter: wanted.filter }),
+      ...(wanted.from === undefined ? {} : { from: wanted.from }),
       ...(opts.timeout === undefined ? {} : { timeoutMs: durationMs(opts.timeout) }),
     },
     opts.label,

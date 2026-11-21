@@ -113,6 +113,20 @@ export interface RecordQuery<D = unknown> {
   readonly from?: Seq | number;
 }
 
+/**
+ * A query of one declared type with a filter on its data: what a query builder of a plugin gives
+ * (`taskDone(task)`). It keeps the type, so a script that waits for it or reads it gets the data
+ * typed by the type; and it is a `RecordQuery`, so whatever takes a query takes it.
+ */
+export interface TypeQuery<T> extends RecordQuery<T> {
+  readonly types: readonly [RecordType<T>];
+}
+
+/** A query of one declared type and a filter on its data: `queryOf(TaskDone, { task })`. */
+export function queryOf<T>(type: RecordType<T>, filter?: PathFilter<T>): TypeQuery<T> {
+  return { types: [type], ...(filter === undefined ? {} : { filter }) };
+}
+
 /** A read of the history: a query, and at most how many of the first records that answer it. */
 export interface RecordReadQuery<D = unknown> extends RecordQuery<D> {
   /** At most this many records, a positive integer. Every record committed now when absent. */

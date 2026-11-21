@@ -135,13 +135,20 @@ export type ScriptDataAt<D, P extends string> = D extends unknown
 /** The filter of a wait or a read of a referenced type: values for fields of its data, by field name or dotted path. */
 export type ScriptFilter<D> = unknown extends D ? Record<string, unknown> : { [P in ScriptDataPath<D>]?: ScriptDataAt<D, P> };
 
+/** A query of one referenced type and a filter on its data, as a plugin's query builder gives it (`taskDone(task)`). */
+export interface ScriptTypeQuery<R> {
+  readonly types: readonly [R];
+  readonly filter?: ScriptFilter<ScriptRecordData<R>>;
+  readonly from?: number;
+}
+
 /**
  * Which records a script reads or waits for: the types as exact names, families written `prefix.*`
  * or references, equality on paths of the data, a stream, and the position to look after.
  */
 export interface ScriptRecordQuery {
   from?: number;
-  types?: Array<string | ScriptRecordRef<any>>;
+  types?: ReadonlyArray<string | ScriptRecordRef<any>>;
   filter?: Record<string, unknown>;
   stream?: string;
 }
@@ -217,6 +224,9 @@ export interface ScriptApi {
     type: R,
     opts: { filter?: ScriptFilter<ScriptRecordData<R>>; from?: number; timeout: Duration; label?: string },
   ): Promise<ScriptWaited<ScriptRecordData<R>> | TimedOut>;
+  /** The first record that answers a query of one referenced type, as a plugin's query builder gives it: after `from` (the option, else the query's). */
+  wait<R extends ScriptRecordRef<any>>(query: ScriptTypeQuery<R>, opts?: { from?: number; label?: string }): Promise<ScriptWaited<ScriptRecordData<R>>>;
+  wait<R extends ScriptRecordRef<any>>(query: ScriptTypeQuery<R>, opts: { from?: number; timeout: Duration; label?: string }): Promise<ScriptWaited<ScriptRecordData<R>> | TimedOut>;
   /** A type named as text: the data is of any shape. */
   wait(type: string, opts?: { filter?: Record<string, unknown>; from?: number; label?: string }): Promise<ScriptWaited>;
   wait(type: string, opts: { filter?: Record<string, unknown>; from?: number; timeout: Duration; label?: string }): Promise<ScriptWaited | TimedOut>;
@@ -252,7 +262,7 @@ export interface ScriptApi {
     ): Promise<{ records: Array<ScriptStoredRecord<ScriptRecordData<R>>>; next: number }>;
     /** The records of the referenced types, each with its data typed by its type. */
     records<R extends ScriptRecordRef<any>>(
-      query: ScriptReadOptions & { types: R[]; filter?: ScriptFilter<ScriptRecordData<R>> },
+      query: ScriptReadOptions & { types: readonly R[]; filter?: ScriptFilter<ScriptRecordData<R>> },
       opts?: CallOptions,
     ): Promise<{ records: Array<R extends unknown ? ScriptStoredRecord<ScriptRecordData<R>> : never>; next: number }>;
     /** The records of types named as text, or of any type: the data is of any shape. */

@@ -163,7 +163,7 @@ test("a read by reference gives the records of the type at its version; a read b
 test("the types of the script package type a wait and a read by reference the same way", async () => {
   const { host, home } = await served();
   const lines = (body: readonly string[]): string[] => [
-    importing("Ping, Pong"),
+    importing("Ping, Pong, pingsTo"),
     'import type { ScriptApi } from "@niwa-labs/script";',
     'declare const wait: ScriptApi["wait"];',
     'declare const read: ScriptApi["read"];',
@@ -176,8 +176,10 @@ test("the types of the script package type a wait and a read by reference the sa
     '  const pong = await wait(Pong, { filter: { ok: true }, timeout: "1m" });',
     "  const { records } = await read.records(Ping, { limit: 1 });",
     "  const both = await read.records({ types: [Ping, Pong] });",
+    '  const built = await wait(pingsTo("owner"), { from: ping.at });',
+    "  const owned = await read.records(pingsTo(\"owner\"));",
     '  const ok: boolean = "timedOut" in pong ? false : pong.data.ok;',
-    "  const size: number = ping.data.size + (records[0]?.data.size ?? 0) + both.records.length;",
+    "  const size: number = ping.data.size + (records[0]?.data.size ?? 0) + both.records.length + built.data.size + owned.records.length;",
     "  return { ok, size };",
   ]));
   expect(await errorsOf(host, fine)).toEqual([]);
@@ -242,4 +244,45 @@ test("the header names the types a script starts on as text: a reference there i
       { line: 2, code: "on", message: expect.stringContaining('the header is read as text: name the type as text, as in on: ["task.done"]; a type imported by reference is for wait and read.records') },
     ]);
   }
+}, 60_000);
+
+test("a query a builder gives is waited for and read like its type: the data is typed by it and its filter holds", async () => {
+  const { host, home } = await served();
+  const file = await scriptIn(home, "built.ts", [
+    importing("Pong, pingsTo"),
+    'export default workflow({ uses: ["niwa.records.read"], output: z.json() }, async () => {',
+    '  const { records, next } = await read.records(pingsTo("owner"));',
+    '  await wait(Pong, { filter: { id: "go" } });',
+    '  const first = await wait(pingsTo("owner"), { from: next });',
+    "  const size: number = first.data.size;",
+    '  const late = await wait(pingsTo("nobody"), { from: first.at, timeout: "1s" });',
+    '  return { before: records.map((row) => row.data.id), first: first.data.id, size, late: "timedOut" in late };',
+    "});",
+  ]);
+  expect(await errorsOf(host, file)).toEqual([]);
+  await host.emit(Ping, { id: "old", size: 1, to: { id: "owner" } });
+  await host.emit(Ping, { id: "else", size: 1, to: { id: "else" } });
+  const { run } = await host.call(workflowStart, { file });
+  await eventually(
+    async () => (await host.records.read({ types: ["niwa.invocation.state"], filter: { state: "waiting" } })).length > 0,
+    20_000,
+    "the run should wait for the pong",
+  );
+  await host.emit(Ping, { id: "elsewhere", size: 2, to: { id: "else" } });
+  await host.emit(Ping, { id: "one", size: 3, to: { id: "owner" } });
+  await host.emit(Pong, { id: "go", ok: true });
+  expect(await resultOf(host, run)).toEqual({ status: "done", result: { before: ["old"], first: "one", size: 3, late: true } });
+
+  const wrong = await scriptIn(home, "built-wrong.ts", [
+    importing("pingsTo"),
+    'export default workflow({ uses: ["niwa.records.read"], output: z.json() }, async () => {',
+    '  const ping = await wait(pingsTo("owner"));',
+    '  const { records } = await read.records(pingsTo("owner"));',
+    "  return [ping.data.nothing, records[0]?.data.nothing];",
+    "});",
+  ]);
+  expect((await errorsOf(host, wrong)).map(({ line, code }) => ({ line, code }))).toEqual([
+    { line: 5, code: "TS2339" },
+    { line: 5, code: "TS2339" },
+  ]);
 }, 60_000);

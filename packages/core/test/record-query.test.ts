@@ -11,6 +11,8 @@ import {
   isTypeSelector,
   matchesQuery,
   overlaps,
+  queryOf,
+  record,
   recordId,
   recordTypeName,
   resolveQuery,
@@ -18,6 +20,7 @@ import {
   streamId,
 } from "../src/index.ts";
 import { openJournal } from "../src/journal.ts";
+import { z } from "zod";
 import type { Journal, NewRecord, PathFilter, ResolvedQuery } from "../src/index.ts";
 
 const homes: string[] = [];
@@ -136,4 +139,13 @@ test("a typed filter takes the paths of the data with the values they have", () 
   // @ts-expect-error a path the data does not have
   const wrongPath: PathFilter<Done> = { "outcome.code": 1 };
   expect([good, wrongValue, wrongPath].length).toBe(3);
+});
+
+test("a query of one declared type keeps the type and its filter, and resolves as any query does", () => {
+  const Done = record("task.done", z.object({ task: z.string(), outcome: z.object({ status: z.string() }) }));
+  const query = queryOf(Done, { task: "task-1", "outcome.status": "result" });
+  expect(query.types).toEqual([Done]);
+  expect(query.filter).toEqual({ task: "task-1", "outcome.status": "result" });
+  expect(resolveQuery(query)).toEqual({ types: ["task.done"], filter: { task: "task-1", "outcome.status": "result" } });
+  expect(queryOf(Done)).toEqual({ types: [Done] });
 });
