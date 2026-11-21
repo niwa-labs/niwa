@@ -189,6 +189,9 @@ export type PermissionPolicy =
 
 /** A `SessionControl` that can also stop what it started. */
 export interface McodeSessionControl extends SessionControl {
+  /** Stops a session and lets it go: the contract's release of one session. */
+  close(id: SessionId): Promise<void>;
+
   /** Stops a session and the process it owns. */
   stop(id: SessionId): Promise<void>;
   /** Stops every process this control side started, including a start still in progress. */
@@ -1713,6 +1716,13 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       // A session not held, or whose child is gone, proves nothing about now.
       if (session === undefined || session.ended || session.stopping) return "unknown";
       return session.running ? "running" : "idle";
+    },
+
+    /** The release the shared contract names: stops this session's process and no other. */
+    async close(id: SessionId): Promise<void> {
+      const session = sessions.get(id.native);
+      if (session === undefined) return;
+      await stopSession(session);
     },
 
     async stop(id: SessionId): Promise<void> {

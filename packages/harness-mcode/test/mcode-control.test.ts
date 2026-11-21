@@ -639,6 +639,14 @@ test("a session with no MCP servers is asked for with no servers", async () => {
   expect(requests[0]?.["mcpServers"]).toEqual([]);
 });
 
+test("close stops the process of the session, as the contract's release", async () => {
+  control = await fakeControl();
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  expect(await control.state(id)).not.toBe("unknown");
+  await control.close!(id);
+  expect(await control.state(id)).toBe("unknown");
+});
+
 test("a stop also stops the MCP servers the session was given, wherever the agent started them", async () => {
   control = await fakeControl();
   const { session: id } = await control.start({

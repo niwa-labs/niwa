@@ -667,6 +667,14 @@ export class ClaudeSdkControl implements SessionControl {
     return session.busy ? "running" : "idle";
   }
 
+  /** Stops the query of one session and lets it go: the session is the harness's to resume later. */
+  async close(id: SessionId): Promise<void> {
+    const session = this.#sessions.get(id.native);
+    if (session === undefined) return;
+    this.#sessions.delete(id.native);
+    session.stop("the session was closed");
+  }
+
   /** Stops every query this side started, including a start still in progress. */
   async dispose(): Promise<void> {
     this.#disposed = true;

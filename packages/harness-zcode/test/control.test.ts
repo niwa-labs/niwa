@@ -882,6 +882,16 @@ test("dispose stops the process of every session", async () => {
   await expect(c.start({ prompt: hello, cwd: dir })).rejects.toMatchObject({ code: "Unavailable" });
 });
 
+test("close stops the process of one session, as the contract's release", async () => {
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText("hang"), cwd: dir });
+  const pid = (await logOf("env.log"))[0]?.["pid"] as number;
+  expect(() => process.kill(pid, 0)).not.toThrow();
+  await c.close!(session);
+  expect(() => process.kill(pid, 0)).toThrow();
+  expect(await c.state(session)).toBe("unknown");
+});
+
 test("a start still being born when the control side is disposed leaves no session and no process", async () => {
   // The manifest of the box is waited for before the process exists: the launch is held there.
   let open: () => void = () => {};

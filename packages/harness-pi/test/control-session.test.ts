@@ -286,3 +286,19 @@ test("the life of a session that sent a line without end is over", async () => {
   for await (const event of pi.life(session)) events.push(event);
   expect(events.filter((event) => event.kind === "turn-started")).toEqual([]);
 });
+
+test("closing one idle session stops its process and leaves the other session's alone", async () => {
+  const pi = side();
+  process.env.FAKE_SESSION = "s1";
+  const first = await pi.start({ prompt: promptFromText("") });
+  process.env.FAKE_SESSION = "s2";
+  const second = await pi.start({ prompt: promptFromText("") });
+  const [one, two] = await spawns();
+  expect(one && two).toBeTruthy();
+  // The contract's release, as the host calls it on a session that is ended.
+  await pi.close(first.session);
+  expect(await dies(one!.pid)).toBe(true);
+  expect(alive(two!.pid)).toBe(true);
+  expect(await pi.state(first.session)).toBe("unknown");
+  expect(await pi.state(second.session)).toBe("idle");
+});

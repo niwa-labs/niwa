@@ -208,6 +208,9 @@ export interface PiControlOptions {
 }
 /** A `SessionControl` that also owns the processes it started. */
 export interface PiSessionControl extends SessionControl {
+  /** Stops a session and lets it go: the contract's release of one session. */
+  close(id: SessionId): Promise<void>;
+
   /** Stops a session and the process it owns. */
   stop(id: SessionId): Promise<void>;
   /** Stops every session this control side owns. */
@@ -627,6 +630,11 @@ export class PiControl implements PiSessionControl {
     // A session that is not held, or whose process is gone, proves nothing about now.
     if (session === undefined || session.ended || session.stopping) return "unknown";
     return session.busy ? "running" : "idle";
+  }
+
+  /** The release the shared contract names: stops this session's process and no other. */
+  async close(id: SessionId): Promise<void> {
+    await this.stop(id);
   }
 
   async stop(id: SessionId): Promise<void> {

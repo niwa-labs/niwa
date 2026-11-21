@@ -145,6 +145,9 @@ export interface ClaudeCodeControlOptions {
  * A `SessionControl` that can also stop what it started.
  */
 export interface ClaudeCodeSessionControl extends SessionControl {
+  /** Stops a session and lets it go: the contract's release of one session. */
+  close(id: SessionId): Promise<void>;
+
   /** Stops a session and the process it owns. */
   stop(id: SessionId): Promise<void>;
 
@@ -228,6 +231,7 @@ export function claudeCodeControl(options: ClaudeCodeControlOptions): ClaudeCode
       control.ask(id, askOptions),
     life: (id: SessionId): AsyncIterable<LifeEvent> => control.life(id),
     state: (id: SessionId): Promise<SessionState> => control.state(id),
+    close: (id: SessionId): Promise<void> => control.close(id),
     stop: (id: SessionId): Promise<void> => control.stop(id),
     dispose: (): Promise<void> => control.dispose(),
   };

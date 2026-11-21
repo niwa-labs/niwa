@@ -59,6 +59,18 @@ test("the servers of a session reach the SDK by name, and a session held to a se
   }
 });
 
+test("close ends the query of one session, as the contract's release", async () => {
+  const fake = scriptedQuery();
+  const control = new ClaudeSdkControl({ harness: HARNESS, query: fake.query });
+  try {
+    const { session: id } = await control.start({ prompt: promptFromText("one") });
+    await control.close(id);
+    expect(await control.state(id)).toBe("unknown");
+  } finally {
+    await control.dispose();
+  }
+});
+
 test("a question and a process launched again keep the servers of the session", async () => {
   const fake = scriptedQuery();
   const started = new ClaudeSdkControl({ harness: HARNESS, query: fake.query });

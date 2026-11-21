@@ -218,6 +218,9 @@ export interface ClaudeAcpControlOptions {
  * started: the way to stop one session, and the way to stop all of them.
  */
 export interface ClaudeAcpSessionControl extends SessionControl {
+  /** Stops a session and lets it go: the contract's release of one session. */
+  close(id: SessionId): Promise<void>;
+
   /** Stops a session and the process it owns. */
   stop(id: SessionId): Promise<void>;
 
@@ -1462,6 +1465,14 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       // A session not held, or whose child is gone, proves nothing about now.
       if (session === undefined || session.ended || session.stopping) return "unknown";
       return session.busy ? "running" : "idle";
+    },
+
+    /** The release the shared contract names: stops this session's process and no other. */
+    async close(id: SessionId): Promise<void> {
+      const session = sessions.get(id.native);
+      if (session === undefined) return;
+      sessions.delete(id.native);
+      await stopSession(session);
     },
 
     async stop(id: SessionId): Promise<void> {

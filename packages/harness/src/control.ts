@@ -436,8 +436,9 @@ export interface SessionControl {
 
   /**
    * Stops the process of one session and lets it go: what is running in it stops, and the session
-   * is the harness's to resume later where it can. A side that holds no process per session may
-   * leave it out.
+   * is the harness's to resume later where it can. A side that holds a process or a query per
+   * session implements it: ending a session releases nothing otherwise. A side that holds none
+   * may leave it out.
    */
   close?(id: SessionId): Promise<void>;
 
