@@ -12,10 +12,11 @@ import { dirname, resolve } from "node:path";
 
 import { z } from "zod";
 
-import { TOKEN_ENV, isSuspend } from "@niwa-labs/core";
+import { StepCancelled, TOKEN_ENV, isSuspend } from "@niwa-labs/core";
 import { spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess, BoxSandboxName } from "@niwa-labs/sandbox";
 
+import { isPausing } from "./bridge.ts";
 import { readableRoots } from "./installation.ts";
 import { PROTOCOL_PREFIX, ScriptRequest } from "./language.ts";
 
@@ -95,6 +96,9 @@ interface Running {
 }
 
 const children = new Map<string, Running>();
+
+/** How long a child that has a suspended call may stay silent before it is stopped. */
+const QUIET_MS = 50;
 
 /**
  * Stop the child process of a run.
@@ -193,6 +197,21 @@ export async function runScript(
   let stopped = false;
   let suspended: unknown;
   const calls: Promise<void>[] = [];
+  // The calls the host is making for the child now: a suspended call is not one of them, nor a wait for a deadline.
+  let busy = 0;
+  let quiet: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * A call suspended: the child goes on while the host still makes calls for it, so the branches
+   * that do not wait move on and their steps are recorded. Once the host makes none and the child
+   * asks for nothing more for a moment, the child is stopped and the suspend is passed on.
+   */
+  const stopWhenQuiet = (): void => {
+    if (suspended === undefined || busy > 0) return;
+    if (quiet !== undefined) clearTimeout(quiet);
+    quiet = setTimeout(() => {
+      if (busy === 0) child.kill();
+    }, QUIET_MS);
+  };
 
   const answer = (ordinal: number, reply: { ok: boolean; value?: unknown; error?: string; name?: string }): void => {
     if (stopped) return;
@@ -208,31 +227,39 @@ export async function runScript(
     }
     const message = Message.parse(JSON.parse(line.slice(PROTOCOL_PREFIX.length)));
     switch (message.kind) {
-      case "call":
+      case "call": {
         // The call is made, and its answer goes back to the child. A call that is still in flight
         // when the child is stopped is not waited for here: the invocation it belongs to owns it.
+        const counted = message.request.op !== "scope-deadline";
+        if (counted) busy += 1;
+        if (quiet !== undefined) clearTimeout(quiet);
         calls.push(
           deps.call({ key: message.key, ...(message.phase === undefined ? {} : { phase: message.phase }), request: message.request }).then(
             (value) => answer(message.ordinal, { ok: true, value: value ?? null }),
             (error: unknown) => {
               // A call that suspends is not a failure: the invocation waits, and the call is made
-              // again when the answer arrives. The child is stopped, and the suspend is passed on.
+              // again when the answer arrives. The child is stopped once it is quiet, and the suspend is passed on.
               if (isSuspend(error)) {
                 suspended ??= error;
-                running.stopped = true;
-                child.kill();
                 return;
               }
               answer(message.ordinal, {
                 ok: false,
-                error: error instanceof Error ? error.message : String(error),
+                // A cancelled step says why it was cancelled: the script sees the reason, as for a cancel of its own.
+                error: error instanceof StepCancelled ? error.reason : error instanceof Error ? error.message : String(error),
                 // The name goes with the message, so a script can tell one error from another.
                 ...(error instanceof Error ? { name: error.name } : {}),
+                // An error that pauses the run is not the outcome of a branch: the script ends on it.
+                ...(isPausing(error) ? { pauses: true } : {}),
               });
             },
-          ),
+          ).finally(() => {
+            if (counted) busy -= 1;
+            stopWhenQuiet();
+          }),
         );
         return;
+      }
       case "phase":
         deps.phase({ branch: message.branch, ordinal: message.ordinal, phase: message.phase });
         return;
@@ -282,6 +309,7 @@ export async function runScript(
     return { ok: false, error: reason !== "" ? reason : `the script exited with ${String(code)} without a result` };
   } finally {
     stopped = true;
+    if (quiet !== undefined) clearTimeout(quiet);
     deps.gone?.();
     child.kill();
     // The handle of the run goes with it: a run that is not going has nothing to stop.

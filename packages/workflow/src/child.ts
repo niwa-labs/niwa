@@ -429,6 +429,8 @@ interface Group {
   cancelled: string | undefined;
   /** Why the branches of the group were cancelled: a branch started after that starts cancelled. */
   branchesCancelled: string | undefined;
+  /** An error that pauses the run, met by a branch: the group throws it to whoever reads it. */
+  pausedBy: unknown;
   open: boolean;
   requests: number;
 }
@@ -443,6 +445,12 @@ class DeadlineExceeded extends Error {
   override name = "DeadlineExceeded";
 }
 globals.DeadlineExceeded = DeadlineExceeded;
+
+/** The errors that pause the run: a step did not complete. A branch that meets one does not end with it; its group throws it. */
+const pausing = new WeakSet<object>();
+
+/** Whether an error pauses the run. */
+const pausesRun = (error: unknown): boolean => typeof error === "object" && error !== null && pausing.has(error);
 
 /** The paths of the groups opened in this run: a path names one group. */
 const opened = new Set<string>();
@@ -560,6 +568,12 @@ function startMember(group: Group, key: string, fn: () => unknown): Member {
     } finally {
       leave(group);
     }
+    if (pausesRun(member.error)) {
+      // The run pauses on a step of the branch: the branch has no outcome, and the group throws the error to whoever reads it.
+      group.pausedBy ??= member.error;
+      changed(group);
+      return result;
+    }
     const outcome = result.ok ? "done" : result.error.name === "Cancelled" ? "cancelled" : "failed";
     const committed = (await requestAt(
       { op: "scope-settled", scope: group.path, key, outcome, ...(result.ok ? {} : { error: result.error }) },
@@ -583,6 +597,7 @@ function startMember(group: Group, key: string, fn: () => unknown): Member {
  */
 async function nextOf(group: Group): Promise<{ key: string; result: Settled } | null> {
   for (;;) {
+    if (group.pausedBy !== undefined) throw group.pausedBy;
     let best: number | undefined;
     for (const order of group.settled.keys()) if (!group.given.has(order) && (best === undefined || order < best)) best = order;
     for (const [order, key] of group.expected) {
@@ -619,9 +634,14 @@ async function cancelMembers(group: Group, reason: string, targets: readonly Mem
 function scopeApi(group: Group) {
   const branchOf = (member: Member) => ({
     key: member.key,
-    settled: (): Promise<Settled> => member.done,
+    settled: async (): Promise<Settled> => {
+      const result = await member.done;
+      if (group.pausedBy !== undefined) throw group.pausedBy;
+      return result;
+    },
     value: async (): Promise<unknown> => {
       const result = await member.done;
+      if (group.pausedBy !== undefined) throw group.pausedBy;
       if (result.ok) return result.value;
       throw member.error ?? Object.assign(new Error(result.error.message), { name: result.error.name });
     },
@@ -642,6 +662,7 @@ function scopeApi(group: Group) {
         const member = group.members.get(key);
         if (member === undefined) continue;
         const result = await member.done;
+        if (group.pausedBy !== undefined) throw group.pausedBy;
         if (member.order !== undefined) group.given.add(member.order);
         out.push({ key, result });
       }
@@ -651,6 +672,7 @@ function scopeApi(group: Group) {
       const all: Record<string, Settled> = {};
       for (const member of [...group.members.values()]) {
         all[member.key] = await member.done;
+        if (group.pausedBy !== undefined) throw group.pausedBy;
         if (member.order !== undefined) group.given.add(member.order);
       }
       return all;
@@ -711,6 +733,7 @@ async function runGroup<T>(path: string, segments: readonly string[], opts: Scop
     running: 0,
     cancelled: undefined,
     branchesCancelled: undefined,
+    pausedBy: undefined,
     open: true,
     requests: 0,
   };
@@ -737,13 +760,18 @@ async function runGroup<T>(path: string, segments: readonly string[], opts: Scop
     failure = error;
   }
   blockDone = true;
+  // A step did not complete and the run pauses on it: nothing is waited for, the script ends here.
+  if (failed && pausesRun(failure)) throw failure;
+  if (group.pausedBy !== undefined) throw group.pausedBy;
   if (failed || onExit === "cancel") {
     const left = [...group.members.values()].filter((member) => member.result === undefined);
     group.branchesCancelled ??= failed ? "the scope failed" : "the scope was left";
     await cancelMembers(group, group.branchesCancelled, left, false);
   }
   group.open = false;
-  await Promise.all([...group.members.values()].map((member) => member.done));
+  while (group.pausedBy === undefined && [...group.members.values()].some((member) => member.result === undefined)) await nextChange(group);
+  // A step of a branch did not complete: the run pauses on it, and the group does not close.
+  if (group.pausedBy !== undefined) throw group.pausedBy;
   const outcome = ranOut ? "deadline" : failed ? "failed" : "done";
   await requestAt({ op: "scope-close", scope: path, outcome }, `${path}~close`);
   if (ranOut) {
@@ -1057,13 +1085,14 @@ if (mode === "describe") {
       const line = buffer.slice(0, at).trim();
       buffer = buffer.slice(at + 1);
       if (line === "") continue;
-      const answer = JSON.parse(line) as { ordinal: number; ok: boolean; value?: unknown; error?: string; name?: string };
+      const answer = JSON.parse(line) as { ordinal: number; ok: boolean; value?: unknown; error?: string; name?: string; pauses?: boolean };
       const waiter = pending.get(answer.ordinal);
       pending.delete(answer.ordinal);
       if (answer.ok) waiter?.resolve(answer.value);
       else {
         const failed = new Error(answer.error ?? "the call failed");
         if (answer.name !== undefined) failed.name = answer.name;
+        if (answer.pauses === true) pausing.add(failed);
         waiter?.reject(failed);
       }
     }

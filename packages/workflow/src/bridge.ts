@@ -214,6 +214,20 @@ const SNAPSHOT = (keys: readonly string[]) =>
     run: () => [...keys],
   });
 
+/** The mark of an error that pauses the run: a branch of the script that meets it does not take it as its outcome. */
+const PAUSES_RUN = Symbol.for("niwa.workflow.pausesRun");
+
+/** Mark an error as one that pauses the run. */
+function pausesRun(error: unknown): unknown {
+  if (error instanceof Error) Object.defineProperty(error, PAUSES_RUN, { value: true });
+  return error;
+}
+
+/** Whether an error pauses the run: a step of the script did not complete, or a call was shown. */
+export function isPausing(error: unknown): boolean {
+  return error instanceof Error && (error as { [PAUSES_RUN]?: boolean })[PAUSES_RUN] === true;
+}
+
 /** What a bridge is: the function that does what the script asks, and the end of the script process. */
 export interface Bridge {
   (request: CallRequest): Promise<unknown>;
@@ -235,11 +249,17 @@ export function bridge(deps: BridgeDeps): Bridge {
   /** The waits for a deadline that are going, each with the way to answer it now. */
   const deadlines = new Set<() => void>();
 
+  /** Whether a step of the run did not complete: the run pauses on it. */
+  let pausing = false;
   const guarded = async <T>(body: () => Promise<T>): Promise<T> => {
     try {
       return await body();
     } catch (error) {
-      if (!(error instanceof CatchableError)) deps.failed();
+      if (!(error instanceof CatchableError)) {
+        pausing = true;
+        deps.failed();
+        throw pausesRun(error);
+      }
       throw error;
     }
   };
@@ -307,8 +327,9 @@ export function bridge(deps: BridgeDeps): Bridge {
     const before = deps.earlier.get(key);
     if (before !== undefined) {
       if (!sameCall(before, { action: name, input: jsonOf(input) })) {
+        pausing = true;
         deps.shown(key);
-        throw new Error(`the call "${key}" was recorded with another input: it is shown, not rerun`);
+        throw pausesRun(new Error(`the call "${key}" was recorded with another input: it is shown, not rerun`));
       }
       if (before.finished) return before.outcome as O;
     }
@@ -419,8 +440,9 @@ export function bridge(deps: BridgeDeps): Bridge {
           // Written by an earlier start of the run: it is not written twice, and another record under the same key is shown.
           const now = type.schema.safeParse(request.data);
           if (before.type !== type.name || !now.success || stableJson(before.data) !== stableJson(now.data)) {
+            pausing = true;
             deps.shown(key);
-            throw new Error(`the emit "${key}" was recorded with another type or data: it is shown, not written again`);
+            throw pausesRun(new Error(`the emit "${key}" was recorded with another type or data: it is shown, not written again`));
           }
           return null;
         }
@@ -448,6 +470,9 @@ export function bridge(deps: BridgeDeps): Bridge {
       case "scope-settled":
         return settleBranch(request);
       case "scope-cancel": {
+        // A step of the run did not complete and the run is pausing on it: the branches are not cancelled
+        // for good, so a retry finds them as they were.
+        if (pausing) return null;
         // A shielded group under a cancelled branch is spared: the cancel waits for its block to end.
         const except = [...shields].filter((open) => request.prefixes.some((prefix) => open !== prefix && keyUnder(open, prefix)));
         const invocation = currentInvocation()?.invocation;

@@ -59,6 +59,18 @@ function work(seen: Seen) {
       }),
     );
     api.action(
+      action("scope.fail", {
+        description: "Fails.",
+        input: z.object({ name: z.string() }),
+        output: z.object({ name: z.string() }),
+        recovery: "repeat",
+        run: async ({ name }) => {
+          seen.calls.push(name);
+          throw new Error("the work failed");
+        },
+      }),
+    );
+    api.action(
       action("scope.hang", {
         description: "Runs until it is aborted.",
         input: z.object({ name: z.string() }),
@@ -350,4 +362,41 @@ test("after a wake the outcomes come in the order the script read them before, w
   expect(await t.ended(run)).toEqual({ status: "done", result: ["fast", "slow"] });
   const settled = ofType(await t.records(), "workflow.scope.settled").map((row) => row.data as { key: string; order: number });
   expect(new Set(settled.map(({ key, order }) => `${key}:${String(order)}`))).toEqual(new Set(["fast:0", "slow:1"]));
+}, 30_000);
+
+test("a step of a branch that does not complete pauses the run: it is not an outcome of the branch, and nothing is cancelled for good", async () => {
+  const t = await setup();
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    return await scope("mixed", undefined, async (s) => {
+      s.start("broken", () => niwa.scope.fail({ name: "broken" }));
+      s.start("hung", () => niwa.scope.hang({ name: "hung" }));
+      return await s.rest();
+    });
+  });`);
+  const outcome = await t.ended(run);
+  expect(outcome.status).toBe("paused");
+  const all = await t.records();
+  expect(ofType(all, "workflow.run.finished")).toEqual([]);
+  expect((ofType(all, "workflow.run.paused")[0]?.data as { choices: string[] }).choices).toEqual(["retry", "skip", "cancel"]);
+  expect(ofType(all, "niwa.step.cancelled")).toEqual([]);
+  expect(ofType(all, "workflow.scope.settled")).toEqual([]);
+}, 30_000);
+
+test("a branch that waits does not stop the others: they go on and record their steps before the run waits", async () => {
+  const t = await setup();
+  await t.start(`export default workflow({ output: z.json() }, async () => {
+    return await scope("apart", undefined, async (s) => {
+      s.start("waits", () => wait("stub.finished", { filter: { id: "never" } }));
+      s.start("works", async () => { await niwa.scope.work({ name: "first", ms: 50 }); return niwa.scope.work({ name: "second" }); });
+      return await s.rest();
+    });
+  });`);
+  await eventually(() => t.seen.calls.includes("second"), 10_000, "the working branch should go on");
+  await eventually(
+    async () => ofType(await t.records(), "niwa.invocation.state").at(-1)?.data !== undefined &&
+      (ofType(await t.records(), "niwa.invocation.state").at(-1)?.data as { state: string }).state === "waiting",
+    10_000,
+    "the run should wait",
+  );
+  expect(ofType(await t.records(), "workflow.scope.settled").map((row) => (row.data as { key: string }).key)).toEqual(["works"]);
 }, 30_000);
