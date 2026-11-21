@@ -292,6 +292,31 @@ test("telegram: a surface for the owner is refused when its chat is not a privat
   expect(() => telegram({ ...options, owner: chatId(1.5) })).toThrow("private chat");
 });
 
+test("telegram: the action that hands a message to the agent exists only when there is a hook for it", async () => {
+  const fake = fakeTelegram();
+  const served = async (hooks: Parameters<typeof telegram>[1]): Promise<boolean> => {
+    const home = await tempHome();
+    const host = createNiwa({ home: home.path });
+    try {
+      host.use(telegram(options(fake.base), hooks));
+      await host.serve();
+      return await host.call("telegram.to-agent", { text: "hello" }).then(
+        () => true,
+        () => false,
+      );
+    } finally {
+      await host.close();
+      await home.cleanup();
+    }
+  };
+  try {
+    expect(await served({})).toBe(false);
+    expect(await served({ toAgent: async () => undefined })).toBe(true);
+  } finally {
+    fake.stop();
+  }
+}, 30_000);
+
 test("telegram: after a restart the offset comes from the journal", async () => {
   const home = await tempHome();
   const fake = fakeTelegram();

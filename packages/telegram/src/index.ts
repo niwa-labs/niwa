@@ -480,7 +480,8 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
   const built = plugin(PLUGIN_NAME, (api: PluginApi) => {
     api.declare(Received, Ignored, Posted, Answered);
     api.action(send);
-    api.action(deliver);
+    // Without a hook nothing is delivered, so no action says that something was.
+    if (toAgent !== undefined) api.action(deliver);
 
     // The poll loop only records. Delivery is a step of this handler, so it never holds up the
     // messages after it. A delivery that failed, or was cut off by a restart, is never resent by
