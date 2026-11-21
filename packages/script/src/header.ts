@@ -168,11 +168,10 @@ export function onOf(ts: typeof Ts, source: Ts.SourceFile): On | undefined {
   for (const element of list.elements) {
     const where = placeOf(ts, source, element);
     const item = bare(ts, element);
-    if (ts.isStringLiteral(item) || ts.isNoSubstitutionTemplateLiteral(item)) {
-      subscriptions.push({ type: item.text, ...where });
-      continue;
-    }
-    const written = ts.isObjectLiteralExpression(item) ? literalOf(ts, item)?.value : undefined;
+    const written = ts.isStringLiteral(item) || ts.isNoSubstitutionTemplateLiteral(item)
+      ? { type: item.text }
+      : ts.isObjectLiteralExpression(item) ? literalOf(ts, item)?.value : undefined;
+    // A bare type and an object are held to the same schema, so an empty type is refused in both.
     const parsed = Subscription.strict().safeParse(written);
     if (!parsed.success) return { bad: { ...where, message: shape } };
     subscriptions.push({ ...parsed.data, ...where });

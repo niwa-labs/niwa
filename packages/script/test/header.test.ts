@@ -28,3 +28,9 @@ test("on that a spread may replace, or that is only a name, is reported as unrea
     expect({ declaration, parsed }).toMatchObject({ parsed: { bad: { message: expect.stringContaining("on ") } } });
   }
 });
+
+test("an empty record type is refused whether it is written bare or in an object", async () => {
+  expect(await read("{ on: [''] }")).toHaveProperty("bad");
+  expect(await read("{ on: [{ type: '' }] }")).toHaveProperty("bad");
+  expect(await read("{ on: ['a', ''] }")).toHaveProperty("bad");
+});
