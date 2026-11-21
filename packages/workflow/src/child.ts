@@ -259,12 +259,13 @@ function group(path: readonly string[]): unknown {
 }
 globals.niwa = group([]);
 
-globals.wait = (type: string, opts: { filter?: Record<string, unknown>; timeout?: Duration; label?: string } = {}): Promise<unknown> =>
+globals.wait = (type: string, opts: { filter?: Record<string, unknown>; from?: number; timeout?: Duration; label?: string } = {}): Promise<unknown> =>
   request(
     {
       op: "wait",
       type,
       ...(opts.filter === undefined ? {} : { filter: opts.filter }),
+      ...(opts.from === undefined ? {} : { from: opts.from }),
       ...(opts.timeout === undefined ? {} : { timeoutMs: durationMs(opts.timeout) }),
     },
     opts.label,

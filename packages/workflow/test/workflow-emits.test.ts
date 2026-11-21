@@ -131,10 +131,10 @@ test("emit takes data of the record's schema, and wait and read.records give dat
   const typed = await scriptIn(home, "typed.ts", [
     'const Note = record("note", z.object({ text: z.string() }));',
     'export default workflow({ name: "typed", emits: [Note], output: z.number() }, async () => {',
-    "  const ping = await wait(\"ping.sent\", { filter: { \"to.id\": \"owner\" } });",
+    "  const { data: ping } = await wait(\"ping.sent\", { filter: { \"to.id\": \"owner\" } });",
     "  const pong = await wait(\"pong.sent\", { timeout: \"1m\" });",
-    "  const ok: boolean = \"timedOut\" in pong ? false : pong.ok;",
-    '  const rows = await read.records({ types: ["ping.sent", "pong.sent"], limit: 2 });',
+    "  const ok: boolean = \"timedOut\" in pong ? false : pong.data.ok;",
+    '  const { records: rows } = await read.records({ types: ["ping.sent", "pong.sent"], limit: 2 });',
     '  const sizes = rows.map((row) => (row.type === "ping.sent" ? row.data.size : row.data.ok ? 1 : 0));',
     "  await emit(Note, { text: ping.id });",
     "  return ping.size + sizes.length + (ok ? 1 : 0);",
@@ -146,7 +146,7 @@ test("emit takes data of the record's schema, and wait and read.records give dat
     'const Note = record("note", z.object({ text: z.string() }));',
     'export default workflow({ name: "wrong", emits: [Note], output: z.number() }, async () => {',
     "  await emit(Note, { text: 1 });",
-    '  const ping = await wait("ping.sent");',
+    '  const { data: ping } = await wait("ping.sent");',
     "  const pong = await wait(\"pong.sent\", { timeout: \"1m\" });",
     "  if (pong.ok) return 0;",
     '  await wait("no.such.type");',
@@ -183,7 +183,7 @@ test("the records a registered workflow declares join the catalogue: a check mad
   const waiter = await scriptIn(home, "waiter.ts", [
     'export default workflow({ description: "Wait for a block", output: z.number() }, async () => {',
     '  const blocked = await wait("wf.sweep.blocked", { filter: { pr: "seven" } });',
-    '  return "timedOut" in blocked ? 0 : blocked.pr;',
+    '  return "timedOut" in blocked ? 0 : blocked.data.pr;',
     "});",
   ]);
   const before = await errorsOf(host, waiter);
@@ -210,14 +210,14 @@ test("the records a registered workflow declares join the catalogue: a check mad
   const fine = await scriptIn(home, "fine.ts", [
     'export default workflow({ description: "Wait for a block", output: z.number() }, async () => {',
     '  const blocked = await wait("wf.sweep.blocked", { filter: { pr: 7 } });',
-    '  return "timedOut" in blocked ? 0 : blocked.pr;',
+    '  return "timedOut" in blocked ? 0 : blocked.data.pr;',
     "});",
   ]);
   expect(await errorsOf(host, fine)).toEqual([]);
   const nothing = await scriptIn(home, "nothing.ts", [
     'export default workflow({ description: "Wait for a block", output: z.number() }, async () => {',
     '  const blocked = await wait("wf.sweep.blocked");',
-    '  return "timedOut" in blocked ? 0 : blocked.nothing;',
+    '  return "timedOut" in blocked ? 0 : blocked.data.nothing;',
     "});",
   ]);
   expect((await errorsOf(host, nothing)).map(({ code }) => code)).toEqual(["TS2339"]);
@@ -229,3 +229,33 @@ test("the records a registered workflow declares join the catalogue: a check mad
   expect(await errorsOf(host, await scriptIn(home, "reacts.ts", reacting('{ pr: 7 }')))).toEqual([]);
   expect((await errorsOf(host, await scriptIn(home, "reacts-wrong.ts", reacting('{ pr: "seven" }')))).length).toBeGreaterThan(0);
 }, 90_000);
+
+test("a script reads up to a position and waits on from it: records written in between are not missed", async () => {
+  const { host, home } = await served();
+  const file = await scriptIn(home, "cursor.ts", [
+    'export default workflow({ uses: ["niwa.records.read"], output: z.json() }, async () => {',
+    '  const { records, next } = await read.records({ types: ["ping.sent"], filter: { "to.id": "owner" } });',
+    '  await wait("pong.sent", { filter: { id: "go" } });',
+    '  const first = await wait("ping.sent", { filter: { "to.id": "owner" }, from: next });',
+    '  const second = await wait("ping.sent", { filter: { "to.id": "owner" }, from: first.at });',
+    "  return { before: records.map((row) => row.data.id), after: [first.data.id, second.data.id], ordered: first.at < second.at };",
+    "});",
+  ]);
+  expect(await errorsOf(host, file)).toEqual([]);
+  await host.emit(Ping, { id: "old", size: 1, to: { id: "owner" } });
+  const { run } = await host.call(workflowStart, { file });
+  await eventually(
+    async () => (await host.records.read({ types: ["niwa.invocation.state"], filter: { state: "waiting" } })).length > 0,
+    20_000,
+    "the run should wait for the pong",
+  );
+  // Both pings are written while the script waits for something else: its later waits find them by the position.
+  await host.emit(Ping, { id: "one", size: 1, to: { id: "owner" } });
+  await host.emit(Ping, { id: "elsewhere", size: 1, to: { id: "else" } });
+  await host.emit(Ping, { id: "two", size: 1, to: { id: "owner" } });
+  await host.emit(Pong, { id: "go", ok: true });
+  await eventually(async () => (await ofType(host, "workflow.run.finished")).length === 1, 20_000, "the run should finish");
+  const finished = (await ofType(host, "workflow.run.finished"))[0]?.data as { run: string; outcome: { result: unknown } };
+  expect(finished.run).toBe(run);
+  expect(finished.outcome.result).toEqual({ before: ["old"], after: ["one", "two"], ordered: true });
+}, 60_000);

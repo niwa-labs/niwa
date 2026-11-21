@@ -89,6 +89,23 @@ export interface TimedOut {
   timedOut: true;
 }
 
+/** What `wait()` answers with: the data of the record, and its position, to wait or read on from. */
+export interface ScriptWaited<D = any> {
+  data: D;
+  at: number;
+}
+
+/**
+ * Which records a script reads or waits for: the types as exact names or families written
+ * `prefix.*`, equality on paths of the data, a stream, and the position to look after.
+ */
+export interface ScriptRecordQuery {
+  from?: number;
+  types?: string[];
+  filter?: Record<string, unknown>;
+  stream?: string;
+}
+
 /**
  * What a script is given. The globals are declared in a script with
  * `declare const wait: ScriptApi["wait"]` and so on: a declaration for the whole project would
@@ -128,10 +145,13 @@ export interface ScriptApi {
   agent<S extends import("zod").z.ZodType>(prompt: string, opts: AgentCallOptions & { schema: S }): Promise<import("zod").z.output<S>>;
   agent(prompt: string, opts?: AgentCallOptions): Promise<{ answer: string }>;
   /**
-   * The data of the first record of a type that holds every field of `filter`, or `{ timedOut: true }`.
+   * The first record of a type whose data holds every field of `filter`, written after `from` — a
+   * position an earlier wait or read answered — or after the wait began: its data and its position.
    * Without a `timeout` it waits for ever; the wait survives a restart of the host.
    */
-  wait(type: string, opts?: { filter?: Record<string, unknown>; timeout?: Duration; label?: string }): Promise<any>;
+  wait(type: string, opts?: { filter?: Record<string, unknown>; from?: number; label?: string }): Promise<ScriptWaited>;
+  /** The same, or `{ timedOut: true }` at the end of the timeout. */
+  wait(type: string, opts: { filter?: Record<string, unknown>; from?: number; timeout: Duration; label?: string }): Promise<ScriptWaited | TimedOut>;
   /** Sleep. The wake-up moment is recorded on the first pass: a replay does not sleep from the start. */
   sleep(duration: Duration, opts?: CallOptions): Promise<void>;
   /**
@@ -153,8 +173,11 @@ export interface ScriptApi {
   read: {
     /** The state of a plugin, as it was when the script read it. */
     state(plugin: string, opts?: CallOptions): Promise<any>;
-    /** The records of the journal: `{ from, types, stream, limit }`. */
-    records(query?: Record<string, unknown>, opts?: CallOptions): Promise<any>;
+    /**
+     * The records that answer a query, and the position to read on from: `{ records, next }`. A wait
+     * from `next` misses nothing written after the read.
+     */
+    records(query?: ScriptRecordQuery & { limit?: number; tail?: number }, opts?: CallOptions): Promise<{ records: any[]; next: number }>;
   };
   /** The clock of the host, recorded: a replay reads the same moment. */
   now(opts?: CallOptions): Promise<number>;

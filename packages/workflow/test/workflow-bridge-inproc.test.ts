@@ -84,7 +84,7 @@ test("W1b sleep records its wake-up moment on the first pass; a restart does not
   expect(ofType(records, "timer.slept")).toHaveLength(1);
 }, 30_000);
 
-test("wait gives the data of the record, or {timedOut: true} at the end of the timeout", async () => {
+test("wait gives the data and the position of the record, or {timedOut: true} at the end of the timeout", async () => {
   const home = await tempHome();
   homes.push(home);
   const clock = testClock(START);
@@ -131,7 +131,7 @@ test("the wake of another sleep does not end a wait; the record does", async () 
   await niwa.call("stub.finish" as ActionName, { id: "y" } as never);
   await niwa.call("stub.finish" as ActionName, { id: "x" } as never);
   await eventually(() => hasFinished(niwa), 10_000, "the record should end the wait");
-  expect(await finishedOf(niwa)).toEqual([{ id: "x" }, "slept"]);
+  expect(await finishedOf(niwa)).toEqual([{ data: { id: "x" }, at: expect.any(Number) }, "slept"]);
 }, 30_000);
 
 test("ask: no answer within the timeout is an error the script catches, not a false answer", async () => {
@@ -199,7 +199,7 @@ test("call, emit, read, now and random", async () => {
        await niwa.stub.finish({ id: made.id });
        await emit(Note, { text: "hello" });
        const state = await read.state("stub");
-       const records = await read.records({ types: ["stub.finished"] });
+       const { records } = await read.records({ types: ["stub.finished"] });
        return { group, made, state, finished: records.map((r) => r.data), at: await now(), dice: await random() };
      });`,
   );

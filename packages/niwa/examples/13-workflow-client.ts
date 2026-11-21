@@ -38,7 +38,7 @@ export default workflow(
 
     // Wait for a record of this task. "An answer or a timeout" is the `timeout` option: no waitAny.
     const done = await wait("task.done", { filter: { task: task.id }, timeout: "30m" });
-    if (done.timedOut) {
+    if ("timedOut" in done) {
       // Ask the owner at the moment of need. A cancelled question or none answered within the timeout
       // throws AskCancelled or AskExpired (the `name` of the error): the script catches it, and here
       // no answer is a denial.

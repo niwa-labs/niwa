@@ -317,15 +317,15 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
     // A wait reads the journal: it is held to the same right as a read of records.
     await authorized(key, "call", RECORDS_READ);
     const filter = request.filter === undefined ? {} : { filter: request.filter };
-    const dataOf = (got: { data: unknown } | { timedOut: true }): unknown => ("timedOut" in got ? got : got.data);
+    // A wait from a position looks after it; one without looks after where the journal was when it
+    // began, so a record that arrives while the wake is being armed is not missed.
+    const since = request.from ?? (request.timeoutMs === undefined ? undefined : (await guarded(() => step(own.mark, {}, { key: `${key}~mark` }))).seq);
+    const after = since === undefined ? {} : { since };
     if (request.timeoutMs === undefined) {
-      return dataOf(await guarded(() => step(WAIT, { type: request.type, ...filter }, { key })));
+      return guarded(() => step(WAIT, { type: request.type, ...filter, ...after }, { key }));
     }
-    // The wait looks after the position the journal had when it began, so a record that arrives
-    // while the wake is being armed is not missed.
-    const { seq } = await guarded(() => step(own.mark, {}, { key: `${key}~mark` }));
     const place = await arm(key, request.timeoutMs);
-    return dataOf(await guarded(() => step(WAIT, { type: request.type, ...filter, place, since: seq }, { key })));
+    return guarded(() => step(WAIT, { type: request.type, ...filter, place, ...after }, { key }));
   };
 
   const ask = async (key: string, request: Extract<ScriptRequest, { op: "ask" }>): Promise<unknown> => {
@@ -395,11 +395,9 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
       case "read-state":
         await authorized(key, "call", RECORDS_READ);
         return guarded(() => step(own.state, { plugin: request.plugin }, { key }));
-      case "read-records": {
-        // The script reads the records; where the next read goes on is for the callers that page.
-        const read = (await act(key, RECORDS_READ, RECORDS_READ, request.query)) as { records: unknown[] };
-        return read.records;
-      }
+      case "read-records":
+        // The records, and where the next read or wait goes on: a wait from `next` misses nothing.
+        return act(key, RECORDS_READ, RECORDS_READ, request.query);
       case "now":
         return clock(key);
       case "random": {

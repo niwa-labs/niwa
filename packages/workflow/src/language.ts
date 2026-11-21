@@ -126,11 +126,13 @@ export const ScriptRequest = z.discriminatedUnion("op", [
   }),
   /** `call()` and the generated wrappers: any action, by name. */
   z.object({ op: z.literal("call"), action: z.string().min(1), input: JsonValueSchema.optional(), reason: z.string().min(1).optional() }),
-  /** `wait()`: the first record of a type whose data holds the filter, or the timeout. */
+  /** `wait()`: the first record of a type whose data holds the filter, after a position or the wait's start, or the timeout. */
   z.object({
     op: z.literal("wait"),
     type: z.string().min(1),
     filter: z.record(z.string(), z.unknown()).optional(),
+    /** The position to look after: what an earlier wait or read answered. */
+    from: z.number().int().nonnegative().optional(),
     timeoutMs: z.number().optional(),
   }),
   z.object({ op: z.literal("sleep"), ms: z.number() }),

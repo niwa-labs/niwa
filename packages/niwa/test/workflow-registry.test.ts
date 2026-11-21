@@ -212,13 +212,13 @@ test("a change in the records a workflow writes checks the scripts that wait for
   const waiter = await scriptIn(home, "waiter.ts", [
     'export default workflow({ description: "Wait for a block", output: z.number() }, async () => {',
     '  const blocked = await wait("wf.sweep.blocked");',
-    '  return "timedOut" in blocked ? 0 : blocked.pr;',
+    '  return "timedOut" in blocked ? 0 : blocked.data.pr;',
     "});",
   ]);
   const reader = await scriptIn(home, "reader.ts", [
     'export default workflow({ description: "Read the blocks", uses: ["niwa.records.read"], output: z.number() }, async () => {',
     '  const found = await read.records({ types: ["wf.sweep.blocked"] });',
-    "  return found.length;",
+    "  return found.records.length;",
     "});",
   ]);
   const unrelated = await scriptIn(home, "unrelated.ts", [

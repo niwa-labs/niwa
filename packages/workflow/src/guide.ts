@@ -24,7 +24,7 @@ their types.
   }, async ({ text, minutes }) => {
     const task = await niwa.task.create({ ... }, { label: "create" });
     const done = await wait("task.done", { filter: { task: task.id }, timeout: minutes + "m" });
-    if (done.timedOut && !(await ask.confirm("Keep waiting?", { timeout: "10m" }))) return { task: "gave up" };
+    if ("timedOut" in done && !(await ask.confirm("Keep waiting?", { timeout: "10m" }))) return { task: "gave up" };
     await sleep("5m");
     return { task: task.id };
   });
@@ -102,14 +102,17 @@ Scripts niwa starts by itself:
   the runs that live keep the grant they were born with.
 
 Time and the outside:
-- wait(type, { filter, timeout }) gives the data of the first record of that type written after the wait began,
-  whose data holds every field of the filter, or { timedOut: true }. There is no waitAny.
+- wait(type, { filter, from, timeout }) gives { data, at }: the first record of that type written after from (a
+  position an earlier wait or read gave) or after the wait began, whose data holds every field of the filter (a
+  field, or a dotted path), and its position; or { timedOut: true }. A wait from at misses nothing written after
+  the record. There is no waitAny.
 - sleep(ms | "5m") records its wake-up moment: a replay does not sleep from the start.
 - ask.choice(text, options, opts), ask.multi, ask.confirm(text, opts), ask.text(text, opts) and ask.form(text, zodObject, opts) ask the owner and give a typed value (the id picked, the ids, a boolean, a string, what the schema parses); opts is { timeout, label }. A cancel or no answer in time throws an error named AskCancelled or AskExpired, which the script may catch (it is never a false answer); uncaught, the run waits for a revision or a cancel, since a retry would get the same error.
 - const Blocked = record("blocked", z.object({ pr: z.number() })) declares a record; workflow({ name, emits: [Blocked] }) lists it,
   and emit(Blocked, { pr }) writes wf.<name>.blocked, the data held to the schema (a script emits nothing it does not list);
   wait(type) and read.records({ types }) give data typed by the type; read.state(plugin), read.records(query), now() and random()
-  are recorded reads.
+  are recorded reads. read.records({ from, types, filter, stream, limit, tail }) gives { records, next }: types are exact
+  names or families written prefix.*, and next is the position to read or wait on from.
 - What the script does is held to the grant of the run: wait, read.state and read.records need niwa.records.read,
   a call needs its action. ask, emit (emit:wf.*, which every run has), sleep, now and random need nothing in
   uses.
