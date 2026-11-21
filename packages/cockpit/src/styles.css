@@ -1,0 +1,19 @@
+@import "tailwindcss";
+@import "@niwa-labs/ui-kit/theme.css";
+
+/* The client modules of the plugins in this repository: their classes are built into the app's stylesheet. */
+@source "../../*/src/cockpit";
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+  * {
+    @apply border-border;
+  }
+}
