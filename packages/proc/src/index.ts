@@ -35,7 +35,7 @@ import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 
 import { OutputCapture } from "./artifact.ts";
 import { ProcRefusal } from "./refusal.ts";
-import { ProcFinished, procExec, procRun } from "./records.ts";
+import { ProcFinished, fileTarget, procExec, procRun } from "./records.ts";
 import type { BoxUsed, ProcFinishedData, ProcResult } from "./records.ts";
 import { launchPlain, supervise } from "./supervise.ts";
 
@@ -112,7 +112,7 @@ export function proc(options: ProcOptions = {}): Plugin {
   const targetOf = (input: { readonly cwd: string }): string => {
     const real = cwdTarget(input.cwd);
     authorized.set(input, real);
-    return real;
+    return fileTarget(real);
   };
 
   /** The sandbox of a run: the one given, or the first of the natural ones that can run here. */

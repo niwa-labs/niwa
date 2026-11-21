@@ -16,6 +16,19 @@
 import { ArtifactRefSchema, SecretName, SecretRef, actionRef, record } from "@niwa-labs/core";
 import { z } from "zod";
 
+/**
+ * An absolute path as the target of a call, the form a rule names: a segment of a target holds no
+ * whitespace, `*`, `@`, `:` or brace, so each such character, and `%`, is written as `%` and its
+ * hex code (the bytes of its UTF-8, for one that has more than one). A path of plain segments is
+ * its own target, so a rule written for it stays valid; one with a space is named as
+ * `/work/My%20Project`. `%` is encoded too, so two paths never share a target.
+ */
+export function fileTarget(path: string): string {
+  const escaped = (char: string): string =>
+    [...new TextEncoder().encode(char)].map((byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`).join("");
+  return path.replace(/[\s*@:{}%]/g, escaped);
+}
+
 /** The most a command may be given to finish, in milliseconds: an hour. */
 export const MAX_TIMEOUT_MS = 3_600_000;
 
@@ -69,6 +82,7 @@ export const procRun = actionRef("proc.run", {
     "`timeout` is in milliseconds; a command that runs longer is stopped, with everything it started. " +
     "`env` is the whole environment besides PATH and HOME. " +
     "The result has the exit code, the end of the output and the whole output as an artifact; a non-zero exit is a result, not an error. " +
+    "A grant names the real path of `cwd` (`proc.run@/work/repo`); a space or another character a rule cannot hold is written as % and its hex code (`My%20Project`). " +
     "Class: write, local.",
   input: z.strictObject({
     cmd: Cmd,
@@ -87,7 +101,8 @@ export const procExec = actionRef("proc.exec", {
     "`env` values are text or a secret reference, `secret(\"name\")`; `secrets` lists secrets given to the command as variables of their own names. " +
     "The values are resolved where the command starts and are never written down; known secret values are removed from the output. " +
     "`net` says the command is meant to reach the network: it is for the owner who is asked, nothing enforces it. " +
-    "The result has the exit code, the end of the output and the whole output as an artifact. Class: irreversible, external.",
+    "The result has the exit code, the end of the output and the whole output as an artifact. " +
+    "A grant names the real path of `cwd` as `proc.exec@/work/repo`, with a space or another character a rule cannot hold written as % and its hex code. Class: irreversible, external.",
   input: z.strictObject({
     cmd: Cmd,
     cwd: Cwd,

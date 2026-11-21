@@ -5,12 +5,12 @@ import { existsSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 
-import { grant, principalOf } from "@niwa-labs/core";
+import { grant, isCallTarget, principalOf } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import { connect } from "@niwa-labs/testing";
 import type { NiwaApi } from "@niwa-labs/testing";
 
-import { procExec, procRun } from "../src/index.ts";
+import { fileTarget, procExec, procRun } from "../src/index.ts";
 import { dirIn, procHost, recordingSandbox } from "./support.ts";
 import type { ProcOptions } from "../src/index.ts";
 
@@ -82,4 +82,32 @@ test("a link that is moved after the grant was checked does not move the command
   await expect(caller.call(procRun, { cmd: ["/usr/bin/touch", "ran"], cwd: link, timeout: 10_000 })).rejects.toThrow(/changed/);
   expect(existsSync(join(there, "ran"))).toBe(false);
   expect(existsSync(join(here, "ran"))).toBe(false);
+});
+
+test("a directory with a space, a percent sign or a colon in its name is a target a rule can name", async () => {
+  const { host, as } = await served();
+  const plain = realpathSync(dirIn(host.home, "My Project"));
+  const odd = realpathSync(dirIn(host.home, "a%b:c@d*e"));
+  const other = realpathSync(dirIn(host.home, "other"));
+
+  const anywhere = await as(["proc.run"]);
+  expect((await anywhere.call(procRun, { cmd: ["/usr/bin/true"], cwd: plain, timeout: 10_000 })).exit).toBe(0);
+  expect((await anywhere.call(procRun, { cmd: ["/usr/bin/true"], cwd: odd, timeout: 10_000 })).exit).toBe(0);
+
+  const named = await as([`proc.run@${fileTarget(plain)}`]);
+  expect(fileTarget(plain)).toBe(`${realpathSync(host.home)}/My%20Project`);
+  expect((await named.call(procRun, { cmd: ["/usr/bin/true"], cwd: plain, timeout: 10_000 })).exit).toBe(0);
+  await expect(named.call(procRun, { cmd: ["/usr/bin/true"], cwd: other, timeout: 10_000 })).rejects.toThrow(/grant/);
+  await expect(named.call(procRun, { cmd: ["/usr/bin/true"], cwd: odd, timeout: 10_000 })).rejects.toThrow(/grant/);
+
+  const underHome = await as([`proc.run@${fileTarget(realpathSync(host.home))}/*`]);
+  expect((await underHome.call(procRun, { cmd: ["/usr/bin/true"], cwd: odd, timeout: 10_000 })).exit).toBe(0);
+});
+
+test("a path with only plain segments is its own target, and an encoded one cannot be read as another place", () => {
+  expect(fileTarget("/work/repo-1/src.d")).toBe("/work/repo-1/src.d");
+  expect(fileTarget("/a b/c")).toBe("/a%20b/c");
+  expect(fileTarget("/a%20b")).toBe("/a%2520b");
+  expect(fileTarget("/a%20b")).not.toBe(fileTarget("/a b"));
+  expect(isCallTarget(fileTarget("/x/{y}/*/z@q:r s"))).toBe(true);
 });
