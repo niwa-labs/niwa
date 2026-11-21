@@ -419,7 +419,13 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       untilCommit: (ms) => api.untilCommit(ms),
       followed: () => followed,
       harnessOf: (ref) => sessionOf(ref).harness,
-      since: bootedAt,
+      servedAfter: () => servedAfter,
+    });
+    // The last record before this host served: turns that began by then ran in processes of another host.
+    let servedAfter = seq(0);
+    api.service(() => {
+      servedAfter = api.journal?.()?.last() ?? seq(0);
+      return () => {};
     });
 
     /**
@@ -1334,7 +1340,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           // The turn is named as the records name it, not as the harness counts it in this process.
           const named = (receipt: DeliveryReceipt) => (receipt.turn === undefined ? receipt : { ...receipt, turn: numbered(ref, receipt.turn) });
           // A harness at its ceiling takes the message once one of its turns ends.
-          if (input.operation === undefined) return { receipt: named(await sending(await caps.admit(id.harness))) };
+          if (input.operation === undefined) return { receipt: named(await sending(await caps.admit(id.harness, ref))) };
 
           const operation = input.operation;
           const digest = createHash("sha256").update(JSON.stringify([input.message, input.into ?? null])).digest("hex");
@@ -1349,7 +1355,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
               throw new InputPossiblySent(id.harness, "send", before.outcome?.reason ?? "the send was cut off before its outcome was known");
             }
           }
-          const slot = await caps.admit(id.harness);
+          const slot = await caps.admit(id.harness, ref);
           await ctx.emit(SessionInputSending, { session: ref, operation, digest }).catch((error: unknown) => {
             slot.release();
             throw error;
@@ -1456,7 +1462,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           const schema = z.fromJSONSchema(input.schema);
           const prompt = input.prompt;
           if (supports(instanceOf(bindings, id.harness), "control", "structuredOutput")) {
-            const answer = await control.ask(id, { schema, prompt, ...startedOf(ref)?.options });
+            // The answer is a turn of the session: a harness at its ceiling takes it once one of its turns ends.
+            const slot = await caps.admit(id.harness, ref);
+            const answer = await control.ask(id, { schema, prompt, ...startedOf(ref)?.options }).finally(() => slot.release());
             // The harness said the answer is structured; niwa checks it all the same.
             const parsed = schema.safeParse(answer.value);
             if (!parsed.success) {
