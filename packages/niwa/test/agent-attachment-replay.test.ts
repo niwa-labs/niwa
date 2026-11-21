@@ -46,6 +46,11 @@ test("replaying attach and detach completes the original watch operation", async
     expect(calls[1]).toEqual(expected);
     expect(calls[1]?.slice(0, calls[0]!.length)).toEqual(calls[0]);
     expect(rows.filter((row) => row.type === interruptAt)).toHaveLength(1);
+
+    // Another attachment won while this operation was stopped. An old operation cannot change its watch.
+    rows.push({ id: `replacement-${action}`, seq: rows.length + 1, type: "agent.attached", data: { agent: "rin", cwd: "/replacement", session: "fake ext" } } as StoredRecord);
+    await attempt(false);
+    expect(calls.at(-1)).not.toContain(action === "agent.attach" ? "history.watch" : "history.unwatch");
   }
   await replay("agent.attach", { agent: "rin", harness: "fake", native: "ext", cwd: "/tmp" }, "agent.attached", ["session.read", "history.watch"]);
   await replay("agent.detach", { session: "fake ext" }, "agent.detached", ["history.unwatch"]);

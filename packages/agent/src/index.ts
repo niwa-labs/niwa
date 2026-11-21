@@ -49,6 +49,7 @@ import {
   AGENT_TYPES,
   AgentAttached,
   AgentAttachmentChanging,
+  AgentDigestAdvanced,
   AgentCreated,
   AgentDefinition,
   AgentDetached,
@@ -66,6 +67,7 @@ import {
   agentBriefing,
   agentCreate,
   agentDetach,
+  agentDigestRead,
   agentGet,
   agentList,
   agentNotify,
@@ -73,6 +75,8 @@ import {
   partVersions,
 } from "./records.ts";
 import type { AgentDefinitionInput, AgentStatus, TurnAuthor, TurnSource } from "./records.ts";
+
+import { readDigest } from "./digest.ts";
 
 export * from "./records.ts";
 
@@ -247,18 +251,32 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     };
 
     /** The native sessions attached to agents now: by session, the agent and the directory. */
-    const attachments = (before = Infinity): Map<string, { agent: string; cwd: string; from?: string }> => {
-      const now = new Map<string, { agent: string; cwd: string; from?: string }>();
+    const attachments = (before = Infinity) => {
+      const now = new Map<string, ReturnType<typeof AgentAttached.schema.parse> & { id: string }>();
       for (const stored of recordsOf(journal(), [AgentAttached.name, AgentDetached.name])) {
         if (stored.seq >= before) break;
         if (stored.type === AgentAttached.name) {
           const attached = AgentAttached.schema.parse(stored.data);
-          now.set(attached.session, { agent: attached.agent, cwd: attached.cwd, ...(attached.from === undefined ? {} : { from: attached.from }) });
+          now.set(attached.session, { ...attached, id: String(stored.id) });
         } else {
           now.delete(AgentDetached.schema.parse(stored.data).session);
         }
       }
       return now;
+    };
+
+    const attachmentOf = (session: string) => {
+      const attached = attachments().get(session);
+      if (attached === undefined) return undefined;
+      let upto = attached.from;
+      let pending = attached.pending === true;
+      for (const row of recordsOf(journal(), [AgentTurnQueued.name, AgentDigestAdvanced.name])) {
+        const data = row.data as { attachment?: string; upto?: string; source?: TurnSource };
+        if (data.attachment !== attached.id) continue;
+        pending = false;
+        upto = data.source?.kind === "session-digest" ? data.source.upto : data.upto;
+      }
+      return { agent: attached.agent, attachment: attached.id, ...(pending ? { pending: true as const } : {}), ...(upto === undefined ? {} : { upto }) };
     };
 
     /** The address a caller states a fact as: the binding's, or niwa's own for a handler, the host or a run. */
@@ -289,13 +307,13 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     }
 
     // A pause or the end of a session attached to an agent makes a digest due; any other session's is no business of the agents.
-    const due = async (id: { harness: string; native: string }, ended: boolean, step: Step): Promise<void> => {
+    const due = async (id: { harness: string; native: string }, ended: boolean, step: Step, record: StoredRecord): Promise<void> => {
       const session = `${id.harness} ${id.native}`;
-      const attached = attachments().get(session);
-      if (attached !== undefined) await step.emit(AgentDigestDue, { agent: attached.agent, session, ended });
+      const attached = attachments(record.seq).get(session);
+      if (attached !== undefined) await step.emit(AgentDigestDue, { agent: attached.agent, session, ended, attachment: attached.id });
     };
-    api.on(HistorySessionPaused, { id: "digest-on-pause", concurrency: Number.POSITIVE_INFINITY }, (data, step) => due(data.session, false, step));
-    api.on(HistorySessionEnded, { id: "digest-on-end", concurrency: Number.POSITIVE_INFINITY }, (data, step) => due(data.session, true, step));
+    api.on(HistorySessionPaused, { id: "digest-on-pause", concurrency: Number.POSITIVE_INFINITY }, (data, step, record) => due(data.session, false, step, record));
+    api.on(HistorySessionEnded, { id: "digest-on-end", concurrency: Number.POSITIVE_INFINITY }, (data, step, record) => due(data.session, true, step, record));
 
     /**
      * The turns reach the main session one at a time, in the order they were queued. The ladder: the
@@ -647,11 +665,19 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
             if (other === session || one.agent !== name || one.cwd !== input.cwd || !other.startsWith(`${harness} `)) continue;
             await ctx.step.outcome(historySignal, { session: { harness, native: other.slice(harness.length + 1) }, signal: "new-binding" });
           }
+          let attachment = before?.id;
+          let pending = before?.pending;
           if (before?.agent !== name || before.cwd !== input.cwd) {
             // Where the transcript stands now: the agent learns what the session does from here on.
             const tail = await ctx.step.outcome(sessionRead, { session, window: { limit: 1 } });
             const from = tail.status === "completed" ? tail.value.records.at(-1)?.locator : undefined;
-            await ctx.emit(AgentAttached, { agent: name, session, cwd: input.cwd, ...(from === undefined ? {} : { from }) });
+            pending = tail.status !== "completed" || tail.value.coverage.status === "failed" || tail.value.coverage.status === "unavailable"
+              || (from === undefined && tail.value.coverage.status !== "empty") ? true : undefined;
+            const bound = await ctx.emit(AgentAttached, { agent: name, session, cwd: input.cwd, ...(pending ? { pending } : from === undefined ? {} : { from }) });
+            attachment = String(bound.id);
+          }
+          if (attachments().get(session)?.id !== attachment) {
+            return { agent: name, session, watching: false, briefing: "This attachment was replaced or detached before its watch completed." };
           }
           const watched = await ctx.step.outcome(historyWatch, {
             session: { harness, native: input.native },
@@ -661,6 +687,7 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
             agent: name,
             session,
             ...(before !== undefined && before.agent !== name ? { replaced: before.agent } : {}),
+            ...(pending && attachmentOf(session)?.pending ? { pending } : {}),
             watching: watched.status === "completed" && watched.value.watching,
             briefing: await briefingOf(name, ctx),
           };
@@ -678,6 +705,7 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
           const attached = attachments(changing.seq).get(input.session);
           if (attached === undefined) return {};
           await ctx.emit(AgentDetached, { agent: attached.agent, session: input.session });
+          if (attachments().has(input.session)) return { agent: attached.agent };
           const space = input.session.indexOf(" ");
           await ctx.step.outcome(historyUnwatch, { session: { harness: input.session.slice(0, space), native: input.session.slice(space + 1) } });
           return { agent: attached.agent };
@@ -690,17 +718,46 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
         recovery: "repeat",
         effect: "read",
         world: "niwa",
-        run: async (input) => {
-          const attached = attachments().get(input.session);
-          if (attached === undefined) return {};
-          const upto = dataOf(journal(), AgentTurnQueued)
-            .filter((turn) => turn.agent === attached.agent && turn.source?.kind === "session-digest" && turn.source.session === input.session)
-            .at(-1)?.source;
-          const read = upto?.kind === "session-digest" ? upto.upto : attached.from;
-          return { agent: attached.agent, ...(read === undefined ? {} : { upto: read }) };
-        },
+        run: async ({ session }) => attachmentOf(session) ?? {},
       }),
     );
+
+    api.action(action(agentDigestRead, {
+      recovery: "repeat",
+      effect: "write",
+      world: "local",
+      run: async (input, ctx) => {
+        const turn = factId(String(ctx.operationId));
+        const delivered = dataOf(journal(), AgentTurnQueued).find((row) => row.turn === turn && row.attachment === input.attachment);
+        if (delivered?.source?.kind === "session-digest") return { more: delivered.more === true, upto: delivered.source.upto };
+        const advanced = dataOf(journal(), AgentDigestAdvanced).find((row) => row.operation === String(ctx.operationId));
+        if (advanced !== undefined) return { more: advanced.more, ...(advanced.upto === undefined ? {} : { upto: advanced.upto }) };
+
+        const current = () => {
+          const bound = attachmentOf(input.session);
+          if (bound?.attachment !== input.attachment || bound.upto !== input.from || Boolean(bound.pending) !== Boolean(input.pending)) return undefined;
+          return bound;
+        };
+        if (current() === undefined) return { more: false, stale: true as const };
+        const part = await readDigest(input, ctx, api.artifacts);
+        const bound = current();
+        if (bound === undefined) return { more: false, stale: true as const };
+        if (part === undefined) return { more: false };
+        const more = part.more && (input.ended || part.text === undefined);
+        if (part.text !== undefined && part.upto !== undefined) {
+          await ctx.emit(AgentTurnQueued, {
+            agent: bound.agent, turn, kind: "fact", author: authorOf(ctx.caller), text: part.text, attachment: input.attachment, more,
+            source: { kind: "session-digest", session: input.session, ...(input.from === undefined ? {} : { from: input.from }), upto: part.upto },
+          });
+        } else {
+          await ctx.emit(AgentDigestAdvanced, {
+            session: input.session, attachment: input.attachment, operation: String(ctx.operationId), more,
+            ...(part.upto === undefined ? {} : { upto: part.upto }),
+          });
+        }
+        return { more, ...(part.upto === undefined ? {} : { upto: part.upto }) };
+      },
+    }));
 
     api.action(
       action(agentBriefing, {

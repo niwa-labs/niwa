@@ -81,7 +81,7 @@ test("under mcode the latest session of the directory is attached only once conf
   expect(named.code).toBe(0);
   expect(JSON.parse(named.output)).toMatchObject({ agent: "rin", session: "mcode older" });
   expect(dataOf(await host.records(), "agent.attached")).toEqual([
-    { agent: "rin", session: "mcode latest", cwd: "/work" },
-    { agent: "rin", session: "mcode older", cwd: "/work" },
+    { agent: "rin", session: "mcode latest", cwd: "/work", pending: true },
+    { agent: "rin", session: "mcode older", cwd: "/work", pending: true },
   ]);
 });

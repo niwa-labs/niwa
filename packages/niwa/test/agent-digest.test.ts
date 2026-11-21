@@ -3,12 +3,15 @@
 
 import { afterEach, expect, test } from "bun:test";
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import type { ActionName } from "@niwa-labs/core";
 import { LocatorSchema } from "@niwa-labs/harness";
 import type { SessionRecord } from "@niwa-labs/harness";
 import { connectAsOwner, workflow } from "@niwa-labs/testing";
 
-import { HARNESS, agentHost, dataOf, until } from "./fixtures/agent-host.ts";
+import { HARNESS, agentHost, dataOf, transcripts, until } from "./fixtures/agent-host.ts";
 import type { AgentHost } from "./fixtures/agent-host.ts";
 
 const RIN = { name: "rin", harness: HARNESS, prompt: "You keep the owner's work in order." };
@@ -106,3 +109,93 @@ test("a session whose history started over is not told again from its top: the a
   expect(third?.source).toEqual({ kind: "session-digest", session: `${HARNESS} ext-1`, from: "M5", upto: "M6" });
   expect(third?.text).toContain("The session: the tests pass");
 }, 90_000);
+
+test("a public fact cannot set the transcript cursor", async () => {
+  const host = await attachedHost([said(1, "user", "old")]);
+  await expect(host.host.call("agent.notify" as ActionName, {
+    agent: "rin", text: "an ordinary fact", source: { kind: "session-digest", session: `${HARNESS} ext-1`, upto: "other" },
+  })).rejects.toThrow();
+  expect(await host.host.call("agent.attachment" as ActionName, { session: `${HARNESS} ext-1` })).toMatchObject({ upto: "L1" });
+});
+
+test("a replaced attachment rejects its previous cursor and competing readers commit only once", async () => {
+  const transcript = [said(1, "user", "old")];
+  const host = await agentHost({ agents: [RIN] }, { transcripts: new Map([["ext-1", transcript]]) });
+  open.push(host);
+  const session = `${HARNESS} ext-1`;
+  const attach = () => host.host.call("agent.attach" as ActionName, { harness: HARNESS, native: "ext-1", cwd: "/work", agent: "rin" });
+  const state = () => host.host.call("agent.attachment" as ActionName, { session }) as Promise<{ attachment: string; upto: string }>;
+  const read = (attachment: string, from: string) => host.host.call("agent.digest.read" as ActionName, { session, attachment, from, ended: false });
+  await attach();
+  const old = await state();
+  transcript.push(said(2, "assistant", "first attachment"));
+  await read(old.attachment, old.upto);
+  await host.host.call("agent.detach" as ActionName, { session });
+  transcript.push(said(3, "user", "between attachments"));
+  await attach();
+  const current = await state();
+  expect(current.upto).toBe("L3");
+  expect(current.attachment).not.toBe(old.attachment);
+  transcript.push(said(4, "user", "new attachment"));
+  await read(old.attachment, "L2");
+  await Promise.all([read(current.attachment, "L3"), read(current.attachment, "L3")]);
+  const facts = dataOf(await host.records(), "agent.turn.queued") as Turn[];
+  expect(facts.map((turn) => turn.source?.upto)).toEqual(["L2", "L4"]);
+  expect(facts[1]?.text).not.toContain("between attachments");
+});
+
+test("a final event skips silent windows and delivers the following mailbox text", async () => {
+  const transcript: SessionRecord[] = [];
+  const host = await attachedHost(transcript);
+  for (let n = 1; n <= 8; n++) transcript.push({ kind: "thinking", locator: at(n), incomplete: false, redacted: false, text: "x".repeat(30000) });
+  transcript.push(said(9, "assistant", "visible after the quiet windows"));
+  const session = `${HARNESS} ext-1`;
+  await host.host.call("history.signal" as ActionName, { session: { harness: HARNESS, native: "ext-1" }, signal: "end-hook" });
+  const turns = dataOf(await until(host.records, "agent.turn.queued", 1, 5000), "agent.turn.queued") as Turn[];
+  expect(turns[0]?.text).toContain("visible after the quiet windows");
+  expect(await host.host.call("agent.attachment" as ActionName, { session })).toMatchObject({ upto: "L9" });
+}, 15000);
+
+test("a rewritten transcript longer than six windows reanchors at its tail", async () => {
+  const transcript = [said(1, "user", "old")];
+  const host = await attachedHost(transcript);
+  transcript.splice(0, 1, ...Array.from({ length: 10 }, (_, n) => said(n + 11, "user", "old".repeat(10000))));
+  const [reset] = await digestsOf(host, 1);
+  expect(reset?.source?.upto).toBe("L20");
+  expect(reset?.text).toContain("started over");
+}, 15000);
+
+test("a final digest fits multibyte text into separate facts and keeps a large excerpt as an artifact", async () => {
+  const transcript: SessionRecord[] = [];
+  const host = await attachedHost(transcript);
+  const long = "я".repeat(30000);
+  for (let n = 1; n <= 6; n++) transcript.push(said(n, "user", long));
+  const large = "文".repeat(100000);
+  transcript.push(said(7, "user", large));
+  await host.host.call("history.signal" as ActionName, { session: { harness: HARNESS, native: "ext-1" }, signal: "end-hook" });
+  const rows = await until(host.records, "agent.turn.queued", 4, 6000);
+  const facts = dataOf(rows, "agent.turn.queued") as Turn[];
+  expect(facts.map((fact) => fact.source?.upto)).toEqual(["L2", "L4", "L6", "L7"]);
+  for (const fact of facts) expect(Buffer.byteLength(JSON.stringify(fact))).toBeLessThan(256 * 1024);
+  const digest = facts[3]!.text.match(/sha256:[0-9a-f]{64}/)?.[0];
+  expect(digest).toBeDefined();
+  expect(await readFile(join(host.home, "artifacts", digest!.slice("sha256:".length)), "utf8")).toContain(large);
+}, 15000);
+
+test("an unknown tail establishes a boundary after reading recovers", async () => {
+  const transcript = [said(1, "user", "before attachment")];
+  let failed = true;
+  const reading = transcripts(new Map([["ext-1", transcript]]));
+  const host = await agentHost({ agents: [RIN] }, { reading: { ...reading, coverage: async () => failed ? { status: "failed", reason: "offline" } : { status: "not-scanned" } } });
+  open.push(host);
+  const session = `${HARNESS} ext-1`;
+  const bound = await host.host.call("agent.attach" as ActionName, { agent: "rin", harness: HARNESS, native: "ext-1", cwd: "/work" });
+  expect(bound).toMatchObject({ pending: true });
+  const state = () => host.host.call("agent.attachment" as ActionName, { session }) as Promise<{ attachment: string; upto?: string; pending?: boolean }>;
+  const before = await state();
+  failed = false;
+  await host.host.call("agent.digest.read" as ActionName, { session, attachment: before.attachment, pending: true, ended: false, ...(before.upto === undefined ? {} : { from: before.upto }) });
+  expect(await state()).toMatchObject({ upto: "L1" });
+  expect((await state()).pending).toBeUndefined();
+  expect(dataOf(await host.records(), "agent.turn.queued")).toHaveLength(0);
+});

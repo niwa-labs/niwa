@@ -101,7 +101,7 @@ export function transcripts(byNative: Map<string, SessionRecord[]>): SessionRead
     },
     raw: async () => undefined,
     rawSchema: { parse: (value: unknown) => value } as never,
-    coverage: async () => ({ status: "not-scanned" }),
+    coverage: async (id) => ({ status: (byNative.get(id.native)?.length ?? 0) === 0 ? "empty" : "not-scanned" }),
   };
 }
 
@@ -139,6 +139,7 @@ export async function agentHost(
     home?: string;
     control?: ScriptedControl;
     transcripts?: Map<string, SessionRecord[]>;
+    reading?: SessionReading;
     /** More installations for the sessions module. */
     harnesses?: HarnessBinding[];
     after?: Plugin[];
@@ -148,7 +149,7 @@ export async function agentHost(
   const fresh = more.home === undefined ? await tempHome() : undefined;
   const home = more.home ?? fresh!.path;
   const control = more.control ?? new ScriptedControl();
-  const reading = transcripts(more.transcripts ?? new Map());
+  const reading = more.reading ?? transcripts(more.transcripts ?? new Map());
   const made = sessions({ harnesses: [{ instance: installation, control, reading }, ...(more.harnesses ?? [])], niwaMcp: { command: "true", args: [] } });
   const agents = agentsModule({ digests: false, ...options });
   const bind = agents.bind(made.bind());

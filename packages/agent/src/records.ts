@@ -149,6 +149,8 @@ export const AgentTurnQueued = record(
     author: TurnAuthor,
     text: z.string(),
     source: TurnSource.optional(),
+    attachment: z.string().optional(),
+    more: z.boolean().optional(),
   }),
 );
 
@@ -176,14 +178,14 @@ export const AgentTurnFailed = record(
  */
 export const AgentAttached = record(
   "agent.attached",
-  z.object({ agent: AgentName, session: SessionRefText, cwd: z.string().min(1), from: z.string().min(1).optional() }),
+  z.object({ agent: AgentName, session: SessionRefText, cwd: z.string().min(1), from: z.string().min(1).optional(), pending: z.literal(true).optional() }),
 );
 
 /**
  * An attached session paused or ended: what it did since the last digest is due to its agent. Only the
  * sessions attached to an agent have one, so the workflow that reads the digest runs for them alone.
  */
-export const AgentDigestDue = record("agent.digest.due", z.object({ agent: AgentName, session: SessionRefText, ended: z.boolean() }));
+export const AgentDigestDue = record("agent.digest.due", z.object({ agent: AgentName, session: SessionRefText, attachment: z.string(), ended: z.boolean() }));
 
 /** A native session was let go of. */
 export const AgentDetached = record("agent.detached", z.object({ agent: AgentName, session: SessionRefText }));
@@ -191,8 +193,13 @@ export const AgentDetached = record("agent.detached", z.object({ agent: AgentNam
 /** The journal position before an attach or detach starts changing a watch. */
 export const AgentAttachmentChanging = record("agent.attachment.changing", z.object({ session: SessionRefText }));
 
+/** A transcript boundary established without sending a fact. */
+export const AgentDigestAdvanced = record("agent.digest.advanced", z.object({
+  session: SessionRefText, attachment: z.string(), upto: z.string().optional(), operation: z.string(), more: z.boolean(),
+}));
+
 /** The record types the module declares. */
-export const AGENT_TYPES = [AgentCreated, AgentSessionStarted, AgentTurnRouted, AgentTurnQueued, AgentTurnDelivered, AgentTurnFailed, AgentAttached, AgentDetached, AgentDigestDue, AgentAttachmentChanging] as const;
+export const AGENT_TYPES = [AgentCreated, AgentSessionStarted, AgentTurnRouted, AgentTurnQueued, AgentTurnDelivered, AgentTurnFailed, AgentAttached, AgentDetached, AgentDigestDue, AgentAttachmentChanging, AgentDigestAdvanced] as const;
 
 /**
  * The digests of attached sessions, as they reach an agent: what a plugin that takes them in (a memory)
@@ -288,7 +295,7 @@ export const agentTell = actionRef("agent.tell", {
 export const agentNotify = actionRef("agent.notify", {
   description:
     "Tells an agent a fact: a turn of its main session that says what happened, from whoever states it. A fact carries no right of its author: it is never the owner's decision.",
-  input: z.object({ agent: AgentName, text: z.string().min(1), source: TurnSource.optional() }),
+  input: z.object({ agent: AgentName, text: z.string().min(1), source: z.object({ kind: z.literal("task"), task: z.string().min(1) }).optional() }),
   output: z.object({ turn: TurnId }),
 });
 
@@ -308,7 +315,7 @@ export const agentAttach = actionRef("agent.attach", {
       pid: z.number().int().positive().optional(),
     })
     .refine((input) => input.harness !== undefined || input.kind !== undefined, "the session needs its harness or its kind"),
-  output: z.object({ agent: AgentName, session: SessionRefText, replaced: AgentName.optional(), watching: z.boolean(), briefing: z.string() }),
+  output: z.object({ agent: AgentName, session: SessionRefText, replaced: AgentName.optional(), watching: z.boolean(), pending: z.literal(true).optional(), briefing: z.string() }),
 });
 
 export const agentDetach = actionRef("agent.detach", {
@@ -320,7 +327,14 @@ export const agentDetach = actionRef("agent.detach", {
 export const agentAttachment = actionRef("agent.attachment", {
   description: "The agent a native session is attached to, and the locator its last digest was read up to (or the one it was attached at).",
   input: z.object({ session: SessionRefText }),
-  output: z.object({ agent: AgentName.optional(), upto: z.string().min(1).optional() }),
+  output: z.object({ agent: AgentName.optional(), attachment: z.string().optional(), pending: z.literal(true).optional(), upto: z.string().min(1).optional() }),
+});
+
+/** Read and publish the next bounded part of the current attachment's transcript. */
+export const agentDigestRead = actionRef("agent.digest.read", {
+  description: "Reads a part of an attached session and commits its digest if its attachment and starting position still match.",
+  input: z.object({ session: SessionRefText, attachment: z.string(), from: z.string().optional(), pending: z.boolean().optional(), ended: z.boolean() }),
+  output: z.object({ more: z.boolean(), stale: z.literal(true).optional(), upto: z.string().optional() }),
 });
 
 export const agentBriefing = actionRef("agent.briefing", {

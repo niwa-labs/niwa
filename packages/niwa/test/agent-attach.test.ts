@@ -54,7 +54,7 @@ test("a native session found by its kind is attached, watched, and answered with
 
   const moved = await asOwner<Attached>(host, "agent.attach", { agent: "bob", harness: HARNESS, native: "ext-1", cwd: "/work" });
   expect(moved.replaced).toBe("rin");
-  expect(await host.host.call("agent.attachment" as ActionName, { session: `${HARNESS} ext-1` })).toEqual({ agent: "bob" });
+  expect(await host.host.call("agent.attachment" as ActionName, { session: `${HARNESS} ext-1` })).toMatchObject({ agent: "bob" });
   expect(await asOwner(host, "agent.detach", { session: `${HARNESS} ext-1` })).toEqual({ agent: "bob" });
   expect(await host.host.call("agent.attachment" as ActionName, { session: `${HARNESS} ext-1` })).toEqual({});
   expect(dataOf(await host.records(), "history.session.unwatched")).toEqual([{ session: { harness: HARNESS, native: "ext-1" } }]);
