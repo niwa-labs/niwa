@@ -103,7 +103,7 @@ export function pi(options: PiKindOptions): HarnessKindDefinition {
     ...(reporter === undefined
       ? {}
       : {
-          insert: new PiInsert({ report: reporter, owned: options.insert?.owned }),
+          insert: new PiInsert({ report: reporter, owned: options.insert?.owned, harness: options.harness }),
         }),
     // Without a reporter the kind has no insert side, and declares none.
     capabilities: reporter === undefined ? { ...PI_CAPABILITIES, insert: NO_INSERT } : PI_CAPABILITIES,
@@ -130,7 +130,7 @@ export type { PiControlOptions, PiSessionControl } from "./control.ts";
 
 export { piSkills } from "./skills.ts";
 
-export { PI_HARNESS, PiInsert, piSession, default as niwaPiExtension } from "./insert/index.ts";
+export { PI_HARNESS, PI_INSTANCE_ENV, PiInsert, piSession, default as niwaPiExtension } from "./insert/index.ts";
 export type {
   InsertReporter,
   PiExtensionApi,

@@ -9,7 +9,8 @@
 import { NIWA_SESSION_ENV, reportThroughCli } from "@niwa-labs/harness";
 import type { InsertEvent } from "@niwa-labs/harness";
 
-import { PiInsert } from "./insert.ts";
+import { PI_INSTANCE_ENV, PiInsert } from "./insert.ts";
+import type { InsertReporter } from "./insert.ts";
 import type {
   PiSessionCompact,
   PiSessionInfo,
@@ -35,11 +36,22 @@ function sessionOf(ctx: PiExtensionContext): PiSessionInfo {
   return { id: ctx.sessionManager.getSessionId(), cwd: ctx.cwd };
 }
 
-export default function niwaPiExtension(pi: PiExtensionApi): void {
-  const insert = new PiInsert({
-    report: reporter(),
-    owned: process.env[NIWA_SESSION_ENV] !== undefined,
+/**
+ * The insert of a pi process, as its environment sets it up: a process niwa started carries the
+ * marker of one (`NIWA_SESSION`) and names its installation (`NIWA_PI_INSTANCE`); one the owner opened
+ * by hand carries neither, and its sessions are reported as opened by hand under the default id.
+ */
+export function insertOf(env: NodeJS.ProcessEnv, report: InsertReporter): PiInsert {
+  const instance = env[PI_INSTANCE_ENV]?.trim();
+  return new PiInsert({
+    report,
+    owned: env[NIWA_SESSION_ENV] !== undefined,
+    ...(instance === undefined || instance === "" ? {} : { harness: instance }),
   });
+}
+
+export default function niwaPiExtension(pi: PiExtensionApi): void {
+  const insert = insertOf(process.env, reporter());
 
   pi.on<PiSessionStart>("session_start", (event, ctx) =>
     safely(() => insert.onSessionStart(event, sessionOf(ctx))),

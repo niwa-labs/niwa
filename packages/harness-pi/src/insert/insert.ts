@@ -28,14 +28,26 @@ export interface PiInsertOptions {
    * Default: false, so a session the owner opened is reported.
    */
   readonly owned?: boolean;
+  /**
+   * The id of the installation the sessions belong to: the one the reading and the control side use.
+   *
+   * Default: `pi`.
+   */
+  readonly harness?: string;
 }
 
-/** The id of the harness: pi's sessions are pi's own. */
+/** The id of the harness when no installation is named: pi's sessions are pi's own. */
 export const PI_HARNESS = "pi";
 
-/** The session of pi that an event is about. */
-export function piSession(native: string): SessionId {
-  return sessionId(harnessId(PI_HARNESS), native);
+/**
+ * The environment variable that names the installation a pi process belongs to, so the extension
+ * inside it reports the sessions under the same id the reading and the control side give them.
+ */
+export const PI_INSTANCE_ENV = "NIWA_PI_INSTANCE";
+
+/** The session of pi that an event is about, of the installation `harness` names. */
+export function piSession(native: string, harness: string = PI_HARNESS): SessionId {
+  return sessionId(harnessId(harness), native);
 }
 
 /** Pi's "session_start", as far as the insert reads it. */
@@ -67,12 +79,14 @@ export class PiInsert implements HarnessInsert {
   private readonly readers = new Set<(event: InsertEvent) => void>();
   private readonly report: InsertReporter;
   private readonly owned: boolean;
+  private readonly harness: string;
   private prompts = 0;
 
   /** The insert is set up with how its events reach niwa and whether it owns the session. */
   constructor(options: PiInsertOptions) {
     this.report = options.report;
     this.owned = options.owned ?? false;
+    this.harness = options.harness ?? PI_HARNESS;
   }
 
   /** The events from the moment of the call, as they happen. */
@@ -105,7 +119,7 @@ export class PiInsert implements HarnessInsert {
     if (this.owned || (event.reason !== "startup" && event.reason !== "new")) return;
     await this.emit({
       kind: "opened-by-hand",
-      session: piSession(session.id),
+      session: piSession(session.id, this.harness),
       cwd: session.cwd,
       at: Date.now(),
     });
@@ -114,7 +128,7 @@ export class PiInsert implements HarnessInsert {
   async onSessionCompact(event: PiSessionCompact, session: PiSessionInfo): Promise<void> {
     await this.emit({
       kind: "compacted",
-      session: piSession(session.id),
+      session: piSession(session.id, this.harness),
       summary: event.compactionEntry.summary,
       at: Date.now(),
     });
@@ -126,7 +140,7 @@ export class PiInsert implements HarnessInsert {
     this.prompts += 1;
     await this.emit({
       kind: "permission-asked",
-      session: piSession(session.id),
+      session: piSession(session.id, this.harness),
       requestId: `${session.id}:prompt:${this.prompts}`,
       tool: `ui:${event.kind}`,
       ...(event.title === undefined ? {} : { detail: event.title }),
