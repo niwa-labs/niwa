@@ -222,3 +222,11 @@ test("a session watched again without its process is not ended by the process it
   await Bun.sleep(150);
   expect(ended(await host.read())).toHaveLength(1);
 });
+
+test("watch calls made at once for one session start one watch", async () => {
+  const host = await hosted((reading) => [history({ harnesses: [{ instance, reading }], timing: { pollMs: 10, pauseMs: 60_000, endMs: 120_000 } })], [checklist(1, 0, 1)]);
+  const answers = await Promise.all([host.call("history.watch", { session: ID }), host.call("history.watch", { session: ID }), host.call("history.watch", { session: ID })]);
+  expect(answers).toEqual([{ watching: true }, { watching: true }, { watching: true }]);
+  await until(host.read, "session.progress");
+  expect((await host.read()).filter((record) => record.type === "history.session.seen")).toHaveLength(1);
+});

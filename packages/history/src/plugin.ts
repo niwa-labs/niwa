@@ -137,6 +137,27 @@ export function history(options: HistoryOptions): Plugin {
       return binding.reading;
     };
 
+    /** The starts of watches in progress, by session: a start is reserved before its first await. */
+    const starting = new Map<string, Promise<void>>();
+
+    /**
+     * Start watching a session with `start`, unless it is watched or a start is already under way, in
+     * which case the caller shares that start. The reservation is released when the start is done or fails.
+     */
+    const begin = async (id: SessionId, start: () => Promise<void>): Promise<void> => {
+      const key = keyOf(id);
+      const under = starting.get(key);
+      if (under !== undefined) return await under;
+      if (watches.has(key)) return;
+      const task = start();
+      starting.set(key, task);
+      try {
+        await task;
+      } finally {
+        starting.delete(key);
+      }
+    };
+
     /** Stop following a session, when it is followed. */
     const stop = (id: SessionId): void => {
       const controller = watches.get(keyOf(id));
@@ -196,23 +217,24 @@ export function history(options: HistoryOptions): Plugin {
         world: "niwa",
         run: async (input, ctx) => {
           const id = input.session;
-          if (watches.has(keyOf(id))) return { watching: true };
-          const reading = readingOf(id);
-          let cwd: string | undefined;
-          for await (const info of reading.list({ natives: [id.native] })) cwd = info.cwd ?? cwd;
-          // A session watched before goes on from where that watch left it, saying no progress twice.
-          const before = standingNow().get(keyOf(id));
-          await ctx.emit(HistorySessionSeen, {
-            session: id,
-            harness: id.harness,
-            ...(cwd === undefined ? {} : { cwd }),
-            ...(input.pid === undefined ? {} : { pid: input.pid }),
-          });
-          // Only where the earlier watch got to is carried over: the process is the one this call names, if any.
-          follow(id, {
-            ...(before?.from === undefined ? {} : { from: before.from }),
-            ...(before?.progress === undefined ? {} : { progress: before.progress }),
-            ...(input.pid === undefined ? {} : { pid: input.pid }),
+          await begin(id, async () => {
+            const reading = readingOf(id);
+            let cwd: string | undefined;
+            for await (const info of reading.list({ natives: [id.native] })) cwd = info.cwd ?? cwd;
+            // A session watched before goes on from where that watch left it, saying no progress twice.
+            const before = standingNow().get(keyOf(id));
+            await ctx.emit(HistorySessionSeen, {
+              session: id,
+              harness: id.harness,
+              ...(cwd === undefined ? {} : { cwd }),
+              ...(input.pid === undefined ? {} : { pid: input.pid }),
+            });
+            // Only where the earlier watch got to is carried over: the process is the one this call names, if any.
+            follow(id, {
+              ...(before?.from === undefined ? {} : { from: before.from }),
+              ...(before?.progress === undefined ? {} : { progress: before.progress }),
+              ...(input.pid === undefined ? {} : { pid: input.pid }),
+            });
           });
           return { watching: true };
         },
@@ -274,11 +296,13 @@ export function history(options: HistoryOptions): Plugin {
           const { session, cwd } = data as { session?: unknown; cwd?: unknown };
           if (stored.type === SESSION_STARTED) {
             const id = sessionOfRef(session);
-            if (id === undefined || watches.has(keyOf(id))) return;
+            if (id === undefined) return;
             // A session of an installation with no reading side has no transcript to follow.
             if (bindings.find((candidate) => candidate.instance.id === id.harness)?.reading === undefined) return;
-            await step.emit(HistorySessionSeen, { session: id, harness: id.harness, ...(typeof cwd === "string" ? { cwd } : {}) });
-            follow(id, {});
+            await begin(id, async () => {
+              await step.emit(HistorySessionSeen, { session: id, harness: id.harness, ...(typeof cwd === "string" ? { cwd } : {}) });
+              follow(id, {});
+            });
             return;
           }
           const id = stored.type === SESSION_ENDED ? sessionOfRef(session) : sessionOfPair(session);
