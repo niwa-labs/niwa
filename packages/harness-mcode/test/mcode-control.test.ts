@@ -2,7 +2,7 @@
  * The MiniMax Code control side.
  *
  * The live test runs the real `mcode` on the model the check names, and it is skipped unless
- * `NIWA_LIVE=1` and the binary is on PATH. It proves the whole path: a start that names the
+ * `NIWA_LIVE=1` and the binary is on PATH (`NIWA_MCODE_LINEAGE=fork` when it is the fork). It proves the whole path: a start that names the
  * session and ends its turn, a message that starts a turn and ends it, a resume that carries a
  * second message, an answer by schema, and no process left behind.
  *
@@ -119,6 +119,8 @@ test.skipIf(!(live && Bun.which("mcode")))(
     control = mcodeControl({
       mode: "full",
       harness: harnessId("mcode-proof"),
+      // The handshake refuses a binary of the other lineage: say which one is on the path.
+      lineage: process.env["NIWA_MCODE_LINEAGE"] === "fork" ? "fork" : "upstream",
       model: "minimax/MiniMax-M3.1-Flash",
       turnTimeoutMs: 120_000,
     });
