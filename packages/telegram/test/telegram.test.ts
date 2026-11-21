@@ -14,6 +14,7 @@ import { expect, test } from "bun:test";
 import { Address, record, seq } from "@niwa-labs/core";
 import type { Caller, HandlerId, InvocationId, StoredRecord } from "@niwa-labs/core";
 import { messageSend, messages } from "@niwa-labs/messages";
+import { messageSendRef } from "@niwa-labs/messages/records";
 import type { CallerBinding } from "@niwa-labs/plugin";
 import { answeredBy, RequestAnswered, RequestCreated, requestAsk, question, requests } from "@niwa-labs/requests";
 import { z } from "zod";
@@ -349,6 +350,38 @@ test("telegram: the message reaches the agent, and telegram.send posts once to t
     expect(posted.chat).toBe(OWNER);
     expect(fake.sent).toHaveLength(1);
     expect(fake.sent[0]).toMatchObject({ chat_id: OWNER, text: "done" });
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: the hook steps an action as the owner, so what it sends is the owner's word", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    const surface = telegram(options(fake.base), {
+      toAgent: async (text, ctx) => {
+        await ctx.step(messageSendRef, { to: { kind: "agent", id: "rin" }, body: { type: "update", text } });
+      },
+    });
+    host.use(messages({ bind: surface.bind() }));
+    host.use(surface);
+    await host.serve();
+
+    fake.push(messageUpdate(310, OWNER, "good morning"));
+    await eventually(() => fake.offsets.includes(311), 5_000, "the update should be handled");
+
+    const sent = (await recordsOf(home.path)).filter((record) => record.type === "message.sent");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.data).toMatchObject({
+      from: { kind: "owner" },
+      to: { kind: "agent", id: "rin" },
+      body: { type: "update", text: "good morning" },
+    });
   } finally {
     await host.close();
     fake.stop();

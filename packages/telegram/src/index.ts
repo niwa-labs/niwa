@@ -21,7 +21,7 @@
  */
 
 import { OptionIdSchema, action, client, optionsOf, owner, questionLines, record } from "@niwa-labs/core";
-import type { Action, Answer, Caller, JournalReader, RecordType, SpeaksFor } from "@niwa-labs/core";
+import type { Action, ActionContext, Answer, Caller, JournalReader, RecordType, SpeaksFor } from "@niwa-labs/core";
 import { bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi, ServiceContext } from "@niwa-labs/plugin";
 import { z } from "zod";
@@ -178,9 +178,13 @@ export interface TelegramHooks {
   /**
    * Send a message to the owner's main agent, when the messages plugin is present.
    *
+   * The hook runs inside the action that delivers the message, with its context. A call it makes
+   * with `ctx.step` is made by this surface, so with `speaksFor` it is the owner's, as long as the
+   * composition gives the modules that bind callers the binding of this instance.
+   *
    * Without it the message stays in the journal and the agent reads it there.
    */
-  toAgent?: (text: string) => Promise<void>;
+  toAgent?: (text: string, ctx: ActionContext) => Promise<void>;
 }
 
 /** The id of the record of an incoming message: the update id, so a repeat is harmless. */
@@ -450,8 +454,8 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     recovery: "do-not-repeat",
     effect: "write",
     world: "local",
-    run: async (input) => {
-      await toAgent?.(input.text);
+    run: async (input, ctx) => {
+      await toAgent?.(input.text, ctx);
       return {};
     },
   });
