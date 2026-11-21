@@ -116,7 +116,7 @@ import {
 } from "./records.ts";
 import type { EmittedRecord, FlowCall, InstallationId, Subscription, WorkflowId } from "./records.ts";
 import { builtinOf, declaredBy, dependentsOf, flowActionName, readersOf, versionOf, workflowIdsOf, workflowsOf } from "./registry.ts";
-import { storedEntry, storeVersion } from "./store.ts";
+import { storedEntry, storedVersion, storeVersion } from "./store.ts";
 import type { RegisteredWorkflow } from "./registry.ts";
 import { decide } from "./revise.ts";
 import type { CurrentCall, RecordedCall, RevisionReport } from "./revise.ts";
@@ -407,9 +407,10 @@ export function workflow(opts: WorkflowOptions = {}) {
 
     /** The copy of a registered version niwa keeps in its home: what the version runs and is checked on. */
     const storedOf = (id: WorkflowId, version: WorkflowVersion): string => {
-      const entry = storedEntry(api.home(), id, version);
-      if (entry === undefined) throw new RunRefusal("not-stored", `niwa holds no code of the version ${version} of ${id}: register it again`);
-      return entry;
+      const stored = storedVersion(api.home(), id, version);
+      if (stored === undefined) throw new RunRefusal("not-stored", `niwa holds no code of the version ${version} of ${id}: register it again`);
+      if ("problem" in stored) throw new RunRefusal("not-the-version", stored.problem);
+      return stored.entry;
     };
 
     /** What a start of a registered workflow runs: the stored copy of its latest version. A broken workflow does not start. */
@@ -1728,10 +1729,14 @@ export function workflow(opts: WorkflowOptions = {}) {
         return;
       }
 
+      // The copy of a registered version runs only as its manifest says it is: the run is read through the same manifest as its start.
+      const stored = data.workflow === undefined || data.version === undefined ? undefined : storedVersion(api.home(), data.workflow, data.version);
       // The module cannot be read for its schemas, or its contract changed so that what the run recorded is no longer its input:
       // the run waits for the owner, who revises it or cancels it.
       const stopped =
-        script !== undefined && described === undefined
+        stored !== undefined && "problem" in stored
+          ? stored.problem
+          : script !== undefined && described === undefined
           ? `the module cannot be read for its schemas: ${read !== undefined && "failed" in read ? read.failed : (read?.described.problems.map((problem) => problem.message).join("; ") ?? "no reading")}`
           : changed.length > 0
             ? `contract-changed: the arguments of the run no longer pass the input of the script (${changed.map((issue) => `${issue.path === "" ? "input" : issue.path}: ${issue.message}`).join("; ")})`

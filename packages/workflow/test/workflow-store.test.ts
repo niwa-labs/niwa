@@ -84,7 +84,7 @@ test("register copies the source closure into the home, laid out as it was, and 
   expect(readFileSync(join(dir, "lib", "label.ts"), "utf8")).toBe('export const label = "one";\n');
   // The copy is the version: the same files at the same places relative to the entry.
   expect(versionOf(join(dir, "flows", "label.ts"))).toBe(version);
-  expect(JSON.parse(readFileSync(join(home, "workflows", id, `${version}.json`), "utf8"))).toEqual({ entry: "flows/label.ts", from: file });
+  expect(JSON.parse(readFileSync(join(home, "workflows", id, `${version}.json`), "utf8"))).toMatchObject({ entry: "flows/label.ts", from: file });
 
   const got = await host.call(workflowGet, { id });
   expect(got.versions).toMatchObject([{ version, file, stored: join(dir, "flows", "label.ts") }]);
@@ -189,3 +189,32 @@ test("a script that imports a data file has a closure: the data file is in it an
   const closure = closureOf(join(dir, "flow.ts"));
   expect([...(closure?.files.keys() ?? [])].sort()).toEqual([join(dir, "flow.ts"), join(dir, "table.json")]);
 });
+
+test("a paused run whose copy changed under it is read through its manifest, and stays paused when it resumes", async () => {
+  const { host, home, src } = await served();
+  await writeFile(join(src, "lib", "label.ts"), 'export const label = "kept";\n');
+  const file = join(src, "flows", "gated.ts");
+  await writeFile(
+    file,
+    [
+      'import { label } from "../lib/label.ts";',
+      'export default workflow({ description: "Pass the gate", uses: ["gate.pass"], output: z.string() }, async () => {',
+      '  await call("gate.pass", {}, { label: "gate" });',
+      "  return label;",
+      "});",
+    ].join("\n"),
+  );
+  const { id, version } = await host.call(workflowRegister, { file });
+  shut = true;
+  try {
+    const { run: started } = await host.call(workflowStart, { id });
+    expect((await host.call(workflowWait, { run: started, timeoutMs: 20_000 })).state).toBe("paused");
+    await writeFile(join(home, "workflows", id, version, "lib", "label.ts"), 'export const label = "swapped";\n');
+    shut = false;
+    await host.call(workflowResume, { run: started });
+    await eventually(async () => JSON.stringify(await host.call(workflowWait, { run: started, timeoutMs: 1_000 })).includes("is not the file"), 20_000);
+    expect((await host.call(workflowWait, { run: started, timeoutMs: 1_000 })).state).toBe("paused");
+  } finally {
+    shut = false;
+  }
+}, 90_000);

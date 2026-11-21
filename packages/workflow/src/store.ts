@@ -6,6 +6,12 @@
  * resolve in the copy as they did in the original. Next to the folder, `<version>.json` names the entry in it and
  * the file the version was registered from; it is written last, so a version is stored once it is there.
  *
+ * The manifest is what the version is: the sha256 of every code file and of every data file of the copy, the
+ * packages it imports by name with the version of each as it was found, and the script ABI it was registered
+ * for. A start, a check and a run read the copy through it: a copy whose files are not the ones it names, or
+ * one made for another ABI, is refused. A manifest that names only the entry is completed from the copy,
+ * which is the version when its hash says so.
+ *
  * What a registered version runs, is checked and resumed on is its copy: the file it was registered from may be
  * edited or deleted. A version is written once: the same version is the same folder, it is not written again.
  *
@@ -15,13 +21,16 @@
  * copy finds the ones a script in niwa's own tree finds.
  */
 
+import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 
+import { SCRIPT_ABI } from "@niwa-labs/script";
 import { z } from "zod";
 
 import { modulesDir } from "./installation.ts";
-import { closureOf, versionOf, versionOfClosure } from "./registry.ts";
+import { closureOf, isCode, packageImportsOf, versionOf, versionOfClosure } from "./registry.ts";
+import type { SourceClosure } from "./registry.ts";
 import type { WorkflowId, WorkflowVersion } from "./records.ts";
 
 /** The folder of the stored workflows in a home. */
@@ -32,7 +41,56 @@ const Manifest = z.object({
   entry: z.string(),
   /** The file the version was registered from. */
   from: z.string(),
+  /** The script ABI the version was registered for. */
+  abi: z.number().int().positive(),
+  /** The code files of the copy, by their path in it, with their sha256. */
+  files: z.record(z.string(), z.string()),
+  /** The data files the code imports, by their path in the copy, with their sha256. */
+  data: z.record(z.string(), z.string()),
+  /** The packages the code imports by name, with the version of each as it was found; null for one that was not. */
+  imports: z.record(z.string(), z.string().nullable()),
 });
+type Manifest = z.infer<typeof Manifest>;
+
+/** A manifest written before it said more than where the entry is. */
+const EntryOnly = Manifest.pick({ entry: true, from: true });
+
+const sha256 = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
+
+/** The version of the package a specifier names, as it is found from `from`; null when it is not found. */
+function packageVersionOf(specifier: string, from: string): string | null {
+  const name = specifier.startsWith("@") ? specifier.split("/").slice(0, 2).join("/") : (specifier.split("/")[0] ?? specifier);
+  let entry: string;
+  try {
+    entry = Bun.resolveSync(specifier, from);
+  } catch {
+    return null;
+  }
+  for (let dir = dirname(entry); dirname(dir) !== dir; dir = dirname(dir)) {
+    const manifest = join(dir, "package.json");
+    if (!existsSync(manifest)) continue;
+    const found = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string; version?: string };
+    if (found.name === name) return found.version ?? null;
+  }
+  return null;
+}
+
+/** The manifest of a closure laid out under `root`. */
+function manifestOfClosure(closure: SourceClosure, root: string, from: string): Manifest {
+  const files: Record<string, string> = {};
+  const data: Record<string, string> = {};
+  for (const [path, bytes] of [...closure.files].sort(([a], [b]) => a.localeCompare(b))) {
+    (isCode(path) ? files : data)[relative(root, path)] = sha256(bytes);
+  }
+  const imports = Object.fromEntries(packageImportsOf(closure).map((specifier) => [specifier, packageVersionOf(specifier, closure.entry)]));
+  return { entry: relative(root, closure.entry), from, abi: SCRIPT_ABI, files, data, imports };
+}
+
+function writeManifest(path: string, manifest: Manifest): void {
+  const aside = `${path}.tmp-${String(process.pid)}`;
+  writeFileSync(aside, `${JSON.stringify(manifest, null, 2)}\n`);
+  renameSync(aside, path);
+}
 
 /** Link `<home>/workflows/node_modules` to the packages niwa runs with, when it is not that link already. */
 function linkPackages(home: string): void {
@@ -52,11 +110,45 @@ function linkPackages(home: string): void {
 const versionDir = (home: string, id: WorkflowId, version: WorkflowVersion): string => join(home, WORKFLOWS_DIR, id, version);
 const manifestOf = (home: string, id: WorkflowId, version: WorkflowVersion): string => join(home, WORKFLOWS_DIR, id, `${version}.json`);
 
-/** The entry of the stored copy of a version, or undefined when niwa holds no copy of it. */
+/** A stored version read through its manifest: the entry of its copy, or why the copy does not run. */
+export type StoredVersion = { entry: string } | { problem: string };
+
+/**
+ * The stored copy of a version as its manifest says it is: its entry, or why it is not what was registered.
+ * Undefined when niwa holds no copy of it.
+ */
+export function storedVersion(home: string, id: WorkflowId, version: WorkflowVersion): StoredVersion | undefined {
+  const path = manifestOf(home, id, version);
+  if (!existsSync(path)) return undefined;
+  const dir = versionDir(home, id, version);
+  const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+  let manifest: Manifest;
+  const full = Manifest.safeParse(raw);
+  if (full.success) {
+    manifest = full.data;
+  } else {
+    const { entry, from } = EntryOnly.parse(raw);
+    const closure = closureOf(join(dir, entry));
+    if (closure === undefined || versionOfClosure(closure) !== version) return { problem: `the copy of the version ${version} of ${id} is not that version: register it again` };
+    manifest = manifestOfClosure(closure, dir, from);
+    writeManifest(path, manifest);
+  }
+  if (manifest.abi !== SCRIPT_ABI) {
+    return { problem: `the version ${version} of ${id} was registered for the script ABI ${String(manifest.abi)}, and niwa reads ${String(SCRIPT_ABI)}: register it again` };
+  }
+  for (const [file, hash] of [...Object.entries(manifest.files), ...Object.entries(manifest.data)]) {
+    const at = join(dir, file);
+    if (!existsSync(at) || sha256(readFileSync(at)) !== hash) {
+      return { problem: `the copy of the version ${version} of ${id} changed: "${file}" is not the file it was registered with` };
+    }
+  }
+  return { entry: join(dir, manifest.entry) };
+}
+
+/** The entry of the stored copy of a version, or undefined when niwa holds no copy of it that is the version. */
 export function storedEntry(home: string, id: WorkflowId, version: WorkflowVersion): string | undefined {
-  const manifest = manifestOf(home, id, version);
-  if (!existsSync(manifest)) return undefined;
-  return join(versionDir(home, id, version), Manifest.parse(JSON.parse(readFileSync(manifest, "utf8"))).entry);
+  const stored = storedVersion(home, id, version);
+  return stored !== undefined && "entry" in stored ? stored.entry : undefined;
 }
 
 /** The folder all the files of a closure are under. */
@@ -78,8 +170,11 @@ function commonRoot(paths: readonly string[]): string {
  */
 export function storeVersion(home: string, id: WorkflowId, version: WorkflowVersion, file: string): string {
   linkPackages(home);
-  const known = storedEntry(home, id, version);
-  if (known !== undefined) return known;
+  const known = storedVersion(home, id, version);
+  if (known !== undefined) {
+    if ("problem" in known) throw new Error(known.problem);
+    return known.entry;
+  }
   const closure = closureOf(file);
   if (closure === undefined || versionOfClosure(closure) !== version) {
     throw new Error(`the script "${file}" changed while it was registered: register it again`);
@@ -107,9 +202,6 @@ export function storeVersion(home: string, id: WorkflowId, version: WorkflowVers
       if (!existsSync(dir)) throw error;
     }
   }
-  const manifest = manifestOf(home, id, version);
-  const aside = `${manifest}.tmp-${String(process.pid)}`;
-  writeFileSync(aside, `${JSON.stringify({ entry, from: closure.entry } satisfies z.infer<typeof Manifest>, null, 2)}\n`);
-  renameSync(aside, manifest);
+  writeManifest(manifestOf(home, id, version), manifestOfClosure(closure, root, closure.entry));
   return join(dir, entry);
 }

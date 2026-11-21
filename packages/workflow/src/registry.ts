@@ -178,6 +178,18 @@ export function closureOf(file: string): SourceClosure | undefined {
   return { entry, files };
 }
 
+/** The packages a source closure imports by name: the specifiers of its code files that are not paths. */
+export function packageImportsOf(closure: SourceClosure): string[] {
+  const named = new Set<string>();
+  for (const [path, bytes] of closure.files) {
+    if (!isCode(path)) continue;
+    for (const { path: specifier } of transpiler.scanImports(bytes.toString("utf8"))) {
+      if (!specifier.startsWith(".") && !specifier.startsWith("/")) named.add(specifier);
+    }
+  }
+  return [...named].sort();
+}
+
 /** The version a source closure is: the sha256 of each file by its path relative to the entry and its bytes. */
 export function versionOfClosure(closure: SourceClosure): WorkflowVersion {
   const hash = createHash("sha256");
