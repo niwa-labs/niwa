@@ -127,9 +127,10 @@ export function blindLabel(index: number): string {
 }
 
 /**
- * The decision of a panel from the scores each judge gave: a judge votes for its highest score (a
- * tie is no vote). `majority` needs more than half of the judges that voted, `unanimous` all of the
- * judges that answered.
+ * The decision of a panel from the scores each judge gave. A sheet that does not score every
+ * candidate is no answer: it counts for no score and no vote. A judge votes for its highest score
+ * (a tie is no vote). `majority` needs more than half of the votes cast, `unanimous` a vote of
+ * every judge that answered; with no sheet that answered, or no vote, the panel decides nothing.
  */
 export function decidePanel(
   candidates: readonly string[],
@@ -138,18 +139,20 @@ export function decidePanel(
   thresholds: { pass: number; warn: number },
 ): { winner: string | null; scores: Record<string, number[]>; split: boolean; band: Band } {
   const scores: Record<string, number[]> = Object.fromEntries(candidates.map((candidate) => [candidate, [] as number[]]));
+  const answered = sheets.filter((sheet) => candidates.every((candidate) => typeof sheet[candidate] === "number"));
   const votes = new Map<string, number>();
-  for (const sheet of sheets) {
-    for (const candidate of candidates) {
-      const score = sheet[candidate];
-      if (typeof score === "number") (scores[candidate] as number[]).push(score);
-    }
-    const top = Math.max(...candidates.map((candidate) => sheet[candidate] ?? Number.NEGATIVE_INFINITY));
+  let cast = 0;
+  for (const sheet of answered) {
+    for (const candidate of candidates) (scores[candidate] as number[]).push(sheet[candidate] as number);
+    const top = Math.max(...candidates.map((candidate) => sheet[candidate] as number));
     const leaders = candidates.filter((candidate) => sheet[candidate] === top);
-    if (leaders.length === 1) votes.set(leaders[0] as string, (votes.get(leaders[0] as string) ?? 0) + 1);
+    if (leaders.length === 1) {
+      votes.set(leaders[0] as string, (votes.get(leaders[0] as string) ?? 0) + 1);
+      cast += 1;
+    }
   }
-  if (sheets.length === 0) return { winner: null, scores, split: false, band: "INCONCLUSIVE" };
-  const need = rule === "unanimous" ? sheets.length : Math.floor(sheets.length / 2) + 1;
+  if (answered.length === 0) return { winner: null, scores, split: false, band: "INCONCLUSIVE" };
+  const need = rule === "unanimous" ? answered.length : Math.floor(cast / 2) + 1;
   const winner = [...votes].find(([, count]) => count >= need)?.[0] ?? null;
   if (winner === null) return { winner, scores, split: true, band: "INCONCLUSIVE" };
   const given = scores[winner] as number[];
@@ -161,7 +164,8 @@ export function decidePanel(
 /**
  * Judges score every candidate from 0 to 100 against a rubric; the rule picks the winner and its
  * mean score the band (85 and above PASS, 75 and above WARNING, else REVISE by default). With
- * `blind` a judge sees labels, not the candidates' names. A judge of `authorVendor` does not judge,
+ * `blind` a judge sees labels, not the candidates' names. A judge that leaves a candidate unscored
+ * has not answered: its sheet counts for nothing. A judge of `authorVendor` does not judge,
  * and with `distinctVendors` only the first judge of each vendor does: when none is left, the panel
  * is `INCONCLUSIVE`.
  */

@@ -170,3 +170,29 @@ test("a script's output can be the Attempt of a revision judged by verify, votes
       }));`);
   expect(resultOf(ended)).toMatchObject({ value: { n: 1 }, rounds: 1, stopped: "accepted", judged: { verdict: "PASS", votes: [{ verdict: "PASS" }] } });
 }, 30_000);
+test("a panel counts only the sheets that score every candidate", () => {
+  const two = ["x", "y"];
+  const rules = { pass: 85, warn: 75 };
+  expect(decidePanel(two, [{ x: 99 }], "majority", rules)).toMatchObject({ winner: null, band: "INCONCLUSIVE", scores: { x: [], y: [] } });
+  expect(decidePanel(two, [{ x: 99 }, { x: 90, y: 10 }], "unanimous", rules)).toMatchObject({ winner: "x", scores: { x: [90], y: [10] } });
+});
+
+test("a majority of a panel is of the judges that voted, a tie being no vote", () => {
+  const two = ["x", "y"];
+  const rules = { pass: 85, warn: 75 };
+  const tied = { x: 50, y: 50 };
+  expect(decidePanel(two, [{ x: 90, y: 10 }, tied, tied], "majority", rules)).toMatchObject({ winner: "x", split: false });
+  expect(decidePanel(two, [{ x: 90, y: 10 }, tied], "unanimous", rules)).toMatchObject({ winner: null, split: true });
+  expect(decidePanel(two, [tied, tied], "majority", rules)).toMatchObject({ winner: null, split: true, band: "INCONCLUSIVE" });
+});
+
+test("a panel whose judge scored only some candidates decides nothing", async () => {
+  const flow = await host({ partial: () => ({ scores: { A: 99 } }) });
+  const ended = await flow.run(`
+    import { panel } from "@niwa-labs/flow";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const out = await panel("pick", { candidates: { one: "first", two: "second" }, judges: [{ harness: "partial", vendor: "v" }], rubric: ["clear"], blind: true });
+      return { winner: out.winner, band: out.band, scores: out.scores };
+    });`);
+  expect(resultOf(ended)).toEqual({ winner: null, band: "INCONCLUSIVE", scores: { one: [], two: [] } });
+}, 30_000);
