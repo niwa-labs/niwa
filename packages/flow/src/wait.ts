@@ -12,7 +12,8 @@ import { checkKey, script } from "./script.ts";
  * a record `on` names after that position, at most `every`, and reads again. Past `deadline` the
  * outcome is `timed-out`, with the facts last read.
  *
- * A query of one exact type waits for it; any other query is looked at every `every`.
+ * A query of one exact type, named as text or by reference (`{ types: [TaskDone] }`, or the query
+ * a plugin's builder gives), waits for it; any other query is looked at every `every`.
  */
 export async function settle<F>(
   key: string,
@@ -20,8 +21,8 @@ export async function settle<F>(
 ): Promise<{ facts: F; outcome: "done" | "timed-out" }> {
   checkKey(key, "the key of a settle");
   const g = script();
-  const types = opts.on.types ?? [];
-  const only = types.length === 1 && !(types[0] as string).endsWith("*") && opts.on.stream === undefined ? (types[0] as string) : undefined;
+  const [first, ...more] = opts.on.types ?? [];
+  const only = first !== undefined && more.length === 0 && opts.on.stream === undefined && !(typeof first === "string" && first.endsWith("*")) ? first : undefined;
   let facts: { value: F } | undefined;
   const settled = await g.scope(key, opts.deadline === undefined ? undefined : { deadline: opts.deadline, onDeadline: "skip" }, async () => {
     let { next } = await g.read.records({ ...opts.on, tail: 1 });
@@ -29,7 +30,8 @@ export async function settle<F>(
       facts = { value: await opts.read() };
       if (opts.done(facts.value)) return true;
       if (only !== undefined) {
-        const got = await g.wait(only, { from: next, timeout: opts.every, ...(opts.on.filter === undefined ? {} : { filter: opts.on.filter }) });
+        const waiting = { from: next, timeout: opts.every, ...(opts.on.filter === undefined ? {} : { filter: opts.on.filter }) };
+        const got = typeof only === "string" ? await g.wait(only, waiting) : await g.wait(only, waiting);
         if (!("timedOut" in got)) next = got.at;
       } else {
         await g.sleep(opts.every);

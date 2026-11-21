@@ -39,8 +39,9 @@ test("a gate of the owner gives the choice, a decline, or a cancel as an outcome
 }, 60_000);
 
 /** A host whose `probe.read` counts its calls, beside the stub plugin whose `stub.finish` writes `stub.finished`. */
-async function settleHost(): Promise<FlowHost> {
+async function settleHost(packages?: readonly string[]): Promise<FlowHost> {
   const flow = await flowHost({}, {
+    ...(packages === undefined ? {} : { packages }),
     plugins: (home) => [
       stub(home),
       plugin("probe", (api) =>
@@ -73,6 +74,27 @@ test("settle wakes on a record written after the position it read, and reads aga
   const flow = await settleHost();
   const run = await flow.start(SETTLE(2));
   await eventually(() => counter(flow.home, "probe.read").count() === 1, 15_000, "the facts should be read once");
+  await flow.host.call("stub.finish" as never, { id: "t-1" } as never);
+  expect(resultOf(await flow.wait(run))).toEqual({ facts: 2, outcome: "done" });
+}, 30_000);
+
+const SETTLE_BY_REFERENCE = `
+  import { record } from "@niwa-labs/core";
+  import { settle } from "@niwa-labs/flow";
+  const StubFinished = record("stub.finished", z.object({ id: z.string() }));
+  export default workflow({ output: z.json() }, async (): Promise<any> =>
+    settle("finished", {
+      on: { types: [StubFinished], filter: { id: "t-1" } },
+      every: "1h",
+      read: async () => (await call("probe.read", {})).n,
+      done: (n) => n >= 2,
+    }));`;
+
+test("settle waits for a type named by reference as it waits for one named as text", async () => {
+  const flow = await settleHost(["flow", "core"]);
+  const run = await flow.start(SETTLE_BY_REFERENCE);
+  await eventually(() => counter(flow.home, "probe.read").count() === 1, 15_000, "the facts should be read once");
+  await flow.host.call("stub.finish" as never, { id: "t-2" } as never);
   await flow.host.call("stub.finish" as never, { id: "t-1" } as never);
   expect(resultOf(await flow.wait(run))).toEqual({ facts: 2, outcome: "done" });
 }, 30_000);

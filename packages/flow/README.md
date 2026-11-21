@@ -16,7 +16,8 @@ are checked before anything runs.
 - Order: `graph` (refuses missing nodes, repeated ids and cycles before it starts), `loop`, `saturate`,
   `paramGrid`.
 - Quality: `revise`, `escalate`, `gate`, `verify`, `panel`. `INCONCLUSIVE` is never a pass.
-- Waiting: `settle` (reads first, then waits for a record after what it read), `humanGate` (a decline,
+- Waiting: `settle` (reads first, then waits for a record after what it read; `on` names its types
+  as text or by reference, and takes the query a plugin's builder gives), `humanGate` (a decline,
   a cancel or a timeout is an outcome, never an error).
 
 A failed branch is a value (`Settled`), except a refusal of the grant (`Denied`) or a spent budget,
