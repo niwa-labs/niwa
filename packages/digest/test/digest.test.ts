@@ -207,3 +207,14 @@ test("a file index keeps its ids and paths unique, and goes on after the highest
   expect(files.name("/b", false)).toBe("[F3] /b");
   expect(files.index().files.map((file) => file.id)).toEqual([2, 3]);
 });
+
+const briefOf = (view: DigestView) => (view.mode === "brief" ? view.brief : undefined);
+
+test("a message is cut only of the tags harnesses wrap their insertions in, and is otherwise left as it was written", () => {
+  expect(withoutInsertions("Render <user-card>Ada</user-card> here")).toBe("Render <user-card>Ada</user-card> here");
+  expect(withoutInsertions("  indented\n\n\n\n    code\n")).toBe("  indented\n\n\n\n    code\n");
+  expect(withoutInsertions("<system-reminder>x</system-reminder>\n\n\n<user-card/>hi")).toBe("<user-card/>hi");
+  const only = user(1, "<user-card>Ada</user-card>");
+  expect(entriesOf(compress([only], "digest").view)).toMatchObject([{ kind: "user", text: "<user-card>Ada</user-card>" }]);
+  expect(briefOf(compress([only], "brief").view)!.asked).toHaveLength(1);
+});

@@ -61,16 +61,35 @@ export function sourceOf(record: SessionRecord): Source {
 }
 
 /**
- * The text a harness wrapped around what the person said is not what the person said: a block in a
- * tag whose name has a `-` or `_` (`<system-reminder>`, `<environment_context>`, `<command-name>`),
- * which is how every harness niwa knows marks its own insertions. A tag of plain letters is left,
- * since a person may well write HTML.
+ * The tags the harnesses niwa knows wrap their own insertions in: a reminder, the environment, a
+ * slash command and what it ran. A tag a person writes (`<user-card>`) is not among them.
+ */
+const INSERTION_TAGS = [
+  "system-reminder",
+  "environment_context",
+  "local-command-caveat",
+  "local-command-stdout",
+  "local-command-stderr",
+  "agent-context",
+  "command-name",
+  "command-message",
+  "command-args",
+  "command-contents",
+  "user-prompt-submit-hook",
+  "user_instructions",
+  "turn_aborted",
+];
+
+const INSERTION = new RegExp(`<(${INSERTION_TAGS.join("|")})\\b[^>]*>[\\s\\S]*?</\\1>`, "g");
+
+/**
+ * The text a harness wrapped around what the person said is not what the person said: a block in
+ * one of the tags of `INSERTION_TAGS`. What is left is cut of the blank lines the block stood in; a
+ * message without an insertion is returned as it was written.
  */
 export function withoutInsertions(text: string): string {
-  return text
-    .replace(/<([A-Za-z][\w]*[-_][\w-]*)\b[^>]*>[\s\S]*?<\/\1>/g, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  const said = text.replace(INSERTION, "");
+  return said === text ? text : said.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** The text of a value a tool gave or was given: a string as it is, anything else as JSON. */
