@@ -38,6 +38,7 @@ export { claudePrompt, fakeSdkQuery } from "./harness-claude.ts";
 export type { FakeCall } from "./harness-claude.ts";
 export { ZCODE_FAKE } from "./harness-zcode.ts";
 export * from "./messages.ts";
+export * from "./niwa.ts";
 export * from "./requests.ts";
 export * from "./sessions.ts";
 export * from "./tasks.ts";
