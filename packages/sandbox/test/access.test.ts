@@ -73,6 +73,19 @@ test("a profile is paths or a function of the machine, and bin finds a program, 
   expect(() => resolveProfile({ read: ["relative/place"] }, "bad", { home: "/h", env: {} })).toThrow(/neither absolute nor under ~/);
 });
 
+test("a program reached through a directory link keeps both paths without granting the parent", () => {
+  const parent = at("programs");
+  symlinkSync(at("bin"), parent);
+  const named = join(parent, "tool");
+  const made = sandbox();
+  made.install("runner", ({ bin }) => ({ read: bin(named) }));
+  const plan = made.plan({ cwd: at("work"), defaults: { allow: [] }, owner: "runner", network: false });
+  expect(allows(plan, named, "read")).toBe(true);
+  expect(allows(plan, at("bin", "tool"), "read")).toBe(true);
+  expect(allows(plan, parent)).toBe(false);
+  expect(allows(plan, at("bin"))).toBe(false);
+});
+
 test("the catalog holds git, node, bun, npm, cargo and uv; a host adds and replaces profiles, with names it can check", () => {
   expect(Object.keys(catalog).sort()).toEqual(["bun", "cargo", "git", "node", "npm", "uv"]);
   expect(sandbox().names()).toEqual(["git", "node", "bun", "npm", "cargo", "uv"]);

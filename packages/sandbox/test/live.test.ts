@@ -19,12 +19,12 @@
 // Only the public API is used: "@niwa-labs/sandbox".
 
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { boxSpec, nono, srt } from "@niwa-labs/sandbox";
+import { admit, boxSpec, nono, sandbox as makeHost, srt } from "@niwa-labs/sandbox";
 import type { Sandbox } from "@niwa-labs/sandbox";
 
 import { tempDir, live } from "@niwa-labs/testing";
@@ -132,6 +132,33 @@ for (const sandbox of [srt(), nono()]) {
         await rm(name, { force: true });
       } finally {
         await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    test.skipIf(!present || sandbox.name !== "nono")("executes a program under a directory alias with its sibling left closed", async () => {
+      const root = await realpath(await tempDir("box-program-alias"));
+      const work = join(root, "work");
+      const store = join(root, "store");
+      const alias = join(root, "alias");
+      try {
+        await mkdir(work);
+        await mkdir(store);
+        await symlink(store, alias);
+        const program = join(alias, "program");
+        await writeFile(program, "#!/bin/sh\necho ok\n", { mode: 0o755 });
+        await writeFile(join(store, "neighbour"), "private");
+        const host = makeHost();
+        host.install("runner", ({ bin }) => ({ read: bin(program) }));
+        const plan = host.plan({ cwd: work, owner: "runner", defaults: { allow: [] }, network: false });
+        const { spec } = admit(plan, sandbox, () => undefined);
+        expect((await run(sandbox, spec, `'${program}'`)).stdout).toBe("ok\n");
+        for (const dir of [alias, store]) {
+          const denied = await run(sandbox, spec, `/bin/cat '${dir}/neighbour'`);
+          expect(denied.code).not.toBe(0);
+          expect(denied.stdout).toBe("");
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
       }
     });
 

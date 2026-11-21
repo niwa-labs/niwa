@@ -262,7 +262,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
         read: [...new Set(given.read.map(place))],
         write: [...new Set(given.write.map(place))],
         net: given.net,
-        programs: [...new Set(given.programs.map(place))],
+        programs: [...new Set(given.programs.flatMap((path) => [place(path), path]))],
       };
       resolved.set(name, found);
     }
