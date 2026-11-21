@@ -72,14 +72,14 @@ test("an overdue call is cancelled, given one more timeout, and fails with the t
 });
 
 test("a request of the agent, a notification, a line that is not JSON and one too long each go to their handler", () => {
-  const { acp, requests, notifications, unreadable, overflowed } = client({ maxLineBytes: 64 });
+  const { acp, requests, notifications, unreadable, overflowed } = client({ maxLineBytes: 128 });
   acp.feed('{"jsonrpc":"2.0","id":"r1","method":"session/request_permission","params":{}}\n');
   acp.feed('{"jsonrpc":"2.0","method":"session/update","params":{}}\nnot json\n');
   acp.feed('{"jsonrpc":"1.0","method":"other"}\n');
   expect(requests.map((request) => request.id)).toEqual(["r1"]);
   expect(notifications.map((notification) => notification.method)).toEqual(["session/update"]);
   expect(unreadable).toEqual(["not json"]);
-  acp.feed("x".repeat(100));
+  acp.feed("x".repeat(200));
   expect(overflowed()).toBe(1);
 });
 
@@ -153,4 +153,49 @@ test("a malformed answer does not stop the close from settling the call", async 
   acp.receive('{"jsonrpc":"2.0","id":1,"error":null}');
   acp.close("the agent exited");
   expect(await call).toEqual({ ok: false, error: "the agent exited", dispatch: "uncertain" });
+});
+
+/** A notification frame padded to exactly `bytes` bytes (without its newline). */
+function frameOf(bytes: number): string {
+  const bare = JSON.stringify({ jsonrpc: "2.0", method: "m", params: { pad: "" } });
+  return JSON.stringify({ jsonrpc: "2.0", method: "m", params: { pad: "x".repeat(bytes - Buffer.byteLength(bare)) } });
+}
+
+/** Every way to cut `text` into two chunks, and the whole of it as one. */
+function splits(text: string): string[][] {
+  return [[text], ...Array.from({ length: text.length - 1 }, (_, at) => [text.slice(0, at + 1), text.slice(at + 1)])];
+}
+
+test("a line over the limit overflows however its chunks are cut, and never reaches the handler", () => {
+  const line = frameOf(100);
+  expect(Buffer.byteLength(line)).toBe(100);
+  for (const chunks of splits(`${line}\n`)) {
+    const { acp, notifications, overflowed } = client({ maxLineBytes: 64 });
+    for (const chunk of chunks) acp.feed(chunk);
+    expect(notifications).toEqual([]);
+    expect(overflowed()).toBe(1);
+  }
+});
+
+test("a line of exactly the limit is read however its chunks are cut", () => {
+  const line = frameOf(64);
+  for (const chunks of splits(`${line}\n`)) {
+    const { acp, notifications, overflowed } = client({ maxLineBytes: 64 });
+    for (const chunk of chunks) acp.feed(chunk);
+    expect(notifications).toHaveLength(1);
+    expect(overflowed()).toBe(0);
+  }
+});
+
+test("the limit counts bytes, and the lines of a chunk after an overflowing one are not read", () => {
+  const { acp, notifications, overflowed } = client({ maxLineBytes: 100 });
+  const wide = JSON.stringify({ jsonrpc: "2.0", method: "m", params: { pad: "é".repeat(30) } });
+  expect(wide.length).toBeLessThan(100);
+  expect(Buffer.byteLength(wide)).toBeGreaterThan(100);
+  acp.feed(`${frameOf(100)}\n${wide}\n${frameOf(100)}\n`);
+  expect(notifications).toHaveLength(1);
+  expect(overflowed()).toBe(1);
+  acp.feed(`${frameOf(100)}\n`);
+  expect(notifications).toHaveLength(1);
+  expect(overflowed()).toBe(1);
 });

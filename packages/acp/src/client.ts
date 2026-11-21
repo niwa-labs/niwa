@@ -104,7 +104,10 @@ export class AcpClient {
   readonly #options: AcpClientOptions;
   readonly #pending = new Map<number, (outcome: RpcOutcome) => void>();
   #nextId = 1;
-  #buffer = "";
+  /** The start of a line whose end has not come yet, and its length in bytes. */
+  #fragment = "";
+  #fragmentBytes = 0;
+  #overflowed = false;
   #closed: string | undefined;
 
   constructor(options: AcpClientOptions) {
@@ -116,19 +119,37 @@ export class AcpClient {
     return this.#pending.size;
   }
 
-  /** A chunk of the agent's stdout: each whole line is read as it completes. */
+  /**
+   * A chunk of the agent's stdout: each whole line is read as it completes.
+   *
+   * A line longer than the budget is the transport failing, and it is so however its chunks were
+   * cut: the length of a line is measured in bytes before the line is read, whether it ends in this
+   * chunk or is still growing. After an overflow nothing more is read.
+   */
   feed(chunk: string): void {
-    this.#buffer += chunk;
-    let newline = this.#buffer.indexOf("\n");
-    while (newline !== -1) {
-      const line = this.#buffer.slice(0, newline).trim();
-      this.#buffer = this.#buffer.slice(newline + 1);
-      this.receive(line);
-      newline = this.#buffer.indexOf("\n");
-    }
-    if (Buffer.byteLength(this.#buffer, "utf8") > (this.#options.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES)) {
-      this.#buffer = "";
-      this.#options.onOverflow();
+    const limit = this.#options.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
+    let start = 0;
+    while (!this.#overflowed) {
+      const newline = chunk.indexOf("\n", start);
+      const piece = newline === -1 ? chunk.slice(start) : chunk.slice(start, newline);
+      const bytes = this.#fragmentBytes + Buffer.byteLength(piece, "utf8");
+      if (bytes > limit) {
+        this.#overflowed = true;
+        this.#fragment = "";
+        this.#fragmentBytes = 0;
+        this.#options.onOverflow();
+        return;
+      }
+      if (newline === -1) {
+        this.#fragment += piece;
+        this.#fragmentBytes = bytes;
+        return;
+      }
+      const line = this.#fragment + piece;
+      this.#fragment = "";
+      this.#fragmentBytes = 0;
+      this.receive(line.trim());
+      start = newline + 1;
     }
   }
 
