@@ -204,3 +204,73 @@ test("a cut-off call whose intent holds no contract is not repeated", async () =
   b.close();
 });
 
+
+test("a replay gives back the output as its schema reads it, as the first run did", async () => {
+  const b = await bench();
+  const When = z.object({ at: z.coerce.date() });
+  const { made } = counted("step.when", "repeat", When, () => ({ at: new Date(0) }));
+  const kinds: string[] = [];
+  const handler: Handle = async (_data, step) => {
+    const got = (await step(made, {})) as z.infer<typeof When>;
+    kinds.push(got.at instanceof Date ? "date" : typeof got.at);
+  };
+  await b.run(handler);
+  await b.run(handler);
+  expect(kinds).toEqual(["date", "date"]);
+  b.close();
+});
+
+
+test("a replay of a recorded output that its schema no longer reads pauses the invocation", async () => {
+  const b = await bench();
+  const before = counted("step.out", "repeat", z.object({ n: z.number() }), () => ({ n: 1 }));
+  await b.run((_data, step) => step(before.made, {}).then(() => undefined));
+  const after = counted("step.out", "repeat", z.object({ n: z.string() }), () => ({ n: "1" }));
+  expect(await b.run((_data, step) => step(after.made, {}).then(() => undefined))).toBe("paused");
+  expect(b.lastState()?.reason).toContain("output schema");
+  expect(after.calls.count).toBe(0);
+  b.close();
+});
+
+
+test("a call that a check found complete gives its value as the output schema reads it", async () => {
+  const b = await bench();
+  const When = z.object({ at: z.coerce.date() });
+  const { made } = counted("step.found", "do-not-repeat", When, () => ({ at: new Date(0) }), {
+    check: () => Promise.resolve({ status: "completed", value: { at: "1970-01-01T00:00:00.000Z" } as never }),
+  });
+  b.cutOffWhen(writesOf(CORE_TYPES.stepOutcome));
+  await b.run((_data, step) => step(made, {}).then(() => undefined));
+  b.cutOffWhen(undefined);
+  let got: unknown;
+  await b.run(async (_data, step) => {
+    got = await step(made, {});
+  });
+  expect((got as z.infer<typeof When>).at).toBeInstanceOf(Date);
+  b.close();
+});
+
+
+test("a replayed wait gives back the record as its type reads it", async () => {
+  const b = await bench();
+  const kinds: string[] = [];
+  const handler: Handle = async (_data, step) => {
+    const got = await step.wait(Note, () => true);
+    kinds.push(got.at instanceof Date ? "date" : typeof got.at);
+  };
+  expect(await b.run(handler)).toBe("waiting");
+  b.journal.append({
+    id: recordId("rec-note"),
+    stream: streamId("test"),
+    type: Note.name,
+    schema: 1,
+    data: { at: "1970-01-01T00:00:00.000Z" },
+    actor: { kind: "host" },
+    cause: null,
+    root: recordId("rec-note"),
+  });
+  await b.run(handler);
+  await b.run(handler);
+  expect(kinds).toEqual(["date", "date"]);
+  b.close();
+});

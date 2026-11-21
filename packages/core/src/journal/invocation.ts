@@ -623,7 +623,21 @@ async function runStepOnce<I, O, In = I>(
   }
 
   // The step already ended: its outcome is the answer, whatever it was.
-  if (recorded !== undefined) return { key, outcome: readOutcome<O>(recorded.data) };
+  if (recorded !== undefined) {
+    const outcome = readOutcome<O>(recorded.data);
+    if (outcome.status !== "completed") return { key, outcome };
+    // The journal holds the value as JSON; the step gives it back as the output schema reads it,
+    // as it gave it the first time.
+    const value = action.output.safeParse(outcome.value);
+    if (!value.success) {
+      pause(
+        ctx,
+        `replay mismatch at step ${key}: the recorded output of ${action.name} does not fit its output schema now`,
+        key,
+      );
+    }
+    return { key, outcome: { status: "completed", value: value.data } };
+  }
 
   if (intent === undefined) {
     // Fresh: the decision is made and recorded before the intent, so the journal shows what was
@@ -671,6 +685,15 @@ async function runStepOnce<I, O, In = I>(
     // An intent without an outcome: the call was cut off. The action's own check is asked first,
     // because it knows whether the effect happened.
     const checked = await checkOutcome(action, operation, { caller });
+    if (checked.status === "completed") {
+      // What the check found is the value of the step, so it is read as the output is.
+      const value = action.output.safeParse(checked.value);
+      if (!value.success) {
+        const error = describeIssues(`output of ${action.name} does not match its schema`, value.error.issues);
+        return settle<O>(ctx, key, { status: "failed", error, effectPossible: true }, attempt);
+      }
+      return settle<O>(ctx, key, { status: "completed", value: value.data }, attempt);
+    }
     if (checked.status !== "unknown") {
       return settle<O>(ctx, key, checked, attempt);
     }
@@ -1063,7 +1086,11 @@ async function awaitRecord<T>(
   if (recorded !== undefined) {
     const outcome = readOutcome<T>(recorded.data);
     if (outcome.status !== "completed") pause(ctx, `step ${key}: ${outcome.status}`, key);
-    return outcome.value;
+    // The answer was recorded as JSON: it is read through the schema of the type, as it was when
+    // it arrived.
+    const value = type.schema.safeParse(outcome.value);
+    if (!value.success) pause(ctx, `replay mismatch at step ${key}: the recorded answer does not fit ${type.name} now`, key);
+    return value.data;
   }
 
   if (intent === undefined) {
@@ -1119,7 +1146,13 @@ async function awaitAnyRecord<Types extends readonly RecordType<any>[]>(
   if (recorded !== undefined) {
     const outcome = readOutcome<AnyWaited<Types[number]>>(recorded.data);
     if (outcome.status !== "completed") pause(ctx, `step ${key}: ${outcome.status}`, key);
-    return outcome.value;
+    // The answer was recorded as JSON: its data is read through the schema of the type it names.
+    const answered = types.find((type) => type.name === outcome.value.type);
+    const value = answered?.schema.safeParse(outcome.value.data);
+    if (answered === undefined || value === undefined || !value.success) {
+      pause(ctx, `replay mismatch at step ${key}: the recorded answer does not fit the types waited for now`, key);
+    }
+    return { type: answered.name, data: value.data } as AnyWaited<Types[number]>;
   }
 
   if (intent === undefined) {
