@@ -31,7 +31,7 @@ export type { McodeKindOptions, McodeOptions, McodeReadingOptions } from "@niwa-
 export { ncode, ncodeKind, ncodeSides } from "@niwa-labs/harness-mcode";
 export type { NcodeKindOptions, NcodeOptions } from "@niwa-labs/harness-mcode";
 
-export { PI_KIND, pi } from "@niwa-labs/harness-pi";
+export { PI_KIND, pi, piSides } from "@niwa-labs/harness-pi";
 export type { PiKindOptions, PiReadingOptions } from "@niwa-labs/harness-pi";
 
 export { zcode, zcodeKind, zcodeSides } from "@niwa-labs/harness-zcode";
