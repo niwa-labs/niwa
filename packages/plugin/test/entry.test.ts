@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 
-import { BUILTIN_WORKFLOW, TIMER_OFFER, bindingOf, offerKey, pluginName, pluginVersion } from "../src/index.ts";
+import { BUILTIN_WORKFLOW, TIMER_OFFER, bindingOf, offerKey, plugin, pluginName, pluginVersion, withoutHandler } from "../src/index.ts";
 
 test("plugin names are lowercase words joined by dashes and grouped by a slash", () => {
   expect(pluginName("night-digest")).toBe("night-digest");
@@ -30,4 +30,13 @@ test("the default binding makes a client speak as itself and the owner as the ow
   expect(bind({ kind: "client", id: "c1", principal: { kind: "owner" } } as never)).toEqual({ kind: "owner" });
   const custom = () => undefined;
   expect(bindingOf({ bind: custom })).toBe(custom);
+});
+
+test("removing handlers one after another never meets removing one handler of a longer name", () => {
+  const source = plugin("two-steps", () => undefined, { version: "1" });
+  const stepwise = withoutHandler(withoutHandler(source, "a"), "b");
+  const single = withoutHandler(source, "a-without-b");
+  expect(stepwise.version).not.toBe(single.version);
+  expect(withoutHandler(withoutHandler(source, "b"), "a").version).not.toBe(stepwise.version);
+  expect(withoutHandler(source, "a").version).not.toBe(source.version);
 });

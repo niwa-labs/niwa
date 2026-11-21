@@ -46,33 +46,50 @@ export const BUILTIN_WORKFLOW: OfferKey<BuiltinWorkflow> = offerKey("workflow.bu
  */
 export type MissedRule = "once" | "skip";
 
-/**
- * One timer: when it fires, and what it does with the dues it missed.
- *
- * A timer has one schedule: a period (`every`), a moment (`at`) or a time of day (`daily`). A
- * timer with no schedule never fires; a timer with two is refused, because two schedules for
- * one timer is not a choice anybody can make.
- */
-export interface TimerDef {
+/** What every timer has, whatever its schedule. */
+interface TimerBase {
   /** The id of the timer: the author's name for it, which the firings carry. */
   readonly id: string;
   /** A few words a person reads in a list. Without one, the schedule is the description. */
   readonly description?: string;
-  /** The period, in milliseconds. The timer fires again every period. */
-  readonly every?: number;
-  /** The moment, in milliseconds since the epoch. The timer fires once. */
-  readonly at?: number;
-  /** The time of day, "HH:MM" in local time. The timer fires every day at that time. */
-  readonly daily?: string;
   /** What to do with the dues missed while the host was down. Default: "once". */
   readonly missed?: MissedRule;
 }
 
 /**
+ * One timer: when it fires, and what it does with the dues it missed.
+ *
+ * A timer has exactly one schedule: a period (`every`), a moment (`at`) or a time of day
+ * (`daily`). A timer with none would never fire and a timer with two is not a choice anybody can
+ * make, so neither is a definition.
+ */
+export type TimerDef = TimerBase &
+  (
+    | {
+        /** The period, in milliseconds. The timer fires again every period. */
+        readonly every: number;
+        readonly at?: never;
+        readonly daily?: never;
+      }
+    | {
+        /** The moment, in milliseconds since the epoch. The timer fires once. */
+        readonly at: number;
+        readonly every?: never;
+        readonly daily?: never;
+      }
+    | {
+        /** The time of day, "HH:MM" in local time. The timer fires every day at that time. */
+        readonly daily: string;
+        readonly every?: never;
+        readonly at?: never;
+      }
+  );
+
+/**
  * A timer as a plugin offers it: the plain definition, or the trigger that carries one (`timer.daily("04:00", { id })`).
  * The data of a firing is what the trigger is a record type of.
  */
-export type TimerOffer = TimerDef | (RecordType<{ timer: string; due: number; at: number }> & { readonly timer: string; readonly def?: TimerDef });
+export type TimerOffer = TimerDef | (RecordType<{ timer: string; due: number; at: number }> & { readonly timer: string; readonly def: TimerDef });
 
 /**
  * Where a plugin offers a timer it needs (`api.offer(TIMER_OFFER, { id, daily: "04:00" })`): the timers

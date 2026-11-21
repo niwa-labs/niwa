@@ -96,6 +96,14 @@ export function sealVersion(source: Plugin, handlers: readonly string[]): void {
   source[SEAL_VERSION]?.(handlers);
 }
 
+/**
+ * What a setup function may be: one that returns nothing. A function that returns a promise is
+ * refused when the plugin is made, because the host runs the setup and goes on without waiting for
+ * it, so everything an asynchronous setup declared after its first `await` would be lost.
+ */
+type SynchronousSetup<S extends (api: PluginApi) => unknown> =
+  ReturnType<S> extends PromiseLike<unknown> ? never : unknown;
+
 interface PluginOptions {
   /**
    * The explicit version of the plugin. Default: a hash of the setup code and of
@@ -116,9 +124,9 @@ interface PluginOptions {
  * @throws when the name is not a valid plugin name, when the version is empty,
  * or when there is no setup function.
  */
-export function plugin(
+export function plugin<S extends (api: PluginApi) => void>(
   name: string,
-  setup: (api: PluginApi) => void,
+  setup: S & SynchronousSetup<S>,
   opts?: PluginOptions,
 ): Plugin {
   if (typeof setup !== "function") {
@@ -157,7 +165,9 @@ export function withoutHandler(source: Plugin, handler: string): Plugin {
     // Read when asked: the version of the source is final only once its setup has run, and it is
     // the setup of this plugin that runs it (below).
     get version() {
-      return pluginVersion(`${source.version}-without-${handler}`);
+      // The pair is written as JSON: whatever the handler is called, one pair has one text, so
+      // "a" then "b" never meets a single handler named "a-without-b".
+      return pluginVersion(JSON.stringify([source.version, "without", handler]));
     },
     setup(api) {
       let removed = false;

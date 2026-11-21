@@ -106,6 +106,11 @@ export interface TimerTrigger extends RecordType<TimerFiredData> {
   readonly def?: TimerDef;
 }
 
+/** A trigger that carries the schedule of its timer: what `every`, `at` and `daily` make. */
+export interface ScheduledTimerTrigger extends TimerTrigger {
+  readonly def: TimerDef;
+}
+
 /**
  * The trigger of one timer: the firings of that timer, as a type a handler can be written for.
  *
@@ -128,7 +133,7 @@ export interface TimerOptions {
  * The id of the timer is the period by default: `every:60000`. Two timers with the same period
  * are the same timer, so a second one needs an id of its own.
  */
-export function every(ms: number, options: TimerOptions = {}): TimerTrigger {
+export function every(ms: number, options: TimerOptions = {}): ScheduledTimerTrigger {
   requirePeriod(ms);
   const key = timerId(options.id ?? `every:${ms}`);
   return triggerOf(key, { id: key, every: ms, ...describedBy(options) });
@@ -139,7 +144,7 @@ export function every(ms: number, options: TimerOptions = {}): TimerTrigger {
  *
  * The id of the timer is the moment by default: `at:1735689600000`.
  */
-export function at(moment: number | Date, options: TimerOptions = {}): TimerTrigger {
+export function at(moment: number | Date, options: TimerOptions = {}): ScheduledTimerTrigger {
   const due = timestamp(moment instanceof Date ? moment.getTime() : moment);
   const key = timerId(options.id ?? `at:${due}`);
   return triggerOf(key, { id: key, at: due, ...describedBy(options) });
@@ -150,7 +155,7 @@ export function at(moment: number | Date, options: TimerOptions = {}): TimerTrig
  *
  * The id of the timer is the time by default: `daily:21:00`.
  */
-export function daily(time: string, options: TimerOptions = {}): TimerTrigger {
+export function daily(time: string, options: TimerOptions = {}): ScheduledTimerTrigger {
   const clock = parseTimeOfDay(time);
   const key = timerId(options.id ?? `daily:${clock}`);
   return triggerOf(key, { id: key, daily: clock, ...describedBy(options) });
@@ -162,6 +167,8 @@ function describedBy(options: TimerOptions): { readonly description?: string } {
 }
 
 /** A trigger over one timer, with the schedule it declares. */
+function triggerOf(id: TimerId, def: TimerDef): ScheduledTimerTrigger;
+function triggerOf(id: TimerId, def: undefined): TimerTrigger;
 function triggerOf(id: TimerId, def: TimerDef | undefined): TimerTrigger {
   return {
     ...TimerFired,
@@ -325,7 +332,7 @@ interface Scheduled {
  * The timers are given as plain definitions or as the triggers that declare them; a trigger
  * carries its schedule with it.
  */
-export function timers(defs: readonly (TimerDef | TimerTrigger)[]): Plugin {
+export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plugin {
   const listed = defs.map((def) => build(defOf(def)));
   const ids = new Set<TimerId>();
   for (const { id } of listed) {
@@ -640,14 +647,14 @@ export const timerGet = actionRef("timer.get", {
 function scheduleOf(def: TimerDef): TimerSchedule {
   if (def.every !== undefined) return { kind: "every", ms: def.every };
   if (def.daily !== undefined) return { kind: "daily", time: def.daily };
-  return { kind: "at", at: def.at as number };
+  return { kind: "at", at: def.at };
 }
 
 /** How a timer says when it fires, for a person who gave it no description. */
 function scheduleText(def: TimerDef): string {
   if (def.every !== undefined) return `every ${String(def.every)}ms`;
   if (def.daily !== undefined) return `daily ${def.daily}`;
-  return `at ${new Date(def.at as number).toISOString()}`;
+  return `at ${new Date(def.at).toISOString()}`;
 }
 
 /** The id of the latest firing of a timer: the one with the greatest due. */
@@ -662,7 +669,7 @@ function lastFiringOf(journal: JournalReader | undefined, timer: TimerId): strin
 
 /** The definition of a timer, whether it came as a definition or as a trigger. */
 function defOf(def: TimerOffer): TimerDef {
-  return "timer" in def && def.def !== undefined ? def.def : (def as TimerDef);
+  return "timer" in def ? def.def : def;
 }
 
 /** One timer, with its rule checked. */
