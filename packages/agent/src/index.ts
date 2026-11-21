@@ -20,7 +20,7 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { UnknownId, action, actionName, agent as agentAddress, addressText, seq } from "@niwa-labs/core";
+import { UnknownId, action, actionName, agent as agentAddress, addressText, isOwnerGrant, seq } from "@niwa-labs/core";
 import type { ActionContext, Address, Caller, JournalReader, Step, StoredRecord } from "@niwa-labs/core";
 import { AGENT, BUILTIN_WORKFLOW, bindingOf, plugin, trigger } from "@niwa-labs/plugin";
 import type { AgentOffer, CallerBinding, MessagesOptions, Plugin, PluginApi } from "@niwa-labs/plugin";
@@ -487,10 +487,14 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
           if (defined().has(definition.name)) throw new AgentRefusal("name-taken", `there is already an agent "${definition.name}"`);
           // The agent's sessions are started by this module, which nothing limits: a caller held to a grant
           // makes no agent that reaches what the caller cannot, neither a hand nor a tool of the harness.
-          if (api.rights(ctx.caller) !== "unlimited") {
+          const rights = api.rights(ctx.caller);
+          if (rights !== "unlimited" && !isOwnerGrant(rights)) {
             const narrowed = api.narrow(ctx.caller, definition.hands);
             if ("refused" in narrowed) {
               throw new AgentRefusal("wider-than-caller", `the caller does not have ${narrowed.refused.join(", ")}: an agent it makes cannot reach more than it does`);
+            }
+            if (narrowed.rules.rules.some((rule) => rule.ask)) {
+              throw new AgentRefusal("wider-than-caller", "the agent's hands cannot carry the approval required by its creator's grant");
             }
             if (definition.tools !== "niwa-only") {
               throw new AgentRefusal("wider-than-caller", 'a caller held to a grant makes only agents whose tools are "niwa-only": the harness\'s own tools reach past any grant');

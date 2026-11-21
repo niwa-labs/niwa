@@ -267,3 +267,16 @@ test("a plugin's prompt section is written when a session of its agent starts, a
   expect(ofAgent("bob").map((one) => one.id)).toEqual(["agent", "turn"]);
   expect(asked).toEqual(["rin"]);
 });
+
+test("the owner can select harness tools and delegated hands preserve approval", async () => {
+  const host = await served({});
+  const definition = { harness: HARNESS, prompt: "Read tasks." };
+  expect(await asOwner(host, "agent.create", { ...definition, name: "owner-agent" })).toMatchObject({ agent: "owner-agent" });
+  const token = host.host.issueToken(principalOf("session", "reader"), { grant: grant(["agent.create", { do: "task.list", ask: true }]) });
+  const client = await connect({ home: host.home, id: "reader", token });
+  try {
+    await expect(client.call("agent.create" as ActionName, { ...definition, name: "reader-agent", hands: ["task.list"], tools: "niwa-only" })).rejects.toThrow(/approval/);
+  } finally {
+    await client.close();
+  }
+});
