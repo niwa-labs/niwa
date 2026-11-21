@@ -8,6 +8,14 @@
   "dependencies": {
     "@niwa-labs/client": "workspace:*",
     "@niwa-labs/ui-kit": "workspace:*",
+    "zod": "^4.6.7",
     "zustand": "^5.1.0"
+  },
+  "peerDependencies": {
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "react": "^19.3.1"
   }
 }
