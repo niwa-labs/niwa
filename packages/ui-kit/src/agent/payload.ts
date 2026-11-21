@@ -27,7 +27,8 @@ export function formatDuration(ms: number): string {
  */
 export function formatAgo(at: number | string, now: number = Date.now()): string {
   const moment = typeof at === "number" ? at : Date.parse(at);
-  if (!Number.isFinite(moment)) return "";
+  // A number can be finite and still outside the range a date holds.
+  if (Number.isNaN(new Date(moment).getTime())) return "";
   const seconds = Math.round((now - moment) / 1000);
   if (seconds < 0) return "in the future";
   if (seconds < 45) return "just now";

@@ -68,6 +68,13 @@ describe("how long ago", () => {
     expect(formatAgo("2026-11-21T11:00:00Z", now)).toBe("1h ago");
     expect(formatAgo("yesterday", now)).toBe("");
     expect(formatAgo(Number.NaN, now)).toBe("");
+    expect(formatAgo(Number.POSITIVE_INFINITY, now)).toBe("");
+  });
+
+  test("a number outside the range a date holds is no moment", () => {
+    expect(formatAgo(-1e20, now)).toBe("");
+    expect(formatAgo(1e20, now)).toBe("");
+    expect(formatAgo(8.64e15 + 1, now)).toBe("");
   });
 
   test("a moment after now is not told as ago", () => {
