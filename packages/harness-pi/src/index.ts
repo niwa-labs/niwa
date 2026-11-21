@@ -53,8 +53,8 @@ export const piSides: SideCapabilities = {
 
 /**
  * What the kind declares it can serve, proved against a live pi: a session that sees niwa's actions
- * calls them, answers a question through `submit-answer`, and with niwa's tools alone uses none of
- * pi's own. An allow-list of pi's own tools is admitted from pi's documented flags.
+ * calls them, answers a question through `submit-answer`, with niwa's tools alone uses none of
+ * pi's own, and with an allow-list of pi's own tools uses those and no other.
  */
 export const PI_CAPABILITIES: KindCapabilities = {
   reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
@@ -66,7 +66,7 @@ export const PI_CAPABILITIES: KindCapabilities = {
     ask: VERIFIED,
     structuredOutput: UNSUPPORTED,
     launch: { model: VERIFIED, effort: PI_LAUNCH.effort, modes: PI_LAUNCH.modes },
-    tools: { niwaOnly: VERIFIED, allow: ADMITTED },
+    tools: { niwaOnly: VERIFIED, allow: VERIFIED },
   },
   // The insert is a file in pi's extensions directory. A pi opened by hand that loads it and reports to the
   // host is proved live (`manualOpen`), and so is the report of a session's end (`end`); a compaction needs a model

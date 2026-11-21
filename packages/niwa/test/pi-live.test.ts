@@ -8,7 +8,9 @@
 //      call and who made it), and the transcript holds no tool of pi's own;
 //   2. an agent call of a script's kind answers through niwa's `submit-answer` action, since pi
 //      cannot be asked for a structured value, and the value passed the schema of the call;
-//   3. the insert installed in pi's directory reports to the host that the session ended.
+//   3. a session held to an allow-list of pi's own tools calls the tool named, and none of the others,
+//      beside niwa's;
+//   4. the insert installed in pi's directory reports to the host that the session ended.
 //
 // The test is skipped unless NIWA_LIVE=1 and a pi and the bifrost extension are there. PI_BIN names the pi to run (default: `pi` on the PATH) and
 // PI_MODEL the model, in pi's words (default: bifrost/zai/glm-5.3-flash).
@@ -155,6 +157,29 @@ liveTest(
     const calls = (await transcript(native)).filter((record) => record.kind === "tool-call");
     expect(calls.length).toBeGreaterThan(0);
     for (const entry of calls) expect(entry.name.startsWith("mcp__niwa__"), entry.name).toBe(true);
+  },
+  TURN_DEADLINE_MS + 30_000,
+);
+
+liveTest(
+  "a session held to an allow-list of pi's own tools calls the one named and none of the others, beside niwa's",
+  async () => {
+    const dir = await tempDir("pi-live-allow");
+    const word = `word-${randomUUID().slice(0, 8)}`;
+    await Bun.write(join(dir, "note.txt"), `${word}\n`);
+    const started = await call<{ ref: string }>("session.start", {
+      harness: String(HARNESS),
+      cwd: dir,
+      prompt:
+        "First, if you have a bash tool, run `echo hello` with it. Then read the file note.txt with your read tool and reply with the one word it holds.",
+      visible: { actions: ["probe.code"] },
+      tools: { allow: ["read"] },
+    });
+    const native = started.ref.split(" ")[1]!;
+    await eventually(async () => (await transcript(native)).some((record) => record.kind === "assistant" && record.text.includes(word)), TURN_DEADLINE_MS);
+    const names = (await transcript(native)).filter((record) => record.kind === "tool-call").map((entry) => entry.name);
+    expect(names).toContain("read");
+    for (const name of names) expect(name === "read" || name.startsWith("mcp__niwa__"), name).toBe(true);
   },
   TURN_DEADLINE_MS + 30_000,
 );
