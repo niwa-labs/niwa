@@ -2,8 +2,35 @@
 
 import { existsSync } from "node:fs";
 
-import { SandboxUnavailable } from "./sandbox.ts";
+import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { LaunchOptions, LaunchedBox, SandboxName } from "./sandbox.ts";
+
+/** Where a wrapper finds the system's tools: the host's choice, never the spec's. */
+export const SYSTEM_PATH = "/usr/bin:/bin";
+
+/**
+ * The command a wrapper runs, with the spec's environment put on it from the inside.
+ *
+ * The wrapper is the host's own process: it locates system tools and loads libraries before any
+ * restriction exists, so the spec's environment must not reach it. The spec's variables are set by
+ * `env` once the restrictions hold, on the command alone; a launcher variable the spec leaves out
+ * is removed there, so the command has the variables the spec lists and what the wrapper adds
+ * itself.
+ */
+export function insideBox(
+  sandbox: SandboxName,
+  launcher: Readonly<Record<string, string>>,
+  env: Readonly<Record<string, string>>,
+  argv: readonly string[],
+): string[] {
+  const program = argv[0];
+  if (program === undefined) throw new SandboxUnsupported(sandbox, "there is no program to run");
+  if (program.includes("=") || program.startsWith("-")) {
+    throw new SandboxUnsupported(sandbox, `the program ${JSON.stringify(program)} would be read by env as a variable or an option`);
+  }
+  const unset = Object.keys(launcher).filter((name) => !(name in env)).flatMap((name) => ["-u", name]);
+  return ["/usr/bin/env", ...unset, ...Object.entries(env).map(([name, value]) => `${name}=${value}`), ...argv];
+}
 
 /** Is the program not to be found, where the spawn looks for it? */
 function missing(program: string | undefined, env: Readonly<Record<string, string>>): boolean {

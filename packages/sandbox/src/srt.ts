@@ -15,7 +15,7 @@ import { SandboxUnavailable } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
-import { probe, spawnBox } from "./spawn.ts";
+import { SYSTEM_PATH, insideBox, probe, spawnBox } from "./spawn.ts";
 
 /** The part of srt's settings file this adapter writes. */
 export interface SrtSettings {
@@ -36,9 +36,13 @@ export interface SrtManifest extends SandboxManifest {
   readonly settings: SrtSettings;
 }
 
-/** srt finds its shell through PATH, so the process always has one: the system's, unless the spec lists its own. */
-const SYSTEM_PATH = "/usr/bin:/bin";
+/**
+ * What the srt process runs with: the host's, fixed. srt finds its shell and the system's tools
+ * through PATH before it confines anything, so the spec's environment is not given to it.
+ */
+const LAUNCHER_ENV: Readonly<Record<string, string>> = { PATH: SYSTEM_PATH };
 
+/** The command's environment: its PATH is the system's unless the spec lists its own. */
 function withPath(env: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
   return "PATH" in env ? env : { PATH: SYSTEM_PATH, ...env };
 }
@@ -91,7 +95,7 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
         try {
           const path = join(dir, "settings.json");
           await writeFile(path, JSON.stringify(manifest(boxSpec({ cwd: dir })).settings));
-          return await probe(wrapped(path, ["/usr/bin/true"]), dir, withPath({}));
+          return await probe(wrapped(path, ["/usr/bin/true"]), dir, LAUNCHER_ENV);
         } finally {
           await rm(dir, { recursive: true, force: true });
         }
@@ -105,7 +109,7 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
       try {
         const path = join(dir, "settings.json");
         await writeFile(path, JSON.stringify(config.settings), { mode: 0o600 });
-        return spawnBox("srt", wrapped(path, argv), config.cwd, config.env, cleanup, options);
+        return spawnBox("srt", wrapped(path, insideBox("srt", LAUNCHER_ENV, config.env, argv)), config.cwd, LAUNCHER_ENV, cleanup, options);
       } catch (error) {
         await cleanup();
         throw error;

@@ -5,8 +5,7 @@
  * the flag list nono is run with. Writing, the network and sockets map one to one. Reading is an
  * allow-list in nono, so a `denyRead` entry needs no flag: what was never granted is already closed.
  * Carving a hole out of a granted directory cannot be said, so a `denyRead` that overlaps a place the
- * box may read or write is refused rather than weakened. nono also needs `HOME` in the environment; the spec lists it, since the
- * environment is only what is listed.
+ * box may read or write is refused rather than weakened. nono runs with a `HOME` and PATH of its own, the host's; the spec's environment is set on the command inside.
  */
 
 import { realpathSync } from "node:fs";
@@ -19,7 +18,7 @@ import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
-import { probe, spawnBox } from "./spawn.ts";
+import { SYSTEM_PATH, insideBox, probe, spawnBox } from "./spawn.ts";
 
 /** A path as the sandbox sees it: `~` expanded, and the links of its longest existing part resolved. */
 function expanded(path: string): string {
@@ -40,6 +39,15 @@ function resolved(absolute: string): string {
 function overlap(one: string, other: string): boolean {
   const under = (path: string, root: string) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
   return under(one, other) || under(other, one);
+}
+
+/**
+ * What the nono process runs with: the host's, fixed. nono reads its own configuration from `HOME`
+ * and finds its tools through PATH before it confines anything, so the spec's environment is not
+ * given to it.
+ */
+function launcherEnv(): Readonly<Record<string, string>> {
+  return { PATH: SYSTEM_PATH, HOME: homedir() };
 }
 
 export interface NonoManifest extends SandboxManifest {
@@ -96,8 +104,8 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
         if (!binary) return false;
         const dir = await mkdtemp(join(tmpdir(), "niwa-nono-probe-"));
         try {
-          const config = manifest(boxSpec({ cwd: dir, env: { HOME: homedir() } }));
-          return await probe(wrapped(config.flags, ["/usr/bin/true"]), dir, config.env);
+          const config = manifest(boxSpec({ cwd: dir }));
+          return await probe(wrapped(config.flags, ["/usr/bin/true"]), dir, launcherEnv());
         } finally {
           await rm(dir, { recursive: true, force: true });
         }
@@ -106,7 +114,8 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     },
     async launch(spec, argv, options) {
       const config = manifest(spec);
-      return spawnBox("nono", wrapped(config.flags, argv), config.cwd, config.env, async () => {}, options);
+      const launcher = launcherEnv();
+      return spawnBox("nono", wrapped(config.flags, insideBox("nono", launcher, config.env, argv)), config.cwd, launcher, async () => {}, options);
     },
   };
 }
