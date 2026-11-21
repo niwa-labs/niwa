@@ -35,16 +35,20 @@ interface Run {
  * The CLI is a program: it is started, it is given the home and the command, and what it
  * printed and how it ended are what the test reads.
  */
-async function cli(home: string, args: string[], env?: Record<string, string>): Promise<Run> {
+function spawnCli(home: string, args: string[], env?: Record<string, string>): Bun.Subprocess<"ignore", "pipe", "pipe"> {
   // An empty home means the CLI must find it itself: from the environment, or from the
   // place niwa keeps it by default.
   const withHome = home === "" ? args : ["--home", home, ...args];
-  const child = Bun.spawn([process.execPath, new URL("../bin/niwa.ts", import.meta.url).pathname, ...withHome], {
+  return Bun.spawn([process.execPath, new URL("../bin/niwa.ts", import.meta.url).pathname, ...withHome], {
     cwd: process.cwd(),
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, ...env },
   });
+}
+
+async function cli(home: string, args: string[], env?: Record<string, string>): Promise<Run> {
+  const child = spawnCli(home, args, env);
   const [out, err] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -303,6 +307,7 @@ test("niwa with no command lists the commands the host declares, and says so whe
 test("niwa log prints one line per record, hides the noise, filters, and follows until idle or a limit", async () => {
   const home = await tempHome();
   let host: ReturnType<typeof spawnHost> | undefined;
+  let follower: ReturnType<typeof spawnCli> | undefined;
 
   try {
     host = spawnHost(HOST_SCRIPT, home.path);
@@ -331,14 +336,31 @@ test("niwa log prints one line per record, hides the noise, filters, and follows
     ]);
 
     // Following ends after the limit, with the records that come later, or when nothing came in the time asked.
-    const following = cli(home.path, ["log", "-f", "--type", "surface.note", "-n", "1", "--limit", "3"]);
-    await Bun.sleep(300);
-    await writer.emit(Note, { text: "note 4" });
-    await writer.emit(Note, { text: "note 5" });
-    const followed = await following;
-    expect(followed.code).toBe(0);
-    expect(followed.out).toContain("note 5");
-    expect(followed.out.trim().split("\n")).toHaveLength(3);
+    follower = spawnCli(home.path, ["log", "-f", "--type", "surface.note", "-n", "1", "--limit", "3"]);
+    const stderr = new Response(follower.stderr).text();
+    const reader = follower.stdout.getReader();
+    const decoder = new TextDecoder();
+    let followed = "";
+    try {
+      while (!followed.includes("\n")) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        followed += decoder.decode(value, { stream: true });
+      }
+      expect(followed).toContain("text=note 3\n");
+      await writer.emit(Note, { text: "note 4" });
+      await writer.emit(Note, { text: "note 5" });
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        followed += decoder.decode(chunk.value, { stream: true });
+      }
+      followed += decoder.decode();
+    } finally {
+      reader.releaseLock();
+    }
+    const [code] = await Promise.all([follower.exited, stderr]);
+    expect(code).toBe(0);
+    expect(followed).toContain("note 5");
+    expect(followed.trim().split("\n")).toHaveLength(3);
 
     const idle = await cli(home.path, ["log", "-f", "--type", "surface.note", "-n", "1", "--wait-ms", "200"]);
     expect(idle.code).toBe(0);
@@ -350,6 +372,8 @@ test("niwa log prints one line per record, hides the noise, filters, and follows
     expect(wrong.err).toContain("-n needs a positive integer");
     await writer.close();
   } finally {
+    follower?.kill("SIGTERM");
+    await follower?.exited;
     await host?.kill().catch(() => {});
     await home.cleanup();
   }
