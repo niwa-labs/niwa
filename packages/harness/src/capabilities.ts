@@ -162,9 +162,20 @@ export function requireAbility<S extends HarnessSide>(
   }
 }
 
-/** The mode a session starts in: the call's, else the instance's, else the default for every harness. */
-export function modeOf(requested: SessionMode | undefined, instance: SessionMode | undefined): SessionMode {
-  return requested ?? instance ?? DEFAULT_SESSION_MODE;
+/**
+ * The mode a session starts in: the call's, else the instance's, else the default of the kind.
+ *
+ * The default is `auto` when the kind can give it, else the first mode the kind declares, so a
+ * kind is never given a default it does not support. A kind that declares no modes gets `auto`,
+ * which `requireLaunch` then refuses if a mode is asked for.
+ */
+export function modeOf(
+  requested: SessionMode | undefined,
+  instance: SessionMode | undefined,
+  launch: LaunchCapabilities,
+): SessionMode {
+  const supported = launch.modes.includes(DEFAULT_SESSION_MODE) ? undefined : launch.modes[0];
+  return requested ?? instance ?? supported ?? DEFAULT_SESSION_MODE;
 }
 
 /**

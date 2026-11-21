@@ -16,7 +16,8 @@ export type {
   PermissionPolicy as ClaudeCodePermissionPolicy,
   PermissionRequest as ClaudeCodePermissionRequest,
 } from "./code/index.ts";
-export { CLAUDE_CODE_ADAPTER, CLAUDE_CODE_LAUNCH } from "./code/control.ts";
+export { CLAUDE_CODE_ADAPTER } from "./code/control.ts";
+export { CLAUDE_CODE_LAUNCH } from "./code/launch.ts";
 export { ClaudeAgentNotification, ClaudeAgentRequest, claudeToolName } from "./code/acp/protocol.ts";
 export { writeClaudeCodeFixtures } from "./code/fixtures.ts";
 export { CLAUDE_CODE_HARNESS, hookPath, hooksJson, installClaudeCodeInsert } from "./code/insert/index.ts";

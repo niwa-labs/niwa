@@ -380,7 +380,7 @@ export class ClaudeSdkControl implements SessionControl {
     }
     const model = options.model ?? this.#model;
     const effort = options.effort ?? this.#effort;
-    const mode = modeOf(options.mode, this.#mode);
+    const mode = modeOf(options.mode, this.#mode, CLAUDE_SDK_LAUNCH);
     requireLaunch(this.#harness, CLAUDE_SDK_LAUNCH, { model, effort, mode });
     await requireBox(options.box);
     const plan: ProcessPlan = {
@@ -477,7 +477,7 @@ export class ClaudeSdkControl implements SessionControl {
     }
     // Its own query over the same session id: the question cannot disturb a running turn. It runs
     // under the limits the session's own process was given.
-    const stored = this.#plans.get(id.native) ?? { mode: modeOf(undefined, this.#mode), claude: this.#claude };
+    const stored = this.#plans.get(id.native) ?? { mode: modeOf(undefined, this.#mode, CLAUDE_SDK_LAUNCH), claude: this.#claude };
     // A question is asked on behalf of the session: what it asks of its client goes where the session's does.
     const plan: ProcessPlan = { ...stored, claude: { ...stored.claude, ...options.claude }, reverse: busy?.reverse ?? stored.reverse };
     await requireBox(plan.box);
@@ -843,7 +843,7 @@ export class ClaudeSdkControl implements SessionControl {
       tools: options?.tools,
       box: options?.box,
       reverse: options?.reverse,
-      mode: modeOf(options?.mode, this.#mode),
+      mode: modeOf(options?.mode, this.#mode, CLAUDE_SDK_LAUNCH),
       // A process launched again keeps the Claude options the session was started with: the ones the
       // resume names (niwa records them), else the ones this side held.
       claude: { ...(this.#plans.get(id.native)?.claude ?? this.#claude), ...options?.claude },

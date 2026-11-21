@@ -1404,7 +1404,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       refuseDisabledTools("start", startOptions.visible, startOptions.tools);
       const model = startOptions.model ?? defaultModel;
       const effort = startOptions.effort ?? defaultEffort;
-      const mode = modeOf(startOptions.mode, options.mode);
+      const mode = modeOf(startOptions.mode, options.mode, MCODE_LAUNCH);
       requireLaunch(harnessId, MCODE_LAUNCH, { model, effort, mode });
       const cwd = startOptions.cwd ?? process.cwd();
       const session = await startProcess(cwd, startOptions);
@@ -1454,7 +1454,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
         await runTurn(session, text, "resume");
         return;
       }
-      const mode = modeOf(resumeOptions?.mode, options.mode);
+      const mode = modeOf(resumeOptions?.mode, options.mode, MCODE_LAUNCH);
       requireLaunch(harnessId, MCODE_LAUNCH, { mode });
       const fresh = await startProcess(session?.cwd ?? process.cwd(), resumeOptions ?? {});
       fresh.reverse = resumeOptions?.reverse;

@@ -32,12 +32,12 @@ import type {
   SessionState,
   StartOptions,
   StartedSession,
-  LaunchCapabilities,
   SessionMode,
   BundledProgram,
   SessionId,
   ClaudeOptions,
 } from "@niwa-labs/harness";
+import { CLAUDE_CODE_LAUNCH } from "./launch.ts";
 import { modeOf, requireLaunch, HarnessIdSchema, findBundled } from "@niwa-labs/harness";
 
 import {
@@ -166,16 +166,6 @@ function defaultCommand(): readonly string[] {
 }
 
 /**
- * What a Claude Code session takes at launch: a model, set on the session after it is created,
- * an effort, the `--effort` flag of the program, and a working mode, set after it is created.
- */
-export const CLAUDE_CODE_LAUNCH: LaunchCapabilities = {
-  model: true,
-  effort: ["low", "medium", "high", "xhigh", "max"],
-  modes: ["ask", "auto", "full"],
-};
-
-/**
  * The owner's own Claude Code: the `claude` on the PATH. niwa does not fall back to a copy it
  * carries: a machine without one is told so.
  */
@@ -218,7 +208,7 @@ export function claudeCodeControl(options: ClaudeCodeControlOptions): ClaudeCode
       requireLaunch(harness, CLAUDE_CODE_LAUNCH, {
         model: startOptions.model ?? options.model,
         effort: startOptions.effort ?? options.effort,
-        mode: modeOf(startOptions.mode, options.mode),
+        mode: modeOf(startOptions.mode, options.mode, CLAUDE_CODE_LAUNCH),
       });
       return await control.start(startOptions);
     },

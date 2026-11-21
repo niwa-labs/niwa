@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { KIND_OPTIONS, defineHarnessKind, harnessId } from "@niwa-labs/harness";
 import type { HarnessId, SideCapabilities } from "@niwa-labs/harness";
 
-import { CLAUDE_CODE_ADAPTER, CLAUDE_CODE_LAUNCH, claudeCodeControl } from "./control.ts";
+import { CLAUDE_CODE_ADAPTER, claudeCodeControl } from "./control.ts";
+import { CLAUDE_CODE_LAUNCH } from "./launch.ts";
 import type { ClaudeCodeControlOptions } from "./control.ts";
 import { installClaudeCodeInsert } from "./insert/index.ts";
 import { ClaudeCodeReading } from "./reading.ts";

@@ -903,7 +903,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       // Everything ZCode cannot do is refused before the child is spawned.
       const model = startOptions.model ?? options.model;
       const effort = startOptions.effort ?? options.effort;
-      const mode = modeOf(startOptions.mode, options.mode);
+      const mode = modeOf(startOptions.mode, options.mode, ZCODE_LAUNCH);
       requireLaunch(harnessId, ZCODE_LAUNCH, { model, effort, mode });
       const surface = surfaceOf(startOptions.servers, startOptions.tools, startOptions.visible);
       if (model !== undefined && model !== "") parseModel(harnessId, model);

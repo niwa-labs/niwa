@@ -313,7 +313,7 @@ export class PiControl implements PiSessionControl {
       throw new Unavailable(this.#harness, "control", "start", "the control side is disposed");
     }
     this.#refuseSeen("start", options.visible, options.servers);
-    const mode = modeOf(options.mode, this.#options.mode);
+    const mode = modeOf(options.mode, this.#options.mode, PI_LAUNCH);
     requireLaunch(this.#harness, PI_LAUNCH, {
       model: options.model ?? this.#options.model,
       effort: options.effort ?? this.#options.effort,
@@ -371,7 +371,7 @@ export class PiControl implements PiSessionControl {
         `the session "${id.native}" has no file to be opened again by: pi writes one only after a turn has run`,
       );
     }
-    requireLaunch(this.#harness, PI_LAUNCH, { mode: modeOf(options?.mode, this.#options.mode) });
+    requireLaunch(this.#harness, PI_LAUNCH, { mode: modeOf(options?.mode, this.#options.mode, PI_LAUNCH) });
     const cwd = resolve(this.#options.cwd ?? process.cwd());
     const session = await this.#spawn(cwd, file, "resume", options?.model, undefined, options ?? {});
     // pi opened the file it was given; a session it names otherwise is not the one that was

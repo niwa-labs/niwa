@@ -66,6 +66,7 @@ import type { AgentProcess } from "@niwa-labs/sandbox";
 import { answerText, acpVariant, readVariant } from "@niwa-labs/acp";
 import type { UnknownVariant } from "@niwa-labs/acp";
 import { claudeEnv } from "../options.ts";
+import { CLAUDE_CODE_LAUNCH } from "../launch.ts";
 import {
   Acp,
   AskUserQuestionParams,
@@ -1386,7 +1387,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
         // overridden by it.
         const model = startOptions.model ?? defaultModel;
         if (model !== undefined && model !== "") await setModel(session, nativeId, model, "start");
-        const mode = modeOf(startOptions.mode, options.mode);
+        const mode = modeOf(startOptions.mode, options.mode, CLAUDE_CODE_LAUNCH);
         await setMode(session, nativeId, mode, "start");
 
         const id = makeSessionId(harnessId, nativeId);
@@ -1450,7 +1451,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
         sessions.set(id.native, session);
         // The adapter chooses its own model when it loads the session: the one the session ran stays.
         if (resumeOptions?.model !== undefined) await setModel(session, id.native, resumeOptions.model, "resume");
-        await setMode(session, id.native, modeOf(resumeOptions?.mode, options.mode), "resume");
+        await setMode(session, id.native, modeOf(resumeOptions?.mode, options.mode, CLAUDE_CODE_LAUNCH), "resume");
         if (text !== "") await runTurn(session, text, "resume");
       } catch (error) {
         await abandon(session);

@@ -821,7 +821,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       // refused before anything is attempted.
       const model = startOptions.model ?? defaultModel;
       const effort = startOptions.effort ?? defaultEffort;
-      const mode = modeOf(startOptions.mode, options.mode);
+      const mode = modeOf(startOptions.mode, options.mode, CODEX_LAUNCH);
       requireLaunch(harnessId, CODEX_LAUNCH, { model, effort, mode });
       const config = codexConfig(
         harnessId,
@@ -901,7 +901,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       session.reverse = resumeOptions?.reverse;
       try {
         const resumed = await call(session, "thread/resume", {
-          ...threadParams(resumeOptions?.model ?? defaultModel, config, modeOf(resumeOptions?.mode, options.mode)),
+          ...threadParams(resumeOptions?.model ?? defaultModel, config, modeOf(resumeOptions?.mode, options.mode, CODEX_LAUNCH)),
           threadId: id.native,
         });
         if (!resumed.ok) throw unavailable("resume", resumed.error ?? "the CLI did not resume the thread");

@@ -465,6 +465,25 @@ test("the control side of the pi kind speaks pi's own dialect", async () => {
   }
 });
 
+test("a pi session started with no mode chosen runs in the one mode pi has", async () => {
+  const fake = await fakeAgent(FAKE_PI);
+  // Neither the instance nor the call names a mode.
+  const kind = pi({
+    harness: HARNESS,
+    sessionsRoot: fake.dir,
+    control: { binary: fake.path, model: "test/model" },
+  });
+  const control = kind.control;
+  if (control === undefined) throw new Error("the kind has no control side");
+
+  try {
+    const { session: id } = await control.start({ prompt: promptFromText("hello") });
+    expect(id.native).toBe("0199aaaa-bbbb-cccc-dddd-eeeeeeeeeeee" as typeof id.native);
+  } finally {
+    await stopFake(fake, control);
+  }
+});
+
 test("the pi control side queues a busy send through prompt, and refuses to resume a turn-less session", async () => {
   const fake = await fakeAgent(FAKE_PI);
   const kind = pi({
