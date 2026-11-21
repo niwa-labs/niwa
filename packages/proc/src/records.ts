@@ -8,37 +8,19 @@
  * - `proc.exec` runs without a box, so nothing limits what it reaches. It is `irreversible` in
  *   `external`, and a grant has to name it.
  *
- * Output is never a field of a record beyond a bounded tail: the whole output is an artifact the
- * record points at. A secret an environment variable takes is a reference, `secret("name")`; the
- * value is resolved where the command starts and never written down.
+ * Output is never a field of a record beyond a bounded tail: the whole output is an artifact of the
+ * host the record points at. A secret an environment variable takes is a reference, `secret("name")`
+ * from core; the host resolves the value where the command starts, and it is never written down.
  */
 
-import { actionRef, record } from "@niwa-labs/core";
+import { ArtifactRefSchema, SecretName, SecretRef, actionRef, record } from "@niwa-labs/core";
 import { z } from "zod";
 
 /** The most a command may be given to finish, in milliseconds: an hour. */
 export const MAX_TIMEOUT_MS = 3_600_000;
 
-/** The effect class of `proc.run`. Held by the box, so it is honest for any command. */
-export const PROC_RUN_CLASS = { effect: "write", world: "local" } as const;
-
-/** The effect class of `proc.exec`. Nothing confines the command, so nothing is promised about it. */
-export const PROC_EXEC_CLASS = { effect: "irreversible", world: "external" } as const;
-
 /** The name of an environment variable (the sandbox has its own, for its spec). */
 const EnvName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "not a valid environment variable name");
-
-/** The name of a secret: it is also a valid name of an environment variable. */
-export const SecretName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "a secret name is letters, digits and underscores");
-
-/** A reference to a secret. The value lives with the owner and is resolved where a command starts. */
-export const SecretRef = z.strictObject({ secret: SecretName });
-export type SecretRef = z.infer<typeof SecretRef>;
-
-/** The reference to the secret called `name`. */
-export function secret(name: string): SecretRef {
-  return SecretRef.parse({ secret: name });
-}
 
 /** The program and its arguments, as they are run. Nothing interprets them: a shell is `["sh", "-c", "…"]`. */
 const Cmd = z
@@ -49,14 +31,6 @@ const Cmd = z
 const Cwd = z.string().regex(/^\//, "the working directory must be an absolute path");
 
 const Timeout = z.number().int().min(1).max(MAX_TIMEOUT_MS);
-
-/** An output kept whole, by the digest of its bytes. */
-export const ArtifactRef = z.strictObject({
-  digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-  size: z.number().int().nonnegative(),
-  type: z.literal("text/plain"),
-});
-export type ArtifactRef = z.infer<typeof ArtifactRef>;
 
 /** How a command ended: it exited on its own, or it was stopped for running out of time. */
 export const ProcOutcome = z.enum(["exited", "timed-out"]);
@@ -75,8 +49,8 @@ export const ProcResult = z.strictObject({
   tail: z.string(),
   /** The output was longer than what is kept: the artifact holds its start. */
   truncated: z.boolean(),
-  /** The output, stdout and stderr in the order they came. */
-  output: ArtifactRef,
+  /** The output, stdout and stderr in the order they came, as an artifact of the host. */
+  output: ArtifactRefSchema,
 });
 export type ProcResult = z.infer<typeof ProcResult>;
 

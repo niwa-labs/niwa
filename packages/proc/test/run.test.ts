@@ -16,9 +16,9 @@ import { afterEach, expect, test } from "bun:test";
 import { nono } from "@niwa-labs/sandbox";
 import { eventually } from "@niwa-labs/testing";
 
-import { artifactPath, procRun } from "../src/index.ts";
+import { procRun } from "../src/index.ts";
 import type { ProcResult } from "../src/index.ts";
-import { absentSandbox, alive, dirIn, procHost, recordingSandbox } from "./support.ts";
+import { absentSandbox, alive, dirIn, outputOf, procHost, recordingSandbox } from "./support.ts";
 
 type Host = Awaited<ReturnType<typeof procHost>>;
 const hosts: Host[] = [];
@@ -50,7 +50,7 @@ test("a run asks for a box that writes only in its cwd, reaches nothing, and hol
     const home = realpathSync(host.home);
     expect(spec?.denyRead).toEqual(expect.arrayContaining([join(home, "owner.token"), join(home, "host.key"), join(home, "secrets")]));
     expect(result.box).toEqual({ sandbox: "nono", write: [cwd], net: [] });
-    const seen = readFileSync(artifactPath(host.home, result.output), "utf8");
+    const seen = outputOf(host, result.output);
     expect(seen).toContain("MODE=ci");
     expect(seen).not.toContain("leaked");
   } finally {
@@ -77,7 +77,7 @@ test("a failing exit is a result with its code, and both streams are in the outp
   expect(result.exit).toBe(3);
   expect(result.tail).toContain("out");
   expect(result.tail).toContain("err");
-  const stored = readFileSync(artifactPath(host.home, result.output), "utf8");
+  const stored = outputOf(host, result.output);
   expect(stored.split("\n").sort()).toEqual(["", "err", "out"]);
 });
 
@@ -118,7 +118,7 @@ test("the output is an artifact: the result and the record keep only a bounded t
   const host = await start({ sandbox: recordingSandbox(), tailBytes: 64 });
   const cwd = dirIn(host.home, "work");
   const result = await host.niwa.call(procRun, { cmd: sh("i=0; while [ $i -lt 5000 ]; do echo line-$i; i=$((i+1)); done"), cwd, timeout: 20_000 });
-  const whole = readFileSync(artifactPath(host.home, result.output), "utf8");
+  const whole = outputOf(host, result.output);
   expect(whole.startsWith("line-0\n")).toBe(true);
   expect(whole.endsWith("line-4999\n")).toBe(true);
   expect(result.output.size).toBe(Buffer.byteLength(whole));

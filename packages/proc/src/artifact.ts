@@ -1,33 +1,19 @@
 /**
- * Command output as an artifact: bytes kept whole under the digest of their content.
+ * Command output as an artifact of the host: bytes kept whole under the digest of their content.
  *
- * The output of a command is written to a file as it arrives and moved to its name, `<sha256>`, when
- * the command is over. The file is flushed to disk before the name exists, so a record that points
- * at an artifact never points at one a crash could take. The same bytes are the same file.
+ * The output of a command goes to a writer of the host's artifact store as it arrives, and is made
+ * durable and named when the command is over, so a record that points at it never points at one a
+ * crash could take. The same bytes are the same artifact.
  *
  * Known secret values are replaced before a byte is written, and before it is kept in the tail:
  * a secret that straddles two chunks is still found, because the end of a chunk is held back until
  * the next one shows it cannot start a secret.
  */
 
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-
-import type { ArtifactRef } from "./records.ts";
+import type { ArtifactRef, ArtifactStore, ArtifactWriter } from "@niwa-labs/core";
 
 /** What stands where a secret was. */
 export const REDACTED = Buffer.from("***");
-
-/** The directory the artifacts of a host live in. */
-export function artifactDir(home: string): string {
-  return join(home, "proc", "artifacts");
-}
-
-/** The file of an artifact. */
-export function artifactPath(home: string, ref: Pick<ArtifactRef, "digest">): string {
-  return join(artifactDir(home), ref.digest.slice("sha256:".length));
-}
 
 /** Replaces every known secret in a stream of chunks. One per stream: the held-back end belongs to it. */
 export class Scrubber {
@@ -71,7 +57,8 @@ export class Scrubber {
 }
 
 export interface CaptureOptions {
-  readonly home: string;
+  /** The store the output is kept in. */
+  readonly artifacts: ArtifactStore;
   /** Values to remove from the output before anything is kept. */
   readonly secrets: readonly string[];
   /** The most bytes kept in the artifact; the rest of the output is read and dropped. */
@@ -91,9 +78,7 @@ export interface Captured {
 export class OutputCapture {
   readonly #options: CaptureOptions;
   readonly #scrubbers: { readonly out: Scrubber; readonly err: Scrubber };
-  readonly #hasher = new Bun.CryptoHasher("sha256");
-  readonly #temp: string;
-  readonly #fd: number;
+  readonly #writer: ArtifactWriter;
   #size = 0;
   #truncated = false;
   #tail: Buffer = Buffer.alloc(0);
@@ -101,9 +86,7 @@ export class OutputCapture {
   constructor(options: CaptureOptions) {
     this.#options = options;
     this.#scrubbers = { out: new Scrubber(options.secrets), err: new Scrubber(options.secrets) };
-    mkdirSync(artifactDir(options.home), { recursive: true, mode: 0o700 });
-    this.#temp = join(artifactDir(options.home), `.partial-${randomUUID()}`);
-    this.#fd = openSync(this.#temp, "wx", 0o600);
+    this.#writer = options.artifacts.writer("text/plain");
   }
 
   /** Takes a chunk of one of the two streams, in the order it came. */
@@ -115,29 +98,12 @@ export class OutputCapture {
   finish(): Captured {
     this.#keep(this.#scrubbers.out.end());
     this.#keep(this.#scrubbers.err.end());
-    fsyncSync(this.#fd);
-    closeSync(this.#fd);
-    const digest = this.#hasher.digest("hex");
-    const ref: ArtifactRef = { digest: `sha256:${digest}`, size: this.#size, type: "text/plain" };
-    const path = artifactPath(this.#options.home, ref);
-    renameSync(this.#temp, path);
-    const dir = openSync(artifactDir(this.#options.home), "r");
-    try {
-      fsyncSync(dir);
-    } finally {
-      closeSync(dir);
-    }
-    return { output: ref, tail: new TextDecoder().decode(this.#tail), truncated: this.#truncated };
+    return { output: this.#writer.finish(), tail: new TextDecoder().decode(this.#tail), truncated: this.#truncated };
   }
 
   /** Throws away what was captured: the command never got to its end. */
   discard(): void {
-    try {
-      closeSync(this.#fd);
-    } catch {
-      // Closed already.
-    }
-    rmSync(this.#temp, { force: true });
+    this.#writer.discard();
   }
 
   #keep(bytes: Buffer): void {
@@ -147,8 +113,7 @@ export class OutputCapture {
     const stored = bytes.subarray(0, room);
     if (stored.length < bytes.length) this.#truncated = true;
     if (stored.length > 0) {
-      writeSync(this.#fd, stored);
-      this.#hasher.update(stored);
+      this.#writer.write(stored);
       this.#size += stored.length;
     }
     this.#tail = Buffer.concat([this.#tail, bytes]);

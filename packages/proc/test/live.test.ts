@@ -17,8 +17,8 @@ import { describe, expect, test } from "bun:test";
 import { nono, srt } from "@niwa-labs/sandbox";
 import { live } from "@niwa-labs/testing";
 
-import { artifactPath, procRun } from "../src/index.ts";
-import { dirIn, procHost } from "./support.ts";
+import { procRun } from "../src/index.ts";
+import { dirIn, outputOf, procHost } from "./support.ts";
 
 for (const sandbox of [srt(), nono()]) {
   const present = live && (await sandbox.available());
@@ -61,7 +61,7 @@ for (const sandbox of [srt(), nono()]) {
           timeout: 20_000,
         });
         expect(result.exit).not.toBe(0);
-        expect(readFileSync(artifactPath(host.home, result.output), "utf8")).not.toContain("owner-token-value");
+        expect(outputOf(host, result.output)).not.toContain("owner-token-value");
       } finally {
         await host.stop();
       }

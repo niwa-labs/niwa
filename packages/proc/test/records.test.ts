@@ -2,7 +2,10 @@
 
 import { expect, test } from "bun:test";
 
-import { PROC_EXEC_CLASS, PROC_RUN_CLASS, procExec, procRun, secret } from "../src/records.ts";
+import { secret } from "@niwa-labs/core";
+
+import { procExec, procRun } from "../src/records.ts";
+import { procHost } from "./support.ts";
 
 const base = { cmd: ["true"], cwd: "/tmp", timeout: 1000 };
 
@@ -29,7 +32,15 @@ test("a secret reference names a variable-like secret", () => {
   expect(secret("DEPLOY_KEY")).toEqual({ secret: "DEPLOY_KEY" });
 });
 
-test("run is a write in the local world, exec an irreversible one in the external world", () => {
-  expect(PROC_RUN_CLASS).toEqual({ effect: "write", world: "local" });
-  expect(PROC_EXEC_CLASS).toEqual({ effect: "irreversible", world: "external" });
+test("run is a write in the local world, exec an irreversible one in the external world, as the host describes them", async () => {
+  const host = await procHost();
+  try {
+    const actions = (await host.niwa.describe()).actions.filter((one) => one.name.startsWith("proc."));
+    expect(actions.map(({ name, effect, world }) => ({ name, effect, world }))).toEqual([
+      { name: "proc.run", effect: "write", world: "local" },
+      { name: "proc.exec", effect: "irreversible", world: "external" },
+    ]);
+  } finally {
+    await host.stop();
+  }
 });

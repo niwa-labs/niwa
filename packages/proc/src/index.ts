@@ -10,11 +10,11 @@
  * - **proc.exec** runs a command with no box. Nothing limits what it writes or reaches, so it is an
  *   irreversible action in the external world, and a grant has to name it. It gets `PATH`, `HOME`,
  *   what the call lists, and the secrets the call names. A secret is a reference, `secret("name")`; its value
- *   is resolved here (`secrets.ts`), handed to the process, and removed from the output before the
- *   artifact or the tail is made. Nothing the host holds goes into the environment of the command
+ *   is resolved by the host's secret store, handed to the process, and removed from the output before
+ *   the artifact or the tail is made. Nothing the host holds goes into the environment of the command
  *   unless the call lists it.
  *
- * A command ends like this: the output is stored as an artifact before anything points at it, the
+ * A command ends like this: the output is stored as an artifact of the host before anything points at it, the
  * result has the exit code and a bounded tail, and a `proc.finished` record says how the command
  * ended. A non-zero exit is a result: the caller reads it.
  *
@@ -37,15 +37,11 @@ import { OutputCapture } from "./artifact.ts";
 import { ProcRefusal } from "./refusal.ts";
 import { ProcFinished, procExec, procRun } from "./records.ts";
 import type { BoxUsed, ProcFinishedData, ProcResult } from "./records.ts";
-import { resolveSecret } from "./secrets.ts";
 import { launchPlain, supervise } from "./supervise.ts";
 
 export * from "./records.ts";
-export { artifactDir, artifactPath } from "./artifact.ts";
 export { ProcRefusal } from "./refusal.ts";
 export type { ProcRefusalCode } from "./refusal.ts";
-export { SecretRefusal, resolveSecret, secretsDir } from "./secrets.ts";
-export type { SecretRefusalCode } from "./secrets.ts";
 
 /** What the module is given. Every field has a default. */
 export interface ProcOptions {
@@ -140,11 +136,11 @@ export function proc(options: ProcOptions = {}): Plugin {
             denyRead: [
               join(home(), OWNER_TOKEN_FILE),
               join(home(), HOST_KEY_FILE),
-              join(home(), "secrets"),
+              api.secrets.dir,
               ...CREDENTIAL_PLACES.map((place) => join(homedir(), place)),
             ],
           });
-          const capture = new OutputCapture({ home: home(), secrets: [], limit, tailBytes });
+          const capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
           try {
             const child = await sandbox.launch(spec, input.cmd, { detached: true });
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS });
@@ -173,7 +169,7 @@ export function proc(options: ProcOptions = {}): Plugin {
           const values: string[] = [];
           const env: Record<string, string> = { ...baseEnv() };
           const given = (name: string): string => {
-            const value = resolveSecret(home(), name);
+            const value = api.secrets.resolve(name);
             values.push(value);
             return value;
           };
@@ -181,7 +177,7 @@ export function proc(options: ProcOptions = {}): Plugin {
             env[name] = typeof value === "string" ? value : given(value.secret);
           }
           for (const name of input.secrets ?? []) env[name] = given(name);
-          const capture = new OutputCapture({ home: home(), secrets: values, limit, tailBytes });
+          const capture = new OutputCapture({ artifacts: api.artifacts, secrets: values, limit, tailBytes });
           try {
             const child = launchPlain(input.cmd, cwd, env);
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS });

@@ -24,5 +24,6 @@ export * from "./json-schema.ts";
 export * from "./tool-name.ts";
 export * from "./speaks-for.ts";
 export * from "./session-ref.ts";
+export * from "./stores.ts";
 export { NOW_ACTION, RANDOM_ACTION, WAIT_ACTION, currentInvocation, isSuspend, offeredChoices } from "./invocation-scope.ts";
 export type { InvocationScope } from "./invocation-scope.ts";

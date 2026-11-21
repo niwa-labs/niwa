@@ -15,8 +15,10 @@ import { afterEach, expect, test } from "bun:test";
 
 import { eventually } from "@niwa-labs/testing";
 
-import { artifactPath, procExec, secret, secretsDir } from "../src/index.ts";
-import { absentSandbox, alive, dirIn, filesUnder, procHost } from "./support.ts";
+import { secret } from "@niwa-labs/core";
+
+import { procExec } from "../src/index.ts";
+import { absentSandbox, alive, dirIn, filesUnder, outputOf, procHost } from "./support.ts";
 
 type Host = Awaited<ReturnType<typeof procHost>>;
 const hosts: Host[] = [];
@@ -36,8 +38,8 @@ async function start(): Promise<Host> {
 const sh = (script: string) => ["/bin/sh", "-c", script];
 const VALUE = "s3cr3t-Value-0042";
 
-function putSecret(home: string, name: string, value: string, mode = 0o600): void {
-  const dir = secretsDir(home);
+function putSecret(host: Host, name: string, value: string, mode = 0o600): void {
+  const dir = host.niwa.secrets.dir;
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, name), `${value}\n`, { mode });
   chmodSync(join(dir, name), mode);
@@ -60,7 +62,7 @@ test("the environment of exec is what the call lists, not the host's", async () 
   const cwd = dirIn(host.home, "work");
   process.env["NIWA_ID"] = "leaked-session";
   const result = await host.niwa.call(procExec, { cmd: sh("env | sort"), cwd, timeout: 10_000, env: { MODE: "ci" } });
-  const names = readFileSync(artifactPath(host.home, result.output), "utf8")
+  const names = outputOf(host, result.output)
     .split("\n")
     .filter((line) => line.includes("="))
     .map((line) => line.split("=")[0])
@@ -71,7 +73,7 @@ test("the environment of exec is what the call lists, not the host's", async () 
 test("a secret from a file reaches the process, and the output has it replaced", async () => {
   const host = await start();
   const cwd = dirIn(host.home, "work");
-  putSecret(host.home, "DEPLOY", VALUE);
+  putSecret(host, "DEPLOY", VALUE);
   const result = await host.niwa.call(procExec, {
     cmd: sh('printf "len=%s\\n" "${#TOKEN}"; printf "value=%s\\n" "$TOKEN"'),
     cwd,
@@ -80,7 +82,7 @@ test("a secret from a file reaches the process, and the output has it replaced",
   });
   expect(result.exit).toBe(0);
   expect(result.tail).toBe(`len=${VALUE.length}\nvalue=***\n`);
-  expect(readFileSync(artifactPath(host.home, result.output), "utf8")).toBe(`len=${VALUE.length}\nvalue=***\n`);
+  expect(outputOf(host, result.output)).toBe(`len=${VALUE.length}\nvalue=***\n`);
 });
 
 test("the secrets a call names are given as variables of their own names", async () => {
@@ -125,7 +127,7 @@ test("a secret that is not there stops the call before a process exists, and the
 test("a secret file that others may read is refused, naming the secret and not its value", async () => {
   const host = await start();
   const cwd = dirIn(host.home, "work");
-  putSecret(host.home, "OPEN", VALUE, 0o644);
+  putSecret(host, "OPEN", VALUE, 0o644);
   const error = await host.niwa.call(procExec, { cmd: ["/usr/bin/true"], cwd, timeout: 10_000, env: { TOKEN: secret("OPEN") } }).then(
     () => undefined,
     (thrown: unknown) => thrown as Error,

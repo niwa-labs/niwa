@@ -4,6 +4,7 @@
 import { mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+import type { ArtifactRef, ArtifactStore } from "@niwa-labs/core";
 import { SandboxUnavailable } from "@niwa-labs/sandbox";
 import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 import { createNiwa, tempHome } from "@niwa-labs/testing";
@@ -70,6 +71,11 @@ export async function procHost(options: ProcOptions = {}, at?: string) {
       await home.cleanup();
     },
   };
+}
+
+/** The text of an output the host keeps as an artifact. */
+export function outputOf(host: { niwa: { artifacts: ArtifactStore } }, ref: ArtifactRef): string {
+  return new TextDecoder().decode(host.niwa.artifacts.read(ref));
 }
 
 /** A directory made inside a parent. */

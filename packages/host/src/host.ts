@@ -9,7 +9,7 @@
 //   flight finishes on its own code;
 // - a client is named by the host from the connection, never by what it sends.
 
-import { chmodSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 import { z } from "zod";
@@ -61,6 +61,8 @@ import {
   selectsType,
 } from "@niwa-labs/core";
 import type {
+  ArtifactStore,
+  SecretStore,
   Clock,
   DeniedDetails,
   Found,
@@ -167,6 +169,7 @@ import { installationOf, pluginInstallAction, removeCopyIfStale, removeStaleCopi
 import { COCKPIT_MODULE, handlerSource, pluginVersion, pluginName, sealVersion } from "@niwa-labs/plugin";
 import { catalogOf } from "./cockpit-catalog.ts";
 import { StateStore } from "./state.ts";
+import { artifactStore, secretStore } from "./stores.ts";
 import type { HostMessage } from "@niwa-labs/client";
 import { isTrigger } from "@niwa-labs/plugin";
 import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionStart } from "@niwa-labs/plugin";
@@ -717,6 +720,16 @@ class Niwa implements Host {
   /** What a request to stop does. */
   private readonly onStop: () => void;
 
+  /** The artifacts of this host: data too large for a record, kept whole by its digest under the home. */
+  readonly artifacts: ArtifactStore = artifactStore(() => this.realHome());
+  /** The secrets of this host's owner, resolved by name where they are used. */
+  readonly secrets: SecretStore = secretStore(() => this.realHome());
+
+  /** The home with its links resolved, once it exists. */
+  private realHome(): string {
+    return existsSync(this.home) ? realpathSync(this.home) : this.home;
+  }
+
   constructor(opts: { home: string; takeover?: boolean; clock?: Clock; onStop?: () => void }) {
     this.onStop = opts.onStop ?? (() => void this.close());
     this.home = expandHome(opts.home);
@@ -913,6 +926,8 @@ class Niwa implements Host {
       untilCommit: (ms) => this.untilCommit(ms),
       socket: () => socketPath(realpathSync(this.home)),
       home: () => realpathSync(this.home),
+      artifacts: this.artifacts,
+      secrets: this.secrets,
       emit: async <T>(type: RecordType<T>, data: T, opts?: EmitOptions): Promise<StoredRecord> => {
         if (!installed.types.some((own) => own.name === type.name)) {
           throw new UnknownType(type.name);

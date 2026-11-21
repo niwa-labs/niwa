@@ -5,6 +5,7 @@ import type { Subscribable } from "./trigger.ts";
 
 import type {
   Action,
+  ArtifactStore,
   ActionRef,
   Effect,
   AdjustFn,
@@ -21,6 +22,7 @@ import type {
   PluginName,
   PluginVersion,
   RecordType,
+  SecretStore,
   StoredRecord,
   Timestamp,
   Token,
@@ -281,6 +283,13 @@ export interface PluginApi {
   socket(): string;
   /** The home of this host, with the links resolved: where `owner.token` and `host.key` are. */
   home(): string;
+  /**
+   * The artifacts of this host: data too large for a record (`ARTIFACT_THRESHOLD`), kept whole by its
+   * digest and durable before the reference to it is returned. A record holds the reference.
+   */
+  readonly artifacts: ArtifactStore;
+  /** The secrets of the host's owner, resolved by name where they are used. A record holds `secret("name")`. */
+  readonly secrets: SecretStore;
   /**
    * Write a record of one of this plugin's own types, from work the plugin runs by itself.
    *
