@@ -84,3 +84,25 @@ test("one digest holds a bounded part of a long stretch, and the next pause goes
   const digests = await digestsOf(host, 2);
   expect(digests[1]?.source?.from).toBe(first?.source?.upto);
 }, 90_000);
+
+test("a session whose history started over is not told again from its top: the agent is told that it did, and the position moves on", async () => {
+  const transcript: SessionRecord[] = [said(1, "user", "an old request"), said(2, "assistant", "an old answer")];
+  const host = await attachedHost(transcript);
+  transcript.push(said(3, "user", "fix the build"), said(4, "assistant", "the build is fixed"));
+  const [first] = await digestsOf(host, 1);
+  expect(first?.source?.upto).toBe("L4");
+  // The transcript is written again under other positions: the last position read is no longer in it.
+  const again = (n: number, kind: "user" | "assistant", text: string): SessionRecord => ({ kind, text, locator: LocatorSchema.parse(`M${String(n)}`), incomplete: false }) as SessionRecord;
+  transcript.splice(0, transcript.length, again(1, "user", "an old request"), again(2, "assistant", "an old answer"), again(3, "user", "fix the build"), again(4, "assistant", "the build is fixed"), again(5, "user", "now the tests"));
+  const [, second] = await digestsOf(host, 2);
+  expect(second?.source).toEqual({ kind: "session-digest", session: `${HARNESS} ext-1`, from: "L4", upto: "M5" });
+  expect(second?.text).toContain("started over");
+  // Nothing of the old stretch is told as news.
+  expect(second?.text).not.toContain("an old request");
+  expect(second?.text).not.toContain("fix the build");
+  // The next digest goes on from the new position.
+  transcript.push(again(6, "assistant", "the tests pass"));
+  const [, , third] = await digestsOf(host, 3);
+  expect(third?.source).toEqual({ kind: "session-digest", session: `${HARNESS} ext-1`, from: "M5", upto: "M6" });
+  expect(third?.text).toContain("The session: the tests pass");
+}, 90_000);

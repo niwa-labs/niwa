@@ -94,8 +94,10 @@ export function transcripts(byNative: Map<string, SessionRecord[]>): SessionRead
     },
     async *read(id, from) {
       const records = byNative.get(id.native) ?? [];
-      const start = from === undefined ? 0 : records.findIndex((record) => record.locator === from) + 1;
-      yield* records.slice(start);
+      const found = from === undefined ? -1 : records.findIndex((record) => record.locator === from);
+      // A position that belongs to another source starts the read over, and the first record says so.
+      const restarted = from !== undefined && found === -1;
+      for (const [index, record] of records.slice(found + 1).entries()) yield restarted && index === 0 ? ({ ...record, reanchored: true } as SessionRecord) : record;
     },
     raw: async () => undefined,
     rawSchema: { parse: (value: unknown) => value } as never,

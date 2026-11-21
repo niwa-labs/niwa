@@ -36,6 +36,8 @@ interface Window {
   next: string | null;
   upto: string | null;
   files: unknown;
+  /** The read started over: the position it was given belonged to another source, so this is the session from its top. */
+  restarted?: boolean;
 }
 
 /** The line an entry is told as; a thought or a sealed record says nothing to the agent. */
@@ -74,6 +76,9 @@ export default workflow(
     let files: unknown;
     let upto = last;
     let more = false;
+    // The history started over: what the agent was told before is in the window again, and nothing
+    // says which of it is new. It is not told again; the agent is told that, and the position moves on.
+    let restarted = false;
     for (let window = 0; window < WINDOWS; window += 1) {
       const read = (await niwa.session.read(
         { session, mode: "digest", budget: BUDGET, ...(from === undefined ? {} : { from }), ...(files === undefined ? {} : { files }) },
@@ -81,9 +86,15 @@ export default workflow(
       )) as { digest?: Window };
       const digest = read.digest;
       if (digest === undefined) break;
-      for (const entry of digest.view.entries ?? []) {
-        const said = line(entry);
-        if (said !== undefined) lines.push(said);
+      if (digest.restarted === true) {
+        restarted = true;
+        lines.length = 0;
+      }
+      if (!restarted) {
+        for (const entry of digest.view.entries ?? []) {
+          const said = line(entry);
+          if (said !== undefined) lines.push(said);
+        }
       }
       upto = digest.upto ?? upto;
       files = digest.files;
@@ -92,14 +103,16 @@ export default workflow(
       from = digest.next ?? undefined;
     }
     // Nothing new since the last digest: the agent is told nothing.
-    if (upto === undefined || upto === last || lines.length === 0) return;
+    if (upto === undefined || upto === last || (lines.length === 0 && !restarted)) return;
     const said = ended ? "The session ended." : "The session paused.";
     await niwa.agent.notify(
       {
         agent,
         text: [
-          `${said} What it did${last === undefined ? "" : " since the last digest"}:`,
-          ...lines,
+          ...(restarted
+            ? [`${said} Its history started over: the position of the last digest is no longer in it, so what it did since cannot be told apart from what came before.`]
+            : [`${said} What it did${last === undefined ? "" : " since the last digest"}:`, ...lines]),
+          ...(restarted ? [`Read it with session.read of ${session}; the next digest goes on from ${upto}.`] : []),
           ...(!more ? [] : ended ? [`(It did more after this: read it with session.read of ${session} from ${upto}.)`] : ["(It did more after this: the rest comes with the next digest.)"]),
         ].join("\n"),
         source: { kind: "session-digest", session, ...(last === undefined ? {} : { from: last }), upto },
