@@ -88,3 +88,29 @@ test("two plugins may not own one type, whether by name or under a family", asyn
   family.use(producer());
   expect(() => family.use(plugin("sub-family", (api) => api.declare(record("sub-test.*", z.unknown()))))).toThrow(/sub-producer/);
 });
+
+test("a plugin whose name has a slash writes its own types from its handlers, and not another's", async () => {
+  const home = await tempHome();
+  try {
+    const Own = record("slash-test.own", z.object({ n: z.number() }));
+    const niwa = await serving(home.path, [
+      producer(),
+      plugin("org", (api) => api.declare(Echo)),
+      plugin("org/app", (api) => {
+        api.declare(Own);
+        api.on(Item, async (data, step) => {
+          await step.emit(Own, { n: data.n });
+          if (data.n === 2) await step.emit(Echo, { n: data.n });
+        });
+      }),
+    ]);
+    await niwa.emit(Item, { n: 1 });
+    await eventually(async () => (await recordsOf(niwa, Own.name)).length === 1);
+    await niwa.emit(Item, { n: 2 });
+    await eventually(async () => (await statesOf(niwa)).some((one) => one.state === "paused"));
+    expect(await recordsOf(niwa, Echo.name)).toEqual([]);
+    await niwa.close();
+  } finally {
+    await home.cleanup();
+  }
+});

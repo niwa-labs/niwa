@@ -1623,8 +1623,10 @@ class Niwa implements Host {
     const principal = caller.kind === "client" ? caller.principal : undefined;
     const declared = this.declaredType(type);
     const owner = this.typeOwners.get(declared?.name ?? type);
-    // A plugin writes its own types: over the wire as its principal, and from a handler of its own.
-    const writer = caller.kind === "handler" ? String(caller.handler).split("/")[0] : principal?.kind === "plugin" ? String(principal.id) : undefined;
+    // A plugin writes its own types: over the wire as its principal, and from a handler of its own. A
+    // handler id is the plugin's name, a "/" and a name with none, so the plugin is all before the last.
+    const handler = caller.kind === "handler" ? String(caller.handler) : undefined;
+    const writer = handler !== undefined ? handler.slice(0, handler.lastIndexOf("/")) : principal?.kind === "plugin" ? String(principal.id) : undefined;
     const own = writer !== undefined && writer === String(owner);
     const closed = `"${type}" is closed: only the "${owner}" plugin writes it`;
     let answer: Permit;
