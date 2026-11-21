@@ -30,7 +30,7 @@ import { HOST_KEY_FILE, OWNER_TOKEN_FILE, action } from "@niwa-labs/core";
 import type { ActionContext } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin } from "@niwa-labs/plugin";
-import { boxSpec, nono, requireSandbox, srt } from "@niwa-labs/sandbox";
+import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, requireSandbox, srt } from "@niwa-labs/sandbox";
 import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 
 import { OutputCapture } from "./artifact.ts";
@@ -99,6 +99,19 @@ function baseEnv(): Record<string, string> {
   return { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: homedir() };
 }
 
+/**
+ * What a sandbox says before any process exists, as the refusal of the call: the command never
+ * started, so the caller is told so, and it is not a failure that may have had an effect.
+ */
+async function beforeStart<T>(start: () => Promise<T>): Promise<T> {
+  try {
+    return await start();
+  } catch (error) {
+    if (error instanceof SandboxUnavailable || error instanceof SandboxUnsupported) throw new ProcRefusal("no-sandbox", error.message);
+    throw error;
+  }
+}
+
 /** The proc module. */
 export function proc(options: ProcOptions = {}): Plugin {
   const limit = options.outputLimit ?? DEFAULT_OUTPUT_LIMIT;
@@ -143,7 +156,7 @@ export function proc(options: ProcOptions = {}): Plugin {
         target: (input) => targetOf(input),
         async run(input, ctx) {
           const cwd = directoryOf(input.cwd, authorized.get(input));
-          const sandbox = await sandboxOf();
+          const sandbox = await beforeStart(sandboxOf);
           // Cancelled while the sandbox was being found: nothing was started, and nothing will be.
           ctx.signal?.throwIfAborted();
           const spec: BoxSpec = boxSpec({
@@ -160,7 +173,7 @@ export function proc(options: ProcOptions = {}): Plugin {
           });
           const capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
           try {
-            const child = await sandbox.launch(spec, input.cmd, { detached: true });
+            const child = await beforeStart(() => sandbox.launch(spec, input.cmd, { detached: true }));
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
             const result: ProcResult = { ...ended, ...capture.finish() };
             const box: BoxUsed = { sandbox: sandbox.name, write: [...spec.write], net: [...spec.net] };
