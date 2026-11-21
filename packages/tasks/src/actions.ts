@@ -43,6 +43,7 @@ export const taskCreate = actionRef("task.create", {
     "Make a task: a few words of description, what to do, who asked, who is responsible, where to report. " +
     "`result` may declare the shape the result must have, as a JSON Schema of an object: " +
     "whoever does the work is shown it, and `task.finish` refuses a result that does not fit. " +
+    "A client asks as the address it speaks as: `askedBy` must be that address, and another is refused. " +
     "It returns the id niwa issued at once, and the work goes on in the background.",
   input: CreateInput,
   output: z.object({ id: TaskId }),

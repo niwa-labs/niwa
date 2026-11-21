@@ -41,7 +41,7 @@ const contract = (description: string, result?: Record<string, unknown>) => ({
   kind: "change",
   description,
   text: `Do the work: ${description}.`,
-  askedBy: ASKER,
+  askedBy: OWNER,
   responsible: OWNER,
   reportTo: ASKER,
   ...(result === undefined ? {} : { result }),

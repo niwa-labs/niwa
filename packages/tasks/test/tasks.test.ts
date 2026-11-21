@@ -38,6 +38,7 @@ import {
 } from "../src/index.ts";
 import type { Strategy, TaskAnswer, TaskContract } from "../src/index.ts";
 import { connect, connectAsOwner, createNiwa, messageSend, messages, tempHome } from "@niwa-labs/testing";
+import type { Host } from "@niwa-labs/testing";
 import { z } from "zod";
 
 /** The record that wakes the strategy: it asks for the work to be done on one task. */
@@ -121,7 +122,7 @@ test("the tasks module: a task returns at once, the result arrives, finishing tw
     const client = await connectAsOwner(home.path);
 
     // The task is created and returns at once, with the id niwa issued.
-    const created = await client.call(taskCreate, contractOf());
+    const created = await niwa.call(taskCreate, contractOf());
     const TASK_ID = created.id;
     expect(TASK_ID).toMatch(/^task-[0-9a-f]{6,8}$/);
 
@@ -233,8 +234,8 @@ async function eventually(
   }
 }
 
-/** A host with the tasks module whose clients and handlers all speak as the strategy. */
-async function withTasks(run: (client: Awaited<ReturnType<typeof connect>>, home: string) => Promise<void>) {
+/** A host with the tasks module whose clients and handlers all speak as the strategy; tasks are made through the host, which asks in the name of whom it likes. */
+async function withTasks(run: (client: Awaited<ReturnType<typeof connect>>, host: Host) => Promise<void>) {
   const home = await tempHome();
   const niwa = createNiwa({ home: home.path });
   niwa.use(messages({ bind }));
@@ -243,7 +244,7 @@ async function withTasks(run: (client: Awaited<ReturnType<typeof connect>>, home
   try {
     const client = await connectAsOwner(home.path);
     try {
-      await run(client, home.path);
+      await run(client, niwa);
     } finally {
       await client.close().catch(() => {});
     }
@@ -266,13 +267,13 @@ const contractOf = (responsible: Address = STRATEGY) => ({
 });
 
 test("only the responsible party reports and finishes, a task finishes once, and a task that does not exist is refused", async () => {
-  await withTasks(async (client) => {
-    const t1 = (await client.call(taskCreate, contractOf({ kind: "agent", id: "other" }))).id;
+  await withTasks(async (client, host) => {
+    const t1 = (await host.call(taskCreate, contractOf({ kind: "agent", id: "other" }))).id;
     await expect(client.call(taskReport, { task: t1, text: "hi" })).rejects.toThrow("only the responsible party");
     await expect(client.call(taskFinish, { task: t1, result: 1 })).rejects.toThrow("only the responsible party");
     await expect(client.call(taskFinish, { task: TaskId.parse("task-000000"), result: 1 })).rejects.toThrow("does not exist");
 
-    const t2 = (await client.call(taskCreate, contractOf())).id;
+    const t2 = (await host.call(taskCreate, contractOf())).id;
     await client.call(taskReport, { task: t2, text: "half way" });
     // A finish needs a result and a failure needs a reason: a stale caller that still sends a reason to task.finish fails loudly.
     await expect(client.call("task.finish" as never, { task: t2 } as never)).rejects.toThrow("result");
@@ -285,8 +286,8 @@ test("only the responsible party reports and finishes, a task finishes once, and
 }, 30_000);
 
 test("task.result waits for a task that ends later, and loses no end that comes at once", async () => {
-  await withTasks(async (client) => {
-    const late = (await client.call(taskCreate, contractOf())).id;
+  await withTasks(async (client, host) => {
+    const late = (await host.call(taskCreate, contractOf())).id;
     const waiting = client.call(taskResult, { task: late });
     await Bun.sleep(100);
     await client.call(taskFinish, { task: late, result: "ok" });
@@ -294,7 +295,7 @@ test("task.result waits for a task that ends later, and loses no end that comes 
 
     // The end arrives while the result is being asked for: neither order may hang.
     for (let index = 0; index < 15; index += 1) {
-      const id = (await client.call(taskCreate, contractOf())).id;
+      const id = (await host.call(taskCreate, contractOf())).id;
       const both = await Promise.all([
         client.call(taskResult, { task: id }),
         client.call(taskFinish, { task: id, result: index }),
@@ -316,7 +317,7 @@ test("the state of a task is read from the journal: a new host knows it", async 
       const client = await connectAsOwner(home.path);
       try {
         if (first) {
-          kept = (await client.call(taskCreate, contractOf())).id;
+          kept = (await niwa.call(taskCreate, contractOf())).id;
           await client.call(taskFinish, { task: kept, result: 7 });
         } else if (kept !== undefined) {
           expect(await client.call(taskResult, { task: kept })).toEqual({
@@ -381,7 +382,7 @@ test("mt-2: the updates and the end of a task go to where it says to report", as
 
   try {
     const client = await connectAsOwner(home.path);
-    const reported = (await client.call(taskCreate, contractOf())).id;
+    const reported = (await niwa.call(taskCreate, contractOf())).id;
     await client.call(taskReport, { task: reported, text: "half way" });
     await client.call(taskFinish, { task: reported, result: "done" });
 
@@ -418,7 +419,7 @@ test("mt-2: a task that ends in a failure reports the failure", async () => {
 
   try {
     const client = await connectAsOwner(home.path);
-    const failed = (await client.call(taskCreate, contractOf())).id;
+    const failed = (await niwa.call(taskCreate, contractOf())).id;
     await client.call(taskFail, { task: failed, reason: "it broke" });
 
     await eventually(
@@ -446,7 +447,7 @@ test("mt-2: a result that is not text is carried along as it is", async () => {
 
   try {
     const client = await connectAsOwner(home.path);
-    const structured = (await client.call(taskCreate, contractOf())).id;
+    const structured = (await niwa.call(taskCreate, contractOf())).id;
     await client.call(taskFinish, { task: structured, result: { files: 2 } });
 
     await eventually(
@@ -490,7 +491,7 @@ test("mt-2: a replay after a restart sends nothing twice", async () => {
 
   try {
     const client = await connectAsOwner(home.path);
-    const again = (await client.call(taskCreate, contractOf())).id;
+    const again = (await first.call(taskCreate, contractOf())).id;
     await client.call(taskReport, { task: again, text: "half way" });
 
     // The handler of the report is at its step, waiting for the guard.

@@ -420,7 +420,7 @@ test("examples/14-workflow-subscription.ts: a failed task tells the owner; a tas
   expect(await profileRules(ownerClient, profile)).toEqual(["call:message.send", "emit:wf.*"]);
 
   const make = (text: string) =>
-    ownerClient.call(
+    host.call(
       actionRef("task.create", {
         description: "Make a task.",
         input: z.object({ kind: z.string(), description: z.string(), text: z.string(), askedBy: z.unknown(), responsible: z.unknown(), reportTo: z.unknown() }),

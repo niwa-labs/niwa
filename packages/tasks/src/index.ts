@@ -18,6 +18,9 @@
  *
  * The state of a task is folded from the journal (`owner.ts`). The actions are values: a
  * responsible party holds the one it needs and calls it as a step of its own invocation.
+ *
+ * Who asks is who the caller is: a client asks as the address it is bound to, and only the host
+ * and the handlers of plugins, which stand for nobody, may ask in another's name.
  */
 
 import { z } from "zod";
@@ -200,6 +203,25 @@ export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: Caller
     return address;
   };
 
+  /**
+   * Who asks for the work: the address the caller is bound to, and a payload that names another is
+   * refused. The host and the handlers of plugins stand for nobody and may ask in another's name;
+   * a client the binding does not know may not choose an address.
+   */
+  const askedBy = (caller: Caller, given: Address): Address => {
+    const bound = bind(caller);
+    if (bound === undefined) {
+      if (caller.kind === "client") {
+        throw new TaskRefusal("unbound", "the caller is not bound to an address, so it cannot ask for a task");
+      }
+      return given;
+    }
+    if (!sameAddress(bound, given)) {
+      throw new TaskRefusal("not-asker", "a task is asked for by the address the caller speaks as, not by one the input names");
+    }
+    return bound;
+  };
+
   const create = action(taskCreate, {
     // A task is made once: a create that was cut off may have made the task, and a second
     // create of the same task is refused. So the call is not made again.
@@ -207,7 +229,7 @@ export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: Caller
     effect: "record",
     world: "niwa",
     async run(input, ctx) {
-      const contract: TaskContract = { ...input, id: ids.issue(birthOf(ctx)) };
+      const contract: TaskContract = { ...input, askedBy: askedBy(ctx.caller, input.askedBy), id: ids.issue(birthOf(ctx)) };
       decide(stateOf(facts(), contract.id), { kind: "create", contract });
       await ctx.emit(TaskCreated, contract);
       return { id: contract.id };

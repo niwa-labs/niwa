@@ -128,7 +128,7 @@ test("the main session is held while the host holds it, resumed natively after a
 
 test("a task the agent asked for reports its outcome to the agent as a fact about the task", async () => {
   const host = await served({ agents: [RIN] });
-  const { id } = await asOwner<{ id: string }>(host, "task.create", {
+  const { id } = await call<{ id: string }>(host, "task.create", {
     kind: "review",
     description: "review the change",
     text: "Review the change.",

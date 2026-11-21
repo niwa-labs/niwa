@@ -86,7 +86,7 @@ test("the briefing holds the inbox, the open tasks and questions of the agent, i
     api.action(action(memoryBrief, { recovery: "repeat", effect: "read", run: async ({ agent }) => ({ text: `the top notes of ${agent}` }) }));
   });
   const host = await served({ agents: [RIN] }, { after: [sections] });
-  await asOwner(host, "task.create", {
+  await host.host.call("task.create" as ActionName, {
     kind: "review",
     description: "review the change",
     text: "Review it.",

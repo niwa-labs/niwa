@@ -22,9 +22,10 @@ afterEach(async () => {
   for (const home of homes.splice(0)) await home.cleanup();
 });
 
-/** The workflow speaks as the owner; the client "builder" is the agent the task is given to. */
+/** The workflow speaks as the owner, in its handlers and in the runs of its scripts; the client "builder" is the agent the task is given to. */
 const bind: CallerBinding = (caller) => {
   if (caller.kind === "handler" && caller.handler.startsWith("workflow/")) return owner;
+  if (caller.kind === "client" && caller.principal?.kind === "run") return owner;
   if (caller.kind === "client" && caller.id.startsWith("builder")) return { kind: "agent", id: "builder" };
   return undefined;
 };

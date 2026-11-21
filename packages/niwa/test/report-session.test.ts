@@ -109,7 +109,7 @@ test("a task that reports to a session has its updates and its end delivered int
 
   try {
     const client = await connectAsOwner(home.path);
-    const { id } = await client.call(taskCreate, {
+    const { id } = await niwa.call(taskCreate, {
       kind: "change",
       description: "Do it",
       text: "do it",
