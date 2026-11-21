@@ -97,3 +97,23 @@ export type TimerOffer = TimerDef | (RecordType<{ timer: string; due: number; at
  * owner's list is the one that is scheduled.
  */
 export const TIMER_OFFER: OfferKey<TimerOffer> = offerKey("timer", "timers");
+
+/**
+ * A client module a plugin offers to the cockpit: where its source is on the host. The host lists the
+ * modules (`niwa.cockpit.catalog`) with a hash of their code, and the web server builds and serves them to the
+ * browser; the plugin never imports the module, so the host process loads no React.
+ */
+export interface CockpitModuleOffer {
+  /** The id of the module, the id of the cockpit plugin it exports: lowercase words joined by `-` or `.`. */
+  readonly id: string;
+  /** The module's entry: an absolute path to a source file inside the plugin's own tree. */
+  readonly entry: string;
+  /** Stylesheets the module needs: absolute paths of files inside the plugin's own tree. */
+  readonly styles?: readonly string[];
+}
+
+/**
+ * Where a plugin offers its cockpit module: `api.offer(COCKPIT_MODULE, { id, entry })`. The host itself reads the
+ * point, so no plugin has to be installed to read it.
+ */
+export const COCKPIT_MODULE: OfferKey<CockpitModuleOffer> = offerKey("cockpit.module", "host");

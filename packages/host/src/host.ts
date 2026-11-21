@@ -131,6 +131,8 @@ import {
   CAUSES_ACTION,
   DESCRIBE_ACTION,
   RECORDS_READ_ACTION,
+  CATALOG_ACTION,
+  CatalogOutput,
   STATUS_ACTION,
   STOP_ACTION,
   StatusOutput,
@@ -145,11 +147,15 @@ import {
 import { AccessControl } from "./access-control.ts";
 import { accessActions } from "./access-actions.ts";
 import { installationOf, pluginInstallAction, removeCopyIfStale, removeStaleCopies } from "./plugin-install.ts";
-import { handlerSource, pluginVersion, pluginName, sealVersion } from "@niwa-labs/plugin";
+import { COCKPIT_MODULE, handlerSource, pluginVersion, pluginName, sealVersion } from "@niwa-labs/plugin";
+import { catalogOf } from "./cockpit-catalog.ts";
 import { StateStore } from "./state.ts";
 import type { HostMessage } from "@niwa-labs/client";
 import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle } from "@niwa-labs/plugin";
 import type { Host, HostOptions } from "./host-types.ts";
+
+/** The reader of an offer point that the host itself reads. */
+const HOST_READER = "host";
 
 type AnyType = RecordType<any>;
 type AnyAction = Action<any, any>;
@@ -579,6 +585,7 @@ class Niwa implements Host {
     this.describeAction(),
     this.statusAction(),
     this.stopAction(),
+    this.catalogAction(),
   ];
   /** The live frames: they go to the listeners of the moment and are never written down. */
   private readonly liveBus = new LiveBus();
@@ -1074,6 +1081,18 @@ class Niwa implements Host {
     });
   }
 
+  /** The action that lists the cockpit modules the plugins offer, with the hash of each one's code. */
+  private catalogAction(): AnyAction {
+    return action(CATALOG_ACTION, {
+      description: "The client modules the installed plugins offer to the cockpit: the id, the plugin and its version, the entry file and the hash of the module's code.",
+      input: z.object({}),
+      output: CatalogOutput,
+      // It reads files and writes nothing: it may be made again.
+      recovery: "repeat",
+      run: () => catalogOf(this.offersAt(COCKPIT_MODULE, undefined), (plugin) => this.plugins.get(pluginName(plugin))?.version ?? ""),
+    });
+  }
+
   /** The action that stops the host: it answers first, and the host closes after. */
   private stopAction(): AnyAction {
     return action(STOP_ACTION, {
@@ -1545,7 +1564,8 @@ class Niwa implements Host {
     // What a plugin offers is read by another: an offer to a reader that is not installed would be lost.
     for (const [name, entry] of this.plugins) {
       for (const { key } of entry.offers) {
-        if (!this.plugins.has(pluginName(key.reader))) {
+        // The host reads the points that name it: no plugin has to be installed to read them.
+        if (key.reader !== HOST_READER && !this.plugins.has(pluginName(key.reader))) {
           throw new MissingReader(name, key.name, key.reader);
         }
       }

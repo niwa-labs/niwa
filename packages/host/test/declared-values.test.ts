@@ -86,6 +86,7 @@ test("declared values: a declared action is described with its schemas, an undec
       "declared-values.shout",
       "declared-values.unload-extra",
       "niwa.causes",
+      "niwa.cockpit.catalog",
       "niwa.describe",
       "niwa.host.status",
       "niwa.host.stop",

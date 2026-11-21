@@ -33,6 +33,27 @@ export const STATUS_ACTION: ActionName = actionName("niwa.host.status");
 /** The action that stops the host. */
 export const STOP_ACTION: ActionName = actionName("niwa.host.stop");
 
+/** The action that lists the cockpit modules the plugins offer. */
+export const CATALOG_ACTION: ActionName = actionName("niwa.cockpit.catalog");
+
+/** What the host lists of a cockpit module: who offers it, where its source is, and the hash of its code. */
+export const CockpitModuleListing = z.object({
+  /** The id of the module. */
+  id: z.string().min(1),
+  /** The plugin that offers it, and the version of that plugin. */
+  plugin: z.string().min(1),
+  version: z.string().min(1),
+  /** The module's entry file on the host's machine. */
+  entry: z.string().min(1),
+  /** The sha256 of the entry file and of every local file it imports, in hex. */
+  hash: z.string().regex(/^[0-9a-f]{64}$/),
+  /** The stylesheets of the module, each with its own hash. */
+  styles: z.array(z.object({ file: z.string().min(1), hash: z.string().regex(/^[0-9a-f]{64}$/) })),
+});
+
+export const CatalogOutput = z.object({ modules: z.array(CockpitModuleListing) });
+export type CatalogAnswer = z.output<typeof CatalogOutput>;
+
 /** What the host answers about itself: its process, its home, its journal and what each plugin holds. */
 export const StatusOutput = z.object({
   pid: z.number().int(),
