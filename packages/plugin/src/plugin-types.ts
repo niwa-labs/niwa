@@ -47,6 +47,21 @@ export interface Reentry {
   readonly depth: number;
 }
 
+/** Keys are compared within a subscription. Numbers must be finite. */
+export type SubscriptionKey = string | number;
+
+export interface KeyedConcurrency<T> {
+  /**
+   * Select the key from the same data the handler receives. Use a pure, synchronous function
+   * and keep the key mapping stable for the subscription while it has unfinished invocations.
+   * If selection fails, the host reports the record and stops scanning this subscription there.
+   */
+  readonly by: (data: T) => SubscriptionKey;
+}
+
+/** A limit on unfinished invocations, or one unfinished invocation per key. */
+export type SubscriptionConcurrency<T> = number | KeyedConcurrency<T>;
+
 export interface HandlerOptions<T = unknown> {
   /** Handler name inside the plugin. Default: the record type name. */
   id?: string;
@@ -60,9 +75,11 @@ export interface HandlerOptions<T = unknown> {
   /**
    * How many records of the subscription run at once. Default: 1, one after the other: the next
    * record starts when the one before it is done, and a record that waits or is paused holds the
-   * ones after it. `Infinity` lets every record run as soon as it is admitted.
+   * ones after it. `Infinity` lets every record run as soon as it is admitted. With `{ by }`,
+   * records with the same key run in order, and records with other keys can pass a busy key.
+   * Waiting and paused invocations continue to hold their keys.
    */
-  concurrency?: number;
+  concurrency?: SubscriptionConcurrency<T>;
   /**
    * A subscription is not woken by a record its own invocations caused. A reentrant one is, down to
    * the depth it gives; past it the record is passed over and the host says so.
@@ -100,8 +117,8 @@ export interface Subscriber {
   readonly from: number;
   /** The position after which it admits nothing: where it ended. */
   readonly until?: number;
-  /** How many of its records run at once. Default 1. */
-  readonly concurrency?: number;
+  /** How many records run at once, or one at a time per selected key. Default 1. */
+  readonly concurrency?: SubscriptionConcurrency<unknown>;
   readonly handler: Handler<unknown>;
 }
 

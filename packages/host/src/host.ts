@@ -178,7 +178,7 @@ import { artifactStore, secretStore } from "./stores.ts";
 import type { HostMessage, LiveSubscription, RecordFeed } from "@niwa-labs/client";
 import { isTrigger } from "@niwa-labs/plugin";
 import type { Trigger } from "@niwa-labs/plugin";
-import type { OfferKey, Offered, HandlerOptions, Plugin, PluginNeeds, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionStart } from "@niwa-labs/plugin";
+import type { OfferKey, Offered, HandlerOptions, Plugin, PluginNeeds, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionConcurrency, SubscriptionKey, SubscriptionStart } from "@niwa-labs/plugin";
 import type { Host, HostOptions } from "./host-types.ts";
 
 /** The reader of an offer point that the host itself reads. */
@@ -252,12 +252,13 @@ const AdmittedData = z.object({
   handler: z.string().includes("/"),
   record: z.string(),
   pluginVersion: z.string().min(1),
+  keyed: z.object({ key: z.union([z.string(), z.number()]), cursor: z.number().int().nonnegative() }).optional(),
 });
 const AdmittedWithPosition = AdmittedData.extend({ recordSeq: z.number(), recordType: z.string() });
 const PositionData = z.object({ subscription: z.string(), seq: z.number().int().nonnegative(), reason: z.string() });
 
-/** Why a subscription's position moved past records without admitting them. */
-type PassReason = "installed" | "filtered" | "schema" | "self" | "reentry";
+/** Why a subscription's position moved past records without admitting them again. */
+type PassReason = "installed" | "filtered" | "schema" | "self" | "reentry" | "already-admitted";
 const StateData = z.object({
   invocation: z.string(),
   state: z.string(),
@@ -287,8 +288,8 @@ interface Subscribing {
   readonly filter: Readonly<Record<string, unknown>> | undefined;
   /** Where a new subscription starts: now, the start, or the position a subscriber from the journal gives. */
   readonly from: SubscriptionStart | Seq;
-  /** How many of its invocations may be unfinished at once. */
-  readonly concurrency: number;
+  /** A limit on unfinished invocations, or one per selected key. */
+  readonly concurrency: SubscriptionConcurrency<any>;
   /** How many of its own invocations may stand on the chain of a record that wakes it; 0 when none may. */
   readonly depth: number;
 }
@@ -298,9 +299,13 @@ const SUBSCRIBING: Subscribing = { filter: undefined, from: "now", concurrency: 
 
 /** The options of a handler as the host keeps them, refused when they cannot be served. */
 function subscribingOf(where: string, options: HandlerOptions<any>): Subscribing {
-  const concurrency = options.concurrency ?? 1;
-  if (!(concurrency === Number.POSITIVE_INFINITY || (Number.isInteger(concurrency) && concurrency >= 1))) {
-    throw new TypeError(`${where}: concurrency is a whole number from 1 or Infinity, not ${String(concurrency)}`);
+  const concurrency = options.concurrency === undefined ? 1 : options.concurrency;
+  if (typeof concurrency === "number") {
+    if (!(concurrency === Infinity || (Number.isInteger(concurrency) && concurrency >= 1))) {
+      throw new TypeError(`${where}: concurrency is a whole number from 1 or Infinity, not ${String(concurrency)}`);
+    }
+  } else if (concurrency === null || typeof concurrency !== "object" || Array.isArray(concurrency) || typeof concurrency.by !== "function") {
+    throw new TypeError(`${where}: keyed concurrency requires { by: (data) => key }`);
   }
   const depth = options.reentrant?.depth ?? 0;
   if (options.reentrant !== undefined && !(Number.isInteger(depth) && depth >= 1)) {
@@ -393,6 +398,14 @@ interface RunSpec {
   readonly handlerId: HandlerId;
   readonly record: StoredRecord;
   readonly version: PluginVersion;
+  /** The key selected at admission, kept through waits, pauses and replay. */
+  readonly key: SubscriptionKey | undefined;
+}
+
+/** The occupied places of a subscription, including numeric admissions with no key. */
+interface ActiveSubscription {
+  size: number;
+  readonly keys: Map<SubscriptionKey | undefined, number>;
 }
 
 /** The index slot a wait sits in: its type alone, or the type with the field and value of its key. */
@@ -689,11 +702,11 @@ class Niwa implements Host {
   /** How far each subscription's position is kept in the journal: by a position record or an admission. */
   private readonly kept = new Map<HandlerId, Seq>();
   /** The unfinished invocations of each subscription: admitted and not done, the waiting and the paused too. */
-  private readonly active = new Map<HandlerId, Set<InvocationId>>();
+  private readonly active = new Map<HandlerId, ActiveSubscription>();
   /** The subscribers read from the journal at the last look: they are read again at the next. */
   private readonly dynamic = new Set<HandlerId>();
   /** The subscription of each unfinished invocation, to free its place when it is done. */
-  private readonly activeOf = new Map<InvocationId, HandlerId>();
+  private readonly activeOf = new Map<InvocationId, { id: HandlerId; key: SubscriptionKey | undefined }>();
   /** The state of the plugins: values by key, projected from the journal. */
   private readonly states = new StateStore();
   /** The functions that stop the running services, by the plugin that declared them. */
@@ -2024,7 +2037,7 @@ class Niwa implements Host {
       const spec = this.specOf(journal, row);
       if (spec === undefined) continue;
       // A paused invocation is unfinished: it holds its place in its subscription until it is decided.
-      this.hold(spec.handlerId, spec.invocation);
+      this.hold(spec);
       if (state !== "paused") this.schedule(spec);
     }
   }
@@ -2050,6 +2063,7 @@ class Niwa implements Host {
       handlerId: handler,
       record: woken,
       version: pluginVersion(moved.success ? moved.data.to : data.data.pluginVersion),
+      key: data.data.keyed?.key,
     };
   }
 
@@ -2079,36 +2093,67 @@ class Niwa implements Host {
    * filter does not hold, another version of the schema, a chain its own invocations caused — moves
    * the position too, by one position record for the stretch it passed with the reason of the last
    * one, so a restart does not read them again. A subscription that has as many unfinished
-   * invocations as it may have stops before the next record it would admit, and goes on when one
-   * of them is done.
+   * invocations as it may have stops before the next record it would admit. A keyed subscription
+   * can admit records of other keys beyond a busy key, but keeps its position before the gap.
+   * The admissions identify the records already served when it scans that range again.
    */
   private pump(journal: Journal): void {
     this.readSubscribers(journal);
     for (const [id, entry] of this.handlers) {
       const subscribing = entry.subscribing;
-      let after = this.positions.get(id) ?? this.loadPosition(journal, id, entry.types, subscribing.from);
+      let after = this.positions.get(id) ?? this.loadPosition(journal, id, entry);
       if (entry.until !== undefined && after >= entry.until) continue;
       let passed: { seq: Seq; reason: PassReason } | undefined;
+      let gap = false;
       for (const record of journal.query({ types: entry.types, from: after })) {
         if (entry.until !== undefined && record.seq > entry.until) break;
         // The positions of subscriptions are their own bookkeeping: no subscription is woken by one, and
         // passing over one writes nothing, or two subscriptions of the family would answer each other.
         if (record.type === CORE_TYPES.subscriptionPosition) {
-          after = record.seq;
+          if (!gap) after = record.seq;
           continue;
         }
-        const reason = this.passOver(journal, id, entry, record);
+        const reason = journal.get(recordId(invocationId(id, record.id)))?.type === CORE_TYPES.invocationAdmitted
+          ? "already-admitted"
+          : this.passOver(journal, id, entry, record);
         if (reason !== undefined) {
-          after = record.seq;
-          passed = { seq: record.seq, reason };
+          if (!gap) {
+            after = record.seq;
+            passed = { seq: record.seq, reason };
+          }
           continue;
         }
-        if ((this.active.get(id)?.size ?? 0) >= subscribing.concurrency) break;
-        const spec = this.admit(journal, id, entry.version, record);
-        after = record.seq;
-        this.keep(id, record.seq);
+        const active = this.active.get(id);
+        const concurrency = subscribing.concurrency;
+        let key: SubscriptionKey | undefined;
+        if (typeof concurrency === "number") {
+          if ((active?.size ?? 0) >= concurrency) break;
+        } else {
+          // When switching from numeric concurrency, let the work with no recorded key finish.
+          if (active?.keys.has(undefined)) break;
+          try {
+            const pinned = this.pinned.get(pinKey(id, entry.version));
+            if (pinned === undefined) throw new Error("the subscription has no installed handler");
+            const selected: unknown = concurrency.by(pinned.type.schema.parse(record.data));
+            if (typeof selected !== "string" && !(typeof selected === "number" && Number.isFinite(selected))) {
+              if (selected instanceof Promise) void selected.catch(() => {});
+              throw new TypeError("concurrency.by must return a string or a finite number synchronously");
+            }
+            key = selected;
+          } catch (error) {
+            this.fail(`selecting the key for ${id} on ${record.id}`, error);
+            break;
+          }
+          if (active?.keys.has(key)) {
+            gap = true;
+            continue;
+          }
+        }
+        if (!gap) after = record.seq;
+        const spec = this.admit(journal, id, entry.version, record, key === undefined ? undefined : { key, cursor: after });
+        this.keep(id, after);
         if (spec !== undefined) {
-          this.hold(id, spec.invocation);
+          this.hold(spec);
           this.schedule(spec);
         }
       }
@@ -2154,19 +2199,25 @@ class Niwa implements Host {
   }
 
   /** Count an invocation among the unfinished ones of its subscription. */
-  private hold(id: HandlerId, invocation: InvocationId): void {
-    const set = this.active.get(id) ?? new Set<InvocationId>();
-    set.add(invocation);
-    this.active.set(id, set);
-    this.activeOf.set(invocation, id);
+  private hold({ handlerId: id, invocation, key }: RunSpec): void {
+    if (this.activeOf.has(invocation)) return;
+    const active: ActiveSubscription = this.active.get(id) ?? { size: 0, keys: new Map() };
+    active.size++;
+    active.keys.set(key, (active.keys.get(key) ?? 0) + 1);
+    this.active.set(id, active);
+    this.activeOf.set(invocation, { id, key });
   }
 
   /** An invocation is done: its place in its subscription is free, and the next record may start. */
   private release(invocation: InvocationId): void {
-    const id = this.activeOf.get(invocation);
-    if (id === undefined) return;
+    const held = this.activeOf.get(invocation);
+    if (held === undefined) return;
     this.activeOf.delete(invocation);
-    this.active.get(id)?.delete(invocation);
+    const active = this.active.get(held.id)!;
+    const count = active.keys.get(held.key)!;
+    if (count === 1) active.keys.delete(held.key);
+    else active.keys.set(held.key, count - 1);
+    if (--active.size === 0) this.active.delete(held.id);
     this.requestPump();
   }
 
@@ -2196,7 +2247,7 @@ class Niwa implements Host {
   private placeSubscriptions(journal: Journal): void {
     this.readSubscribers(journal);
     for (const [id, entry] of this.handlers) {
-      if (!this.positions.has(id)) this.loadPosition(journal, id, entry.types, entry.subscribing.from);
+      if (!this.positions.has(id)) this.loadPosition(journal, id, entry);
     }
   }
 
@@ -2224,11 +2275,12 @@ class Niwa implements Host {
           }
           const id = handlerIdOf(`${name}/${one.id}`);
           if (this.handlers.has(id)) continue;
-          const subscribing = subscribingOf(`plugin "${name}", subscriber "${one.id}"`, {
-            ...(one.concurrency === undefined ? {} : { concurrency: one.concurrency }),
-          });
+          let subscribing: Subscribing;
           let selectors: Selector[];
           try {
+            subscribing = subscribingOf(`plugin "${name}", subscriber "${one.id}"`, {
+              ...(one.concurrency === undefined ? {} : { concurrency: one.concurrency }),
+            });
             selectors = one.queries.map((query) => {
               // The position of a subscriber is its own (`from`, `until`): a query that carries one says two things.
               if ((query as RecordQuery).from !== undefined) throw new TypeError("a query of a subscriber has no position: the subscriber has its own");
@@ -2269,6 +2321,7 @@ class Niwa implements Host {
     handler: HandlerId,
     version: PluginVersion,
     record: StoredRecord,
+    keyed: { key: SubscriptionKey; cursor: Seq } | undefined,
   ): RunSpec | undefined {
     const invocation = invocationId(handler, record.id);
     const admitted: NewRecord = {
@@ -2283,6 +2336,7 @@ class Niwa implements Host {
         recordSeq: record.seq,
         recordType: record.type,
         pluginVersion: version,
+        ...(keyed === undefined ? {} : { keyed }),
       },
       actor: { kind: "host" },
       cause: record.id,
@@ -2299,11 +2353,12 @@ class Niwa implements Host {
   }
 
   /**
-   * The position of a subscription, from the journal: the later of its last position record and its
-   * last admission. A subscription with neither is new: it starts at the beginning of the journal,
+   * The position of a subscription, from the journal: the farthest position it committed, through
+   * a position record or an admission. A subscription with neither starts at the beginning,
    * or where the journal is now, written down once so a restart does not move it.
    */
-  private loadPosition(journal: Journal, id: HandlerId, types: readonly RecordTypeName[], from: SubscriptionStart | Seq): Seq {
+  private loadPosition(journal: Journal, id: HandlerId, entry: Served): Seq {
+    const { types, subscribing: { from, concurrency } } = entry;
     let position = seq(0);
     let known = false;
     const last = PositionData.safeParse(
@@ -2319,15 +2374,16 @@ class Niwa implements Host {
       if (!data.success) continue;
       if (!selectsType({ types }, data.data.recordType)) continue;
       known = true;
-      if (data.data.recordSeq > position) position = seq(data.data.recordSeq);
+      const cursor = data.data.keyed?.cursor ?? data.data.recordSeq;
+      if (cursor > position) position = seq(cursor);
     }
     if (!known && typeof from === "number") position = from;
     this.positions.set(id, position);
     this.keep(id, position);
-    // A new subscription to types the journal holds no record of starts the same at the beginning as
-    // now: nothing needs writing down until one is written.
-    if (!known && from === "now" && journal.query({ types }, 1).length > 0) {
-      position = journal.last();
+    // A keyed subscription can encounter a gap before its first admission (a selector can fail).
+    // Keep its starting position even then, so `now` does not skip that gap on restart.
+    if (!known && (typeof concurrency !== "number" || (from === "now" && journal.query({ types }, 1).length > 0))) {
+      if (from === "now") position = journal.last();
       this.positions.set(id, position);
       this.writePosition(id, position, "installed");
     }

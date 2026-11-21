@@ -46,6 +46,9 @@ const positionsOf = async (niwa: Host): Promise<Array<{ subscription: string; se
 const statesOf = async (niwa: Host): Promise<Array<{ invocation: string; state: string }>> =>
   (await recordsOf(niwa, CORE_TYPES.invocationState)).map((row) => row.data as { invocation: string; state: string });
 
+const admissionsOf = async (niwa: Host): Promise<string[]> =>
+  (await recordsOf(niwa, CORE_TYPES.invocationAdmitted)).map((row) => (row.data as { record: string }).record);
+
 test("a new subscription starts at the position it was installed at", async () => {
   const home = await tempHome();
   try {
@@ -265,6 +268,252 @@ test("a subscription with room for two runs two records at once", async () => {
     await eventually(() => began.length === 3);
     await niwa.close();
   } finally {
+    await home.cleanup();
+  }
+});
+
+test("a keyed subscription preserves order within a key and lets other keys pass", async () => {
+  const home = await tempHome();
+  const began: number[] = [];
+  const niwa = await serving(home.path, [
+    producer(),
+    plugin("sub-keyed", (api) => api.on(Item, { concurrency: { by: (data) => data.kind ?? "" } }, waiter(began))),
+  ]);
+  try {
+    const first = await niwa.emit(Item, { n: 1, kind: "a" });
+    const second = await niwa.emit(Item, { n: 2, kind: "a" });
+    const third = await niwa.emit(Item, { n: 3, kind: "a" });
+    const other = await niwa.emit(Item, { n: 4, kind: "b" });
+    await eventually(() => began.length === 2);
+    expect(began).toEqual([1, 4]);
+    expect(await admissionsOf(niwa)).toEqual([first.id, other.id]);
+
+    await niwa.emit(Answer, { n: 1 });
+    await eventually(() => began.length === 3);
+    expect(began).toEqual([1, 4, 2]);
+    expect(await admissionsOf(niwa)).toEqual([first.id, other.id, second.id]);
+
+    await niwa.emit(Answer, { n: 2 });
+    await eventually(() => began.length === 4);
+    expect(began).toEqual([1, 4, 2, 3]);
+    expect(await admissionsOf(niwa)).toEqual([first.id, other.id, second.id, third.id]);
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+});
+
+test("a thrown handler keeps only its own key until the paused invocation is cancelled", async () => {
+  const home = await tempHome();
+  const began: number[] = [];
+  const niwa = await serving(home.path, [
+    producer(),
+    plugin("sub-keyed", (api) => {
+      api.on(Item, { concurrency: { by: (data) => data.kind ?? "" } }, (data) => {
+        began.push(data.n);
+        if (data.n === 1) throw new Error("item one fails");
+      });
+    }),
+  ]);
+  try {
+    await niwa.emit(Item, { n: 1, kind: "a" });
+    await niwa.emit(Item, { n: 2, kind: "a" });
+    await niwa.emit(Item, { n: 3, kind: "b" });
+    await eventually(() => began.length === 2);
+    expect(began).toEqual([1, 3]);
+    const paused = (await statesOf(niwa)).find((one) => one.state === "paused");
+    expect(paused).toBeDefined();
+    await niwa.call("niwa.invocation.resolve" as ActionName, { invocation: paused?.invocation, choice: "cancel" });
+    await eventually(() => began.length === 3);
+    expect(began).toEqual([1, 3, 2]);
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+});
+
+test("restart preserves a keyed gap, replays the wait and skips completed admissions beyond it", async () => {
+  const home = await tempHome();
+  const selected: number[] = [];
+  const began: number[] = [];
+  const keyed = () => plugin("sub-keyed", (api) => {
+    api.declare(Echo);
+    api.on(Item, { concurrency: { by: (data) => {
+      selected.push(data.n);
+      return data.kind ?? "";
+    } } }, async (data, step) => {
+      began.push(data.n);
+      await step.emit(Echo, { n: data.n });
+      if (data.n === 1) await step.wait(Answer, { filter: { n: 1 } });
+    });
+  });
+  let niwa = await serving(home.path, [producer(), keyed()]);
+  try {
+    const first = await niwa.emit(Item, { n: 1, kind: "a" });
+    const second = await niwa.emit(Item, { n: 2, kind: "a" });
+    const third = await niwa.emit(Item, { n: 3, kind: "b" });
+    await eventually(async () => {
+      const states = await statesOf(niwa);
+      return states.some((one) => one.invocation.endsWith(first.id) && one.state === "waiting")
+        && states.some((one) => one.invocation.endsWith(third.id) && one.state === "done");
+    });
+    expect(await admissionsOf(niwa)).toEqual([first.id, third.id]);
+    expect(began).toEqual([1, 3]);
+    await niwa.close();
+
+    selected.length = 0;
+    began.length = 0;
+    niwa = await serving(home.path, [producer(), keyed()]);
+    const fourth = await niwa.emit(Item, { n: 4, kind: "b" });
+    await eventually(() => began.includes(4));
+    expect(began).toEqual([1, 4]);
+    expect([...new Set(selected)]).toEqual([2, 4]);
+    expect(await admissionsOf(niwa)).toEqual([first.id, third.id, fourth.id]);
+
+    await niwa.emit(Answer, { n: 1 });
+    await eventually(async () => (await statesOf(niwa)).some((one) => one.invocation.endsWith(second.id) && one.state === "done"));
+    expect(began).toEqual([1, 4, 1, 2]);
+    expect(await admissionsOf(niwa)).toEqual([first.id, third.id, fourth.id, second.id]);
+    expect((await recordsOf(niwa, Echo.name)).map((row) => row.data)).toEqual([1, 3, 4, 2].map((n) => ({ n })));
+    expect((await positionsOf(niwa)).at(-1)?.seq).toBe(fourth.seq);
+    await niwa.close();
+
+    niwa = await serving(home.path, [producer(), keyed()]);
+    const fifth = await niwa.emit(Item, { n: 5, kind: "a" });
+    await eventually(() => began.includes(5));
+    expect(began).toEqual([1, 4, 1, 2, 5]);
+    expect(await admissionsOf(niwa)).toEqual([first.id, third.id, fourth.id, second.id, fifth.id]);
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+});
+
+test("keyed concurrency validates the declaration and does not consume a record on selector failure", async () => {
+  const home = await tempHome();
+  const errors: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => void errors.push(args.map(String).join(" "));
+  let niwa: Host | undefined;
+  try {
+    for (const concurrency of [0, 1.5, NaN, -Infinity, null, [], {}, { by: "kind" }]) {
+      expect(() => createNiwa({ home: home.path }).use(consumer(() => {}, { concurrency } as HandlerOptions))).toThrow(/concurrency/);
+    }
+    const failed: number[] = [];
+    const healthy: number[] = [];
+    const throwing = () => plugin("sub-throwing-selector", (api) => {
+      api.on(Item, { concurrency: { by: (data) => {
+        if (data.n === 1) throw new Error("missing entity");
+        return data.n === 2 ? Infinity : data.n;
+      } } }, (data) => void failed.push(data.n));
+    });
+    const fixed = () => plugin("sub-throwing-selector", (api) => {
+      api.on(Item, { concurrency: { by: (data) => data.n } }, (data) => void failed.push(data.n));
+    });
+    niwa = await serving(home.path, [producer(), throwing(), consumer((data) => void healthy.push(data.n))]);
+    const first = await niwa.emit(Item, { n: 1 });
+    await niwa.emit(Item, { n: 2 });
+    await eventually(() => healthy.length === 2);
+    expect(failed).toEqual([]);
+    expect(errors.some((line) => line.includes(first.id) && line.includes("missing entity"))).toBe(true);
+    await niwa.close();
+
+    niwa = await serving(home.path, [producer(), fixed()]);
+    await eventually(() => failed.length === 2);
+    expect(failed).toEqual([1, 2]);
+    await niwa.close();
+
+    niwa = await serving(home.path, [producer(), throwing()]);
+    const invalid = await niwa.emit(Item, { n: 2 });
+    await eventually(() => errors.some((line) => line.includes(invalid.id) && line.includes("finite number")));
+    expect(failed).toEqual([1, 2]);
+  } finally {
+    await niwa?.close();
+    console.error = original;
+    await home.cleanup();
+  }
+});
+
+test("a journal-derived subscriber applies its queries, bounds and keyed concurrency", async () => {
+  const home = await tempHome();
+  const began: number[] = [];
+  let niwa = await serving(home.path, [producer()]);
+  try {
+    await niwa.emit(Item, { n: 0, kind: "older" });
+    const marker = await niwa.emit(Answer, { n: 0 });
+    await niwa.emit(Item, { n: 1, kind: "wanted" });
+    await niwa.emit(Item, { n: 1, kind: "wanted" });
+    await niwa.emit(Item, { n: 2, kind: "ignored" });
+    const end = await niwa.emit(Item, { n: 3, kind: "wanted" });
+    await niwa.emit(Item, { n: 4, kind: "wanted" });
+    await niwa.close();
+
+    niwa = await serving(home.path, [producer(), plugin("sub-dynamic-keyed", (api) => {
+      api.subscribers(() => [{
+        id: "items",
+        queries: [{ type: Item, filter: { kind: "wanted" } }],
+        from: marker.seq,
+        until: end.seq,
+        concurrency: { by: (data) => Item.schema.parse(data).n },
+        handler: async (data, step) => {
+          const item = Item.schema.parse(data);
+          began.push(item.n);
+          await step.wait(Answer, { filter: { n: item.n } });
+        },
+      }]);
+    })]);
+    await eventually(() => began.length === 2);
+    expect(began).toEqual([1, 3]);
+    await niwa.emit(Answer, { n: 1 });
+    await eventually(async () => (await admissionsOf(niwa)).length === 3);
+    expect((await positionsOf(niwa)).at(-1)?.seq).toBe(end.seq);
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+});
+
+test("busy keys under load leave room for a new key and drain their own queues in order", async () => {
+  const home = await tempHome();
+  const keys = Array.from({ length: 32 }, (_, n) => String(n));
+  const gates = new Map(keys.map((key) => [key, Promise.withResolvers<void>()]));
+  const occupied = new Set<string>();
+  const seen = new Map<string, number[]>();
+  const overlaps: string[] = [];
+  const niwa = await serving(home.path, [producer(), plugin("sub-keyed", (api) => {
+    api.on(Item, { concurrency: { by: (data) => data.kind ?? "" } }, async (data) => {
+      const key = data.kind ?? "";
+      if (occupied.has(key)) overlaps.push(key);
+      occupied.add(key);
+      const order = seen.get(key) ?? [];
+      order.push(data.n);
+      seen.set(key, order);
+      if (data.n === 1) await gates.get(key)?.promise;
+      occupied.delete(key);
+    });
+  })]);
+  try {
+    for (const n of [1, 2, 3]) {
+      for (const kind of keys) await niwa.emit(Item, { n, kind });
+    }
+    await niwa.emit(Item, { n: 4, kind: "fresh" });
+    await eventually(() => seen.has("fresh"));
+    expect(occupied.size).toBe(keys.length);
+    for (const key of keys) expect(seen.get(key)).toEqual([1]);
+
+    const released = keys.at(-1)!;
+    gates.get(released)!.resolve();
+    await eventually(() => seen.get(released)?.length === 3);
+    expect(occupied.size).toBe(keys.length - 1);
+    expect(seen.get(keys[0]!)).toEqual([1]);
+
+    for (const key of [...keys].reverse()) gates.get(key)!.resolve();
+    await eventually(() => keys.every((key) => seen.get(key)?.length === 3));
+    for (const key of keys) expect(seen.get(key)).toEqual([1, 2, 3]);
+    expect(overlaps).toEqual([]);
+  } finally {
+    for (const gate of gates.values()) gate.resolve();
+    await niwa.close();
     await home.cleanup();
   }
 });
