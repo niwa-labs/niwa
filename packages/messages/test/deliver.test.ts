@@ -272,3 +272,25 @@ test("a delivery that was cut off is not made again when its paused step is retr
     await home.cleanup();
   }
 });
+
+test("a message to a session whose harness has whitespace is refused, and any other address reaches exactly the session it names", async () => {
+  const home = await tempHome();
+  const control = new FakeControl();
+  const niwa = await serve(control, home.path);
+
+  try {
+    // Joined and split again, this pair would name the harness "fake" and a native id "harness session-1".
+    const split = { ...toSession(), to: { kind: "session" as const, harness: "fake harness", id: SESSION } };
+    await expect(niwa.call(messageSend(), split)).rejects.toThrow();
+    expect(await recordsOf(niwa, MessageSent.name)).toEqual([]);
+
+    // A native id may hold whitespace: it comes back as it was given.
+    const spaced = { ...toSession(), to: { kind: "session" as const, harness: HARNESS, id: "team west 1234" } };
+    await niwa.call(messageSend(), spaced);
+    await eventually(() => control.entered === 1, 5_000, "the message should reach the session");
+    expect(control.sentTo).toEqual([{ harness: HARNESS, native: "team west 1234" }]);
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+});

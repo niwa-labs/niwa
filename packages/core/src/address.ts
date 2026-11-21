@@ -37,10 +37,17 @@ export const AgentAddress = z.strictObject({
   id: Identifier,
 });
 
+/**
+ * The id of the harness a session runs in: no whitespace, the rule of the id of a harness
+ * installation. A session is named by the harness and the native id joined with a space, so a
+ * harness with a space in it would name another session once the pair is joined and split again.
+ */
+const HarnessIdentifier = z.string().regex(/^\S+$/, "the harness of a session address must be non-empty and contain no whitespace");
+
 /** A session: one conversation inside a harness. Its identity is the harness id and the harness's own id. */
 export const SessionAddress = z.strictObject({
   kind: z.literal("session"),
-  harness: Identifier,
+  harness: HarnessIdentifier,
   id: Identifier,
 });
 
