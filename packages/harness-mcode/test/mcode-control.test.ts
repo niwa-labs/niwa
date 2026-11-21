@@ -314,6 +314,7 @@ for await (const chunk of Bun.stdin.stream()) {
       send({ jsonrpc: "2.0", id: message.id, result: { modes: {}, configOptions: [], ...named } });
     }
     else if (message.method === "session/prompt") {
+      appendFileSync(${JSON.stringify(join(dir, "prompts.log"))}, JSON.stringify(message.params) + "\\n");
       // Like real mcode: a session whose daemon runs a turn for another client refuses a prompt.
       if (existsSync(${JSON.stringify(join(dir, "foreign-turn"))})) { send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error: MiniMax Code refused the prompt (local_session_busy): Session already has an active Turn. Use queue send to deliver the message after it.", data: { code: "local_session_busy", retryable: false } } }); continue; }
       // Like real mcode: one prompt at a time per session.
@@ -1609,4 +1610,36 @@ test("a turn cut off for its time says it failed", async () => {
   await writeFile(join(dir, "release"), "");
   await eventually(() => outcomes.length === 1, 10_000);
   expect(outcomes).toEqual(["failed"]);
+});
+
+test("a start tells the caller the session before its first prompt goes out", async () => {
+  control = await fakeControl();
+  const named: string[] = [];
+  let prompted: number | undefined;
+  const { session } = await control.start({
+    prompt: promptFromText("one"),
+    cwd: dir,
+    named: async (id) => {
+      named.push(id.native);
+      prompted = (await readFile(join(dir, "prompts.log"), "utf8").catch(() => "")).split("\n").filter((line) => line !== "").length;
+    },
+  });
+  expect(named).toEqual([session.native]);
+  expect(prompted).toBe(0);
+});
+
+test("a start whose session could not be written down gives it no work and stops the process", async () => {
+  control = await fakeControl();
+  const before = directChildren().map((child) => child.pid);
+  await expect(
+    control.start({
+      prompt: promptFromText("one"),
+      cwd: dir,
+      named: async () => {
+        throw new Error("the journal is full");
+      },
+    }),
+  ).rejects.toThrow("the journal is full");
+  expect(await readFile(join(dir, "prompts.log"), "utf8").catch(() => "")).toBe("");
+  await eventually(() => directChildren().every((child) => before.includes(child.pid)), 10_000);
 });
