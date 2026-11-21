@@ -16,6 +16,7 @@ import {
   NestedRecordSchema,
   HarnessIdSchema,
   HarnessKindSchema,
+  HarnessSidesSchema,
   MachineIdSchema,
   OptionsBlockNameSchema,
   withBlocks,
@@ -181,12 +182,17 @@ export const sessionRunning = actionRef("session.running", {
 });
 
 /**
- * A harness instance as the sessions module binds it: its name (the id its author gave), its kind, and the options block
- * a start of it takes. An instance is named by its author, so it is listed and got by that name, as a direction is.
+ * A harness instance as the sessions module binds it: its name (the id its author gave), its kind, the model it is
+ * pinned to, what its sides can do, and the options block a start of it takes. An instance is named by its author, so
+ * it is listed and got by that name, as a direction is. Several instances may be of one kind.
  */
 const HarnessItem = z.object({
   name: HarnessIdSchema,
   kind: HarnessKindSchema,
+  /** The model each session of it runs unless the start names another; absent, the harness's own. */
+  model: z.string().min(1).optional(),
+  /** What each of its sides can do: within what its kind declares, narrowed by what was found on the machine. */
+  capabilities: HarnessSidesSchema,
   /** The block a start of this harness may carry; absent, it takes none. */
   block: OptionsBlockNameSchema.optional(),
   /** The JSON Schema of the block, as `agent()` and `session.start` take it. */
@@ -195,14 +201,14 @@ const HarnessItem = z.object({
 
 export const harnessList = actionRef("harness.list", {
   description:
-    "List the harnesses sessions are started on: the name, the kind and the options block of each (`claude` for Claude Code) with its JSON Schema. Take a name from here to get one.",
+    "List the harnesses sessions are started on: the name, the kind, the model it is pinned to, what its sides can do, and the options block of each (`claude` for Claude Code) with its JSON Schema. One kind may have several. Take a name from here to start a session on it, or to get one.",
   input: z.object({}),
   output: z.object({ items: z.array(HarnessItem) }),
 });
 
 export const harnessGet = actionRef("harness.get", {
   description:
-    "Get one harness by its name: its kind, its machine, the options block a start of it takes and the JSON Schema of that block. A harness with no block takes no options; the block of another kind is refused by session.start.",
+    "Get one harness by its name: its kind, its machine, the model it is pinned to, what its sides can do, the options block a start of it takes and the JSON Schema of that block. A harness with no block takes no options; the block of another kind is refused by session.start.",
   input: z.object({ name: HarnessIdSchema }),
   output: HarnessItem.extend({
     machine: MachineIdSchema,

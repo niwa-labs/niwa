@@ -181,8 +181,16 @@ test("a kind no package of niwa ships has a block of its own, checked by its sch
   // A key that is no field of the start and holds no object is neither a field nor a block.
   await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", modle: "x" })).rejects.toThrow(/no field "modle"/);
   expect(control.starts).toHaveLength(1);
-  const listed = await call<{ items: Array<{ name: string; kind: string; block?: string; options?: unknown }> }>(niwa, "harness.list", {});
-  expect(listed.items).toEqual([{ name: HARNESS, kind: "acme-code", block: "acme", options: expect.objectContaining({ properties: { speed: expect.anything() } }) }]);
+  const listed = await call<{ items: Array<{ name: string; kind: string; capabilities: unknown; block?: string; options?: unknown }> }>(niwa, "harness.list", {});
+  expect(listed.items).toEqual([
+    {
+      name: HARNESS,
+      kind: "acme-code",
+      capabilities: installation("acme-code").sides,
+      block: "acme",
+      options: expect.objectContaining({ properties: { speed: expect.anything() } }),
+    },
+  ]);
 });
 
 test("the block of another kind is refused before anything is started, naming both", async () => {

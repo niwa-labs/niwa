@@ -15,7 +15,7 @@ import type { ActionName } from "@niwa-labs/core";
 import type { Host } from "@niwa-labs/host";
 import { HarnessInstanceRegistry, HarnessKindRegistry } from "@niwa-labs/harness";
 import { claudeCodeKind } from "@niwa-labs/harness-claude";
-import { codexKind, writeCodexFixtures } from "@niwa-labs/harness-codex";
+import { codexKind, codexSides, writeCodexFixtures } from "@niwa-labs/harness-codex";
 import { sessions } from "@niwa-labs/sessions";
 import { tempHome } from "@niwa-labs/testing";
 
@@ -108,6 +108,37 @@ test("the history of each installation is read in its own home and named by its 
       expect(await listed("codex-sol")).toEqual([`codex-sol ${solSession}`]);
       const read = await call<{ records: unknown[] }>(niwa, "history.read", { session: { harness: "codex-sol", native: solSession } });
       expect(read.records.length).toBeGreaterThan(0);
+    } finally {
+      await niwa.close();
+    }
+  } finally {
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("harness.list and harness.get show each installation with its kind, its model and what it can do", async () => {
+  const home = await tempHome();
+  try {
+    const harnesses = registry();
+    harnesses.register(codexKind.bind({ id: "codex-luna", home: join(home.path, "codex"), model: "gpt-6-luna" }));
+    harnesses.register(codexKind.bind({ id: "codex-sol", home: join(home.path, "codex"), model: "gpt-6.2-sol", sides: { reading: { list: true, read: true, watch: false } } }));
+    harnesses.register(claudeCodeKind.bind({ id: "claude-code", home: join(home.path, "claude") }));
+    const niwa = createNiwa({ home: join(home.path, "niwa") });
+    niwa.use(sessions({ harnesses }));
+    await niwa.serve();
+    try {
+      const { items } = await call<{ items: Array<Record<string, unknown>> }>(niwa, "harness.list", {});
+      expect(items.map(({ name, kind, model }) => ({ name, kind, model }))).toEqual([
+        { name: "claude-code", kind: "claude-code", model: undefined },
+        { name: "codex-luna", kind: "codex", model: "gpt-6-luna" },
+        { name: "codex-sol", kind: "codex", model: "gpt-6.2-sol" },
+      ]);
+      expect(items[1]?.["capabilities"]).toEqual(codexSides);
+      // What a machine showed narrows what an installation can do, and the list says so.
+      expect(items[2]?.["capabilities"]).toEqual({ reading: { list: true, read: true, watch: false } });
+      const sol = await call<Record<string, unknown>>(niwa, "harness.get", { name: "codex-sol" });
+      expect(sol).toMatchObject({ name: "codex-sol", kind: "codex", model: "gpt-6.2-sol", machine: "local", block: "codex" });
+      expect(sol["capabilities"]).toEqual({ reading: { list: true, read: true, watch: false } });
     } finally {
       await niwa.close();
     }

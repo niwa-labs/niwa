@@ -753,6 +753,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     const harnessItem = (binding: HarnessBinding) => ({
       name: binding.instance.id,
       kind: binding.instance.kind,
+      ...(binding.instance.model === undefined ? {} : { model: binding.instance.model }),
+      capabilities: binding.instance.sides,
       ...(binding.options === undefined
         ? {}
         : { block: binding.options.block, options: JsonSchemaValue.parse(z.toJSONSchema(binding.options.schema, { io: "input" })) }),
