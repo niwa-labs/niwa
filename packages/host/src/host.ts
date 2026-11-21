@@ -2500,7 +2500,7 @@ class Niwa implements Host {
         }
       },
       standingOf: (caller) => this.access.standing(caller),
-      emit: (action, caller, entries) => this.emitAs(action, caller, entries),
+      emit: async (action, caller, entries) => this.emitAs(action, caller, entries),
       admitEmit: (caller, name, data) => {
         const declared = this.declaredType(name);
         if (declared === undefined) throw new UnknownType(name);
@@ -2716,10 +2716,10 @@ class Niwa implements Host {
    * invocation it runs in, and a call outside an invocation starts a chain of its own. The
    * schema of the type is the one that was declared, so the data is checked before it is kept.
    */
-  private async emitAs(
+  private emitAs(
     action: ActionName, caller: Caller,
     entries: readonly { type: AnyType; data: unknown; place: Placement }[],
-  ): Promise<StoredRecord[]> {
+  ): StoredRecord[] {
     const owned = this.typesOfAction(action);
     return this.append(entries.map(({type, data, place}) => {
       const declared = this.declaredType(type.name);
@@ -2816,6 +2816,7 @@ class Niwa implements Host {
     // A call the client named runs under the operation id made from its name, and says it began.
     const operation = made?.operation ?? newOperationId();
     made?.began();
+    let previous: Pick<StoredRecord, "id" | "root"> | undefined;
     const output = await found.run(decision.final, {
       operationId: operation,
       caller,
@@ -2824,14 +2825,23 @@ class Niwa implements Host {
       // and is its own root, and the later ones of the same call belong to it. Every record
       // after the first hangs on the one before it, so the trace down from the root reaches
       // all of them.
-      ...actionEmits(entries => this.emitAs(name, made?.actor ?? caller, entries.map(({type, data, ordinal}) => ({
-        type, data, place: {
-          id: recordId(`${operation}/emit/${ordinal}`),
-          stream: streamId(`input:${type.name}`),
-          cause: ordinal === 1 ? null : recordId(`${operation}/emit/${ordinal - 1}`),
-          root: recordId(`${operation}/emit/1`),
-        },
-      })))),
+      ...actionEmits(async entries => {
+        let tail = previous;
+        const placed = entries.map(({type, data, ordinal}) => {
+          const id = recordId(`${operation}/emit/${ordinal}`);
+          const place: Placement = {id, stream: streamId(`input:${type.name}`), cause: tail?.id ?? null, root: tail?.root ?? id};
+          tail = place;
+          return {type, data, place};
+        });
+        try {
+          const rows = this.emitAs(name, made?.actor ?? caller, placed);
+          previous = rows.at(-1) ?? previous;
+          return rows;
+        } catch (error) {
+          if (error instanceof RecordRefused) previous = error.audit;
+          throw error;
+        }
+      }),
       // A call outside an invocation has no invocation to suspend, so it cannot wait. The
       // answer is looked for and its absence is reported: the caller asked for something that
       // is not there, and that is said rather than waited for.

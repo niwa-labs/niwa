@@ -205,3 +205,24 @@ test("the entity state cache preserves a fold's map values within a batch", asyn
     await host.emitAll([item]);
   } finally { await host.close(); await home.cleanup(); }
 });
+
+test("an action's next write follows the refusal when the action handles a lost race", async () => {
+  const home = await tempHome();
+  const host = createNiwa({home: home.path});
+  const handle = action("admission.handle", {
+    description: "Handle a lost race", input: z.object({}), output: z.null(), effect: "record", recovery: "repeat",
+    async run(_, ctx) {
+      try { await ctx.emit(Edit, data("a", 9, 10)); }
+      catch (error) { if (!(error instanceof RecordRefused)) throw error; }
+      await ctx.emit(Result, {});
+      return null;
+    },
+  });
+  host.use(plugin("admission", api => { api.declare(Edit, Result); api.action(handle); }));
+  try {
+    await host.serve();
+    await host.call(handle, {});
+    const [audit, note] = await host.records.read({types: [CORE_TYPES.recordRefused, Result]});
+    expect(note).toMatchObject({cause: audit!.id, root: audit!.id});
+  } finally { await host.close(); await home.cleanup(); }
+});
