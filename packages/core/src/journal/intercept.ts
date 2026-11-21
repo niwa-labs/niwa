@@ -200,6 +200,13 @@ export interface DecideOptions<I, In = I> {
    * action makes inside itself is the plugin's own work and is not matched against the grant again.
    */
   readonly standing?: Standing;
+  /**
+   * What the principal a step is made as stands on, when whoever made the step held the call to it
+   * already, as it was requested. An adjust that moves the call to another target moves it under
+   * the grant again: the call is made with its final input, and that is what the grant must allow.
+   * Nobody is asked about a moved call: the owner was asked, if at all, about another one.
+   */
+  readonly held?: Standing;
   /** Why the caller makes the call: it is shown in the question the owner is asked. */
   readonly reason?: string;
   /**
@@ -293,6 +300,16 @@ async function decideIn<I, In = I>(opts: DecideOptions<I, In>): Promise<Decision
   }
   if (access !== undefined && !access.allowed) {
     return { kind: "denied", requested: requested.data, final: checked.data, reason: access.reason, access };
+  }
+  // 4c. A call held to its grant as it was requested, and moved by an adjust: the target it is
+  // moved to must be allowed too.
+  if (opts.held !== undefined && opts.intercepts.adjusts.length > 0 && target !== opts.action.target?.(requested.data)) {
+    const moved = permit(opts.held, "call", opts.action.name, target, opts.action.effect);
+    if (!moved.allowed) {
+      const where = target === undefined ? "no target" : `"${target}"`;
+      const reason = moved.asks === true ? `an adjust moved the call to ${where}, which asks the owner, and a moved call is not asked: it is denied` : moved.reason;
+      return { kind: "denied", requested: requested.data, final: checked.data, reason, access: { ...moved, reason } };
+    }
   }
 
   // 5. The guards run against that final input; one denial is enough.

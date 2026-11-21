@@ -2362,6 +2362,7 @@ class Niwa implements Host {
           return NO_INTERCEPTS; // not a valid name: no such action
         }
       },
+      standingOf: (caller) => this.access.standing(caller),
       emit: (action, type, data, caller, place) => this.emitAs(action, type, data, caller, place),
       admitEmit: (caller, name, data) => {
         const declared = this.declaredType(name);

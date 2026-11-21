@@ -10,6 +10,7 @@
 
 import { heldAction, targetName } from "../action.ts";
 import { callerOf } from "../access.ts";
+import type { Standing } from "../access.ts";
 import type { InvocationScope } from "../invocation-scope.ts";
 import { NOW_ACTION, RANDOM_ACTION, RUNNING, SuspendSignal, WAIT_ACTION, offeredChoices, stepKey } from "../invocation-scope.ts";
 import { decide } from "./intercept.ts";
@@ -102,6 +103,11 @@ export interface RunnerDeps {
    * decide. An action nobody registered an intercept on has none.
    */
   interceptsOf(name: string): Intercepts;
+  /**
+   * What a principal a step is made as stands on. The one who made the step held the call to it as
+   * requested; a call an adjust moves to another target is held to it again. Absent, it is not.
+   */
+  standingOf?(caller: Caller): Standing;
   /**
    * Write a record on behalf of an action: the type must be one its own plugin declares.
    *
@@ -712,7 +718,7 @@ async function runStepOnce<I, O, In = I>(
   if (intent === undefined) {
     // Fresh: the decision is made and recorded before the intent, so the journal shows what was
     // decided and what was run.
-    const decided = await decideCall(ctx, caller, action, input, key, attempt, opts?.reason);
+    const decided = await decideCall(ctx, caller, action, input, key, attempt, opts?.reason, as !== undefined);
     if (decided.kind === "invalid") {
       // The intent is written even when the call never happened, so the journal shows what was
       // called. It is written together with the outcome: an intent alone reads as a call that
@@ -789,7 +795,7 @@ async function runStepOnce<I, O, In = I>(
 
   // The call is made again: the guards are asked again, and a decision other than the one that
   // stands is recorded, a denial with its reason among them.
-  const decided = await decideCall(ctx, caller, action, input, key, attempt, opts?.reason);
+  const decided = await decideCall(ctx, caller, action, input, key, attempt, opts?.reason, as !== undefined);
   if (decided.kind === "invalid") {
     const error = describeIssues(invalidMessage(action.name, decided.which), decided.issues);
     return settle<O>(ctx, key, { status: "failed", error, effectPossible: false }, attempt);
@@ -1376,13 +1382,17 @@ async function decideCall<I, O, In = I>(
   key: StepKey,
   attempt: number,
   reason?: string,
+  madeAs = false,
 ): Promise<Decision<I>> {
+  // A step made as a principal was held to its grant by whoever made it: a move by an adjust is held to it again.
+  const held = madeAs ? ctx.deps.standingOf?.(caller) : undefined;
   return decide({
     intercepts: ctx.deps.interceptsOf(action.name),
     action,
     input,
     caller,
     ...(reason === undefined ? {} : { reason }),
+    ...(held === undefined ? {} : { held }),
     // The intercept may need a call to the outside: it makes it as a step of this invocation,
     // under a key of its own.
     step: interceptStep(ctx, key, attempt),
