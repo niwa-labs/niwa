@@ -7,5 +7,9 @@
   },
   "dependencies": {
     "@niwa-labs/flow": "workspace:*"
+  },
+  "devDependencies": {
+    "@niwa-labs/testing": "workspace:*",
+    "zod": "^4.6.7"
   }
 }
