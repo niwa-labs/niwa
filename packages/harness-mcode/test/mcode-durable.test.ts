@@ -6,7 +6,7 @@
 
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 
@@ -617,4 +617,79 @@ test("a zstd batch that inflates past the cap is refused while it is decoded, no
   } finally {
     rmSync(dirOfBatch, { recursive: true, force: true });
   }
+});
+
+test("the fork reads the active generation in the session's own database through its native id", async () => {
+  const native = "mvs_fork";
+  const storage = join(home, "durable-history");
+  const directory = join(storage, "sessions", native);
+  mkdirSync(directory, { recursive: true });
+  const reader = new McodeReading({ harness: harnessId("ncode-test"), home, perSessionHistory: true });
+  const target = sessionId(harnessId("ncode-test"), native);
+  const old = envelope("outdated", assistant("earlier"));
+  putBatch([full(native, "seed", [old])]);
+  db.run("vacuum into ?", [join(directory, "sessions.g1.db")]);
+  sessionDir(native, JSON.stringify(old) + "\n");
+  putBatch([full(native, "adopt", [envelope("question", user("ping"))]),
+    append(native, [envelope("answer", assistant("PONG"))]),
+    append("mvs_other", [envelope("other", assistant("wrong session"))])], 2);
+  db.run("vacuum into ?", [join(directory, "sessions.g2.db")]);
+  const records = await Array.fromAsync(reader.read(target));
+  expect(texts(records)).toEqual(["ping", "PONG"]);
+  expect(texts(await Array.fromAsync(reader.read(target, records[0]!.locator)))).toEqual(["PONG"]);
+  expect(await reader.raw(target, records[1]!.locator)).toMatchObject({ message_id: "answer" });
+  expect(await reader.coverage(target, records[1]!.locator)).toEqual({ status: "empty" });
+  expect(texts(await all(native))).toEqual(["earlier"]);
+  await expect(Array.fromAsync(reader.read(id(native)))).rejects.toThrow("another harness installation");
+});
+
+test("a matching Ncode fold checkpoint supplies the compacted view and later appends", async () => {
+  const native = "mvs_compacted";
+  const storage = join(home, "durable-history");
+  const directory = join(storage, "sessions", native);
+  const cache = join(storage, "fold-cache");
+  mkdirSync(directory, { recursive: true });
+  mkdirSync(cache);
+  const anchor = native + "|compact";
+  putBatch([full(native, "seed", [envelope("old", user("superseded"))])]);
+  putBatch([{ id: anchor, kind: "history.v2.compaction.replace", payload: { sessionId: native } }]);
+  putBatch([append(native, [envelope("reply", assistant("next"))])]);
+  db.run("vacuum into ?", [join(directory, "sessions.g1.db")]);
+  const reader = new McodeReading({ harness: harnessId("ncode-test"), home, perSessionHistory: true });
+  const target = sessionId(harnessId("ncode-test"), native);
+  const checkpoint = {
+    schema: 1, sessionId: native, backendDirectory: directory, backendGeneration: 1, backendSeq: 2,
+    fold: { headSeq: 2, generation: 1, segmentCounts: [1], segmentSeqs: [2], lastEntryId: anchor,
+      envelopes: [envelope("summary", user("current summary"))] },
+  };
+  const path = join(cache, native + ".json");
+  for (const fields of [{ sessionId: "foreign" }, { backendGeneration: 2 }, { backendDirectory: storage },
+    { backendSeq: 100 }, { backendSeq: 3 }]) {
+    writeFileSync(path, JSON.stringify({ ...checkpoint, ...fields }));
+    expect(await reader.coverage(target)).toMatchObject({ status: "failed" });
+    await expect(Array.fromAsync(reader.read(target))).rejects.toThrow("cannot materialize");
+  }
+  writeFileSync(path, JSON.stringify(checkpoint));
+  const records = await Array.fromAsync(reader.read(target));
+  expect(texts(records)).toEqual(["current summary", "next"]);
+  expect(texts(await Array.fromAsync(reader.read(target, records[0]!.locator)))).toEqual(["next"]);
+  expect(await reader.raw(target, records[0]!.locator)).toMatchObject({ message_id: "summary" });
+});
+
+test("Ncode refuses a foreign envelope or symlink in the per-session store", async () => {
+  const native = "mvs_isolated";
+  const storage = join(home, "durable-history");
+  const directory = join(storage, "sessions", native);
+  mkdirSync(directory, { recursive: true });
+  const target = sessionId(harnessId("ncode-test"), native);
+  const reader = new McodeReading({ harness: target.harness, home, perSessionHistory: true });
+  const path = join(directory, "sessions.g1.db");
+  symlinkSync(join(storage, "sessions.g1.db"), path);
+  await expect(Array.fromAsync(reader.read(target))).rejects.toThrow("invalid session history file");
+  rmSync(path);
+  const entry = full(native, "seed", [envelope("wrong", assistant("private"))]);
+  putBatch([{ ...entry, payload: { ...entry.payload, sessionId: "elsewhere" } }]);
+  db.run("vacuum into ?", [path]);
+  await expect(Array.fromAsync(reader.read(target))).rejects.toThrow("identity mismatch");
+  expect(await reader.coverage(target)).toMatchObject({ status: "failed" });
 });

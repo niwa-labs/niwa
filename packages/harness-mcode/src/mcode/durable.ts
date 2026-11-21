@@ -16,11 +16,12 @@
  * The database is only ever opened read-only; this module writes nothing.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import * as zlib from "node:zlib";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { Database } from "bun:sqlite";
+import { z } from "zod";
 
 import { parseNativeRecord } from "./format.ts";
 import type { McodeRecord } from "./format.ts";
@@ -39,6 +40,34 @@ export const DURABLE_NAME = "sessions.g1.db";
 /** The database of an installation. */
 export function durablePathOf(home: string): string {
   return join(home, DURABLE_DIR, DURABLE_NAME);
+}
+
+/** The newest generation of Ncode's session log. Only the configured home may be a symlink. */
+export function sessionDurablePath(home: string, native: string): string | undefined {
+  // The producer's safeHistoryPathSegment. The entry and payload identities are checked on read
+  // because this encoding is not injective.
+  const segment = native.replace(/[<>:"/\\|?*\x00-\x1f]/gu, "-").replace(/^\.+/u, "").slice(0, 180) || "snapshot";
+  let directory = home;
+  for (const component of [DURABLE_DIR, "sessions", segment]) {
+    directory = join(directory, component);
+    const info = lstatSync(directory, { throwIfNoEntry: false });
+    if (info === undefined) return undefined;
+    if (!info.isDirectory()) throw new Error(`ncode: expected a session history directory at ${directory}`);
+  }
+  let generation = 0;
+  for (const name of readdirSync(directory)) {
+    const match = /^sessions\.g([1-9]\d*)\.db$/.exec(name);
+    if (match === null) continue;
+    const value = Number(match[1]);
+    if (Number.isSafeInteger(value) && value > generation) generation = value;
+  }
+  if (generation === 0) return undefined;
+  const path = join(directory, `sessions.g${generation}.db`);
+  for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+    const entry = lstatSync(path + suffix, { throwIfNoEntry: false });
+    if (entry !== undefined && !entry.isFile()) throw new Error(`ncode: invalid session history file at ${path + suffix}`);
+  }
+  return path;
 }
 
 /** One message of the active view, with where it was found. */
@@ -207,39 +236,106 @@ interface Located {
  * time and only as far as the caller goes. The listing is built on the first of them; a batch is
  * not decoded for an entry that is not conversation. Runs in one read transaction: a snapshot.
  */
-function* entriesOf(db: Database, native: string): Generator<Located> {
+function* entriesOf(db: Database, native: string, sessionFile = false, afterSeq = -1): Generator<Located> {
   const [low, high] = rangeOf(native);
-  db.run("begin");
   const rows = db
     .query(
-      "select seq, ordinal, batch_id from entries where entry_id >= ? and entry_id < ? order by seq, ordinal",
+      "select entry_id, seq, ordinal, batch_id from entries where entry_id >= ? and entry_id < ? and seq > ? order by seq, ordinal",
     )
-    .all(low, high) as Array<{ seq: number; ordinal: number; batch_id: number }>;
+    .all(low, high, afterSeq) as Array<{ entry_id: string; seq: number; ordinal: number; batch_id: number }>;
   const payload = db.query("select payload from batches where batch_id = ?");
   // Entries of one batch lie together, so the last decoded batch is the one that is asked again.
   let cached: { id: number; batch: unknown[] } | undefined;
   for (const row of rows) {
     if (cached?.id !== row.batch_id) {
       const found = payload.get(row.batch_id) as { payload: Uint8Array } | null;
-      if (found === null) continue;
+      if (found === null) {
+        if (sessionFile) throw new Error("ncode: missing session history batch");
+        continue;
+      }
       cached = { id: row.batch_id, batch: decodeBatch(found.payload) };
     }
     const entry = cached.batch[row.ordinal];
-    if (typeof entry !== "object" || entry === null) continue;
+    if (typeof entry !== "object" || entry === null) {
+      if (sessionFile) throw new Error("ncode: missing session history entry");
+      continue;
+    }
     const { kind, payload: body } = entry as { kind?: unknown; payload?: unknown };
-    if (kind !== FULL && kind !== APPEND) continue;
+    if (typeof kind !== "string" || !kind.startsWith("history.")) continue;
+    if (sessionFile && ((entry as { id?: unknown }).id !== row.entry_id ||
+      (body as { sessionId?: unknown } | null)?.sessionId !== native)) {
+      throw new Error("ncode: session history entry identity mismatch");
+    }
     const envelopes = (body as { envelopes?: unknown } | null | undefined)?.envelopes;
-    yield { seq: row.seq, ordinal: row.ordinal, kind, envelopes: Array.isArray(envelopes) ? envelopes : [] };
+    if (sessionFile && kind === "history.v2.tombstone") {
+      yield { seq: row.seq, ordinal: row.ordinal, kind: FULL, envelopes: [] };
+    } else if (sessionFile && kind === "history.v2.replace" && Array.isArray(envelopes)) {
+      yield { seq: row.seq, ordinal: row.ordinal, kind: FULL, envelopes };
+    } else if (kind === FULL || kind === APPEND) {
+      if (sessionFile && !Array.isArray(envelopes)) throw new Error("ncode: missing session history envelopes");
+      yield { seq: row.seq, ordinal: row.ordinal, kind, envelopes: Array.isArray(envelopes) ? envelopes : [] };
+    } else if (sessionFile) {
+      throw new Error(`ncode: cannot materialize the active view for ${kind}`);
+    }
   }
 }
 
-function readView(path: string, native: string): DurableTurn[] {
-  if (!existsSync(path)) return [];
+const checkpointSchema = z.object({
+  schema: z.literal(1),
+  sessionId: z.string(),
+  backendDirectory: z.string(),
+  backendGeneration: z.int().positive(),
+  backendSeq: z.int().nonnegative(),
+  fold: z.object({
+    lastEntryId: z.string(),
+    segmentCounts: z.array(z.int().nonnegative()),
+    segmentSeqs: z.array(z.int().nonnegative()),
+    envelopes: z.array(z.object({ message_id: z.string().min(1), turn_id: z.string(), message: z.looseObject({}) }).passthrough()),
+  }),
+});
+
+/** Ncode's disposable materialized fold. Validate its carrier and anchor in this read transaction. */
+function checkpointOf(db: Database, path: string, native: string): Located | undefined {
+  const carrier = dirname(path);
+  const cache = join(dirname(dirname(carrier)), "fold-cache");
+  const file = join(cache, basename(carrier) + ".json");
+  if (!lstatSync(cache, { throwIfNoEntry: false })?.isDirectory()) return undefined;
+  const info = lstatSync(file, { throwIfNoEntry: false });
+  if (!info?.isFile() || info.size > MAX_BATCH_BYTES) return undefined;
+  try {
+    const parsed = checkpointSchema.safeParse(JSON.parse(readFileSync(file, "utf8")));
+    if (!parsed.success) return undefined;
+    const { sessionId, backendDirectory, backendGeneration, backendSeq, fold } = parsed.data;
+    if (sessionId !== native || backendDirectory !== carrier || basename(path) !== `sessions.g${backendGeneration}.db`) return undefined;
+    if (fold.segmentCounts.length !== fold.segmentSeqs.length ||
+      fold.segmentCounts.reduce((sum, count) => sum + count, 0) !== fold.envelopes.length ||
+      !fold.lastEntryId.startsWith(native + "|")) return undefined;
+    if (db.query("select 1 from entries where seq >= ? limit 1").get(backendSeq) === null) return undefined;
+    const [low, high] = rangeOf(native);
+    const anchor = db.query(
+      "select entry_id from entries where entry_id >= ? and entry_id < ? and seq <= ? order by seq desc, ordinal desc limit 1",
+    ).get(low, high, backendSeq) as { entry_id: string } | null;
+    if (anchor?.entry_id !== fold.lastEntryId) return undefined;
+    return { kind: FULL, seq: backendSeq, ordinal: 0, envelopes: fold.envelopes };
+  } catch {
+    return undefined;
+  }
+}
+
+function* activeEntries(db: Database, path: string, native: string, sessionFile: boolean): Generator<Located> {
+  const checkpoint = sessionFile ? checkpointOf(db, path, native) : undefined;
+  if (checkpoint !== undefined) yield checkpoint;
+  yield* entriesOf(db, native, sessionFile, checkpoint?.seq);
+}
+
+export function readView(path: string, native: string, sessionFile = false): DurableTurn[] {
+  if (!sessionFile && !existsSync(path)) return [];
   const db = open(path);
   try {
+    db.run("begin");
     let view: DurableTurn[] = [];
     const seen = new Set<string>();
-    for (const entry of entriesOf(db, native)) {
+    for (const entry of activeEntries(db, path, native, sessionFile)) {
       if (entry.kind === FULL) {
         view = [];
         seen.clear();
@@ -277,6 +373,7 @@ export function durableFirst<T>(
     if (!existsSync(path)) return undefined;
     const db = open(path);
     try {
+      db.run("begin");
       for (const entry of entriesOf(db, native)) {
         for (const [index, raw] of entry.envelopes.entries()) {
           const taken = pick({

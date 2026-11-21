@@ -57,6 +57,8 @@ import {
   durableSessions,
   messageIdOf,
   readDurableSession,
+  readView,
+  sessionDurablePath,
   STOP,
 } from "./durable.ts";
 import type { DurableTurn } from "./durable.ts";
@@ -80,6 +82,8 @@ export interface McodeReadingOptions {
   readonly harness: HarnessId;
   /** The directory that holds `v2/sessions`. */
   readonly home: string;
+  /** Read the fork's canonical per-session databases before its older history sources. */
+  readonly perSessionHistory?: boolean;
 }
 
 const CHUNK_SIZE = 65_536;
@@ -409,11 +413,13 @@ async function resumeAfterMessage(
 export class McodeReading implements SessionReading {
   readonly #harness: HarnessId;
   readonly #sessionsRoot: string;
+  readonly #perSessionHome: string | undefined;
   readonly #durablePath: string;
   readonly #runtimeStatePath: string;
 
   constructor(options: McodeReadingOptions) {
     this.#harness = options.harness;
+    this.#perSessionHome = options.perSessionHistory ? options.home : undefined;
     this.#sessionsRoot = join(options.home, "v2", "sessions");
     this.#durablePath = durablePathOf(options.home);
     this.#runtimeStatePath = runtimeStatePathOf(options.home);
@@ -458,7 +464,16 @@ export class McodeReading implements SessionReading {
    */
   async *read(id: SessionId, from?: Locator): AsyncIterable<SessionRecord> {
     checkedLocator(from);
-    yield* this.#readOf(id, await this.#find(id), from);
+    const turns = this.#sessionFileTurns(id);
+    if (turns !== undefined) yield* this.#readDurable(turns, from);
+    else yield* this.#readOf(id, await this.#find(id), from);
+  }
+
+  #sessionFileTurns(id: SessionId): DurableTurn[] | undefined {
+    if (this.#perSessionHome === undefined) return undefined;
+    if (id.harness !== this.#harness) throw new Error("ncode: session belongs to another harness installation");
+    const path = sessionDurablePath(this.#perSessionHome, id.native);
+    return path === undefined ? undefined : readView(path, id.native, true);
   }
 
   /** The records of a session whose directory is already found, or that has none. */
@@ -629,6 +644,8 @@ export class McodeReading implements SessionReading {
 
   /** The harness's own record, whole, at a locator of the current file. */
   async raw(id: SessionId, locator: Locator): Promise<unknown> {
+    const active = this.#sessionFileTurns(id);
+    if (active !== undefined) return this.#rawDurable(active, id.native, locator);
     const found = await this.#find(id);
     if (found === null) {
       const turns = this.#inDurable(id.native) ? this.#durableTurns(id.native) : null;
@@ -708,6 +725,8 @@ export class McodeReading implements SessionReading {
   }
 
   async #coverageOf(id: SessionId, from?: Locator): Promise<Coverage> {
+    const active = this.#sessionFileTurns(id);
+    if (active !== undefined) return this.#durableCoverage(active, from);
     const found = await this.#find(id);
     if (found === null) {
       const held = this.#durableHolds(id.native);
