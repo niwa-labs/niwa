@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 
 import { z } from "zod";
 
-import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, keyUnder, callerOf, grant, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, toJsonSchema } from "@niwa-labs/core";
+import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, keyUnder, callerOf, fillRule, grant, isRuleTemplate, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, toJsonSchema } from "@niwa-labs/core";
 import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -73,7 +73,7 @@ import {
 import { holds } from "@niwa-labs/core";
 import { catalogueFor } from "./catalogue.ts";
 import { neutralValue } from "./ask.ts";
-import { isMask, scriptChecker, scriptReads, scriptUses, withDeclaration } from "./check.ts";
+import { isUse, scriptChecker, scriptReads, scriptUses, useName, withDeclaration } from "./check.ts";
 import { describer } from "./describe-cache.ts";
 import { contractOf, emittedTypesOf } from "./describe.ts";
 import type { Described } from "./describe.ts";
@@ -455,11 +455,12 @@ export function workflow(opts: WorkflowOptions = {}) {
      *
      * A script with no `uses` asks for nothing, so its run holds only its own records; a caller
      * that nothing limits (the host, a plugin) has no grant to narrow, so its run has none either,
-     * unless the script names what it uses. A mask the caller does not hold refuses the run.
+     * unless the script names what it uses. A mask the caller does not hold refuses the run. A target
+     * template of `uses` is filled from the arguments of the run first.
      */
-    const grantOfRun = async (asker: Caller, text: string | undefined, file: string): Promise<Grant | undefined> => {
+    const grantOfRun = async (asker: Caller, text: string | undefined, file: string, args: unknown): Promise<Grant | undefined> => {
       const uses = text === undefined ? undefined : await scriptUses({ file, text });
-      const masks = uses !== undefined && "masks" in uses ? uses.masks.map((use) => use.mask).filter(isMask) : undefined;
+      const masks = uses !== undefined && "masks" in uses ? filledUses(uses.masks.map((use) => use.mask), args) : undefined;
       if (masks === undefined && api.rights(asker) === "unlimited") return undefined;
       const narrowed = api.narrow(asker, masks ?? []);
       if ("refused" in narrowed) throw new UsesRefused(narrowed.refused.map((text) => text.replace(/^call:/, "")));
@@ -519,9 +520,6 @@ export function workflow(opts: WorkflowOptions = {}) {
       // script that cannot be read is not refused here, the run that reads it fails as it
       // always did.
       const script = readScript(file);
-      // The run is a subject of its own: what it may do is what the caller may do, narrowed to
-      // `uses`, and it keeps that grant until it ends.
-      const born = await grantOfRun(ctx.caller, script?.text, file);
       const boxed = await boxOf(input.box);
       let accepted: unknown = input.args ?? null;
       let contract: ContractHash | undefined;
@@ -536,6 +534,9 @@ export function workflow(opts: WorkflowOptions = {}) {
         accepted = report.input === undefined || records ? (input.args ?? null) : (input.args ?? {});
         contract = report.contract;
       }
+      // The run is a subject of its own: what it may do is what the caller may do, narrowed to
+      // `uses` as its arguments fill it, and it keeps that grant until it ends.
+      const born = await grantOfRun(ctx.caller, script?.text, file, accepted);
       if (born !== undefined) api.issueToken("run", run, { grant: born, parent: ctx.caller });
       await ctx.emit(RunRequested, {
         run,
@@ -942,12 +943,12 @@ export function workflow(opts: WorkflowOptions = {}) {
      */
     const birth = action("workflow.subscription.birth", {
       description: "Issue the id of the run that a record starts under an installation, and give the run its grant.",
-      input: z.object({ installation: z.number().int() }),
-      output: z.object({ run: RunId.optional() }),
+      input: z.object({ installation: z.number().int(), record: z.string().optional() }),
+      output: z.object({ run: RunId.optional(), refused: z.string().optional() }),
       recovery: "repeat",
       effect: "record",
       world: "niwa",
-      run: ({ installation }, ctx) => {
+      run: ({ installation, record: woken }, ctx) => {
         const found = installationsOf(journal()).find((one) => one.seq === installation);
         if (found === undefined || found.removed !== undefined) return {};
         const installer = installerOf(found);
@@ -960,6 +961,22 @@ export function workflow(opts: WorkflowOptions = {}) {
         if (pinned !== found.hash || (found.version !== undefined && versionOf(found.file) !== found.version)) {
           throw new RunRefusal("script-changed", `the installed script "${found.file}" is not the one that was installed: install it again`);
         }
+        // A target template is filled by the record the run starts on, and the rule it gives is held whole by the
+        // installer: a value that would widen it, or a rule the installer does not hold, starts nothing.
+        const templates = found.uses.filter((use) => isRuleTemplate(use));
+        let filled: RuleSpec[] = [];
+        if (templates.length > 0) {
+          const stored = woken === undefined ? undefined : journal().get(recordId(woken));
+          const args = stored === undefined ? undefined : { id: stored.id, type: stored.type, data: stored.data };
+          try {
+            filled = filledUses(templates, args);
+          } catch (error) {
+            return { refused: (error as Error).message };
+          }
+          const held = api.narrow(installer, filled);
+          if ("refused" in held) return { refused: new UsesRefused(held.refused.map((text) => text.replace(/^call:/, ""))).message };
+          filled = specsOf(held.rules);
+        }
         const run = runIndex.issue(ctx.operationId);
         const issued = journal()
           .find({ type: CORE_TYPES.accessGranted, field: "principal.id", equals: run })
@@ -967,7 +984,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         if (!issued) {
           const profile = profileRulesOf(journal(), found.id) ?? grant([]);
           const rules = withinInstaller(installer, specsOf(profile).filter(notEmit));
-          api.issueToken("run", run, { grant: grant([...rules, emitRule]), parent: installer });
+          api.issueToken("run", run, { grant: grant([...rules, ...filled, emitRule]), parent: installer });
         }
         return { run };
       },
@@ -981,7 +998,7 @@ export function workflow(opts: WorkflowOptions = {}) {
     const startRun =
       (installation: Installation): Handler<unknown> =>
       async (_data, step, stored) => {
-        const { run } = await step(birth, { installation: installation.seq }, { key: `birth:${installation.seq}` });
+        const { run } = await step(birth, { installation: installation.seq, record: stored.id }, { key: `birth:${installation.seq}` });
         if (run === undefined) return;
         await step.emit(
           RunRequested,
@@ -1050,10 +1067,11 @@ export function workflow(opts: WorkflowOptions = {}) {
         throw new RunRefusal("nothing-to-start-on", `the script "${file}" has no \`on\`: no record would start it`);
       }
       const uses = await scriptUses({ file, text: script.text });
-      const masks = uses !== undefined && "masks" in uses ? uses.masks.map((use) => use.mask).filter(isMask) : [];
-      // The profile is what the installer may give: narrow(installer, uses), and the script's own records.
+      const masks = uses !== undefined && "masks" in uses ? uses.masks.map((use) => use.mask).filter(isUse) : [];
+      // The profile is what the installer may give: narrow(installer, uses), and the script's own records. A target
+      // template is filled by each record that starts a run, and held to the installer then.
       const asker = ctx.caller;
-      const narrowed = api.narrow(asker, masks);
+      const narrowed = api.narrow(asker, masks.filter((mask) => !isRuleTemplate(mask)));
       if ("refused" in narrowed) throw new UsesRefused(narrowed.refused.map((text) => text.replace(/^call:/, "")));
       const subscriptions = on.subscriptions.map(({ type, filter }) => ({ type, ...(filter === undefined ? {} : { filter }) }));
       const id = installationIndex.issue(ctx.operationId);
@@ -1257,10 +1275,10 @@ export function workflow(opts: WorkflowOptions = {}) {
       const reads = await scriptReads({ file, text: script.text });
       const on = await scriptOn({ file, text: script.text });
       const subscriptions = on === undefined || "bad" in on ? [] : on.subscriptions.map(({ type, filter }) => ({ type, ...(filter === undefined ? {} : { filter }) }));
-      const masks = uses !== undefined && "masks" in uses ? uses.masks.map((use) => use.mask).filter(isMask) : [];
+      const masks = uses !== undefined && "masks" in uses ? uses.masks.map((use) => use.mask).filter(isUse) : [];
       const workflows = workflowsOf(journal());
       const calls = masks.flatMap((mask): FlowCall[] => {
-        const called = workflows.find((one) => flowActionName(one.id) === mask);
+        const called = workflows.find((one) => flowActionName(one.id) === useName(mask));
         return called === undefined ? [] : [{ workflow: called.id, contract: called.latest.contract }];
       });
       await ctx.emit(WorkflowRegistered, {
@@ -1779,6 +1797,22 @@ export class RunRefusal extends Error {
     super(message);
     this.code = code;
   }
+}
+
+/**
+ * The rules `uses` asks for with these arguments: every entry as it is written, a target template
+ * filled from the arguments. A value that would widen a rule, or a placeholder with no value,
+ * refuses the run.
+ */
+export function filledUses(uses: readonly string[], args: unknown): string[] {
+  return uses.filter(isUse).map((use) => {
+    if (!isRuleTemplate(use)) return use;
+    try {
+      return fillRule(use, args);
+    } catch (error) {
+      throw new RunRefusal("uses-template", `uses "${use}" cannot be filled from the input: ${(error as Error).message}`);
+    }
+  });
 }
 
 /** A run asked for more than whoever starts it holds: nothing is created, and the masks say what was refused. */

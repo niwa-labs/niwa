@@ -33,8 +33,8 @@ export function mask(text: string): Mask {
   return text as Mask;
 }
 
-/** One segment of a target: not empty, no wildcard, no whitespace, no `@` or `:`. */
-const SEGMENT = "[^\\s*@:/]+";
+/** One segment of a target: not empty, no wildcard, no whitespace, no `@` or `:`, no braces of a placeholder. */
+const SEGMENT = "[^\\s*@:/{}]+";
 
 /**
  * A target mask: segments between `/`, the last of which may be `*`. `*` alone is every target.
@@ -116,6 +116,86 @@ export function rule(spec: RuleSpec): Rule {
   const name = mask(at === -1 ? rest : rest.slice(0, at));
   if (at === -1) return { verb, name, ask };
   return { verb, name, target: targetMask(rest.slice(at + 1)), ask };
+}
+
+/** A placeholder of a template: `{path.to.value}` in the input of a run. */
+const PLACEHOLDER = /^\{([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\}$/;
+
+/** One value filled into a template: segments between `/`, none empty, none a wildcard. */
+const FILLED = new RegExp(`^${SEGMENT}(/${SEGMENT})*$`);
+
+/** The value of a placeholder that opens a target: it may be an absolute path too. */
+const FILLED_FIRST = new RegExp(`^/?${SEGMENT}(/${SEGMENT})*$`);
+
+/** Is the text a rule whose target has placeholders, to be filled from the input of a run? */
+export function isRuleTemplate(text: string): boolean {
+  const at = text.indexOf("@");
+  return at !== -1 && /[{}]/.test(text.slice(at + 1));
+}
+
+/** The text of a call rule split at its `@`: the name with its verb, and the pieces of the target. */
+function templateParts(text: string): { head: string; pieces: string[] } {
+  const at = text.indexOf("@");
+  if (at === -1) throw new TypeError(`a template has a target: ${JSON.stringify(text)}`);
+  const head = text.slice(0, at);
+  const parsed = rule(head);
+  if (parsed.verb !== "call") throw new TypeError(`only a call rule has a target template: ${JSON.stringify(text)}`);
+  return { head, pieces: text.slice(at + 1).split("/") };
+}
+
+/**
+ * A rule with a target template, checked as it is written: `forge.pr.merge@{repo.host}/{repo.path}/pr/*`.
+ *
+ * Each segment of the target is text, a placeholder `{path}` that stands for one or more whole
+ * segments, or, last, `*`. The rule it gives is known only once it is filled.
+ */
+export function ruleTemplate(text: string): string {
+  const { head, pieces } = templateParts(text);
+  // Every placeholder stands in for a segment, so the rule with a segment in each place must be a rule.
+  const shaped = pieces.map((piece) => (PLACEHOLDER.test(piece) ? "x" : piece)).join("/");
+  if (pieces.some((piece) => /[{}]/.test(piece) && !PLACEHOLDER.test(piece))) {
+    throw new TypeError(`a placeholder of a template is a whole segment, "{name}" or "{name.field}": ${JSON.stringify(text)}`);
+  }
+  rule(`${head}@${shaped}`);
+  return text;
+}
+
+/** The value at a path of the input; undefined when the input has none. */
+function valueAt(input: unknown, path: string): unknown {
+  let value: unknown = input;
+  for (const key of path.split(".")) {
+    if (value === null || typeof value !== "object" || !Object.hasOwn(value, key)) return undefined;
+    value = (value as Record<string, unknown>)[key];
+  }
+  return value;
+}
+
+/**
+ * The rule a template gives for one input: each placeholder is replaced by the value at its path,
+ * which must be text or a whole number made of segments between `/`, none empty and none a
+ * wildcard; one that opens the target may be an absolute path. A value cannot widen the rule:
+ * what is refused says which placeholder and why.
+ */
+export function fillRule(text: string, input: unknown): string {
+  ruleTemplate(text);
+  const { head, pieces } = templateParts(text);
+  const filled = pieces.map((piece, at) => {
+    const placeholder = PLACEHOLDER.exec(piece)?.[1];
+    if (placeholder === undefined) return piece;
+    const value = valueAt(input, placeholder);
+    if (value === undefined || value === null) throw new TypeError(`{${placeholder}} has no value in the input`);
+    if (typeof value !== "string" && !(typeof value === "number" && Number.isSafeInteger(value))) {
+      throw new TypeError(`{${placeholder}} is not text or a whole number`);
+    }
+    const segments = String(value);
+    if (!(at === 0 ? FILLED_FIRST : FILLED).test(segments)) {
+      throw new TypeError(`{${placeholder}} is not one or more segments without "*": ${JSON.stringify(segments)}`);
+    }
+    return segments;
+  });
+  const result = `${head}@${filled.join("/")}`;
+  rule(result);
+  return result;
 }
 
 /** The text of a rule, with its verb: what a refusal says is missing. */

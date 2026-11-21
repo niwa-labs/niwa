@@ -8,7 +8,7 @@
 import { z } from "zod";
 
 import { JsonSchemaValue, actionName, actionRef } from "@niwa-labs/core";
-import { match } from "@niwa-labs/core";
+import { isOwnerGrant, matches } from "@niwa-labs/core";
 import type { ActionContext, ActionDescription, ActionName, Grant } from "@niwa-labs/core";
 import type { OptionsBlock } from "@niwa-labs/harness";
 import { harnessList } from "@niwa-labs/sessions/records";
@@ -34,12 +34,20 @@ const describeRef = actionRef("niwa.describe", {
   }),
 });
 
-/** The actions the caller may call, out of the names the host serves. */
+/**
+ * The actions the caller may call, out of the ones the host serves: those a call rule of its grant
+ * covers, for some target at least. An irreversible action is covered only by a rule that names it.
+ */
 export function callableBy(
-  names: readonly ActionName[],
+  actions: readonly Pick<ActionDescription, "name" | "effect">[],
   rights: Grant | "unlimited",
 ): ActionName[] {
-  return rights === "unlimited" ? [...names] : names.filter((name) => match(rights, "call", name) !== undefined);
+  if (rights === "unlimited" || isOwnerGrant(rights)) return actions.map((action) => action.name);
+  return actions
+    .filter(({ name, effect }) =>
+      rights.rules.some((held) => held.verb === "call" && matches(held.name, name) && (effect !== "irreversible" || String(held.name) === String(name))),
+    )
+    .map((action) => action.name);
 }
 
 /** The options block of each harness, by its name, out of what `harness.list` answers: a harness with none is not in it. */
@@ -58,5 +66,5 @@ export async function catalogueFor(
   const described = await ctx.step(describeRef, {});
   const actions = described.actions.map((action): ActionDescription => ({ ...action, name: actionName(action.name) }));
   const blocks = actions.some((action) => action.name === harnessList.name) ? blocksByHarness(await ctx.step(harnessList, {})) : new Map<string, OptionsBlock>();
-  return { actions, callable: callableBy(actions.map((action) => action.name), held), rights: held, blocks };
+  return { actions, callable: callableBy(actions, held), rights: held, blocks };
 }

@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { mask as maskOf, narrow, rule, ruleText } from "@niwa-labs/core";
+import { isOwnerGrant, isRuleTemplate, narrow, rule, ruleTemplate, ruleText } from "@niwa-labs/core";
 import type { ActionDescription, ActionName, Grant, JsonSchema } from "@niwa-labs/core";
 import type { OptionsBlock } from "@niwa-labs/harness";
 import { bare, declarationField, declarationOf, literalOf, onOf, placeOf } from "@niwa-labs/script";
@@ -92,14 +92,27 @@ interface Use {
 /** What `uses` holds: the masks, or the place where it is not a list of text. */
 export type Uses = { masks: Use[] } | { bad: { line: number; column: number } };
 
-/** Is the text an action name or a mask (`task.create`, `task.*`, `*`), and not a rule of another verb? */
-export function isMask(text: string): boolean {
+/**
+ * The name mask of an entry of `uses`: an action name or a mask (`task.create`, `task.*`, `*`),
+ * the same with a target (`forge.pr.read@git.example.com/acme/*`), or with a target template filled
+ * from the input of the run (`forge.pr.merge@{repo.host}/{repo.path}/pr/*`). Undefined for anything
+ * else, a rule of another verb among them.
+ */
+export function useName(text: string): string | undefined {
   try {
-    maskOf(text);
-    return true;
+    if (isRuleTemplate(text)) ruleTemplate(text);
+    const at = text.indexOf("@");
+    const parsed = rule(at === -1 || isRuleTemplate(text) ? text.slice(0, at === -1 ? undefined : at) : text);
+    if (parsed.verb !== "call" || text.startsWith("call:")) return undefined;
+    return parsed.name;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/** Is the text an entry `uses` may hold? */
+export function isUse(text: string): boolean {
+  return useName(text) !== undefined;
 }
 
 /** The `name` of a parsed script, when it is written as text. */
@@ -355,6 +368,12 @@ export interface Catalogue {
    * same answers.
    */
   records?: (type: string) => JsonSchema | undefined;
+}
+
+/** Which of the described actions are irreversible: a mask of `uses` does not grant them. */
+function irreversibleIn(actions: readonly ActionDescription[]): (name: string) => boolean {
+  const named = new Set(actions.filter((action) => action.effect === "irreversible").map((action) => String(action.name)));
+  return (name) => named.has(name);
 }
 
 /** A record type a script may start on, with the schema of the data of its records. */
@@ -646,21 +665,24 @@ async function check(source: ScriptSource, catalogue: Catalogue): Promise<TextCh
   const rights = catalogue.rights ?? "unlimited";
   // The same narrowing `workflow.start` makes: a mask the caller's grant does not hold is refused.
   const wider = new Set<string>();
+  // A template is filled from the input of a run, so it is held to the rights when a run starts, not here.
   if (rights !== "unlimited") {
-    const narrowed = narrow(rights, (masks ?? []).filter((use) => isMask(use.mask)).map((use) => use.mask));
+    const fixed = (masks ?? []).filter((use) => isUse(use.mask) && !isRuleTemplate(use.mask)).map((use) => use.mask);
+    const narrowed = narrow(rights, fixed, isOwnerGrant(rights) ? {} : { irreversible: irreversibleIn(catalogue.actions) });
     if ("refused" in narrowed) for (const refused of narrowed.refused) wider.add(refused);
   }
   for (const use of masks ?? []) {
     const place = { file: source.file, line: use.line, column: use.column, code: "uses" };
-    if (!isMask(use.mask)) {
-      errors.push({ ...place, message: `uses "${use.mask}" is not an action name or a mask` });
-    } else if (wider.has(ruleText(rule(use.mask)))) {
+    const name = useName(use.mask);
+    if (name === undefined) {
+      errors.push({ ...place, message: `uses "${use.mask}" is not an action name, a rule or a target template` });
+    } else if (!isRuleTemplate(use.mask) && wider.has(ruleText(rule(use.mask)))) {
       errors.push({ ...place, message: `uses "${use.mask}" is wider than the caller's rights` });
-    } else if (!catalogue.callable.some((name) => matches(use.mask, name))) {
+    } else if (!catalogue.callable.some((callable) => matches(name, callable))) {
       errors.push({ ...place, message: `uses "${use.mask}" names no action the caller may call` });
     }
   }
-  const allowed = allowedFor(catalogue.callable, masks?.map((use) => use.mask), rights);
+  const allowed = allowedFor(catalogue.callable, masks?.flatMap((use) => useName(use.mask) ?? []), rights);
   const listed = on !== undefined && "subscriptions" in on ? on.subscriptions.map((subscription) => subscription.type) : [];
   // A record of a script that no schema describes carries data of any shape.
   const known = catalogue.triggers ?? [];

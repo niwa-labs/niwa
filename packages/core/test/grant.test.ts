@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 
-import { callTarget, grant, match, narrow, narrowed, rule, ruleText, specsOf } from "../src/index.ts";
+import { callTarget, fillRule, grant, isRuleTemplate, match, narrow, narrowed, rule, ruleTemplate, ruleText, specsOf } from "../src/index.ts";
 import type { Grant, RuleSpec } from "../src/index.ts";
 
 test("a rule is verb:name[@target], with call as the default verb and an optional ask", () => {
@@ -253,4 +253,35 @@ test("the target of a call is one place: no wildcard and no empty segment", () =
   expect(callTarget("git.example.com/acme/billing/pr/7")).toBe("git.example.com/acme/billing/pr/7");
   expect(callTarget("/home/me/work")).toBe("/home/me/work");
   for (const bad of ["acme/*", "*", "acme//billing", "", "acme/", "a b", "/", "//home"]) expect(() => callTarget(bad)).toThrow("not the target of a call");
+});
+
+test("a target template is filled with typed segments from the input, and a value cannot add a wildcard", () => {
+  const template = "forge.pr.merge@{repo.host}/{repo.path}/pr/*";
+  expect(isRuleTemplate(template)).toBe(true);
+  expect(isRuleTemplate("forge.pr.merge@git.example.com/acme/*")).toBe(false);
+  const input = { repo: { host: "git.example.com", path: "acme/billing" } };
+  expect(fillRule(template, input)).toBe("forge.pr.merge@git.example.com/acme/billing/pr/*");
+  expect(fillRule("proc.run@{worktrees}/*", { worktrees: "wt/acme" })).toBe("proc.run@wt/acme/*");
+  // A value that opens the target may be an absolute path; anywhere else it is segments.
+  expect(fillRule("proc.run@{worktrees}/*", { worktrees: "/home/me/wt" })).toBe("proc.run@/home/me/wt/*");
+  expect(fillRule("forge.pr.read@{repo.host}/pr/{pr}", { repo: { host: "h" }, pr: 7 })).toBe("forge.pr.read@h/pr/7");
+  for (const [value, why] of [
+    ["acme/*", "is not one or more segments"],
+    ["*", "is not one or more segments"],
+    ["acme//billing", "is not one or more segments"],
+    ["", "is not one or more segments"],
+    ["/acme", "is not one or more segments"],
+  ] as const) {
+    expect(() => fillRule(template, { repo: { host: "h", path: value } })).toThrow(`{repo.path} ${why}`);
+  }
+  expect(() => fillRule(template, { repo: { host: "h" } })).toThrow("{repo.path} has no value in the input");
+  expect(() => fillRule(template, { repo: { host: "h", path: { deep: 1 } } })).toThrow("{repo.path} is not text or a whole number");
+  expect(() => fillRule(template, null)).toThrow("{repo.host} has no value in the input");
+});
+
+test("a template is checked as it is written: placeholders stand for whole segments", () => {
+  expect(() => ruleTemplate("forge.pr.merge@{repo.host}/{repo.path}/pr/*")).not.toThrow();
+  for (const bad of ["a.b@x{repo}", "a.b@{repo}*", "a.b@{}/x", "a.b@{1x}/y", "a.b@{a}//b", "a.*@{a}/*/b", "emit:a@{x}"]) {
+    expect(() => ruleTemplate(bad)).toThrow();
+  }
 });
