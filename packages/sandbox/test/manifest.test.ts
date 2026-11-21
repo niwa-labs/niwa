@@ -10,7 +10,9 @@
 //   6. a sandbox that is not available stops the session before it starts
 //   7. nono's manifest carries the profile it is run with: the default one without the groups that
 //      grant the temp areas and the user's tools, and a nono that resolves it to more is not available;
-//      a denyRead that a granted socket would open is refused; what each sandbox holds is said
+//      a denyRead that a granted socket would open is refused
+//   8. each manifest says the policy the sandbox applies: nono's is the spec's places and the
+//      system's, srt's adds its own writes and leaves reads open
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
@@ -161,9 +163,33 @@ test("a nono that resolves the profile to more than is named is not available", 
   expect(await (await answering("silent", "none")).available()).toBe(false);
 });
 
-test("what a sandbox holds beyond the lists of its spec is said: nono holds writes and reads, srt neither", () => {
-  expect(nono().guarantees).toEqual({ exactWrites: true, closedReads: true });
-  expect(srt().guarantees).toEqual({ exactWrites: false, closedReads: false });
+test("nono's policy is the spec's places and the system's, with reads an allow-list", () => {
+  const home = homedir();
+  for (const platform of ["darwin", "linux"] as const) {
+    const sandbox = nono({ platform });
+    const { policy, profile } = sandbox.manifest(spec);
+    expect(policy.write).toEqual(["/work/repo", "/tmp", join(home, ".claude")]);
+    expect(policy.devices).toEqual([...profile.filesystem.write, ...profile.filesystem.write_file]);
+    expect(policy.net).toEqual(["api.anthropic.com", "registry.npmjs.org"]);
+    if (!("only" in policy.read)) throw new Error("nono's reads are an allow-list");
+    expect(policy.read.only.slice(0, 4)).toEqual(["/work/repo", "/tmp", join(home, ".claude"), join(home, ".niwa/host.sock")]);
+    expect(policy.read.only).toEqual(expect.arrayContaining([...profile.filesystem.read, "/usr/share"]));
+    expect(policy.read.only).not.toContain(home);
+  }
+});
+
+test("srt's policy adds its own temp directory and home places to the writes, and its reads are open", async () => {
+  const { getDefaultWritePaths } = await import("@anthropic-ai/sandbox-runtime");
+  const home = homedir();
+  const devices = (paths: string[]) => paths.filter((path) => path.startsWith("/dev/"));
+  const places = (paths: string[]) => paths.filter((path) => !path.startsWith("/dev/"));
+  const { policy } = srt().manifest(spec);
+  expect(policy.write).toEqual(["/work/repo", "/tmp", join(home, ".claude"), ...places(getDefaultWritePaths())]);
+  expect(policy.devices).toEqual(devices(getDefaultWritePaths()));
+  expect(policy.read).toEqual({ except: [] });
+  const denied = srt().manifest(boxSpec({ cwd: "/x", denyRead: ["~/.npm"] })).policy;
+  expect(denied.write).toEqual(places(getDefaultWritePaths({ denyRead: ["~/.npm"], allowRead: [] })));
+  expect(denied.read).toEqual({ except: [join(home, ".npm")] });
 });
 
 test("a working directory under the home directory is expanded once, and the paths read from it follow", () => {

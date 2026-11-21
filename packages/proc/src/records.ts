@@ -85,10 +85,15 @@ export const ProcResult = z.strictObject({
 });
 export type ProcResult = z.infer<typeof ProcResult>;
 
-/** What a command ran in: the sandbox and what it let through. */
+/** What a command ran in: the sandbox and what it let through, as the sandbox reports it applies the box. */
 export const BoxUsed = z.strictObject({
   sandbox: z.string(),
+  /** Every place the command could write, besides the devices. */
   write: z.array(z.string()),
+  /** The devices the command could write: the null device, the terminal, its descriptors. */
+  devices: z.array(z.string()),
+  /** Every place the command could read: nothing else of the machine was open to it. */
+  read: z.array(z.string()),
   net: z.array(z.string()),
 });
 export type BoxUsed = z.infer<typeof BoxUsed>;

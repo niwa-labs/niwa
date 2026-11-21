@@ -7,22 +7,32 @@ import { join } from "node:path";
 import type { Action, ActionContext, ArtifactRef, ArtifactStore, RecordType } from "@niwa-labs/core";
 import type { PluginApi } from "@niwa-labs/plugin";
 import { SandboxUnavailable } from "@niwa-labs/sandbox";
-import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
+import type { BoxPolicy, BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 import { createNiwa, tempHome } from "@niwa-labs/testing";
 
 import { proc } from "../src/index.ts";
 import type { ProcOptions } from "../src/index.ts";
 
-/** A sandbox that runs the command as it is. Every spec it is given is kept. */
-export function recordingSandbox(): Sandbox & { readonly specs: BoxSpec[] } {
+/** The policy a sandbox that holds a run to its directory reports: the spec's places, a device and a system place to read. */
+export function heldPolicy(spec: BoxSpec): BoxPolicy {
+  return { write: [...spec.write], devices: ["/dev/null"], read: { only: [spec.cwd, "/usr/lib"] }, net: [...spec.net] };
+}
+
+/**
+ * A sandbox that runs the command as it is. Every spec it is given is kept. It reports `policy`
+ * of the spec as what it applies: by default one that holds a run.
+ */
+export function recordingSandbox(policy: (spec: BoxSpec) => BoxPolicy | undefined = heldPolicy): Sandbox & { readonly specs: BoxSpec[] } {
   const specs: BoxSpec[] = [];
   return {
     specs,
     name: "nono",
     class: "process",
-    guarantees: { exactWrites: true, closedReads: true },
     available: async () => true,
-    manifest: (spec) => ({ sandbox: "nono", cwd: spec.cwd, env: spec.env }),
+    manifest: (spec) => {
+      const reported = policy(spec);
+      return { sandbox: "nono", cwd: spec.cwd, env: spec.env, ...(reported === undefined ? {} : { policy: reported }) };
+    },
     async launch(spec, argv, options) {
       specs.push(spec);
       const child = Bun.spawn([...argv], {
@@ -49,9 +59,8 @@ export function recordingSandbox(): Sandbox & { readonly specs: BoxSpec[] } {
 export const absentSandbox: Sandbox = {
   name: "nono",
   class: "process",
-  guarantees: { exactWrites: true, closedReads: true },
   available: async () => false,
-  manifest: (spec) => ({ sandbox: "nono", cwd: spec.cwd, env: spec.env }),
+  manifest: (spec) => ({ sandbox: "nono", cwd: spec.cwd, env: spec.env, policy: heldPolicy(spec) }),
   async launch() {
     throw new SandboxUnavailable("nono", "not here");
   },

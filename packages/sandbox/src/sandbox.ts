@@ -11,12 +11,29 @@ import type { BoxSpec } from "./spec.ts";
 export type SandboxName = "srt" | "nono" | "gondolin" | "boxlite";
 export type SandboxClass = "process" | "vm";
 
+/**
+ * What a box lets its process reach once the sandbox has applied a spec: the places the spec lists
+ * and what the sandbox adds of its own. A path is absolute, with `~` expanded.
+ */
+export interface BoxPolicy {
+  /** Every place the process may write, besides the devices. */
+  readonly write: readonly string[];
+  /** The devices the process may write to run: the null device, the terminal, its descriptors. */
+  readonly devices: readonly string[];
+  /** Reads: only the places listed, or every place but those listed. */
+  readonly read: { readonly only: readonly string[] } | { readonly except: readonly string[] };
+  /** The only hosts the process may reach. */
+  readonly net: readonly string[];
+}
+
 /** The full configuration a sandbox will be given for one spec. A pure value of the spec. */
 export interface SandboxManifest {
   readonly sandbox: SandboxName;
   readonly cwd: string;
   /** The whole environment of the process. */
   readonly env: Readonly<Record<string, string>>;
+  /** What the box will let the process reach. Absent: the sandbox does not say, and nothing is promised beyond the spec. */
+  readonly policy?: BoxPolicy;
 }
 
 /** A launched box: its streams and its end. */
@@ -51,22 +68,9 @@ export interface LaunchOptions {
   readonly detached?: boolean;
 }
 
-/**
- * What a sandbox keeps to beyond the places a spec lists. A caller whose promise needs more than
- * the lists says so by asking for it, and a sandbox that does not say it holds it does not.
- */
-export interface SandboxGuarantees {
-  /** A process writes where `write` lists and nowhere else: the sandbox adds no temp or scratch place of its own. */
-  readonly exactWrites: boolean;
-  /** Reads are an allow-list: the cwd, `read` and what the system needs, and nothing else of the user's, not even a place no `denyRead` names. */
-  readonly closedReads: boolean;
-}
-
 export interface Sandbox<M extends SandboxManifest = SandboxManifest> {
   readonly name: SandboxName;
   readonly class: SandboxClass;
-  /** What it holds beyond the lists of the spec. Absent: nothing is promised. */
-  readonly guarantees?: SandboxGuarantees;
   /** Probes the machine: the binary is there and can really wrap a process. */
   available(): Promise<boolean>;
   /** Pure and deterministic: the same spec gives the same manifest. Recorded in the journal before launch. */

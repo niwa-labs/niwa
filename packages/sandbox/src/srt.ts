@@ -4,13 +4,17 @@
  * The adapter writes srt's settings and runs the srt CLI as its own process for each session.
  * It never calls the SandboxManager in-process: that keeps module-global state, and two sessions
  * with different specs would share it.
+ *
+ * srt adds places of its own to what a spec lists, and the manifest's policy says so: the temp
+ * directory it hands the process and a few places under the home are always writable, and reads
+ * are open but for `denyRead`.
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve, sep } from "node:path";
 
-import type { Sandbox, SandboxManifest } from "./sandbox.ts";
+import type { BoxPolicy, Sandbox, SandboxManifest } from "./sandbox.ts";
 import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
@@ -42,6 +46,7 @@ export interface SrtSettings {
 
 export interface SrtManifest extends SandboxManifest {
   readonly sandbox: "srt";
+  readonly policy: BoxPolicy;
   readonly settings: SrtSettings;
 }
 
@@ -74,6 +79,32 @@ export interface SrtOptions {
 
 const literally = (paths: readonly string[]): SrtPath[] => paths.map((path) => ({ path, literal: true }));
 
+/** The devices srt always lets a process write. */
+const SRT_DEVICES = ["/dev/stdout", "/dev/stderr", "/dev/null", "/dev/tty", "/dev/dtracehelper", "/dev/autofs_nowait"];
+
+/** The temp directory srt gives every process, writable whatever the settings say. */
+const SRT_TEMP = ["/tmp/claude", "/private/tmp/claude"];
+
+/** Places under the home srt makes writable unless a `denyRead` covers them. */
+const SRT_HOME_WRITES = [".npm/_logs", ".claude/debug"];
+
+function homeExpanded(path: string): string {
+  return resolve(path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
+}
+
+/** What srt will let a process reach: the spec's places, and the ones srt adds of its own. */
+function srtPolicy(spec: BoxSpec): BoxPolicy {
+  const denied = spec.denyRead.map(homeExpanded);
+  const covered = (path: string) => denied.some((root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep));
+  const home = SRT_HOME_WRITES.map((place) => join(homedir(), place)).filter((path) => !covered(path));
+  return {
+    write: [...new Set([...spec.write.map(homeExpanded), ...SRT_TEMP, ...home])],
+    devices: SRT_DEVICES,
+    read: { except: denied },
+    net: spec.net,
+  };
+}
+
 export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
   const command = options.command ?? packagedCommand();
   const platform = options.platform ?? process.platform;
@@ -91,6 +122,7 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
       sandbox: "srt",
       cwd: spec.cwd,
       env: withPath(spec.env),
+      policy: srtPolicy(spec),
       settings: {
         network: { allowedDomains: spec.net, deniedDomains: [], allowUnixSockets: spec.sockets },
         filesystem: { denyRead: literally(spec.denyRead), allowWrite: literally(spec.write), denyWrite: [] },
@@ -107,9 +139,6 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
   return {
     name: "srt",
     class: "process",
-    // srt always lets a process write its own temp directory and a few places under the home, and
-    // reads everything that no `denyRead` names.
-    guarantees: { exactWrites: false, closedReads: false },
     manifest,
     available() {
       probed ??= (async () => {

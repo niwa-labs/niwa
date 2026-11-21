@@ -9,7 +9,7 @@
 export { BoxPathSchema, BoxSpecSchema, EnvNameSchema, NetHostSchema, boxSpec } from "./spec.ts";
 export type { BoxPath, BoxSpec, BoxSpecInput, EnvName, NetHost } from "./spec.ts";
 export { SandboxUnavailable, SandboxUnsupported, requireSandbox } from "./sandbox.ts";
-export type { LaunchedBox, Sandbox, SandboxClass, SandboxGuarantees, SandboxManifest, SandboxName } from "./sandbox.ts";
+export type { BoxPolicy, LaunchedBox, Sandbox, SandboxClass, SandboxManifest, SandboxName } from "./sandbox.ts";
 export { srt } from "./srt.ts";
 export type { SrtManifest, SrtOptions, SrtSettings } from "./srt.ts";
 export { nono } from "./nono.ts";

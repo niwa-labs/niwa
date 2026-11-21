@@ -8,6 +8,7 @@
 //   4. a background child that outlives its parent does not hold the run
 //   5. the whole output is an artifact; the result and the record carry only a bounded tail
 //   6. a box that cannot run stops the call before any process exists
+//   7. the box a run and its record name is the policy the sandbox reports it applies
 
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -50,7 +51,7 @@ test("a run asks for a box that writes only in its cwd, reaches nothing, and hol
     expect(Object.keys(spec?.env ?? {}).sort()).toEqual(["HOME", "MODE", "PATH", "TMPDIR"]);
     const home = realpathSync(host.home);
     expect(spec?.denyRead).toEqual(expect.arrayContaining([join(home, "owner.token"), join(home, "host.key"), join(home, "secrets")]));
-    expect(result.box).toEqual({ sandbox: "nono", write: [cwd], net: [] });
+    expect(result.box).toEqual({ sandbox: "nono", write: [cwd], devices: ["/dev/null"], read: [cwd, "/usr/lib"], net: [] });
     const seen = outputOf(host, result.output);
     expect(seen).toContain("MODE=ci");
     expect(seen).not.toContain("leaked");
@@ -58,6 +59,22 @@ test("a run asks for a box that writes only in its cwd, reaches nothing, and hol
     delete process.env["NIWA_ID"];
     delete process.env["GITLAB_TOKEN"];
   }
+});
+
+test("the box a run and its record name is the policy the sandbox applies, not the spec it was given", async () => {
+  const sandbox = recordingSandbox((spec) => ({
+    write: [...spec.write, join(spec.cwd, ".own")],
+    devices: ["/dev/null", "/dev/tty"],
+    read: { only: [spec.cwd, "/opt/tool"] },
+    net: [],
+  }));
+  const host = await start({ sandbox });
+  const cwd = realpathSync(dirIn(host.home, "work"));
+  const result = await host.niwa.call(procRun, { cmd: sh("true"), cwd, timeout: 10_000 });
+  const box = { sandbox: "nono", write: [cwd, join(cwd, ".own")], devices: ["/dev/null", "/dev/tty"], read: [cwd, "/opt/tool"], net: [] };
+  expect(result.box).toEqual(box);
+  const finished = (await host.niwa.records.read()).filter((row) => row.type === "proc.finished");
+  expect((finished[0]?.data as { box?: unknown }).box).toEqual(box);
 });
 
 test("a run has a TMPDIR inside its cwd, the one place its box lets it write, and nothing of it is left behind", async () => {

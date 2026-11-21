@@ -22,18 +22,24 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
-import type { Sandbox, SandboxManifest } from "./sandbox.ts";
+import type { BoxPolicy, Sandbox, SandboxManifest } from "./sandbox.ts";
 import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
 import { SYSTEM_PATH, probe, spawnBox } from "./spawn.ts";
 
+/** A path with a leading `~` made the home directory, and otherwise as it is spelled. */
+function homeExpanded(path: string): string {
+  return resolve(path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
+}
+
 /** A path as the sandbox sees it: `~` expanded, and the links of its longest existing part resolved. */
 function expanded(path: string): string {
-  const absolute = resolve(path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
-  return resolved(absolute);
+  return resolved(homeExpanded(path));
 }
+
+const distinct = (paths: readonly string[]): string[] => [...new Set(paths)];
 
 function resolved(absolute: string): string {
   try {
@@ -182,6 +188,7 @@ function resolvesAsSaid(binary: string, path: string, platform: NodeJS.Platform)
 
 export interface NonoManifest extends SandboxManifest {
   readonly sandbox: "nono";
+  readonly policy: BoxPolicy;
   /** The profile file nono is run with, put before these flags at launch. */
   readonly profile: NonoProfile;
   /** The flags between `nono run` and the program. */
@@ -217,6 +224,12 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
       sandbox: "nono",
       cwd: spec.cwd,
       env: spec.env,
+      policy: {
+        write: distinct(spec.write.map(homeExpanded)),
+        devices: systemWrites(platform),
+        read: { only: distinct([...[spec.cwd, ...spec.read, ...spec.write, ...spec.sockets].map(homeExpanded), ...systemReads(platform)]) },
+        net: spec.net,
+      },
       profile: profileFor(platform),
       flags: [
         "--silent",
@@ -250,7 +263,6 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
   return {
     name: "nono",
     class: "process",
-    guarantees: { exactWrites: true, closedReads: true },
     manifest,
     available() {
       probed ??= (async () => {

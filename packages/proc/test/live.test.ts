@@ -8,6 +8,7 @@
 //   2. a run reaches no network
 //   3. a run cannot read the owner token of the host, though the host's home holds it
 //   4. a run cannot write a shared temp area, and the temp files of a command that follows TMPDIR still work
+//   5. the box a run names is nono's policy: its cwd to write, and neither a temp area nor the home to read
 
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -34,6 +35,12 @@ for (const sandbox of [nono()]) {
         const cwd = realpathSync(dirIn(host.home, "work"));
         const inside = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", "echo x > in.txt"], cwd, timeout: 20_000 });
         expect(inside.exit).toBe(0);
+        // The box it names is the one nono applies: its own directory to write, and no temp area or home to read.
+        expect(inside.box.write).toEqual([cwd]);
+        expect(inside.box.read).toContain(cwd);
+        for (const place of [realpathSync(tmpdir()), homedir(), realpathSync(host.home)]) {
+          expect(inside.box.read.some((path) => place === path || place.startsWith(`${path}/`))).toBe(false);
+        }
         expect(readFileSync(join(cwd, "in.txt"), "utf8")).toBe("x\n");
 
         const denied = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", `echo x > ${outside}/out.txt`], cwd, timeout: 20_000 });

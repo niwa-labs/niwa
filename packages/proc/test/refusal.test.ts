@@ -6,8 +6,9 @@
 //      cannot be started each refuse the call as a ProcRefusal, which the caller catches and the
 //      core does not record as a failure that may have had an effect
 //   2. nothing was started, and no `proc.finished` was written
-//   3. a sandbox that does not keep writes to the cwd and reads to an allow-list (srt, or one that
-//      says nothing) cannot run it, so the promise of the action is never made on its word
+//   3. a sandbox whose policy lets a process write outside the cwd, read from more than an
+//      allow-list or reach a host (srt), or one that reports no policy, cannot run it, so the
+//      promise of the action is never made on its word
 
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -18,7 +19,7 @@ import { SandboxUnavailable, SandboxUnsupported, srt } from "@niwa-labs/sandbox"
 import type { Sandbox } from "@niwa-labs/sandbox";
 
 import { ProcRefusal } from "../src/index.ts";
-import { absentSandbox, dirIn, procActions, recordingSandbox } from "./support.ts";
+import { absentSandbox, dirIn, heldPolicy, procActions, recordingSandbox } from "./support.ts";
 
 type Bench = Awaited<ReturnType<typeof procActions>>;
 const benches: Bench[] = [];
@@ -41,11 +42,15 @@ const wrapperGone: Sandbox = {
   },
 };
 
-test("a sandbox that does not hold writes and reads to the lists of the spec refuses the call before anything starts", async () => {
-  const { guarantees: _kept, ...silent } = recordingSandbox();
-  const writesOnly: Sandbox = { ...recordingSandbox(), guarantees: { exactWrites: true, closedReads: false } };
-  const readsOnly: Sandbox = { ...recordingSandbox(), guarantees: { exactWrites: false, closedReads: true } };
-  for (const sandbox of [silent, writesOnly, readsOnly, srt()]) {
+test("a sandbox whose policy does not hold a run to its directory refuses the call before anything starts", async () => {
+  const cases: Array<[Sandbox, RegExp]> = [
+    [recordingSandbox(() => undefined), /does not say what a box lets a process reach/],
+    [recordingSandbox((spec) => ({ ...heldPolicy(spec), read: { except: [] } })), /reads are open/],
+    [recordingSandbox((spec) => ({ ...heldPolicy(spec), write: [...spec.write, "/tmp/claude"] })), /lets a process write \/tmp\/claude/],
+    [recordingSandbox((spec) => ({ ...heldPolicy(spec), net: ["example.com"] })), /lets a process reach example\.com/],
+    [srt(), /reads are open/],
+  ];
+  for (const [sandbox, reason] of cases) {
     const bench = await procActions({ sandbox });
     benches.push(bench);
     const cwd = realpathSync(dirIn(bench.home, "work"));
@@ -55,7 +60,7 @@ test("a sandbox that does not hold writes and reads to the lists of the spec ref
     );
     expect(error).toBeInstanceOf(ProcRefusal);
     expect((error as ProcRefusal).code).toBe("no-sandbox");
-    expect((error as Error).message).toMatch(/keep writes to the directory and reads to an allow-list/);
+    expect((error as Error).message).toMatch(reason);
     expect(existsSync(join(cwd, "ran"))).toBe(false);
     expect(bench.emitted).toEqual([]);
   }

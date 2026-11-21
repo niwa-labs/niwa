@@ -10,10 +10,11 @@
 //   4. a relative `write` is read from the cwd, where the wrapper runs
 //   5. a path with pattern characters names itself and not its neighbours
 //   6. a detached box leads its own process group, and a group signal ends what it started
-//   7. a sandbox that holds exact writes lets a process write no temp area, only what `write` lists
-//      and the devices it needs
-//   8. a sandbox whose reads are an allow-list lets a process read neither the user's temp area nor
-//      a file of the home it was not given, and the system's tools still run
+//   7. a sandbox whose policy writes only what `write` lists lets a process write no temp area, only
+//      what `write` lists and the devices it needs
+//   8. a sandbox whose policy reads from an allow-list lets a process read neither the user's temp
+//      area nor a file of the home it was not given, and the system's tools still run
+//   9. a place a sandbox's policy adds to the writes is writable: srt's own temp directory
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
@@ -43,6 +44,18 @@ function alive(pid: number): boolean {
   }
 }
 
+/** Does the sandbox say it writes only what a spec lists, besides the devices? */
+function exact(sandbox: Sandbox): boolean {
+  const spec = boxSpec({ cwd: "/x", write: ["/x"] });
+  return JSON.stringify(sandbox.manifest(spec).policy?.write) === JSON.stringify(["/x"]);
+}
+
+/** Does the sandbox say its reads are an allow-list? */
+function closed(sandbox: Sandbox): boolean {
+  const policy = sandbox.manifest(boxSpec({ cwd: "/x" })).policy;
+  return policy !== undefined && "only" in policy.read;
+}
+
 const CURL = (url: string) => `curl -sS -m 10 -o /dev/null -w '%{http_code}' ${url}`;
 
 for (const sandbox of [srt(), nono()]) {
@@ -65,7 +78,7 @@ for (const sandbox of [srt(), nono()]) {
       }
     });
 
-    test.skipIf(!present || !sandbox.guarantees?.exactWrites)("writes no temp area, and still has the devices it needs", async () => {
+    test.skipIf(!present || !exact(sandbox))("writes no temp area, and still has the devices it needs", async () => {
       const cwd = await realpath(await tempDir("box-temp"));
       const name = `niwa-box-temp-${process.pid}-${Date.now()}`;
       const shared = [join("/tmp", name), join(await realpath(tmpdir()), name)];
@@ -84,7 +97,7 @@ for (const sandbox of [srt(), nono()]) {
       }
     });
 
-    test.skipIf(!present || !sandbox.guarantees?.closedReads)("reads neither the user's temp area nor the home, and still runs the system's tools", async () => {
+    test.skipIf(!present || !closed(sandbox))("reads neither the user's temp area nor the home, and still runs the system's tools", async () => {
       const cwd = await realpath(await mkdtemp(join(homedir(), ".niwa-box-read-")));
       const kept = await realpath(await mkdtemp(join(tmpdir(), "niwa-box-kept-")));
       try {
@@ -105,6 +118,20 @@ for (const sandbox of [srt(), nono()]) {
         await rm(`${cwd}-beside`, { force: true });
         await rm(cwd, { recursive: true, force: true });
         await rm(kept, { recursive: true, force: true });
+      }
+    });
+
+    test.skipIf(!present || sandbox.name !== "srt")("writes the temp directory its policy adds to the spec's", async () => {
+      const cwd = await realpath(await tempDir("box-own-temp"));
+      try {
+        const spec = boxSpec({ cwd, write: [cwd], env: { PATH: "/usr/bin:/bin", HOME: homedir() } });
+        const added = sandbox.manifest(spec).policy?.write.filter((path) => path !== cwd) ?? [];
+        expect(added).toContain("/tmp/claude");
+        const name = `/tmp/claude/niwa-box-own-${process.pid}-${Date.now()}`;
+        expect((await run(sandbox, spec, `mkdir -p /tmp/claude && echo x > '${name}'`)).code).toBe(0);
+        await rm(name, { force: true });
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
       }
     });
 

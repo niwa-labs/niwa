@@ -6,8 +6,9 @@
  *   `TMPDIR` inside its directory and what the call lists, and the keys of the host and the places
  *   credentials live are closed to it. Because the box holds this, the class of the action is honest
  *   for any command: a write in the local world. It never runs without a box: a box that cannot run
- *   here, or cannot hold this (it must keep writes to the directory and reads to an allow-list), stops
- *   the call before a process exists.
+ *   here, or whose policy does not hold this (writes only in the directory, reads from an allow-list,
+ *   no network), stops the call before a process exists. What the result and the record say of the
+ *   box is that policy, as the sandbox reports it, not the spec it was given.
  *
  * - **proc.exec** runs a command with no box. Nothing limits what it writes or reaches, so it is an
  *   irreversible action in the external world, and a grant has to name it. It gets `PATH`, `HOME`,
@@ -30,7 +31,7 @@
 
 import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE, RECORD_DATA_LIMIT, action } from "@niwa-labs/core";
 import type { ActionContext } from "@niwa-labs/core";
@@ -51,7 +52,10 @@ export type { ProcRefusalCode } from "./refusal.ts";
 
 /** What the module is given. Every field has a default. */
 export interface ProcOptions {
-  /** The sandbox of `proc.run`; it has to keep writes to the directory and reads to an allow-list. Default: nono. */
+  /**
+   * The sandbox of `proc.run`. The policy its manifest reports has to keep writes to the directory
+   * and reads to an allow-list, with no network. Default: nono.
+   */
   readonly sandbox?: Sandbox;
   /** The most bytes of output kept in an artifact. Default: 16 MiB. */
   readonly outputLimit?: number;
@@ -104,12 +108,22 @@ function directoryOf(cwd: string, authorized: string | undefined): string {
 }
 
 /**
- * Does a sandbox keep what `proc.run` promises beyond the lists of its spec: no write outside the
- * directory, no read of what the user keeps that the spec does not name? A sandbox that does not
- * say so is taken not to.
+ * The box of a run, as the sandbox says it will apply the spec, when that keeps what `proc.run`
+ * promises: writes only in the directory (and the devices a process needs), reads from an
+ * allow-list, no network. A sandbox that does not say what it applies is taken not to keep it.
  */
-function holdsRun(sandbox: Sandbox): boolean {
-  return sandbox.guarantees?.exactWrites === true && sandbox.guarantees.closedReads === true;
+function boxOf(sandbox: Sandbox, spec: BoxSpec): BoxUsed {
+  const policy = sandbox.manifest(spec).policy;
+  const refuse = (why: string): never => {
+    throw new SandboxUnsupported(sandbox.name, `${why}, and a run may write only in its directory, read only what it is given and reach no network`);
+  };
+  if (policy === undefined) return refuse("it does not say what a box lets a process reach");
+  if (!("only" in policy.read)) return refuse("its reads are open but for the places it is told to close");
+  const outside = policy.write.find((path) => path !== spec.cwd && !path.startsWith(`${spec.cwd}${sep}`));
+  if (outside !== undefined) refuse(`it lets a process write ${outside}`);
+  const host = policy.net[0];
+  if (host !== undefined) refuse(`it lets a process reach ${host}`);
+  return { sandbox: sandbox.name, write: [...policy.write], devices: [...policy.devices], read: [...policy.read.only], net: [...policy.net] };
 }
 
 /**
@@ -181,17 +195,11 @@ export function proc(options: ProcOptions = {}): Plugin {
     return fileTarget(real);
   };
 
-  /** The sandbox of a run: the one given, or the first of the natural ones that can run here. Either has to hold what a run promises. */
+  /** The sandbox of a run: the one given, or the first of the natural ones that can run here. */
   const sandboxOf = async (): Promise<Sandbox> => {
-    if (options.sandbox !== undefined) return await requireSandbox(holding(options.sandbox));
+    if (options.sandbox !== undefined) return await requireSandbox(options.sandbox);
     for (const candidate of natural) if (await candidate.available()) return candidate;
     return await requireSandbox(natural[0] as Sandbox);
-  };
-  const holding = (sandbox: Sandbox): Sandbox => {
-    if (!holdsRun(sandbox)) {
-      throw new SandboxUnsupported(sandbox.name, "it does not keep writes to the directory and reads to an allow-list, as a run promises");
-    }
-    return sandbox;
   };
 
   return plugin("proc", (api) => {
@@ -236,9 +244,9 @@ export function proc(options: ProcOptions = {}): Plugin {
           });
           const capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
           try {
+            const box = await beforeStart(async () => boxOf(sandbox, spec));
             const child = await beforeStart(() => sandbox.launch(spec, input.cmd, { detached: true }));
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
-            const box: BoxUsed = { sandbox: sandbox.name, write: [...spec.write], net: [...spec.net] };
             const result = await finish(ctx, { action: "proc.run", cwd, program: input.cmd[0] as string, box }, { ...ended, ...capture.finish() });
             return { ...result, box };
           } catch (error) {
