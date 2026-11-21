@@ -161,6 +161,12 @@ Rin is the owner's main agent. If the host has her, `rin.*` actions are in the a
 their descriptions say what she takes (notes, commitments, judging). If they are absent, she is not
 on this host.
 
+When the owner asks you to load Rin (or another agent: "load the reviewer"), run
+`niwa agent attach [<agent>]` from your shell; without a name it attaches the host's default agent.
+It finds your session from your environment, prints the agent's briefing, and from then on the agent
+learns what this session does at its pauses. Under mcode, add `--session <id>`. What you say to the
+agent yourself (`agent.tell`) is your word, not the owner's.
+
 ## When it does not work
 
 - **Host down** (`niwa status` fails, or MCP calls end in connection errors). Tell the owner. Do

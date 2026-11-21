@@ -7,6 +7,7 @@ import { messages } from "@niwa-labs/messages";
 import type { CallerBinding, Plugin } from "@niwa-labs/plugin";
 import { requests } from "@niwa-labs/requests";
 import { sessions } from "@niwa-labs/sessions";
+import type { HarnessBinding } from "@niwa-labs/sessions";
 import { tasks } from "@niwa-labs/tasks";
 import { createNiwa, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
@@ -132,13 +133,21 @@ export async function until(read: () => Promise<StoredRecord[]>, type: string, c
  */
 export async function agentHost(
   options: AgentOptions,
-  more: { home?: string; control?: ScriptedControl; transcripts?: Map<string, SessionRecord[]>; after?: Plugin[]; timing?: { pollMs: number; pauseMs: number; endMs: number } } = {},
+  more: {
+    home?: string;
+    control?: ScriptedControl;
+    transcripts?: Map<string, SessionRecord[]>;
+    /** More installations for the sessions module. */
+    harnesses?: HarnessBinding[];
+    after?: Plugin[];
+    timing?: { pollMs: number; pauseMs: number; endMs: number };
+  } = {},
 ): Promise<AgentHost> {
   const fresh = more.home === undefined ? await tempHome() : undefined;
   const home = more.home ?? fresh!.path;
   const control = more.control ?? new ScriptedControl();
   const reading = transcripts(more.transcripts ?? new Map());
-  const made = sessions({ harnesses: [{ instance: installation, control, reading }], niwaMcp: { command: "true", args: [] } });
+  const made = sessions({ harnesses: [{ instance: installation, control, reading }, ...(more.harnesses ?? [])], niwaMcp: { command: "true", args: [] } });
   const agents = agentsModule({ digests: false, ...options });
   const bind = agents.bind(made.bind());
   const host = createNiwa({ home });

@@ -36,6 +36,7 @@ import {
 } from "@niwa-labs/client";
 import type { ActionDescription, Seq, Token } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
+import { AGENT_USAGE, runAgentCommand } from "./agent.ts";
 import { LOG_USAGE, LogUsage, log } from "./log.ts";
 import { SKILL_USAGE } from "./skill/command.ts";
 import {
@@ -49,6 +50,8 @@ import {
   type Format,
 } from "./render.ts";
 
+export { AGENT_USAGE, callerSession, runAgentCommand } from "./agent.ts";
+export type { AgentCommandContext, AgentCommandResult, CallerSession } from "./agent.ts";
 export { INSERT_REPORT, INSERT_USAGE, runInsert } from "./insert.ts";
 export { log } from "./log.ts";
 export { logLine } from "./render.ts";
@@ -74,9 +77,10 @@ export interface CliResult {
  * because the host declares them, not because the CLI knows them.
  *
  * `log` is the one that is about the CLI: it is `niwa.records.search` shown the way a person reads a log,
- * and followed by reading again.
+ * and followed by reading again. `agent attach` reads the session it runs in from its environment, which
+ * no action can see.
  */
-const BUILTIN = ["serve", "help", "log"] as const;
+const BUILTIN = ["serve", "help", "log", "agent"] as const;
 
 /** One builtin command. */
 export type Builtin = (typeof BUILTIN)[number];
@@ -93,6 +97,10 @@ export interface CliArgs {
   readonly json: boolean;
   /** Who the CLI is: `NIWA_ID` when the command runs in a session, else the owner's own token. */
   readonly token?: Token;
+  /** The environment the command runs in: the process's own when absent. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /** The directory the command runs in: the process's own when absent. */
+  readonly cwd?: string;
 }
 
 /**
@@ -388,6 +396,11 @@ async function runBuiltin(
       }
       return { output: "", code: 0 };
     }
+    case "agent": {
+      const done = await runAgentCommand(api, args.args, { env: args.env ?? process.env, cwd: args.cwd ?? process.cwd() });
+      if (!done.ok) throw new CliError(done.reason);
+      return { output: args.json ? JSON.stringify(done.answer, null, 2) : done.answer.briefing, code: 0 };
+    }
     default:
       throw new CliError(`there is no command "${args.command}"`);
   }
@@ -415,6 +428,8 @@ export async function usage(api?: NiwaApi): Promise<string> {
           "  niwa web [--port N]              the web cockpit of the host: prints its address and login link",
           "  niwa mcp                         the MCP server of the host, over stdio",
           "  niwa serve [-d] <composition.ts> run a host from a file that exports plugins; -d in the background",
+          `  ${AGENT_USAGE}`,
+          "      attach the native session this runs in to an agent (the default one without a name) and print its briefing",
           `  ${LOG_USAGE}`,
           `  ${SKILL_USAGE}`,
           "  niwa help                       what niwa is: its actions and its record types",
