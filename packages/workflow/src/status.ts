@@ -465,6 +465,8 @@ export function runLine(journal: JournalReader, run: string): string {
   const resolve =
     status.state !== "paused"
       ? ""
+      : status.manualPause?.kind === "deadline" && status.invocation === undefined
+        ? `extend: niwa workflow.extend --run ${short} --by MS | niwa workflow.cancel --run ${short}`
       : status.manualPause !== undefined && status.invocation === undefined
         ? `continue: niwa workflow.continue --run ${short} --pause ${status.manualPause.id}`
         : status.invocation === undefined

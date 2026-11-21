@@ -65,6 +65,9 @@ test("a run that reaches its deadline pauses with extend or cancel, enters nothi
   const paused = await call<Status>(niwa, "workflow.wait", { run, timeoutMs: 1 });
   expect(paused).toMatchObject({ state: "paused", choices: ["extend", "cancel"], manualPause: { kind: "deadline" } });
   expect(paused.reason).toContain("deadline");
+  // The list of runs says how the pause is answered.
+  const { runs } = await call<{ runs: string[] }>(niwa, "workflow.runs", {});
+  expect(runs.find((line) => line.startsWith(run.slice(0, 8)) || line.includes("paused"))).toContain("niwa workflow.extend --run");
   // A plain continue does not get past a deadline: only more time does.
   const pause = (await ofType(niwa, "workflow.run.pause-requested")).at(-1)!;
   await expect(call(niwa, "workflow.continue", { run, pause: String(pause.id) })).rejects.toThrow(/workflow.extend/);
