@@ -7,7 +7,7 @@ import type { ActionName } from "@niwa-labs/core";
 import { createNiwa } from "@niwa-labs/host";
 import type { Host } from "@niwa-labs/host";
 import { harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
-import type { AskAnswer, DeliveryReceipt, Harness, LifeEvent, SessionControl, SessionId, SessionState, StartedSession } from "@niwa-labs/harness";
+import type { AskAnswer, DeliveryReceipt, Harness, LifeEvent, ResumeOptions, SessionControl, SessionId, SessionState, StartedSession } from "@niwa-labs/harness";
 import { sessions } from "@niwa-labs/sessions";
 import { eventually, tempHome } from "@niwa-labs/testing";
 
@@ -17,6 +17,7 @@ const HARNESS = "capped";
 class Turns implements SessionControl {
   starts = 0;
   readonly sends: string[] = [];
+  readonly resumes: Array<string | undefined> = [];
   readonly #lives = new Map<string, { queue: LifeEvent[]; wake?: () => void }>();
   readonly #turns = new Map<string, number>();
 
@@ -49,7 +50,11 @@ class Turns implements SessionControl {
     const native = `s${String(this.starts)}`;
     return { session: sessionId(harnessId(HARNESS), native), first: this.#begin(native) };
   }
-  async resume(): Promise<void> {}
+  /** A resume with a prompt begins a turn, as a send does. */
+  async resume(id: SessionId, options?: ResumeOptions): Promise<void> {
+    this.resumes.push(options?.prompt === undefined ? undefined : "prompt");
+    if (options?.prompt !== undefined) this.#begin(id.native);
+  }
   async send(id: SessionId, message: string): Promise<DeliveryReceipt> {
     this.sends.push(message);
     return this.#begin(id.native);
@@ -161,4 +166,27 @@ test("a turn a host before this one left open holds no slot, even once its sessi
   await call(after, "session.resume", { session });
   await start(after);
   expect(control.starts).toBe(1);
+});
+
+test("a resume with a prompt over the ceiling waits for a turn to end, and one without a prompt does not", async () => {
+  const control = new Turns();
+  const niwa = await serve(control, { [HARNESS]: 1 });
+  const first = await start(niwa);
+  control.end("s1");
+  await eventually(async () => (await niwa.records.read()).some((row) => row.type === "session.turn-ended"), 5_000, "the turn should end");
+  await start(niwa);
+  // Taking a session on again begins no turn, so it waits for nothing.
+  await call(niwa, "session.resume", { session: first.session });
+  expect(control.resumes).toEqual([undefined]);
+
+  let resumed = false;
+  const resuming = call(niwa, "session.resume", { session: first.session, prompt: "continue" }).then(() => {
+    resumed = true;
+  });
+  await Bun.sleep(300);
+  expect(resumed).toBe(false);
+  expect(control.resumes).toEqual([undefined]);
+  control.end("s2");
+  await resuming;
+  expect(control.resumes).toEqual([undefined, "prompt"]);
 });

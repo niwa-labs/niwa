@@ -1268,50 +1268,60 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         run: async (input, ctx) => {
           const { ref, id, control } = controlOf(input.session, "resume");
           const prompt = input.prompt;
-          // A resume that is given no `visible` takes the grant the session was last launched
-          // with: the session is the same, and so are its tools, its box and its rights.
-          const restored = input.visible === undefined ? lastLaunchOf(ref) : undefined;
-          const requested = input.visible ?? restored?.request;
-          const visible = visibleFor(id.harness, callsOf(requested));
-          const rules = grantOfSession(ctx.caller, requested, visible);
-          // A process that is still running keeps what it was born with: only a process that is
-          // gone is launched again, and only then are its tools, box and servers asked for.
-          const gone = (await control.state(id)) === "unknown";
-          const launches = input.visible !== undefined || gone;
-          // A process that is launched again counts its turns from 1: the records go on from the last.
-          if (gone) restart(ref);
-          // The directory the session was started in: a harness that loads a session by it needs the same one.
-          const startedIn = restored?.cwd ?? startedOf(ref)?.cwd;
-          const launch = launches ? await launchFor(rules, startedIn) : {};
-          // A process launched again keeps the tools the session was started with, within its grant.
-          const tools = launches ? toolsOfSession(startedOf(ref)?.tools, launch.tools) : undefined;
-          const mark = randomUUID();
-          const token = tokenFor(mark, rules, ctx.caller);
-          const servers = launches ? serversOf(visible.actions, mark, token) : undefined;
-          // The session is named already: the pairing is written before the harness takes it
-          // on, so the server it is given finds the session from its first list of tools.
-          await ctx.emit(SessionMarked, { session: ref, mark });
-          const started = startedOf(ref);
-          const mode = started?.mode;
-          // The session starts again with the model the harness named for it, not the alias it was asked for.
-          const model = modelOf(ref);
-          await recording(mark, launch, ctx, () =>
-            control.resume(id, {
-              ...(mode === undefined ? {} : { mode }),
-              ...(model === undefined ? {} : { model }),
-              ...started?.options,
-              ...(prompt === undefined ? {} : { prompt }),
-              ...(launches && startedIn !== undefined ? { cwd: startedIn } : {}),
-              ...(launches && requested !== undefined ? { visible } : {}),
-              ...(servers === undefined ? {} : { servers }),
-              env: { [TOKEN_ENV]: token },
-              reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
-              ...launchOptions(launch, mark),
-              ...(tools === undefined ? {} : { tools }),
-            }),
-          );
-          follow(control, ref, id);
-          return { resumed: true };
+          // A resume with a prompt begins a turn: a harness at its ceiling takes it once one of its turns ends.
+          // The slot is taken before anything is decided of the session, which may change while it waits.
+          // A resume without a prompt takes the session on and runs nothing, so it waits for nothing.
+          const slot = prompt === undefined ? undefined : await caps.admit(id.harness, ref);
+          try {
+            // A resume that is given no `visible` takes the grant the session was last launched
+            // with: the session is the same, and so are its tools, its box and its rights.
+            const restored = input.visible === undefined ? lastLaunchOf(ref) : undefined;
+            const requested = input.visible ?? restored?.request;
+            const visible = visibleFor(id.harness, callsOf(requested));
+            const rules = grantOfSession(ctx.caller, requested, visible);
+            // A process that is still running keeps what it was born with: only a process that is
+            // gone is launched again, and only then are its tools, box and servers asked for.
+            const gone = (await control.state(id)) === "unknown";
+            const launches = input.visible !== undefined || gone;
+            // A process that is launched again counts its turns from 1: the records go on from the last.
+            if (gone) restart(ref);
+            // The directory the session was started in: a harness that loads a session by it needs the same one.
+            const startedIn = restored?.cwd ?? startedOf(ref)?.cwd;
+            const launch = launches ? await launchFor(rules, startedIn) : {};
+            // A process launched again keeps the tools the session was started with, within its grant.
+            const tools = launches ? toolsOfSession(startedOf(ref)?.tools, launch.tools) : undefined;
+            const mark = randomUUID();
+            const token = tokenFor(mark, rules, ctx.caller);
+            const servers = launches ? serversOf(visible.actions, mark, token) : undefined;
+            // The session is named already: the pairing is written before the harness takes it
+            // on, so the server it is given finds the session from its first list of tools.
+            await ctx.emit(SessionMarked, { session: ref, mark });
+            const started = startedOf(ref);
+            const mode = started?.mode;
+            // The session starts again with the model the harness named for it, not the alias it was asked for.
+            const model = modelOf(ref);
+            await recording(mark, launch, ctx, () =>
+              control.resume(id, {
+                ...(mode === undefined ? {} : { mode }),
+                ...(model === undefined ? {} : { model }),
+                ...started?.options,
+                ...(prompt === undefined ? {} : { prompt }),
+                ...(launches && startedIn !== undefined ? { cwd: startedIn } : {}),
+                ...(launches && requested !== undefined ? { visible } : {}),
+                ...(servers === undefined ? {} : { servers }),
+                env: { [TOKEN_ENV]: token },
+                reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
+                ...launchOptions(launch, mark),
+                ...(tools === undefined ? {} : { tools }),
+              }),
+            );
+            slot?.reached(ref, { status: "started" });
+            follow(control, ref, id);
+            return { resumed: true };
+          } catch (error) {
+            slot?.release();
+            throw error;
+          }
         },
       }),
     );
