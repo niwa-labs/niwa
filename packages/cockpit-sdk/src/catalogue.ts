@@ -16,9 +16,13 @@ export const CockpitModuleSchema = z.object({
   /** The package that offers the module. */
   package: z.string().min(1),
   version: z.string().min(1),
-  /** The address of the module's code: an ES module that imports React and the SDK as shared modules. */
+  /**
+   * The address of the module's code: an ES module that imports React and the SDK as shared
+   * modules. The address contains the hash as a path segment, so the module's own relative
+   * imports carry it too and no cache serves old code.
+   */
   entry: z.string().min(1),
-  /** The hash of the module's code; a new hash is a new address, so caches never serve old code. */
+  /** The hash of the module's code. */
   hash: z.string().min(1),
   /** Stylesheets the module needs, if any. */
   styles: z.array(z.string().min(1)).optional(),

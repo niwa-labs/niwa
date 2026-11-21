@@ -23,7 +23,7 @@ describe("the catalogue", () => {
     expect(() => parseCatalogue({})).toThrow();
   });
 
-  test("modules are imported by an address that carries their hash", async () => {
+  test("modules are imported by their content-addressed entries", async () => {
     const urls: string[] = [];
     const sources = catalogueSources(catalogue, async (url) => {
       urls.push(url);
@@ -31,7 +31,7 @@ describe("the catalogue", () => {
     });
     expect(sources.map((s) => s.id)).toEqual(["sessions", "rin"]);
     await Promise.all(sources.map((s) => s.load()));
-    expect(urls).toEqual(["/cockpit/sessions.js?h=abc", "/cockpit/rin.js?v=1&h=d%20e"]);
+    expect(urls).toEqual(["/cockpit/sessions.js", "/cockpit/rin.js?v=1"]);
   });
 });
 
@@ -58,6 +58,24 @@ describe("loading", () => {
       ["throws", "setup", "boom"],
     ]);
     expect(registry.plugins).toEqual(["ok", "also-ok"]);
+  });
+
+  test("a module that does not import or set up in time is left out; the rest load", async () => {
+    const plugin = (id: string, setup: () => Promise<void> | void) => definePlugin({ id, setup });
+    const { registry, faults } = await loadPlugins(
+      [
+        { id: "stuck-import", load: () => new Promise(() => {}) },
+        { id: "stuck-setup", load: async () => ({ default: plugin("stuck-setup", () => new Promise(() => {})) }) },
+        { id: "quick", load: async () => ({ default: plugin("quick", () => {}) }) },
+      ],
+      services(),
+      { timeoutMs: 20 },
+    );
+    expect(faults.map((f) => [f.plugin, f.phase, f.message])).toEqual([
+      ["stuck-import", "load", "importing stuck-import took longer than 20ms"],
+      ["stuck-setup", "setup", "the setup of stuck-setup took longer than 20ms"],
+    ]);
+    expect(registry.plugins).toEqual(["quick"]);
   });
 
   test("setup sees the viewer and the host", async () => {

@@ -15,6 +15,7 @@ describe("paths", () => {
   test("patterns that match the same paths share a shape", () => {
     expect(pathShape("/runs/$runId")).toBe(pathShape("/runs/$id"));
     expect(pathShape("/runs/new")).not.toBe(pathShape("/runs/$id"));
+    expect(pathShape("/Rin")).toBe(pathShape("/rin"));
   });
 
   test("an address from a pattern, its parameters escaped, with a query", () => {
@@ -31,5 +32,6 @@ describe("paths", () => {
     expect(matchPath("/runs/$runId", "/runs")).toBeUndefined();
     expect(matchPath("/runs/$runId", "/tasks/x")).toBeUndefined();
     expect(matchPath("/", "/")).toEqual({});
+    expect(matchPath("/runs/$runId", "/runs/%E0%A4%A")).toBeUndefined();
   });
 });

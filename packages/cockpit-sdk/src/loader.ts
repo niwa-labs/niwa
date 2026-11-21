@@ -21,22 +21,37 @@ export type LoadResult = {
   faults: PluginFault[];
 };
 
-/** The catalogue's modules as sources, imported by their hashed address. */
+/** The catalogue's modules as sources, imported by their content-addressed entries. */
 export function catalogueSources(
   catalogue: CockpitCatalogue,
   importModule: (url: string) => Promise<unknown> = (url) => import(/* @vite-ignore */ url),
 ): PluginSource[] {
-  return catalogue.modules.map((module) => ({
-    id: module.id,
-    load: () => importModule(`${module.entry}${module.entry.includes("?") ? "&" : "?"}h=${encodeURIComponent(module.hash)}`),
-  }));
+  return catalogue.modules.map((module) => ({ id: module.id, load: () => importModule(module.entry) }));
+}
+
+/** How long a module may take to import, and then to set up, before it is left out. */
+export const DEFAULT_MODULE_TIMEOUT_MS = 10_000;
+
+class Timeout extends Error {}
+
+function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Timeout(`${what} took longer than ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
 export async function loadPlugins(
   sources: readonly PluginSource[],
   services: Services,
-  options: { slots?: ReadonlyArray<{ name: string; kind: SlotKind }> | undefined } = {},
+  options: {
+    slots?: ReadonlyArray<{ name: string; kind: SlotKind }> | undefined;
+    /** Per module, for the import and again for the setup; a module that takes longer is left out. */
+    timeoutMs?: number | undefined;
+  } = {},
 ): Promise<LoadResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_MODULE_TIMEOUT_MS;
   const faults: PluginFault[] = [];
   const seen = new Set<string>();
   const unique = sources.filter((source) => {
@@ -52,7 +67,7 @@ export async function loadPlugins(
     unique.map(async (source): Promise<{ draft: PluginDraft } | { fault: PluginFault }> => {
       let loaded: unknown;
       try {
-        loaded = await source.load();
+        loaded = await within(source.load(), timeoutMs, `importing ${source.id}`);
       } catch (error) {
         return { fault: { plugin: source.id, phase: "load", message: faultMessage(error), error } };
       }
@@ -63,7 +78,7 @@ export async function loadPlugins(
       if (plugin.id !== source.id) {
         return { fault: { plugin: source.id, phase: "load", message: `the module ${source.id} exports the plugin ${plugin.id}` } };
       }
-      return runSetup(plugin, services);
+      return runSetup(plugin, services, (setup) => within(setup, timeoutMs, `the setup of ${source.id}`));
     }),
   );
 

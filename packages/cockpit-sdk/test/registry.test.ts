@@ -52,12 +52,16 @@ describe("registration in a module's own setup", () => {
       source("bad-path", (ctx) => ctx.pages.add({ path: "runs", title: "Runs", component: Part })),
       source("bad-key", (ctx) => ctx.slots.register("home.tile", { key: "", component: Part })),
       source("bad-kind", (ctx) => ctx.entities.register("Run", { label: "Run", href: (id) => `/runs/${id}` })),
+      source("bad-prefix", (ctx) => ctx.entities.register("pr", { label: "PR", prefix: "pull-request", href: () => "/" })),
+      source("bad-nav", (ctx) => ctx.pages.add({ path: "/runs/$runId", title: "Run", component: Part, nav: {} })),
       source("good", (ctx) => ctx.pages.add({ path: "/good", title: "Good", component: Part })),
     );
     expect(faults.map((f) => [f.plugin, f.phase])).toEqual([
       ["bad-path", "setup"],
       ["bad-key", "setup"],
       ["bad-kind", "setup"],
+      ["bad-prefix", "setup"],
+      ["bad-nav", "setup"],
     ]);
     expect(registry.plugins).toEqual(["good"]);
   });
@@ -106,17 +110,60 @@ describe("slots", () => {
       source("digest", (ctx) => ctx.slots.register("rin.panel", { key: "digest", component: Part })),
       source("rin", (ctx) => {
         ctx.slots.declare("rin.panel", "list");
-        ctx.slots.register("home.tile", { key: "t", component: Part });
+        ctx.slots.register("record.view", { key: "run.started", component: Part });
       }),
-      source("rival", (ctx) => ctx.slots.register("home.tile", { key: "t", component: Part })),
+      source("rival", (ctx) => ctx.slots.register("record.view", { key: "run.started", component: Part })),
       source("dup", (ctx) => ctx.slots.declare("home.tile", "list")),
     );
     expect(faults.map((f) => [f.plugin, f.message])).toEqual([
+      ["rival", "the key run.started in record.view is already used by rin"],
       ["dup", "the slot home.tile is already declared by cockpit"],
-      ["rival", "the key t in home.tile is already used by rin"],
     ]);
     expect(registry.plugins).toEqual(["digest", "rin"]);
+  });
 
+  test("list keys only need to be unique within a module", async () => {
+    const { faults, registry } = await load(
+      source("a", (ctx) => ctx.slots.register("home.tile", { key: "overview", component: Part })),
+      source("b", (ctx) => ctx.slots.register("home.tile", { key: "overview", component: Part })),
+      source("c", (ctx) => {
+        ctx.slots.register("home.tile", { key: "twice", component: Part });
+        ctx.slots.register("home.tile", { key: "twice", component: Part });
+      }),
+    );
+    expect(faults.map((f) => f.plugin)).toEqual(["c"]);
+    expect(registry.slot("home.tile").map((c) => `${c.plugin}:${c.key}`)).toEqual(["a:overview", "b:overview"]);
+    expect(registry.slot("shell.status")).toBe(registry.slot("shell.status"));
+  });
+
+  test("a module that clashes only with a module that is left out anyway stays", async () => {
+    const { faults, registry } = await load(
+      source("a", (ctx) => {
+        ctx.pages.add({ path: "/x", title: "A", component: Part });
+        ctx.slots.register("rin.panel", { key: "p", component: Part });
+      }),
+      source("b", (ctx) => ctx.pages.add({ path: "/x", title: "B", component: Part })),
+    );
+    expect(faults.map((f) => [f.plugin, f.place])).toEqual([["a", "rin.panel"]]);
+    expect(registry.plugins).toEqual(["b"]);
+    expect(registry.pages.map((p) => p.title)).toEqual(["B"]);
+  });
+
+  test("a module whose holder goes for a reason of its own is judged again", async () => {
+    const { faults, registry } = await load(
+      source("z", (ctx) => ctx.pages.add({ path: "/c", title: "Z", component: Part })),
+      source("a", (ctx) => {
+        ctx.pages.add({ path: "/x", title: "A", component: Part });
+        ctx.slots.register("c.panel" as "rin.panel", { key: "p", component: Part });
+      }),
+      source("b", (ctx) => ctx.pages.add({ path: "/x", title: "B", component: Part })),
+      source("c", (ctx) => {
+        ctx.slots.declare("c.panel" as "rin.panel", "list");
+        ctx.pages.add({ path: "/c", title: "C", component: Part });
+      }),
+    );
+    expect(faults.map((f) => f.plugin)).toEqual(["c", "a"]);
+    expect(registry.plugins).toEqual(["z", "b"]);
   });
 
   test("a single slot takes one contribution; the later module is left out", async () => {

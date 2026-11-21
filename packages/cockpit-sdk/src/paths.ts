@@ -30,9 +30,12 @@ export function pathProblem(pattern: string): string | undefined {
   return undefined;
 }
 
-/** The shape of a pattern with parameter names erased: two patterns that would match the same paths share it. */
+/**
+ * The shape of a pattern with parameter names erased and letters lowered: two patterns that a
+ * router matching without regard to case would confuse share it.
+ */
 export function pathShape(pattern: string): string {
-  return pattern.replace(/\$[A-Za-z_][A-Za-z0-9_]*/g, "$");
+  return pattern.replace(/\$[A-Za-z_][A-Za-z0-9_]*/g, "$").toLowerCase();
 }
 
 /** The address of a page: the pattern with its parameters filled in, and an optional query. */
@@ -61,7 +64,11 @@ export function matchPath<P extends string>(pattern: P, path: string): PathParam
     const h = have[i]!;
     if (w.startsWith("$")) {
       if (h === "") return undefined;
-      params[w.slice(1)] = decodeURIComponent(h);
+      try {
+        params[w.slice(1)] = decodeURIComponent(h);
+      } catch {
+        return undefined;
+      }
     } else if (w !== h) {
       return undefined;
     }

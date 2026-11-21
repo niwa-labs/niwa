@@ -47,7 +47,7 @@ export {
   type CockpitCatalogue,
   type CockpitModule,
 } from "./catalogue.ts";
-export { catalogueSources, loadPlugins, type LoadResult, type PluginSource } from "./loader.ts";
+export { catalogueSources, DEFAULT_MODULE_TIMEOUT_MS, loadPlugins, type LoadResult, type PluginSource } from "./loader.ts";
 
 export { matchRecord, type RecordMatch, type StoredRecord } from "./records.ts";
 export { serverEvents, textChunks, type ServerEvent } from "./sse.ts";

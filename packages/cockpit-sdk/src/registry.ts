@@ -4,8 +4,9 @@
  * Each module registers into a draft of its own during setup. Assembling the drafts decides
  * conflicts in load order — the module loaded first keeps a path, a slot name, an entity kind
  * or a single slot — and leaves out a module whole when anything it registered cannot be
- * accepted, so no module is ever half installed. Leaving a module out can strand contributions
- * to the slots it declared, so assembly repeats until every remaining module fits.
+ * accepted, so no module is ever half installed. Leaving a module out can free what it took and
+ * strand contributions to the slots it declared, so assembly leaves out one module at a time,
+ * the first in load order that does not fit, and starts again.
  */
 
 import type { ComponentType } from "react";
@@ -74,6 +75,9 @@ export type PluginDraft = {
 
 const SLOT_NAME = /^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+$/;
 const ENTITY_KIND = /^[a-z][a-z0-9-]*$/;
+/** An id prefix is one word: ids are split at their first dash. */
+const ID_PREFIX = /^[a-z][a-z0-9]*$/;
+const NO_CONTRIBUTIONS: readonly RegisteredContribution[] = Object.freeze([]);
 const SLOT_KINDS: ReadonlySet<string> = new Set(["single", "list", "keyed"]);
 
 function isComponent(value: unknown): boolean {
@@ -110,6 +114,9 @@ export function draftContext(plugin: string, services: Services): { ctx: PluginC
         if (problem !== undefined) throw new RegistrationError(problem);
         if (typeof page.title !== "string" || page.title === "") throw new RegistrationError(`the page ${page.path} has no title`);
         if (!isComponent(page.component)) throw new RegistrationError(`the page ${page.path} has no component`);
+        if (page.nav !== undefined && page.path.includes("$")) {
+          throw new RegistrationError(`the page ${page.path} has parameters and cannot be in the navigation`);
+        }
         draft.pages.push({
           plugin,
           path: page.path,
@@ -141,8 +148,8 @@ export function draftContext(plugin: string, services: Services): { ctx: PluginC
       register(kind, spec) {
         guard(`the entity kind ${kind}`);
         if (!ENTITY_KIND.test(kind)) throw new RegistrationError(`an entity kind is a lowercase word: "${kind}"`);
-        if (spec.prefix !== undefined && !ENTITY_KIND.test(spec.prefix)) {
-          throw new RegistrationError(`the id prefix of ${kind} is a lowercase word: "${spec.prefix}"`);
+        if (spec.prefix !== undefined && !ID_PREFIX.test(spec.prefix)) {
+          throw new RegistrationError(`the id prefix of ${kind} is one lowercase word without dashes: "${spec.prefix}"`);
         }
         if (typeof spec.href !== "function") throw new RegistrationError(`the entity kind ${kind} has no href`);
         draft.entities.push({ kind, spec });
@@ -158,48 +165,54 @@ export function draftContext(plugin: string, services: Services): { ctx: PluginC
   };
 }
 
-type Built = { registry: CockpitRegistry; rejected: PluginFault[] };
+/**
+ * A module that does not fit, and the module whose presence makes it not fit, if any: the
+ * earlier holder of a path, slot, kind or key, or the owner of a slot it needs that was itself
+ * left out in this round.
+ */
+type Misfit = { fault: PluginFault; holder: string | undefined };
+
+type Built = { registry: CockpitRegistry; misfits: Misfit[] };
 
 function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: readonly PluginDraft[]): Built {
-  const rejected: PluginFault[] = [];
+  const misfits: Misfit[] = [];
   const slots = new Map<string, { kind: SlotKind; owner: string }>(base.map((s) => [s.name, { kind: s.kind, owner: "cockpit" }]));
   const entities = new Map<string, RegisteredEntity>();
   const prefixes = new Map<string, string>();
   const shapes = new Map<string, string>();
   const pages: RegisteredPage[] = [];
   const accepted: PluginDraft[] = [];
+  const left: PluginDraft[] = [];
 
   // First what modules own: slot names, entity kinds and their tab slots, page paths.
   for (const draft of drafts) {
-    const reject = (place: string, message: string): void => {
-      rejected.push({ plugin: draft.plugin, phase: "register", place, message });
+    let ok = true;
+    const reject = (place: string, message: string, holder: string): void => {
+      misfits.push({ fault: { plugin: draft.plugin, phase: "register", place, message }, holder });
+      ok = false;
     };
     const ownSlots = new Map<string, SlotKind>();
     const ownShapes = new Map<string, string>();
     const ownPrefixes = new Map<string, string>();
-    let ok = true;
     const claimSlot = (name: string, kind: SlotKind): void => {
       const taken = slots.get(name)?.owner ?? (ownSlots.has(name) ? draft.plugin : undefined);
-      if (taken !== undefined) {
-        reject(name, `the slot ${name} is already declared by ${taken}`);
-        ok = false;
-      } else ownSlots.set(name, kind);
+      if (taken !== undefined) reject(name, `the slot ${name} is already declared by ${taken}`, taken);
+      else ownSlots.set(name, kind);
     };
     for (const d of draft.declarations) claimSlot(d.name, d.kind);
     const ownKinds = new Set<string>();
     for (const e of draft.entities) {
       const owner = entities.get(e.kind)?.plugin ?? (ownKinds.has(e.kind) ? draft.plugin : undefined);
       if (owner !== undefined) {
-        reject(e.kind, `the entity kind ${e.kind} is already registered by ${owner}`);
-        ok = false;
+        reject(e.kind, `the entity kind ${e.kind} is already registered by ${owner}`, owner);
         continue;
       }
       ownKinds.add(e.kind);
       if (e.spec.prefix !== undefined) {
-        const prefixOwner = prefixes.get(e.spec.prefix) ?? ownPrefixes.get(e.spec.prefix);
-        if (prefixOwner !== undefined) {
-          reject(e.kind, `the id prefix ${e.spec.prefix} already belongs to the entity kind ${prefixOwner}`);
-          ok = false;
+        const prefixKind = prefixes.get(e.spec.prefix) ?? ownPrefixes.get(e.spec.prefix);
+        if (prefixKind !== undefined) {
+          const holder = entities.get(prefixKind)?.plugin ?? draft.plugin;
+          reject(e.kind, `the id prefix ${e.spec.prefix} already belongs to the entity kind ${prefixKind}`, holder);
         } else ownPrefixes.set(e.spec.prefix, e.kind);
       }
       claimSlot(entityTabSlot(e.kind), "list");
@@ -207,12 +220,13 @@ function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: re
     for (const page of draft.pages) {
       const shape = pathShape(page.path);
       const owner = shapes.get(shape) ?? (ownShapes.has(shape) ? draft.plugin : undefined);
-      if (owner !== undefined) {
-        reject(page.path, `the path ${page.path} is already taken by ${owner}`);
-        ok = false;
-      } else ownShapes.set(shape, page.path);
+      if (owner !== undefined) reject(page.path, `the path ${page.path} is already taken by ${owner}`, owner);
+      else ownShapes.set(shape, page.path);
     }
-    if (!ok) continue;
+    if (!ok) {
+      left.push(draft);
+      continue;
+    }
     for (const [name, kind] of ownSlots) slots.set(name, { kind, owner: draft.plugin });
     for (const e of draft.entities) entities.set(e.kind, { ...e.spec, kind: e.kind, plugin: draft.plugin });
     for (const [prefix, kind] of ownPrefixes) prefixes.set(prefix, kind);
@@ -221,33 +235,43 @@ function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: re
     accepted.push(draft);
   }
 
+  /** The module left out in this round that would have declared the slot. */
+  const lostOwner = (slot: string): string | undefined =>
+    left.find((d) => d.declarations.some((x) => x.name === slot) || d.entities.some((x) => entityTabSlot(x.kind) === slot))?.plugin;
+
   // Then what modules contribute, against the slots that exist now.
   const filled = new Map<string, RegisteredContribution[]>();
   for (const draft of accepted) {
     const own = new Map<string, RegisteredContribution[]>();
-    let fault: PluginFault | undefined;
+    let misfit: Misfit | undefined;
     for (const { slot, contribution } of draft.contributions) {
       const declared = slots.get(slot);
       const existing = [...(filled.get(slot) ?? []), ...(own.get(slot) ?? [])];
+      const fault = (message: string, holder: string | undefined): Misfit => ({
+        fault: { plugin: draft.plugin, phase: "register", place: slot, message },
+        holder,
+      });
+      // Keys of a keyed slot are what it is looked up by, so they are unique across modules;
+      // elsewhere a key only has to be unique within its module.
+      const clash = existing.find((c) => c.key === contribution.key && (declared?.kind === "keyed" || c.plugin === draft.plugin));
       if (declared === undefined) {
-        fault = { plugin: draft.plugin, phase: "register", place: slot, message: `no module declares the slot ${slot}` };
+        misfit = fault(`no module declares the slot ${slot}`, lostOwner(slot));
       } else if (declared.kind === "single" && existing.length > 0) {
-        fault = { plugin: draft.plugin, phase: "register", place: slot, message: `the single slot ${slot} is already filled by ${existing[0]!.plugin}` };
-      } else if (existing.some((c) => c.key === contribution.key)) {
-        const other = existing.find((c) => c.key === contribution.key)!;
-        fault = { plugin: draft.plugin, phase: "register", place: slot, message: `the key ${contribution.key} in ${slot} is already used by ${other.plugin}` };
+        misfit = fault(`the single slot ${slot} is already filled by ${existing[0]!.plugin}`, existing[0]!.plugin);
+      } else if (clash !== undefined) {
+        misfit = fault(`the key ${contribution.key} in ${slot} is already used by ${clash.plugin}`, clash.plugin);
       }
-      if (fault !== undefined) break;
+      if (misfit !== undefined) break;
       own.set(slot, [...(own.get(slot) ?? []), { ...contribution, plugin: draft.plugin }]);
     }
-    if (fault !== undefined) {
-      rejected.push(fault);
+    if (misfit !== undefined) {
+      misfits.push(misfit);
       continue;
     }
     for (const [slot, list] of own) filled.set(slot, [...(filled.get(slot) ?? []), ...list]);
   }
 
-  const plugins = accepted.map((d) => d.plugin).filter((id) => !rejected.some((f) => f.plugin === id));
+  const plugins = accepted.map((d) => d.plugin).filter((id) => !misfits.some((m) => m.fault.plugin === id));
   for (const [slot, list] of filled) {
     if (slots.get(slot)?.kind === "list") {
       // A stable sort: equal orders keep load order.
@@ -289,14 +313,19 @@ function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: re
     nav,
     entities: entityRegistry,
     slotKind: (name) => slots.get(name)?.kind,
-    slot: <K extends SlotName>(name: K) => (filled.get(name) ?? []) as readonly RegisteredContribution<SlotPropsOf<K>>[],
+    slot: <K extends SlotName>(name: K) => (filled.get(name) ?? NO_CONTRIBUTIONS) as readonly RegisteredContribution<SlotPropsOf<K>>[],
   };
-  return { registry, rejected };
+  return { registry, misfits };
 }
 
 /**
  * Assemble the drafts, in load order, over the slots the cockpit owns. A module that does not
- * fit is left out whole and reported; assembly repeats until the remaining modules all fit.
+ * fit is left out whole and reported, and assembly starts again without it.
+ *
+ * Each round leaves out one module: the first in load order whose misfit is certain — caused by
+ * nothing, by the cockpit, by itself, or by a module that fits. A module that only clashes with
+ * a module that is itself about to go, or needs a slot of one, waits: it may fit once that one
+ * is gone. When every misfit waits on another, the first in load order goes.
  */
 export function assembleRegistry(
   base: ReadonlyArray<{ name: string; kind: SlotKind }>,
@@ -305,11 +334,17 @@ export function assembleRegistry(
   const faults: PluginFault[] = [];
   let remaining = drafts;
   for (;;) {
-    const { registry, rejected } = build(base, remaining);
-    if (rejected.length === 0) return { registry, faults };
-    faults.push(...rejected);
-    const out = new Set(rejected.map((f) => f.plugin));
-    remaining = remaining.filter((d) => !out.has(d.plugin));
+    const { registry, misfits } = build(base, remaining);
+    if (misfits.length === 0) return { registry, faults };
+    const failing = new Set(misfits.map((m) => m.fault.plugin));
+    const certain = misfits.filter(
+      (m) => m.holder === undefined || m.holder === m.fault.plugin || !failing.has(m.holder),
+    );
+    const order = new Map(remaining.map((d, index) => [d.plugin, index]));
+    const pool = certain.length > 0 ? certain : misfits;
+    const first = pool.reduce((a, b) => (order.get(b.fault.plugin)! < order.get(a.fault.plugin)! ? b : a));
+    faults.push(first.fault);
+    remaining = remaining.filter((d) => d.plugin !== first.fault.plugin);
   }
 }
 
@@ -317,10 +352,12 @@ export function assembleRegistry(
 export async function runSetup(
   plugin: { id: string; setup: (ctx: PluginContext) => void | Promise<void> },
   services: Services,
+  /** Bounds the setup, e.g. with a deadline; the draft closes when it settles either way. */
+  bound: (setup: Promise<void>) => Promise<void> = (setup) => setup,
 ): Promise<{ draft: PluginDraft } | { fault: PluginFault }> {
   const { ctx, draft, close } = draftContext(plugin.id, services);
   try {
-    await plugin.setup(ctx);
+    await bound(Promise.resolve().then(() => plugin.setup(ctx)));
     return { draft };
   } catch (error) {
     return { fault: { plugin: plugin.id, phase: "setup", message: faultMessage(error), error } };
