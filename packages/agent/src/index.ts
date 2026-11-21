@@ -56,6 +56,7 @@ import {
   AgentTurnDelivered,
   AgentTurnFailed,
   AgentTurnQueued,
+  AgentTurnRouted,
   BriefingSectionOutput,
   PromptSectionOutput,
   agentAttach,
@@ -305,7 +306,25 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       if (found === undefined) return void (await failed("unsent", `there is no agent "${turn.agent}"`));
       const { definition } = found;
       const text = turnText(turn);
-      const main = mainOf(turn.agent);
+      const startedForTurn = mainSessionsOf(turn.agent).find((session) => session.firstTurn?.turn === turn.turn);
+      const finishStart = async (session: string, receipt?: DeliveryReceipt) => {
+        if (receipt !== undefined) {
+          await step.emit(AgentTurnDelivered, { agent: turn.agent, turn: turn.turn, session, receipt }, { key: "delivered" });
+          return;
+        }
+        const sent = await step.outcome(sessionSend, { session, message: text, operation: turn.turn }, { key: "send-first" });
+        if (sent.status === "completed") await step.emit(AgentTurnDelivered, { agent: turn.agent, turn: turn.turn, session, receipt: sent.value.receipt }, { key: "delivered" });
+        else await failed(sent.status === "failed" && !sent.effectPossible ? "unsent" : "possibly-sent", sent.status === "failed" ? sent.error : sent.status);
+      };
+      if (startedForTurn !== undefined) return finishStart(startedForTurn.session, startedForTurn.firstTurn?.receipt);
+
+      let route = dataOf(journal(), AgentTurnRouted).find((one) => one.agent === turn.agent && one.turn === turn.turn);
+      if (route === undefined) {
+        const session = mainOf(turn.agent)?.session;
+        route = { agent: turn.agent, turn: turn.turn, ...(session === undefined ? {} : { session }), held: session !== undefined && heldNow(session) };
+        await step.emit(AgentTurnRouted, route, { key: "route" });
+      }
+      const main = route.session === undefined ? undefined : { session: route.session };
 
       // The steps are keyed by what they do: a replay that finds the session otherwise than the first run
       // did takes the same steps again by their names, and a send made once is answered from its record.
@@ -324,7 +343,7 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
         };
         // A session the host holds takes the turn; one whose process turns out gone, or a host before this one
         // held, is resumed first.
-        if (heldNow(main.session) && (await sendInto("send"))) return;
+        if (route.held && (await sendInto("send"))) return;
         const resumed = await step.outcome(sessionResume, { session: main.session }, { key: "resume" });
         if (resumed.status === "completed") {
           if (!(await sendInto("send-resumed"))) await failed("unsent", "the resumed session did not take the turn");
@@ -370,19 +389,13 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
         id: started.value.session,
         harness,
         ...(definition.role === undefined ? {} : { role: definition.role }),
+        firstTurn: { turn: turn.turn, ...(started.value.receipt === undefined ? {} : { receipt: started.value.receipt }) },
         parts: partVersions(definition),
         origin: main === undefined || seed === undefined ? { kind: "first" } : { kind: "seeded", from: main.session, seed: seed.kind },
         },
         { key: "session" },
       );
-      const receipt: DeliveryReceipt | undefined = started.value.receipt;
-      if (receipt !== undefined) {
-        await step.emit(AgentTurnDelivered, { agent: turn.agent, turn: turn.turn, session: started.value.ref, receipt }, { key: "delivered" });
-        return;
-      }
-      const sent = await step.outcome(sessionSend, { session: started.value.ref, message: text, operation: turn.turn }, { key: "send-first" });
-      if (sent.status === "completed") await step.emit(AgentTurnDelivered, { agent: turn.agent, turn: turn.turn, session: started.value.ref, receipt: sent.value.receipt }, { key: "delivered" });
-      else await failed(sent.status === "failed" && !sent.effectPossible ? "unsent" : "possibly-sent", sent.status === "failed" ? sent.error : sent.status);
+      await finishStart(started.value.ref, started.value.receipt);
     });
 
     /**

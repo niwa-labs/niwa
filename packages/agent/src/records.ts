@@ -107,6 +107,7 @@ export const AgentSessionStarted = record(
     harness: z.string().min(1),
     /** The role the harness was chosen by, when the agent runs on a role. */
     role: z.string().min(1).optional(),
+    firstTurn: z.object({ turn: z.string(), receipt: DeliveryReceiptSchema.optional() }).optional(),
     parts: PartVersions,
     origin: SessionOrigin,
   }),
@@ -151,6 +152,11 @@ export const AgentTurnQueued = record(
   }),
 );
 
+/** The main session and delivery path selected before this turn touches a harness. */
+export const AgentTurnRouted = record("agent.turn.routed", z.object({
+  agent: AgentName, turn: TurnId, session: SessionRefText.optional(), held: z.boolean(),
+}));
+
 /** A turn reached the agent's main session. */
 export const AgentTurnDelivered = record(
   "agent.turn.delivered",
@@ -183,7 +189,7 @@ export const AgentDigestDue = record("agent.digest.due", z.object({ agent: Agent
 export const AgentDetached = record("agent.detached", z.object({ agent: AgentName, session: SessionRefText }));
 
 /** The record types the module declares. */
-export const AGENT_TYPES = [AgentCreated, AgentSessionStarted, AgentTurnQueued, AgentTurnDelivered, AgentTurnFailed, AgentAttached, AgentDetached, AgentDigestDue] as const;
+export const AGENT_TYPES = [AgentCreated, AgentSessionStarted, AgentTurnRouted, AgentTurnQueued, AgentTurnDelivered, AgentTurnFailed, AgentAttached, AgentDetached, AgentDigestDue] as const;
 
 /**
  * The digests of attached sessions, as they reach an agent: what a plugin that takes them in (a memory)

@@ -8,7 +8,7 @@ import { action, actionRef, agent as agentAddress, grant, principalOf } from "@n
 import { connect } from "@niwa-labs/client";
 import type { ActionName, StoredRecord } from "@niwa-labs/core";
 import { connectAsOwner } from "@niwa-labs/testing";
-import { AGENT_PROMPT_SECTION, PromptSectionInput, PromptSectionOutput, partVersions, AgentDefinition, turnText } from "@niwa-labs/agent";
+import { AGENT_PROMPT_SECTION, PromptSectionInput, PromptSectionOutput, partVersions, AgentDefinition, AgentSessionStarted, AgentTurnQueued, turnText } from "@niwa-labs/agent";
 import { plugin } from "@niwa-labs/plugin";
 
 import { Unsupported, harnessId } from "@niwa-labs/harness";
@@ -279,4 +279,19 @@ test("the owner can select harness tools and delegated hands preserve approval",
   } finally {
     await client.close();
   }
+});
+
+test("an interrupted turn resumes from its start receipt after a new session was recorded", async () => {
+  const host = await served({ agents: [RIN] });
+  const session = `${HARNESS} recorded`;
+  const turn = "msg-d00d00";
+  await host.host.emit(AgentSessionStarted, {
+    agent: "rin", session, id: "s-recorded", harness: HARNESS, parts: {}, origin: { kind: "first" },
+    firstTurn: { turn, receipt: { status: "started", turn: 1 } },
+  });
+  await host.host.emit(AgentTurnQueued, { agent: "rin", turn, kind: "message", text: "same turn", author: { kind: "owner" } });
+  const rows = await until(host.records, "agent.turn.delivered");
+  expect(host.control.sends).toHaveLength(0);
+  expect(host.control.resumes).toHaveLength(0);
+  expect(dataOf(rows, "agent.turn.delivered")).toEqual([{ agent: "rin", session, turn, receipt: { status: "started", turn: 1 } }]);
 });
