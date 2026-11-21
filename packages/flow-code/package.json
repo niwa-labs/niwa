@@ -9,5 +9,9 @@
     "@niwa-labs/flow": "workspace:*",
     "@niwa-labs/git": "workspace:*",
     "@niwa-labs/proc": "workspace:*"
+  },
+  "devDependencies": {
+    "@niwa-labs/testing": "workspace:*",
+    "zod": "^4.6.7"
   }
 }

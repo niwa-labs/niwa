@@ -139,6 +139,10 @@
         "@niwa-labs/git": "workspace:*",
         "@niwa-labs/proc": "workspace:*",
       },
+      "devDependencies": {
+        "@niwa-labs/testing": "workspace:*",
+        "zod": "^4.6.7",
+      },
     },
     "packages/flow-eval": {
       "name": "@niwa-labs/flow-eval",

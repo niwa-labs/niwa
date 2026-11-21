@@ -3,8 +3,8 @@
 
 export { Attempt, FindingSchema, JudgedSchema, VERDICTS, VerdictSchema, passes } from "./types.ts";
 export type { Finding, FlowError, Judged, Settled, Verdict } from "./types.ts";
-export { agentOptions, checkKey, harnessOf, seatKeys, vendorOf } from "./script.ts";
-export type { Seat, SeatOptions } from "./script.ts";
+export { agentOptions, checkKey, checkKeys, harnessOf, isFatal, script, seatKeys, vendorOf } from "./script.ts";
+export type { ScriptGlobals, Seat, SeatOptions } from "./script.ts";
 export { askSeat, consensus, firstPassing, map, mapReduce, parallel, rankAll, stream, swarm } from "./group.ts";
 export { graph, graphProblems } from "./graph.ts";
 export type { GraphNode } from "./graph.ts";
