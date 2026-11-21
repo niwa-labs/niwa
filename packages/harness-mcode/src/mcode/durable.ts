@@ -42,18 +42,26 @@ export function durablePathOf(home: string): string {
   return join(home, DURABLE_DIR, DURABLE_NAME);
 }
 
-/** The newest generation of Ncode's session log. Only the configured home may be a symlink. */
-export function sessionDurablePath(home: string, native: string): string | undefined {
-  // The producer's safeHistoryPathSegment. The entry and payload identities are checked on read
-  // because this encoding is not injective.
-  const segment = native.replace(/[<>:"/\\|?*\x00-\x1f]/gu, "-").replace(/^\.+/u, "").slice(0, 180) || "snapshot";
-  let directory = home;
-  for (const component of [DURABLE_DIR, "sessions", segment]) {
+// Match the producer's safeHistoryPathSegment. This encoding is not injective.
+function sessionSegment(native: string): string {
+  return native.replace(/[<>:"/\\|?*\x00-\x1f]/gu, "-").replace(/^\.+/u, "").slice(0, 180) || "snapshot";
+}
+
+function checkedDirectory(root: string, components: string[]): string | undefined {
+  let directory = root;
+  for (const component of components) {
     directory = join(directory, component);
     const info = lstatSync(directory, { throwIfNoEntry: false });
     if (info === undefined) return undefined;
     if (!info.isDirectory()) throw new Error(`ncode: expected a session history directory at ${directory}`);
   }
+  return directory;
+}
+
+/** The newest generation of Ncode's session log. Only the configured home may be a symlink. */
+export function sessionDurablePath(home: string, native: string): string | undefined {
+  const directory = checkedDirectory(home, [DURABLE_DIR, "sessions", sessionSegment(native)]);
+  if (directory === undefined) return undefined;
   let generation = 0;
   for (const name of readdirSync(directory)) {
     const match = /^sessions\.g([1-9]\d*)\.db$/.exec(name);
@@ -206,6 +214,37 @@ export function durableSessions(path: string): string[] {
   } catch (error) {
     tellOnce(path, error);
     return [];
+  }
+}
+
+/** Discover native identities only inside the fork's canonical per-session stores. */
+export function* sessionStoreIds(home: string, wanted: Set<string> | undefined, listed: Set<string>): Generator<string> {
+  const root = checkedDirectory(home, [DURABLE_DIR, "sessions"]);
+  if (root === undefined) return;
+  const segments = wanted === undefined
+    ? readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+    : new Set(Array.from(wanted, sessionSegment));
+  for (const segment of segments) {
+    if (segment !== sessionSegment(segment)) continue;
+    try {
+      const path = sessionDurablePath(home, segment);
+      if (path === undefined) continue;
+      const db = open(path);
+      try {
+        db.run("begin");
+        const rows = db.query<{ id: string }, []>(
+          "select distinct substr(entry_id, 1, instr(entry_id, '|') - 1) as id from entries where instr(entry_id, '|') > 1",
+        ).all();
+        for (const { id } of rows) {
+          if (sessionSegment(id) !== segment || listed.has(id) || (wanted && !wanted.has(id))) continue;
+          if (checkpointOf(db, path, id) || !entriesOf(db, id, true).next().done) yield id;
+        }
+      } finally {
+        db.close();
+      }
+    } catch (error) {
+      tellOnce(join(root, segment), error);
+    }
   }
 }
 

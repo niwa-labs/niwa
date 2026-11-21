@@ -643,6 +643,33 @@ test("the fork reads the active generation in the session's own database through
   await expect(Array.fromAsync(reader.read(id(native)))).rejects.toThrow("another harness installation");
 });
 
+test("Ncode lists a database-only session by its stored native identity", async () => {
+  const native = "mvs_example:import";
+  const storage = join(home, "durable-history");
+  const directory = join(storage, "sessions", "mvs_example-import");
+  mkdirSync(directory, { recursive: true });
+  putBatch([full(native, "seed", [envelope("question", user("per-session only"))])]);
+  db.run("vacuum into ?", [join(directory, "sessions.g2.db")]);
+  const misplaced = join(storage, "sessions", "unrelated");
+  mkdirSync(misplaced);
+  db.run("vacuum into ?", [join(misplaced, "sessions.g1.db")]);
+  db.close();
+  rmSync(join(storage, "sessions.g1.db"));
+  db = new Database(":memory:");
+  symlinkSync(directory, join(storage, "sessions", "linked"));
+  const stale = join(directory, "sessions.g1.db");
+  writeFileSync(stale, "an older generation is not active");
+  const reader = new McodeReading({ harness: harnessId("ncode-test"), home, perSessionHistory: true });
+  const result = await Array.fromAsync(reader.list());
+  expect(result.map((item) => item.id.native)).toEqual([native]);
+  expect(texts(await Array.fromAsync(reader.read(result[0]!.id)))).toEqual(["per-session only"]);
+  expect(await Array.fromAsync(reader.list({ natives: [sessionId(harnessId("ncode-test"), "other").native] }))).toEqual([]);
+  expect(await Array.fromAsync(reader.list({ natives: [result[0]!.id.native] }))).toEqual(result);
+  expect(await Array.fromAsync(reading().list())).toEqual([]);
+  sessionDir(native);
+  expect((await Array.fromAsync(reader.list())).map((item) => item.id.native)).toEqual([native]);
+});
+
 test("a matching Ncode fold checkpoint supplies the compacted view and later appends", async () => {
   const native = "mvs_compacted";
   const storage = join(home, "durable-history");

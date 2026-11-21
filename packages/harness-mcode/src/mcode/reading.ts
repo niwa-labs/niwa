@@ -59,6 +59,7 @@ import {
   readDurableSession,
   readView,
   sessionDurablePath,
+  sessionStoreIds,
   STOP,
 } from "./durable.ts";
 import type { DurableTurn } from "./durable.ts";
@@ -451,7 +452,15 @@ export class McodeReading implements SessionReading {
       if (wanted !== undefined && !wanted.has(native)) continue;
       const id: SessionId = { harness: this.#harness, native: NativeSessionIdSchema.parse(native) };
       const title = titles.get(native) ?? this.#durableTitle(native) ?? undefined;
+      listed.add(native);
       yield { id, ...(title !== undefined ? { title } : {}) };
+    }
+    if (this.#perSessionHome === undefined) return;
+    for (const native of sessionStoreIds(this.#perSessionHome, wanted, listed)) {
+      const parsed = NativeSessionIdSchema.safeParse(native);
+      if (!parsed.success) continue;
+      const title = titles.get(native);
+      yield { id: { harness: this.#harness, native: parsed.data }, ...(title !== undefined ? { title } : {}) };
     }
   }
 
