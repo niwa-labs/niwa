@@ -204,3 +204,21 @@ test("the end the harness reports through its insert ends the watch of the sessi
   await host.call("insert.report", { kind: "session-ended", session: ID, reason: "quit" });
   expect(ended(await until(host.read, "history.session.ended"))).toEqual([{ session: ID, certainty: "exact", why: "end-hook" }]);
 });
+
+test("a session watched again without its process is not ended by the process it was watched with before", async () => {
+  const process = Bun.spawn(["sleep", "30"]);
+  const records: SessionRecord[] = [checklist(1, 0, 1)];
+  const host = await hosted((reading) => [history({ harnesses: [{ instance, reading }], timing: { pollMs: 10, pauseMs: 60_000, endMs: 120_000 } })], records);
+  await host.call("history.watch", { session: ID, pid: process.pid });
+  await until(host.read, "session.progress");
+  process.kill();
+  await process.exited;
+  expect(ended(await until(host.read, "history.session.ended"))).toHaveLength(1);
+
+  await host.call("history.watch", { session: ID });
+  records.push(checklist(2, 1, 1));
+  for (let waited = 0; (await host.read()).filter((record) => record.type === "session.progress").length < 2 && waited < 5_000; waited += 20) await Bun.sleep(20);
+  // A few polls with nothing new: a process that is gone would end the watch by now.
+  await Bun.sleep(150);
+  expect(ended(await host.read())).toHaveLength(1);
+});

@@ -208,7 +208,12 @@ export function history(options: HistoryOptions): Plugin {
             ...(cwd === undefined ? {} : { cwd }),
             ...(input.pid === undefined ? {} : { pid: input.pid }),
           });
-          follow(id, { ...before, ...(input.pid === undefined ? {} : { pid: input.pid }) });
+          // Only where the earlier watch got to is carried over: the process is the one this call names, if any.
+          follow(id, {
+            ...(before?.from === undefined ? {} : { from: before.from }),
+            ...(before?.progress === undefined ? {} : { progress: before.progress }),
+            ...(input.pid === undefined ? {} : { pid: input.pid }),
+          });
           return { watching: true };
         },
       }),
