@@ -336,6 +336,12 @@ export interface StartOptions extends OptionBlocks {
    * client. Without it a side answers them by its own policy, as a side used on its own does.
    */
   readonly reverse?: ReverseHandler;
+  /**
+   * Told the session's id as soon as the harness names it, before the first prompt is sent, by a
+   * side whose harness names the session first. The caller writes it down, so a start cut off
+   * while its prompt was going finds the session it made instead of making another.
+   */
+  readonly named?: (session: SessionId) => Promise<void> | void;
 }
 
 /**

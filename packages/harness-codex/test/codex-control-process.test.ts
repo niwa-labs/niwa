@@ -419,6 +419,20 @@ test("a start whose first turn may have been taken answers with the session, so 
   await codex.dispose();
 });
 
+test("the thread is named to the caller before its first turn is sent", async () => {
+  process.env.FAKE_MODE = "silent";
+  const codex = control({ callTimeoutMs: 300 });
+  const seen: Array<{ native: string; turns: number }> = [];
+  await codex.start({
+    prompt: promptFromText("go"),
+    named: async (id) => {
+      seen.push({ native: String(id.native), turns: (await startedTurns()).length });
+    },
+  });
+  expect(seen).toEqual([{ native: THREAD, turns: 0 }]);
+  await codex.dispose();
+});
+
 test("a start whose first turn Codex refused leaves no session behind", async () => {
   process.env.FAKE_MODE = "refuse-turn";
   const codex = control();

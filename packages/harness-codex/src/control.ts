@@ -939,8 +939,18 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         throw error;
       }
       const id = makeSessionId(harnessId, session.nativeId);
-      // The thread exists once Codex has named it. The prompt is its first turn, delivered like
-      // a send: the start waits for Codex to accept the turn, never for the turn to end.
+      // The thread exists once Codex has named it, and the caller knows it before the prompt goes:
+      // a start cut off while its first turn is on the way still finds its thread.
+      try {
+        await startOptions.named?.(id);
+      } catch (error) {
+        // A thread whose name could not be kept is one nobody could find again: it is given no work.
+        sessions.delete(session.nativeId);
+        await stopSession(session);
+        throw error;
+      }
+      // The prompt is its first turn, delivered like a send: the start waits for Codex to accept
+      // the turn, never for the turn to end.
       const text = promptText(startOptions.prompt);
       if (text === "") return { session: id, mode };
       try {
