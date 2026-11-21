@@ -1325,6 +1325,10 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
         await setMode(session, nativeId, mode, "start");
 
         const id = makeSessionId(harnessId, nativeId);
+        // The caller knows the session before its prompt goes: a start cut off while its first
+        // turn is on the way still finds it. A name that could not be kept leaves a session nobody
+        // could find again, so it is given no work.
+        await startOptions.named?.(id);
         // The session exists once the agent has named it. The prompt is its first turn,
         // delivered like a send: the start does not wait for the agent to finish it.
         const text = promptText(startOptions.prompt);

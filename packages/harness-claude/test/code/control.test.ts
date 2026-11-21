@@ -125,6 +125,7 @@ for await (const chunk of process.stdin) {
       appendFileSync(${JSON.stringify(join(dir, "settings.log"))}, JSON.stringify(frame.params) + "\\n");
       out({ jsonrpc: "2.0", id: frame.id, result: {} });
     } else if (frame.method === "session/prompt") {
+      appendFileSync(${JSON.stringify(join(dir, "prompts.log"))}, JSON.stringify(frame.params) + "\\n");
       if (${options.strict === true} && (busy || jobs.length > 0)) {
         out({ jsonrpc: "2.0", id: frame.id, error: { code: -32602, message: "Invalid params: A prompt is already active for this session." } });
         continue;
@@ -1101,4 +1102,41 @@ test("the end of a turn carries how it ended: completed when the agent finished 
     [1, "completed"],
     [2, "unknown"],
   ]);
+});
+
+test("a start tells the caller the session before its first prompt goes out", async () => {
+  control = claudeCodeControl({ harness: "fake", command: [await fakeAgent({ turnMs: 0 })] });
+  const named: string[] = [];
+  let prompted: number | undefined;
+  const started = await control.start({
+    prompt: promptFromText("one"),
+    named: async (id) => {
+      named.push(id.native);
+      prompted = (await readFile(join(dir, "prompts.log"), "utf8").catch(() => "")).split("\n").filter((line) => line !== "").length;
+    },
+  });
+  expect(named).toEqual([started.session.native]);
+  expect(prompted).toBe(0);
+});
+
+test("a start whose session could not be written down gives it no work and leaves no process", async () => {
+  control = claudeCodeControl({ harness: "fake", command: [await fakeAgent({ turnMs: 0 })] });
+  await expect(
+    control.start({
+      prompt: promptFromText("one"),
+      named: async () => {
+        throw new Error("the journal is full");
+      },
+    }),
+  ).rejects.toThrow("the journal is full");
+  expect(await agentsAlive()).toEqual([]);
+});
+
+test("closing a session stops its process and the side holds it no more", async () => {
+  control = claudeCodeControl({ harness: "fake", command: [await fakeAgent({ turnMs: 0 })] });
+  const id = await startIdle(control, { prompt: promptFromText("one") });
+  expect(await agentsAlive()).toHaveLength(1);
+  await control.close(id);
+  expect(await control.state(id)).toBe("unknown");
+  expect(await agentsAlive()).toEqual([]);
 });

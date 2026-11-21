@@ -512,6 +512,9 @@ export class ClaudeSdkControl implements SessionControl {
       mode,
       claude: { ...this.#claude, ...options.claude },
     };
+    // The program names a session only once its first turn has begun, so the caller cannot be told
+    // the name before the prompt goes out: `named` is not called, and a start cut off in between
+    // leaves a session nobody can find.
     const session = this.#open(this.#sdkOptions(model, system, plan), "", plan.reverse);
     let first: DeliveryReceipt | undefined;
     const nativeId = await this.#ownedBy(session, async () => {
