@@ -162,3 +162,45 @@ test("a denied step is written whole or not at all, so a restart never finds it 
   expect(seen).toEqual([0, 1, 2, 3].map((writes) => ({ writes, ...denied })));
 });
 
+
+test("a cut-off call is judged by the recovery contract it was made under", async () => {
+  for (const [was, now, repeated] of [
+    ["do-not-repeat", "repeat", false],
+    ["repeat", "do-not-repeat", true],
+  ] as const) {
+    const b = await bench();
+    const before = counted("step.effect", was, Any, () => ({ n: 1 }));
+    // The effect happens, and the outcome is never written.
+    b.cutOffWhen(writesOf(CORE_TYPES.stepOutcome));
+    expect(await b.run((_data, step) => step(before.made, {}).then(() => undefined))).toBe("cut off");
+    b.cutOffWhen(undefined);
+    // The code declares the action again, with another contract.
+    const after = counted("step.effect", now, Any, () => ({ n: 2 }));
+    await b.run((_data, step) => step(after.made, {}).then(() => undefined));
+    expect(before.calls.count).toBe(1);
+    expect(after.calls.count).toBe(repeated ? 1 : 0);
+    expect(b.lastState()?.reason).toBe(repeated ? undefined : "step 1: unknown");
+    b.close();
+  }
+});
+
+
+test("a cut-off call whose intent holds no contract is not repeated", async () => {
+  const b = await bench();
+  const { made, calls } = counted("step.effect", "repeat", Any, () => ({ n: 1 }));
+  b.journal.append({
+    id: recordId(`${INVOCATION}/step/1/intent`),
+    stream: streamId(`invocation:${INVOCATION}`),
+    type: CORE_TYPES.stepIntent,
+    schema: 1,
+    data: { invocation: INVOCATION, key: "1", action: "step.effect", input: {}, operationId: `${INVOCATION}/1` },
+    actor: { kind: "host" },
+    cause: recordId("rec-wake"),
+    root: recordId("rec-wake"),
+  });
+  await b.run((_data, step) => step(made, {}).then(() => undefined));
+  expect(calls.count).toBe(0);
+  expect(b.lastState()?.reason).toBe("step 1: unknown");
+  b.close();
+});
+

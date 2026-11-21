@@ -44,6 +44,7 @@ import type {
   RecordId,
   RecordType,
   RecordTypeName,
+  Recovery,
   Seq,
   Step,
   StepEmitOptions,
@@ -635,7 +636,7 @@ async function runStepOnce<I, O, In = I>(
       const error = describeIssues(invalidMessage(action.name, decided.which), decided.issues);
       const outcome: Outcome<O> = { status: "failed", error, effectPossible: false };
       commitAll(ctx, [
-        intentRecord(ctx, key, action.name, held, operation, attempt ),
+        intentRecord(ctx, key, action.name, held, operation, attempt, action.recovery),
         outcomeRecord(ctx, key, outcome, attempt),
       ]);
       return { key, outcome };
@@ -646,14 +647,14 @@ async function runStepOnce<I, O, In = I>(
       const outcome: Outcome<O> = { status: "denied", reason: decided.reason };
       commitAll(ctx, [
         decisionRecord(ctx, key, decided, attempt),
-        intentRecord(ctx, key, action.name, decided.final, operation, attempt ),
+        intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery),
         outcomeRecord(ctx, key, outcome, attempt),
       ]);
       return { key, outcome };
     }
     commitAll(ctx, [
       decisionRecord(ctx, key, decided, attempt),
-      intentRecord(ctx, key, action.name, decided.final, operation, attempt ),
+      intentRecord(ctx, key, action.name, decided.final, operation, attempt, action.recovery),
     ]);
     return callAction(ctx, as, key, action, decided.final, operation, attempt);
   }
@@ -674,8 +675,9 @@ async function runStepOnce<I, O, In = I>(
       return settle<O>(ctx, key, checked, attempt);
     }
 
-    // The check could not say, so the recovery contract decides.
-    if (action.recovery === "do-not-repeat") {
+    // The check could not say, so the recovery contract decides: the one the call was made under,
+    // which is what the other side was promised, not the one the code declares now.
+    if (recoveryOf(intent) === "do-not-repeat") {
       return settle<O>(ctx, key, { status: "unknown" }, attempt);
     }
   }
@@ -1169,7 +1171,7 @@ function nextKey(ctx: RunContext, opts?: StepOptions): StepKey {
   return stepKey(String(ctx.ordinal));
 }
 
-/** The intent of a step: which action, with what input, under which operation id. */
+/** The intent of a step: which action, with what input, under which operation id and recovery contract. */
 function intentRecord(
   ctx: RunContext,
   key: StepKey,
@@ -1177,6 +1179,7 @@ function intentRecord(
   input: unknown,
   operation: OperationId,
   attempt: number,
+  recovery?: Recovery,
 ): NewRecord {
   return recordOf(ctx, attemptRecordId(ctx.invocation, key, attempt, "intent"), CORE_TYPES.stepIntent, {
     invocation: ctx.invocation,
@@ -1184,6 +1187,7 @@ function intentRecord(
     action,
     input,
     operationId: operation,
+    ...(recovery === undefined ? {} : { recovery }),
   });
 }
 
@@ -1227,6 +1231,16 @@ function decisionRecord<I>(
     denied: decision.kind === "denied",
     ...(decision.kind === "denied" ? { reason: decision.reason } : {}),
   });
+}
+
+/**
+ * The recovery contract an intent was written under.
+ *
+ * An intent that does not say is a call whose contract nobody recorded: it is not repeated.
+ */
+function recoveryOf(intent: StoredRecord): Recovery {
+  const recorded = (intent.data as { recovery?: unknown }).recovery;
+  return recorded === "repeat" || recorded === "repeat-with-key" ? recorded : "do-not-repeat";
 }
 
 /** The last decision recorded for this attempt: a call made again after a cut-off has a later one. */
