@@ -73,7 +73,7 @@ import { TIMER_OFFER, plugin, trigger } from "@niwa-labs/plugin";
 import type { MissedRule, Plugin, ServiceContext, StateHandle, TimerDef, TimerOffer, Trigger } from "@niwa-labs/plugin";
 import { z } from "zod";
 
-import { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerId, timerSleepRequest } from "./records.ts";
+import { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerFiredQuery, timerId, timerSleepRequest } from "./records.ts";
 import type {
   SleepKey,
   SleepRequestedData,
@@ -81,7 +81,7 @@ import type {
   TimerSleptData,
 } from "./records.ts";
 
-export { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerId, timerSleepRequest } from "./records.ts";
+export { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerFiredQuery, timerId, timerSleepRequest } from "./records.ts";
 export type {
   SleepKey,
   SleepRequestedData,
@@ -177,7 +177,7 @@ function triggerOf(id: TimerId, def: undefined): TimerTrigger;
 function triggerOf(id: TimerId, def: TimerDef | undefined): TimerTrigger {
   const base = trigger(TimerFired, {
     name: `timer.fired:${id}`,
-    filter: { timer: id },
+    filter: timerFiredQuery(id).filter ?? {},
     provider: "timers",
     ...(def === undefined ? {} : { offer: { key: TIMER_OFFER, value: def } }),
   });
@@ -704,6 +704,7 @@ function build(def: TimerDef): Scheduled {
     throw new Error(`timer "${id}" has more than one schedule: one timer has one schedule`);
   }
   if (def.every !== undefined) requirePeriod(def.every);
+  if (def.at !== undefined) timestamp(def.at);
   if (def.daily !== undefined) parseTimeOfDay(def.daily);
   const description = EntityDescription.safeParse(def.description ?? scheduleText(def));
   if (!description.success) throw new TypeError(`timer "${id}" has a bad description: ${description.error.issues[0]?.message ?? "invalid"}`);
@@ -714,11 +715,11 @@ function build(def: TimerDef): Scheduled {
   return { id, def, description: description.data, missed, due: timestamp(0), done: false };
 }
 
-/** A period is a positive number of milliseconds. */
+/** A period is a positive whole number of milliseconds: the moments it makes are timestamps. */
 function requirePeriod(ms: number): void {
-  if (!Number.isFinite(ms) || ms <= 0) {
+  if (!Number.isInteger(ms) || ms <= 0) {
     throw new TypeError(
-      `a timer period must be a positive number of milliseconds, got ${String(ms)}`,
+      `a timer period must be a positive whole number of milliseconds, got ${String(ms)}`,
     );
   }
 }
@@ -798,7 +799,12 @@ function nextTimeOfDay(time: string, from: Timestamp): Timestamp {
   const [hours, minutes] = time.split(":").map(Number);
   const day = new Date(from);
   day.setHours(hours ?? 0, minutes ?? 0, 0, 0);
-  if (day.getTime() <= from) day.setDate(day.getDate() + 1);
+  if (day.getTime() <= from) {
+    day.setDate(day.getDate() + 1);
+    // The hour is set again: on the day a clock change skipped it, the first setting landed on
+    // the next hour, and the next day has its own.
+    day.setHours(hours ?? 0, minutes ?? 0, 0, 0);
+  }
   return timestamp(day.getTime());
 }
 

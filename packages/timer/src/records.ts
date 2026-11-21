@@ -7,7 +7,8 @@
  * schedule, and the write time is when the host got to it.
  */
 
-import { actionRef, record } from "@niwa-labs/core";
+import { actionRef, queryOf, record } from "@niwa-labs/core";
+import type { TypeQuery } from "@niwa-labs/core";
 import { z } from "zod";
 
 /** The name of a timer: its author gives it, and it becomes part of the seed of its firings. */
@@ -50,6 +51,11 @@ export const TimerFired = record(
 
 /** The data of a firing: which timer, when it was due, when it was written. */
 export type TimerFiredData = z.infer<typeof TimerFired.schema>;
+
+/** The firings of one timer: the query a trigger, a wait and a read of the history share. */
+export function timerFiredQuery(timer: TimerId): TypeQuery<TimerFiredData> {
+  return queryOf(TimerFired, { timer });
+}
 
 /**
  * The key of one sleep: the invocation and the sleeping place.
@@ -122,9 +128,12 @@ export type TimerSleptData = z.infer<typeof TimerSlept.schema>;
 
 const DAY_MS = 24 * 3_600_000;
 
-/** A moment as a person reads a clock: the time, and the day when it is more than a day away. */
+/** A moment as a person reads a clock, in local time: the time, and the day when it is more than a day away. */
 export function clockOf(at: number, now: number = Date.now()): string {
   const date = new Date(at);
   const time = date.toTimeString().slice(0, 8);
-  return at - now < DAY_MS ? time : `${date.toISOString().slice(5, 10)} ${time}`;
+  if (at - now < DAY_MS) return time;
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${month}-${day} ${time}`;
 }
