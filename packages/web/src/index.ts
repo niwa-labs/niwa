@@ -256,7 +256,7 @@ async function route(context: Context, request: Request): Promise<Response> {
     case "/api/viewer":
       return json(200, await viewerOf(api, WEB_CLIENT_ID));
     case "/api/catalogue":
-      return json(200, await catalogueOf(api));
+      return json(200, app === undefined ? await catalogueOf(api) : { modules: await context.builds.catalogue(api, app) });
     case "/api/info":
       return cockpitInfo(api);
     case "/api/source": {
@@ -651,6 +651,7 @@ const MODULE_PATH = /^\/modules\/([^/]+)\/([0-9a-f]{64})\/(index\.js|style-(\d+)
 
 /** What the app serves at an address that is none of the API's: its files, the client modules, or the app's own page. */
 async function appResponse(context: Context, app: WebApp, path: string): Promise<Response> {
+  const { api } = context;
   if (path.startsWith(ASSETS_PREFIX)) {
     const file = await assetFile(app, path);
     if (file === undefined) return text(404, "there is no such file");
@@ -662,17 +663,13 @@ async function appResponse(context: Context, app: WebApp, path: string): Promise
     const found = MODULE_PATH.exec(path);
     if (found === null) return text(404, "there is no such module");
     const [, id = "", hash = "", file = "", index, sheet] = found;
-    if (file === "index.js") {
-      const code = await context.builds.code(context.api, app, id, hash);
-      if (code === undefined) return text(404, "the host lists no such module");
-      if (typeof code !== "string") return text(500, `the module could not be built: ${code.problem}`);
-      return new Response(code, {
-        headers: { "content-type": typeOf("module.js"), ...SECURITY_HEADERS, "cache-control": IMMUTABLE },
-      });
-    }
-    const css = await context.builds.style(context.api, id, hash, Number(index), sheet ?? "");
-    if (css === undefined) return text(404, "the host lists no such stylesheet");
-    return new Response(css, { headers: { "content-type": typeOf("style.css"), ...SECURITY_HEADERS, "cache-control": IMMUTABLE } });
+    const answer = await context.builds.file(api, app, id, hash, file === "index.js" ? {} : { sheet: { index: Number(index), hash: sheet ?? "" } });
+    if (answer === undefined) return text(404, "the host lists no such module file");
+    if ("problem" in answer) return text(500, `the module could not be built: ${answer.problem}`);
+    const headers = { ...SECURITY_HEADERS, "cache-control": IMMUTABLE };
+    return "code" in answer
+      ? new Response(answer.code, { headers: { "content-type": typeOf("module.js"), ...headers } })
+      : new Response(answer.css, { headers: { "content-type": typeOf("style.css"), ...headers } });
   }
   // An address with an extension names a file that is not there; any other is a page of the app.
   if (/\.[A-Za-z0-9]+$/.test(path)) return text(404, "there is no such file");

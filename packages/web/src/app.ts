@@ -11,7 +11,7 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, sep } from "node:path";
 
 import { CATALOG_ACTION, CatalogOutput } from "@niwa-labs/client";
-import type { NiwaApi } from "@niwa-labs/client";
+import type { CatalogAnswer, NiwaApi } from "@niwa-labs/client";
 
 /** The cockpit app: where it was built, and what a client module imports from it instead of carrying its own copy. */
 export interface WebApp {
@@ -104,6 +104,7 @@ export interface ServedModule {
   readonly package: string;
   readonly version: string;
   readonly entry: string;
+  /** The hash of the bytes the browser gets at `entry`; the hash the host lists when the module cannot be built. */
   readonly hash: string;
   readonly styles?: readonly string[];
 }
@@ -118,7 +119,10 @@ export function styleAddress(id: string, moduleHash: string, index: number, shee
   return `${MODULES_PREFIX}${id}/${moduleHash}/style-${String(index)}-${sheetHash.slice(0, 12)}.css`;
 }
 
-/** What the host lists, as the browser is told of it. */
+/**
+ * What the host lists, as the browser is told of it when there is no app to build modules for: the addresses are the host's
+ * hashes of the sources, and nothing is served there.
+ */
 export async function catalogueOf(api: NiwaApi): Promise<{ modules: ServedModule[] }> {
   const listed = CatalogOutput.parse(await api.call(CATALOG_ACTION, {}));
   return {
@@ -135,42 +139,116 @@ export async function catalogueOf(api: NiwaApi): Promise<{ modules: ServedModule
   };
 }
 
-type Built = { code: string; hash: string } | { problem: string };
+/** What the surface holds of a module the host lists: the bytes it serves, or why there are none. */
+interface HeldModule {
+  readonly served: ServedModule;
+  /** The code and the sheets as they are served, each under the hash of those bytes. */
+  readonly built?: { readonly code: string; readonly hash: string; readonly sheets: readonly Sheet[] };
+  /** Why the module could not be built; its address is then the host's hash of the source. */
+  readonly problem?: string;
+}
 
-/** The client modules built for the browser, by id and hash: the host's hash is the address, so a build is made once. */
+interface Sheet {
+  readonly text: string;
+  readonly hash: string;
+}
+
+/** A file of a module as the browser asks for it: the code, or one of the sheets by position and hash prefix. */
+export type ModuleFile = { readonly sheet?: undefined } | { readonly sheet: { readonly index: number; readonly hash: string } };
+
+/** What a request for a module's file is answered with. */
+export type ModuleAnswer = { readonly code: string } | { readonly css: string } | { readonly problem: string };
+
+/**
+ * The client modules built for the browser. The address of a module and of each of its sheets is the hash of the bytes served
+ * there, never the hash of the source the host lists: the same source builds to other bytes when the modules the page shares
+ * change, and a browser that kept the old bytes under a name that did not change would run stale code. The bytes that were
+ * hashed are the bytes that are served; nothing is read again once the address is made.
+ */
 export class ModuleBuilds {
-  readonly #built = new Map<string, Promise<Built>>();
+  /** Builds by the id and source hash the host lists, so one source is built once. */
+  readonly #builds = new Map<string, Promise<Built>>();
+  /** Sheets by the file and hash the host lists. */
+  readonly #sheets = new Map<string, Promise<Sheet>>();
+
+  /** The modules the host lists now, each as the browser is told of it. */
+  async catalogue(api: NiwaApi, app: WebApp): Promise<ServedModule[]> {
+    return (await this.#hold(api, app)).map((held) => held.served);
+  }
 
   /**
-   * The code of a module the host lists now under this id and hash, built for the browser with the app's shared modules left
-   * as imports. Undefined when the host lists no such module, so nothing else is ever built or read.
+   * The file a module is served at under this id and hash, when the host lists such a module now and the hash is the one of
+   * its bytes (of its source, when it cannot be built). Undefined when nothing is served there, so nothing else is read.
    */
-  async code(api: NiwaApi, app: WebApp, id: string, hash: string): Promise<string | { problem: string } | undefined> {
-    const listed = CatalogOutput.parse(await api.call(CATALOG_ACTION, {})).modules.find((module) => module.id === id && module.hash === hash);
-    if (listed === undefined) return undefined;
-    const key = `${id}/${hash}`;
-    let build = this.#built.get(key);
-    if (build === undefined) {
-      build = buildModule(listed.entry, Object.keys(app.imports));
-      this.#built.set(key, build);
-      // A failed build is tried again at the next request: the source may have been repaired under the same hash only by
-      // a change the hash covers, so a repeat of the same failure is cheap and a transient one is not remembered.
-      void build.then((result) => {
-        if ("problem" in result) this.#built.delete(key);
-      });
-    }
-    const result = await build;
-    return "problem" in result ? result : result.code;
+  async file(api: NiwaApi, app: WebApp, id: string, hash: string, file: ModuleFile): Promise<ModuleAnswer | undefined> {
+    const held = (await this.#hold(api, app)).find((module) => module.served.id === id && module.served.hash === hash);
+    if (held === undefined) return undefined;
+    if (held.built === undefined) return { problem: held.problem ?? "the module could not be built" };
+    if (file.sheet === undefined) return { code: held.built.code };
+    const sheet = held.built.sheets[file.sheet.index];
+    return sheet === undefined || !sheet.hash.startsWith(file.sheet.hash) ? undefined : { css: sheet.text };
   }
 
-  /** The stylesheet of a module the host lists now under this id and hash and the sheet's own hash prefix. */
-  async style(api: NiwaApi, id: string, hash: string, index: number, sheetHash: string): Promise<string | undefined> {
-    const listed = CatalogOutput.parse(await api.call(CATALOG_ACTION, {})).modules.find((module) => module.id === id && module.hash === hash);
-    const sheet = listed?.styles[index];
-    if (sheet === undefined || !sheet.hash.startsWith(sheetHash)) return undefined;
-    return readFile(sheet.file, "utf8");
+  async #hold(api: NiwaApi, app: WebApp): Promise<HeldModule[]> {
+    const listed = CatalogOutput.parse(await api.call(CATALOG_ACTION, {})).modules;
+    const held = await Promise.all(listed.map((module) => this.#holdOne(module, app)));
+    // What the host no longer lists is forgotten, so a changed module leaves nothing behind.
+    const builds = new Set(listed.map((module) => `${module.id}/${module.hash}`));
+    const sheets = new Set(listed.flatMap((module) => module.styles.map((sheet) => `${sheet.file}/${sheet.hash}`)));
+    for (const key of [...this.#builds.keys()]) if (!builds.has(key)) this.#builds.delete(key);
+    for (const key of [...this.#sheets.keys()]) if (!sheets.has(key)) this.#sheets.delete(key);
+    return held;
+  }
+
+  async #holdOne(module: CatalogAnswer["modules"][number], app: WebApp): Promise<HeldModule> {
+    const key = `${module.id}/${module.hash}`;
+    let build = this.#builds.get(key);
+    if (build === undefined) {
+      build = buildModule(module.entry, Object.keys(app.imports));
+      this.#builds.set(key, build);
+      // A failed build is tried again at the next request: a transient failure is not remembered.
+      void build.then((result) => {
+        if ("problem" in result) this.#builds.delete(key);
+      });
+    }
+    const built = await build;
+    const unbuilt = (problem: string): HeldModule => ({
+      served: { id: module.id, package: module.plugin, version: module.version, entry: moduleAddress(module.id, module.hash), hash: module.hash },
+      problem,
+    });
+    if ("problem" in built) return unbuilt(built.problem);
+    let sheets: Sheet[];
+    try {
+      sheets = await Promise.all(module.styles.map((sheet) => this.#sheet(sheet)));
+    } catch (error) {
+      return unbuilt(`a stylesheet could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return {
+      served: {
+        id: module.id,
+        package: module.plugin,
+        version: module.version,
+        entry: moduleAddress(module.id, built.hash),
+        hash: built.hash,
+        ...(sheets.length === 0 ? {} : { styles: sheets.map((sheet, index) => styleAddress(module.id, built.hash, index, sheet.hash)) }),
+      },
+      built: { code: built.code, hash: built.hash, sheets },
+    };
+  }
+
+  #sheet(listed: { readonly file: string; readonly hash: string }): Promise<Sheet> {
+    const key = `${listed.file}/${listed.hash}`;
+    let sheet = this.#sheets.get(key);
+    if (sheet === undefined) {
+      sheet = readFile(listed.file, "utf8").then((text) => ({ text, hash: createHash("sha256").update(text).digest("hex") }));
+      this.#sheets.set(key, sheet);
+      sheet.catch(() => this.#sheets.delete(key));
+    }
+    return sheet;
   }
 }
+
+type Built = { code: string; hash: string } | { problem: string };
 
 /** Build one module for the browser. The shared modules stay imports, and the page's import map resolves them. */
 async function buildModule(entry: string, shared: readonly string[]): Promise<Built> {

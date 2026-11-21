@@ -5,7 +5,8 @@
 //   3. the catalogue names the modules the host lists, and a module is served only under the id and hash it is listed by
 //   4. a module is built for the browser with the shared modules left as imports the import map resolves
 //   5. a changed module is a new address, and the old one is gone
-//   6. without an app the surface serves its pages and no module
+//   6. the address is the hash of the bytes served, so other shared modules mean another address
+//   7. without an app the surface serves its pages and no module
 
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -172,6 +173,37 @@ test("a module is built for the browser with the shared modules left as imports 
   // The JSX of the entry is compiled to the production runtime, and the file it imports is part of the module.
   expect(code).toContain('"b"');
   expect(code).not.toContain("./helper");
+});
+
+test("the address of a module is the hash of the bytes served there, and so is the address of its sheet", async () => {
+  const { web } = await setup();
+  const [module] = ((await (await webFetch(`${web.url}/api/catalogue`)).json()) as Catalogue).modules;
+  const code = await (await webFetch(`${web.url}${module!.entry}`)).text();
+  expect(module!.hash).toBe(createHash("sha256").update(code).digest("hex"));
+  const style = await (await webFetch(`${web.url}${module!.styles![0]}`)).text();
+  expect(module!.styles![0]).toBe(`/modules/demo/${module!.hash}/style-0-${createHash("sha256").update(style).digest("hex").slice(0, 12)}.css`);
+});
+
+test("the same source built against other shared modules is served at another address", async () => {
+  const { web, dir, app } = await setup();
+  await mkdir(join(dir, "node_modules", "tinydep"), { recursive: true });
+  await writeFile(join(dir, "node_modules", "tinydep", "package.json"), `{ "name": "tinydep", "type": "module", "main": "index.js" }`);
+  await writeFile(join(dir, "node_modules", "tinydep", "index.js"), `export const tiny = "${"x".repeat(2_000)}";\n`);
+  await writeFile(join(dir, "helper.ts"), `import { tiny } from "tinydep";\nexport function helper(value: unknown): unknown { return [value, tiny]; }\n`);
+
+  // One page shares `tinydep` and leaves it an import; the other carries its own copy of it.
+  const sharing = await serveWebPages({ home: join(app.root, ".."), port: 0, speaksFor: "owner", app: { root: app.root, imports: { ...IMPORTS, tinydep: "/assets/tinydep.js" } } });
+  cleanups.push(() => sharing.close());
+  await loginWeb(sharing);
+
+  const [bundled] = ((await (await webFetch(`${web.url}/api/catalogue`)).json()) as Catalogue).modules;
+  const [shared] = ((await (await webFetch(`${sharing.url}/api/catalogue`)).json()) as Catalogue).modules;
+  const bundledCode = await (await webFetch(`${web.url}${bundled!.entry}`)).text();
+  const sharedCode = await (await webFetch(`${sharing.url}${shared!.entry}`)).text();
+  expect(bundledCode).not.toBe(sharedCode);
+  expect(bundledCode.length).toBeGreaterThan(sharedCode.length);
+  // Other bytes, other name: a browser that kept one of them is not served the other under its address.
+  expect(bundled!.entry).not.toBe(shared!.entry);
 });
 
 test("a changed module is a new address, and the old address is gone", async () => {
