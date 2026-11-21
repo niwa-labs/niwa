@@ -261,6 +261,26 @@ test("a child run's deadline comes no later than its parent's", async () => {
   expect(childRun?.deadline).toBe(parent?.deadline);
 }, 30_000);
 
+test("extending a run extends the child held to its deadline, and both go on", async () => {
+  const t = await setup();
+  const child = await t.register(`export default workflow({ description: "a child that sleeps", input: z.object({}), output: z.json() }, async () => {
+    await sleep("2m");
+    await niwa.tree.work({ name: "after-the-sleep" });
+    return "child done";
+  });`);
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    return await niwa.flow["${child}"]({});
+  });`, { limits: { deadline: 60_000 } });
+  await eventually(async () => ofType(await t.records(), "timer.sleep.requested").length === 1, 10_000, "the child should sleep");
+  await t.clock.advance(60_000);
+  await t.clock.advance(120_000);
+  await Bun.sleep(300);
+  expect(t.calls).not.toContain("after-the-sleep");
+  await t.call("workflow.extend", { run, by: 600_000 });
+  await eventually(async () => ofRun(await t.records(), "workflow.run.finished", run).length > 0, 10_000, "the parent should finish");
+  expect(t.calls).toContain("after-the-sleep");
+}, 30_000);
+
 test("a branch runs a registered workflow that takes no input as its child", async () => {
   const t = await setup();
   const child = await t.register(`export default workflow({ description: "a child with no input", output: z.string() }, async () => {

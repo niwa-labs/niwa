@@ -773,6 +773,22 @@ export function workflow(opts: WorkflowOptions = {}) {
       deadlineTimers.set(run, stop);
     };
 
+    /**
+     * Move the deadline of a run to `to`, and of each run it started whose deadline was its own (`from`): a child held
+     * to its parent's deadline is given the parent's new one. A pause of a deadline that came is answered: the run goes on.
+     */
+    const extendTree = async (run: string, from: number, to: number, ctx: ActionContext): Promise<void> => {
+      await changeControl(run, async () => {
+        await ctx.emit(RunDeadlineExtended, { run: RunId.parse(run), deadline: to });
+        const pause = activeManualPause(journal(), run);
+        if (pause !== undefined && deadlineReached(pause) !== undefined) await ctx.emit(RunContinued, { run: RunId.parse(run), pause: String(pause.id) });
+      });
+      watchDeadline(run);
+      for (const child of childrenOf(journal(), run)) {
+        if (statusOf(journal(), child).state !== "finished" && deadlineOf(journal(), child) === from) await extendTree(child, from, to, ctx);
+      }
+    };
+
     api.action(action(workflowExtend, {
       // Each extension moves the deadline again: one that was cut off is not made twice.
       recovery: "do-not-repeat",
@@ -781,16 +797,13 @@ export function workflow(opts: WorkflowOptions = {}) {
       run: async (input, ctx) => {
         const run = runOf(input.run, ctx.caller);
         mayAct(ctx.caller, ownerOfRun(journal(), run), `extend the run "${run}"`);
-        await changeControl(run, async () => {
+        const extended = await changeControl(run, async () => {
           if (statusOf(journal(), run).state === "finished") throw new RunRefusal("finished", `the run "${run}" has finished`);
           const current = deadlineOf(journal(), run);
           if (current === undefined) throw new RunRefusal("no-deadline", `the run "${run}" has no deadline to extend`);
-          await ctx.emit(RunDeadlineExtended, { run, deadline: Math.max(current, clockNow()) + input.by });
-          // The pause of the deadline that came is answered: the run goes on.
-          const pause = activeManualPause(journal(), run);
-          if (pause !== undefined && deadlineReached(pause) !== undefined) await ctx.emit(RunContinued, { run, pause: String(pause.id) });
+          return { from: current, to: Math.max(current, clockNow()) + input.by };
         });
-        watchDeadline(run);
+        await extendTree(run, extended.from, extended.to, ctx);
         return statusOf(journal(), run);
       },
     }));
