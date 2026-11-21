@@ -361,6 +361,15 @@ export type WantedBuiltin = z.infer<typeof WantedBuiltin>;
  */
 export const BuiltinsWanted = record("workflow.builtins.wanted", z.object({ items: z.array(WantedBuiltin) }));
 
+/** One version of a workflow, by its id and its version. */
+export const VersionOf = z.object({ workflow: WorkflowId, version: WorkflowVersion });
+
+/**
+ * Candidate versions of gated built-ins were accepted together, by the run that tried them: each becomes the latest
+ * version of its workflow, which is installed at it.
+ */
+export const BuiltinPromoted = record("workflow.builtin.promoted", z.object({ run: RunId, versions: z.array(VersionOf).min(1) }));
+
 /** One error of a check, with its place in the file. */
 export const CheckProblem = z.object({ file: z.string(), line: z.number().int(), column: z.number().int(), code: z.string(), message: z.string() });
 
@@ -449,4 +458,5 @@ export const WORKFLOW_TYPES = [
   WorkflowRegistered,
   WorkflowRechecked,
   BuiltinsWanted,
+  BuiltinPromoted,
 ];

@@ -18,7 +18,7 @@ import { contractOf } from "./describe.ts";
 import type { Described } from "./describe.ts";
 import { SCRIPT_TYPES } from "./language.ts";
 import type { WorkflowPhases } from "./language.ts";
-import { WorkflowRechecked, WorkflowRegistered, WorkflowVersion } from "./records.ts";
+import { BuiltinPromoted, WorkflowRechecked, WorkflowRegistered, WorkflowVersion } from "./records.ts";
 import type { Builtin, ContractHash, EmittedRecord, FlowCall, JsonSchemaValue, Subscription, WorkflowId } from "./records.ts";
 
 /** One version of a registered workflow. */
@@ -61,7 +61,20 @@ export interface RegisteredWorkflow {
 export function workflowsOf(journal: JournalReader): RegisteredWorkflow[] {
   const checks = journal.find({ type: WorkflowRechecked.name }).map((row) => WorkflowRechecked.schema.parse(row.data));
   const byId = new Map<WorkflowId, RegisteredWorkflow>();
-  for (const row of journal.find({ type: WorkflowRegistered.name })) {
+  const rows = [...journal.find({ type: WorkflowRegistered.name }), ...journal.find({ type: BuiltinPromoted.name })].sort((a, b) => a.seq - b.seq);
+  for (const row of rows) {
+    if (row.type === BuiltinPromoted.name) {
+      // Promoted candidates are accepted: each moves to the end of its versions and is the latest one.
+      for (const { workflow, version } of BuiltinPromoted.schema.parse(row.data).versions) {
+        const known = byId.get(workflow);
+        const was = known?.versions.find((one) => one.version === version);
+        if (known === undefined || was === undefined) continue;
+        const { candidate: _, ...accepted } = was;
+        known.versions = [...known.versions.filter((one) => one !== was), accepted];
+        known.latest = accepted;
+      }
+      continue;
+    }
     const data = WorkflowRegistered.schema.parse(row.data);
     const last = checks.filter((check) => check.workflow === data.workflow && check.version === data.version).at(-1);
     const version: RegisteredVersion = {

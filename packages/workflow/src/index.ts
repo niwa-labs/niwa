@@ -55,6 +55,7 @@ import {
   workflowCheck,
   workflowContinue,
   workflowPause,
+  workflowBuiltinPromote,
   workflowGet,
   workflowGuide,
   workflowInspect,
@@ -86,6 +87,8 @@ import type { HarnessLaunch } from "./agent.ts";
 import {
   Builtin,
   BuiltinsWanted,
+  BuiltinPromoted,
+  InstallationId,
   ContractHash,
   Issue,
   JsonSchemaValue,
@@ -114,7 +117,7 @@ import {
   WantedBuiltin,
   WorkflowVersion,
 } from "./records.ts";
-import type { EmittedRecord, FlowCall, InstallationId, Subscription, WorkflowId } from "./records.ts";
+import type { EmittedRecord, FlowCall, Subscription, WorkflowId } from "./records.ts";
 import { builtinOf, declaredBy, dependentsOf, flowActionName, readersOf, versionOf, workflowIdsOf, workflowsOf } from "./registry.ts";
 import { storedEntry, storedVersion, storeVersion } from "./store.ts";
 import type { RegisteredWorkflow } from "./registry.ts";
@@ -413,8 +416,27 @@ export function workflow(opts: WorkflowOptions = {}) {
       return stored.entry;
     };
 
-    /** What a start of a registered workflow runs: the stored copy of its latest version. A broken workflow does not start. */
-    const registeredTarget = (registered: RegisteredWorkflow): { file: string } & RunOrigin => {
+    /** The plugin whose built-in a caller is a run of; undefined for any other caller. */
+    const builtinPluginOf = (caller: Caller): string | undefined => {
+      if (caller.kind !== "client" || caller.principal?.kind !== "run") return undefined;
+      const id = factsOf(journal(), caller.principal.id)?.workflow;
+      return id === undefined ? undefined : workflowsOf(journal()).find((one) => one.id === id)?.builtin?.plugin;
+    };
+
+    /**
+     * What a start of a registered workflow runs: the stored copy of its latest version, or of the version it names. A
+     * broken version does not start, and a candidate starts only by its version, for a run of a built-in of its plugin.
+     */
+    const registeredTarget = (registered: RegisteredWorkflow, version?: WorkflowVersion, caller?: Caller): { file: string } & RunOrigin => {
+      if (version !== undefined) {
+        const named = registered.versions.find((one) => one.version === version);
+        if (named === undefined) throw new RunRefusal("unknown-version", `the workflow ${registered.id} has no version ${version}`);
+        if (named.candidate === true && (caller === undefined || registered.builtin === undefined || builtinPluginOf(caller) !== registered.builtin.plugin)) {
+          throw new RunRefusal("candidate", `the version ${version} of ${registered.id} is a candidate: only a run of a built-in of the plugin "${registered.builtin?.plugin ?? ""}" starts it`);
+        }
+        if (named.broken !== undefined) throw new RunRefusal("workflow-broken", `the version ${version} of ${registered.id} is broken, it does not start: ${named.broken}`);
+        return { file: storedOf(registered.id, version), workflow: registered.id, version };
+      }
       const latest = registered.latest;
       if (latest.candidate === true) {
         throw new RunRefusal("candidate", `the workflow ${registered.id} has only a candidate version: it is not started by its id until a version is promoted`);
@@ -490,7 +512,8 @@ export function workflow(opts: WorkflowOptions = {}) {
           if ((input.id === undefined) === (input.file === undefined)) {
             throw new RunRefusal("start-what", "a start names the workflow to run: its id, or a script file, one of the two");
           }
-          const target = input.id === undefined ? { file: resolveFile(opts.root, input.file ?? "") } : registeredTarget(workflowOf(input.id));
+          if (input.version !== undefined && input.id === undefined) throw new RunRefusal("start-what", "a version is the version of a registered workflow: name it with `id`");
+          const target = input.id === undefined ? { file: resolveFile(opts.root, input.file ?? "") } : registeredTarget(workflowOf(input.id), input.version, ctx.caller);
           const run = await requestRun(ctx, {
             ...target,
             args: input.args,
@@ -1450,6 +1473,9 @@ export function workflow(opts: WorkflowOptions = {}) {
       one.version === registered.latest.version &&
       one.description === registered.latest.description;
 
+    /** Whether a built-in stands installed: its latest version is accepted and has records to start on. */
+    const installable = (registered: RegisteredWorkflow): boolean => registered.latest.candidate !== true && (registered.latest.on?.length ?? 0) > 0;
+
     /**
      * Whether a wanted built-in is registered as it is wanted: its version is the latest one, or, for a gated built-in,
      * one of its versions, a candidate until it is promoted.
@@ -1471,7 +1497,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       const each = wanted.every((item) => {
         const registered = builtinOf(workflows, item);
         if (registered === undefined || !isRegistered(registered, item)) return false;
-        if (registered.latest.candidate === true) return !stands.some((one) => sameBuiltin(one.builtin, item));
+        if (!installable(registered)) return !stands.some((one) => sameBuiltin(one.builtin, item));
         installed += 1;
         return stands.some((one) => isCurrent(one, registered, item));
       });
@@ -1493,13 +1519,13 @@ export function workflow(opts: WorkflowOptions = {}) {
 
     /**
      * The installation of a built-in made what its registration says: one at its accepted latest version, and none while
-     * it has only a candidate. An installation of another version is ended.
+     * it has only a candidate or nothing to start on (a suite is started by hand). An installation of another version is ended.
      */
     const installBuiltin = async (ctx: ActionContext, registered: RegisteredWorkflow, builtin: Builtin): Promise<{ installation?: string }> => {
       const stands = standing(journal()).filter((one) => sameBuiltin(one.builtin, builtin));
-      const current = registered.latest.candidate === true ? undefined : stands.find((one) => isCurrent(one, registered, builtin));
+      const current = installable(registered) ? stands.find((one) => isCurrent(one, registered, builtin)) : undefined;
       for (const stale of stands) if (stale !== current) await uninstallOne(ctx, stale.id, "replaced by another version of the built-in");
-      if (registered.latest.candidate === true) return {};
+      if (!installable(registered)) return {};
       if (current !== undefined) return { installation: current.id };
       const installed = await installScript(ctx, { registered, description: registered.latest.description, builtin });
       return { installation: installed.id };
@@ -1553,6 +1579,47 @@ export function workflow(opts: WorkflowOptions = {}) {
       },
     });
     api.action(builtinRetire);
+
+    /**
+     * Candidates of gated built-ins accepted together by the run of a built-in of the same plugin that tried them: one
+     * record with the run, then each workflow installed at its new latest version. A set already accepted writes nothing.
+     */
+    api.action(
+      action(workflowBuiltinPromote, {
+        recovery: "repeat",
+        effect: "record",
+        world: "niwa",
+        run: async (input, ctx) => {
+          const caller = ctx.caller;
+          const plugin = builtinPluginOf(caller);
+          if (plugin === undefined || caller.kind !== "client" || caller.principal === undefined) {
+            throw new DeniedError("only a run of a built-in workflow promotes the candidates of its plugin");
+          }
+          const workflows = workflowsOf(journal());
+          const named = input.versions.map(({ workflow: id, version }) => {
+            const registered = workflows.find((one) => one.id === id);
+            const found = registered?.versions.find((one) => one.version === version);
+            if (registered?.builtin?.plugin !== plugin || found === undefined) {
+              throw new RunRefusal("not-a-candidate", `${id} at ${version} is no version of a built-in of the plugin "${plugin}": nothing is promoted`);
+            }
+            return { registered, found };
+          });
+          const fresh = named.filter(({ found }) => found.candidate === true);
+          const run = RunId.parse(caller.principal.id);
+          if (fresh.length > 0) {
+            await ctx.emit(BuiltinPromoted, { run, versions: input.versions.map(({ workflow: id, version }) => ({ workflow: id, version })) });
+          }
+          const installations: InstallationId[] = [];
+          for (const { registered } of named) {
+            const now = workflowOf(registered.id);
+            if (now.builtin === undefined) continue;
+            const { installation } = await installBuiltin(ctx, now, now.builtin);
+            if (installation !== undefined) installations.push(InstallationId.parse(installation));
+          }
+          return { run, versions: input.versions, installations };
+        },
+      }),
+    );
 
     api.on(BuiltinsWanted, { id: BUILTINS_HANDLER }, async (data, step) => {
       await step(builtinRetire, { keep: data.items.map(({ plugin, name }) => ({ plugin, name })) }, { key: "retire" });
@@ -2346,6 +2413,7 @@ async function planCalls(
 
 export {
   Builtin,
+  BuiltinPromoted,
   BuiltinsWanted,
   InstallationId,
   RunFinished,
@@ -2380,6 +2448,7 @@ export type { ActionGroup, CallOptions, Duration, ScriptApi, TimedOut } from "@n
 export { sessionAgent } from "./agent.ts";
 export type { HarnessLaunch } from "./agent.ts";
 export {
+  workflowBuiltinPromote,
   workflowCancel,
   workflowStop,
   workflowCheck,

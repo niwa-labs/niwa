@@ -33,6 +33,11 @@ const ABSOLUTE_PATH = /^(\/|[A-Za-z]:[\\/])/;
 export const StartInput = z.object({
   /** The registered workflow to run, at its latest version: its id or any text that names it. */
   id: IdText.optional(),
+  /**
+   * With `id`: run this version of it instead of the latest. A candidate version of a gated built-in is started only by a
+   * run of a built-in of the same plugin: the suite that tries it.
+   */
+  version: WorkflowVersion.optional(),
   /** A script file to run once, unregistered. A start names `id` or `file`, not both. */
   file: z.string().optional(),
   args: z.unknown().optional(),
@@ -174,6 +179,13 @@ export const workflowPause = actionRef("workflow.pause", {
     'Request a durable pause at a workflow boundary. Operations already admitted can complete. Answers the current state and the pause identifier. With effects: "deny" the run is held instead: new writes and irreversible calls are refused while reads and records of niwa\'s own go on; the hold is holding while operations it began are still going (listed in hold.inFlight) and held once they ended; tree: true holds the runs it started too. workflow.continue with the hold\'s id releases it. For whoever started the run, and the owner.',
   input: PauseInput,
   output: RunStatus,
+});
+
+export const workflowBuiltinPromote = actionRef("workflow.builtin.promote", {
+  description:
+    "Accept candidate versions of gated built-ins together: each becomes the latest version of its workflow and is installed at it, and the promotion is recorded with the run that made it. For a run of a built-in of the same plugin, the suite that tried them; a version that is not a candidate of that plugin refuses the whole set.",
+  input: z.object({ versions: z.array(z.object({ workflow: WorkflowId, version: WorkflowVersion })).min(1) }),
+  output: z.object({ run: RunId, versions: z.array(z.object({ workflow: WorkflowId, version: WorkflowVersion })), installations: z.array(InstallationId) }),
 });
 
 export const workflowContinue = actionRef("workflow.continue", {
