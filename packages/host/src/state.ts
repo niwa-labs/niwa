@@ -87,6 +87,17 @@ export class StateStore {
     if (data.success) this.values.set(stateKey(data.data.plugin, data.data.name), data.data.value);
   }
 
+  /** The keys declared now: what an install that fails puts back. */
+  declared(): ReadonlyMap<string, Entry> {
+    return new Map(this.entries);
+  }
+
+  /** Put the declared keys back as `declared` took them. */
+  restore(declared: ReadonlyMap<string, Entry>): void {
+    this.entries.clear();
+    for (const [key, entry] of declared) this.entries.set(key, entry);
+  }
+
   /** Declare a key of a plugin's state and hand out its handle. */
   define<T>(plugin: PluginName, name: string, schema: z.ZodType<T>, initial: T): StateHandle<T> {
     const key = stateKey(plugin, requireName(name));

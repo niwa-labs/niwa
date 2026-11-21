@@ -648,7 +648,33 @@ class Niwa implements Host {
     return undefined;
   }
 
+  /**
+   * Install a plugin, or replace the one of its name.
+   *
+   * The plugin is staged first: its setup runs against a copy of what it may change in the host
+   * besides its own registrations (the profiles and the keys of state it declares). Only a setup
+   * that ran to its end is swapped in. Any other outcome puts the shared things back and leaves the
+   * installed plugin as it was.
+   */
   private install(plugin: Plugin): void {
+    const profiles = this.access.declaredProfiles();
+    const keys = this.states.declared();
+    // Set when the install is refused: the api of the plugin then changes nothing in the host.
+    let refused = false;
+    const live = (): void => {
+      if (refused) throw new Error(`plugin "${plugin.name}" was not installed: its api changes nothing any more`);
+    };
+    try {
+      this.stage(plugin, live);
+    } catch (error) {
+      refused = true;
+      this.access.restoreProfiles(profiles);
+      this.states.restore(keys);
+      throw error;
+    }
+  }
+
+  private stage(plugin: Plugin, live: () => void): void {
     const sources: string[] = [];
     const installed: Installed = {
       source: plugin,
@@ -750,8 +776,10 @@ class Niwa implements Host {
         }
         return this.write({ kind: "host" }, type.name, data, opts);
       },
-      state: <T>(name: string, schema: z.ZodType<T>, initial: T): StateHandle<T> =>
-        this.states.define(plugin.name, name, schema, initial),
+      state: <T>(name: string, schema: z.ZodType<T>, initial: T): StateHandle<T> => {
+        live();
+        return this.states.define(plugin.name, name, schema, initial);
+      },
       // A plugin starts sessions and runs; the owner and the plugins are the host's to make.
       issueToken: (kind, id, opts) => {
         if (kind !== "session" && kind !== "run") throw new TypeError(`a plugin makes no token for "${String(kind)}"`);
@@ -760,6 +788,7 @@ class Niwa implements Host {
       narrow: (caller, requested) => this.access.narrowFor(caller, requested),
       rights: (caller) => this.access.rightsOf(caller),
       profile: (name, rules) => {
+        live();
         installed.profiles.add(name);
         this.access.declareProfile(name, rules);
       },

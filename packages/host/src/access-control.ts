@@ -77,6 +77,17 @@ export class AccessControl {
     this.defaults.set(name, rules);
   }
 
+  /** The profiles the plugins declared, as they are now: what an install that fails puts back. */
+  declaredProfiles(): ReadonlyMap<string, ProfileDefault> {
+    return new Map(this.defaults);
+  }
+
+  /** Put the declared profiles back as `declaredProfiles` took them. */
+  restoreProfiles(declared: ReadonlyMap<string, ProfileDefault>): void {
+    this.defaults.clear();
+    for (const [name, rules] of declared) this.defaults.set(name, rules);
+  }
+
   /**
    * What a caller stands on. A connection with no token, or one the host did not make, is a client
    * the host never issued a token to: it stands on the `default` profile, and only the owner's
