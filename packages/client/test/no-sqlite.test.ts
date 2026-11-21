@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const SQLITE = "bun:sqlite";
 const ENTRY = fileURLToPath(new URL("../src/index.ts", import.meta.url));
@@ -32,6 +33,25 @@ function reachable(entry: string): { files: Set<string>; edges: Edge[] } {
   return { files, edges };
 }
 
+/** Whether a file calls `require("bun:sqlite")` or `import("bun:sqlite")` where the module loads, outside any function. */
+function loadsSqliteAtModuleLevel(file: string): boolean {
+  const source = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.ESNext, true);
+  let found = false;
+  const visit = (node: ts.Node, insideFunction: boolean): void => {
+    if (ts.isCallExpression(node) && !insideFunction) {
+      const callee = node.expression;
+      const named = ts.isIdentifier(callee) && callee.text === "require";
+      const dynamic = callee.kind === ts.SyntaxKind.ImportKeyword;
+      const first = node.arguments[0];
+      if ((named || dynamic) && first !== undefined && ts.isStringLiteralLike(first) && first.text === SQLITE) found = true;
+    }
+    const entersFunction = ts.isFunctionLike(node) || ts.isClassStaticBlockDeclaration(node);
+    ts.forEachChild(node, (child) => visit(child, insideFunction || entersFunction));
+  };
+  visit(source, false);
+  return found;
+}
+
 describe("the client entry", () => {
   const { files, edges } = reachable(ENTRY);
 
@@ -42,6 +62,10 @@ describe("the client entry", () => {
   test("never loads bun:sqlite, itself or through a package it imports", () => {
     const loading = edges.filter((edge) => edge.kind === "import-statement" && edge.specifier === SQLITE);
     expect(loading).toEqual([]);
+  });
+
+  test("never requires bun:sqlite where a module loads, in any file it reaches", () => {
+    expect([...files].filter(loadsSqliteAtModuleLevel)).toEqual([]);
   });
 
   test("does not reach the journal entry of core", () => {
