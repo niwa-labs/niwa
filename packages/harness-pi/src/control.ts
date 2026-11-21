@@ -36,11 +36,17 @@
  *   asks through the same dialogs as any other question. A session given a `reverse` handler
  *   routes every dialog (`select`, `confirm`, `input`, `editor`) to it as a question.
  * - **structuredOutput**: pi's events carry pi's messages, not a structured result.
+ * - **niwa's tools**: pi's RPC mode takes no MCP server, but an extension of pi can register one. A
+ *   session given servers is started with `--extension` of this package's own (`mcp/extension.ts`) and
+ *   the servers in its environment; the extension registers them, and their tools are pi's tools,
+ *   `mcp__<server>__<tool>`. The servers are fixed when the process starts: a resume of a process
+ *   that is held cannot change them.
  */
 
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { assertNever, OptionIdSchema, pickedOptions } from "@niwa-labs/core";
 import type { Answer, Question, QuestionOption } from "@niwa-labs/core";
@@ -84,6 +90,7 @@ import type {
 import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
 import { PI_INSTANCE_ENV } from "./insert/insert.ts";
+import { PI_MCP_SERVERS_ENV, encodeServers, piToolPattern } from "./mcp/servers.ts";
 import { PI_PROTOCOL, PiCommandSchema, RequestIdSchema, describeUnknown, parseLine, unknownVariantName } from "./protocol/index.ts";
 import type {
   PiUnknownVariant,
@@ -124,37 +131,90 @@ function unliteralToolName(name: string): string | undefined {
 
 /**
  * pi's flags for an allow-list of its own tools (`docs/cli.md`): `--tools` replaces the selection
- * with exactly the tools named, built-in, extension or custom, but it keeps every MCP tool, so
- * `--no-mcp` goes with it. With none named `--no-tools` starts with every tool off, the extensions
- * and MCP servers pi loads by itself among them: those are pi's, not niwa's.
+ * with exactly the tools named, built-in, extension or custom, but it keeps every MCP tool unless
+ * an entry names MCP tools itself (`mcp__<server>__*`), which then are the only MCP tools kept.
+ *
+ * `served` are the patterns of the MCP servers niwa gives the session: they go into the list, so
+ * the list holds exactly the tools named and those of niwa's servers, and no other MCP tool. With
+ * none, `--no-mcp` goes with the list; with no tool named either, `--no-tools` starts with every
+ * tool off, the extensions and MCP servers pi loads by itself among them: those are pi's, not niwa's.
  *
  * A name pi would read as a pattern is refused with `Unsupported`: the list would reach more tools
  * than niwa named.
  */
-export function piToolFlags(harness: HarnessId, ability: "start" | "resume", allow: readonly string[]): string[] {
+export function piToolFlags(
+  harness: HarnessId,
+  ability: "start" | "resume",
+  allow: readonly string[],
+  served: readonly string[] = [],
+): string[] {
   for (const name of allow) {
     const why = unliteralToolName(name);
     if (why !== undefined) {
       throw new Unsupported(harness, "control", ability, `${describeToolsMode({ allow })}: "${name}" cannot be named to pi exactly: ${why}`);
     }
   }
+  if (served.length > 0) return ["--tools", [...allow, ...served].join(",")];
   return allow.length === 0 ? ["--no-tools"] : ["--tools", allow.join(","), "--no-mcp"];
 }
 
 /**
- * The flags for a tool mode, or `Unsupported` when pi cannot hold a session to it.
+ * The flags for a tool mode. `servers` are the MCP servers niwa gives the session: the tools of
+ * them are the tools of niwa.
  *
- * `niwa-only` is refused: pi's RPC mode takes no MCP server, and the tools niwa would give a
- * session through an extension of pi are not wired in, so a session of niwa's tools only would have
- * no tool at all.
+ * `niwa-only` switches off pi's built-in tools and keeps the tools of niwa's servers alone, so the
+ * list names their pattern: pi's other MCP servers and the tools of its other extensions go with
+ * the built-in ones. With no server there is no tool of niwa, and the session has none at all.
  */
-export function piToolsModeFlags(harness: HarnessId, ability: "start" | "resume", tools: ToolsMode | undefined): string[] {
+export function piToolsModeFlags(
+  harness: HarnessId,
+  ability: "start" | "resume",
+  tools: ToolsMode | undefined,
+  servers: readonly McpServerSpec[] = [],
+): string[] {
   if (tools === undefined || tools === "all") return [];
-  if (tools === "niwa-only") {
-    throw new Unsupported(harness, "control", ability, `${describeToolsMode(tools)}: pi has no way to give a session niwa's tools alone`);
-  }
-  return piToolFlags(harness, ability, tools.allow);
+  const served = servers.map((server) => piToolPattern(server.name));
+  if (tools === "niwa-only") return served.length === 0 ? ["--no-tools"] : ["--no-builtin-tools", "--tools", served.join(",")];
+  return piToolFlags(harness, ability, tools.allow, served);
 }
+
+/**
+ * Why pi cannot be given a server exactly as niwa describes it, or `undefined` when it can.
+ *
+ * The server goes to pi as an entry of its `mcpServers`, which pi reads with a syntax of its own: a
+ * name is made of letters, digits, `_` and `-`, and two names that differ only in `-` and `_` are
+ * one server; a leading `~/` of the command or an argument names the home directory; a value of the
+ * environment may hold `${NAME}` and may be a `!command` to run. A server that pi would read
+ * otherwise than niwa wrote it is refused, so a session never gets other tools than it was promised.
+ */
+function unliteralServer(server: McpServerSpec): string | undefined {
+  if (!/^[A-Za-z0-9_-]+$/.test(server.name)) return `the server name "${server.name}" is not made of letters, digits, \`_\` and \`-\``;
+  for (const word of [server.command, ...server.args]) {
+    if (word.startsWith("~/")) return `pi reads a leading \`~/\` of "${word}" as its home directory`;
+  }
+  for (const [name, value] of Object.entries(server.env)) {
+    if (value.startsWith("!") || value.includes("${")) return `pi would expand the value of ${name} as its own syntax`;
+  }
+  return undefined;
+}
+
+/** The refusal of a set of servers pi would not read as niwa wrote them, or nothing. */
+function refuseServers(harness: HarnessId, ability: "start" | "resume", servers: readonly McpServerSpec[]): void {
+  const seen = new Map<string, string>();
+  for (const server of servers) {
+    const why = unliteralServer(server);
+    if (why !== undefined) throw new Unsupported(harness, "control", ability, `MCP server "${server.name}": ${why}`);
+    const key = server.name.replace(/-/g, "_");
+    const other = seen.get(key);
+    if (other !== undefined) {
+      throw new Unsupported(harness, "control", ability, `MCP servers "${other}" and "${server.name}" are one server to pi: its names differ only in \`-\` and \`_\``);
+    }
+    seen.set(key, server.name);
+  }
+}
+
+/** The extension that registers a session's servers with pi: the file pi loads with `-e`. */
+const TOOLS_EXTENSION = fileURLToPath(new URL("./mcp/extension.ts", import.meta.url));
 
 /**
  * What a pi session takes at launch: a model by `--model`, a thinking level by `--thinking`. pi has
@@ -417,7 +477,7 @@ export class PiControl implements PiSessionControl {
   async start(options: StartOptions): Promise<StartedSession> {
     this.#requireOpen("start");
     this.#refuseSeen("start", options.visible, options.servers);
-    const toolFlags = piToolsModeFlags(this.#harness, "start", options.tools);
+    const toolFlags = piToolsModeFlags(this.#harness, "start", options.tools, options.servers);
     const mode = modeOf(options.mode, this.#options.mode, PI_LAUNCH);
     requireLaunch(this.#harness, PI_LAUNCH, {
       model: options.model ?? this.#options.model,
@@ -472,14 +532,14 @@ export class PiControl implements PiSessionControl {
     const known = this.#sessions.get(id.native);
     const held = known !== undefined && !known.ended && !known.stopping ? known : undefined;
     if (held !== undefined) {
-      if (options?.tools !== undefined || options?.box !== undefined) {
+      if (options?.tools !== undefined || options?.box !== undefined || (options?.servers ?? []).length > 0) {
         throw new Unsupported(this.#harness, "control", "resume", LIVE_PROCESS_REFUSAL);
       }
       // The one who resumes names where the dialogs go from now on.
       if (options?.reverse !== undefined) held.reverse = options.reverse;
       return { session: held, fresh: false };
     }
-    const toolFlags = piToolsModeFlags(this.#harness, "resume", options?.tools);
+    const toolFlags = piToolsModeFlags(this.#harness, "resume", options?.tools, options?.servers);
     requireLaunch(this.#harness, PI_LAUNCH, { mode: modeOf(options?.mode, this.#options.mode, PI_LAUNCH) });
     // The directory the session was started in, when the caller says it, is where its file is
     // looked for and where pi is run again.
@@ -784,7 +844,7 @@ export class PiControl implements PiSessionControl {
     model: string | undefined,
     effort: string | undefined,
     toolFlags: readonly string[],
-    plan: Pick<StartOptions, "env" | "box" | "reverse">,
+    plan: Pick<StartOptions, "env" | "box" | "reverse" | "servers">,
   ): Promise<LiveSession> {
     const starting = this.#launch(cwd, file, ability, model, effort, toolFlags, plan);
     this.#spawning.add(starting);
@@ -800,7 +860,7 @@ export class PiControl implements PiSessionControl {
     model: string | undefined,
     effort: string | undefined,
     toolFlags: readonly string[],
-    plan: Pick<StartOptions, "env" | "box" | "reverse">,
+    plan: Pick<StartOptions, "env" | "box" | "reverse" | "servers">,
   ): Promise<LiveSession> {
     const binary = this.#options.binary ?? "pi";
     const args = ["--mode", "rpc"];
@@ -810,13 +870,17 @@ export class PiControl implements PiSessionControl {
     const chosenEffort = effort ?? this.#options.effort;
     if (chosenEffort !== undefined) args.push("--thinking", chosenEffort);
     args.push(...toolFlags);
+    // The tools of niwa are brought into pi by an extension of this one session, which registers the servers
+    // it is given through the environment.
+    const servers = plan.servers ?? [];
+    if (servers.length > 0) args.push("--extension", TOOLS_EXTENSION);
 
     const child = await spawnAgent({
       harness: this.#harness,
       program: binary,
       args,
       cwd,
-      env: { ...this.#env(), ...plan.env },
+      env: { ...this.#env(), ...(servers.length > 0 ? { [PI_MCP_SERVERS_ENV]: encodeServers(servers) } : {}), ...plan.env },
       box: plan.box,
       needs: PI_NEEDS,
     });
@@ -1310,22 +1374,23 @@ export class PiControl implements PiSessionControl {
   }
 
   /**
-   * pi's RPC mode has no way to give a session niwa actions, servers or a tool switch, and a
-   * session promised them would wait for a call that never comes: the request is refused.
+   * What a request asks of the session's tools that pi cannot do is refused before a process is
+   * started: a session promised niwa actions that no server brings would wait for a call that never
+   * comes, a tool switched off singly is not a switch this side has, and a server pi would read
+   * otherwise than niwa wrote it would give the session other tools than it was promised.
    */
   #refuseSeen(
     ability: "start" | "resume",
     visible: VisibleActions | undefined,
     servers: readonly McpServerSpec[] | undefined,
   ): void {
-    const seen = visible !== undefined && (visible.actions.length > 0 || visible.disabledTools.length > 0);
-    if (!seen && (servers === undefined || servers.length === 0)) return;
-    throw new Unsupported(
-      this.#harness,
-      "control",
-      ability,
-      "pi's RPC mode takes neither niwa actions, MCP servers nor a tool switch",
-    );
+    if (visible !== undefined && visible.disabledTools.length > 0) {
+      throw new Unsupported(this.#harness, "control", ability, "pi's tools are not switched off one by one: this side holds a session to a mode of tools");
+    }
+    if (visible !== undefined && visible.actions.length > 0 && (servers ?? []).length === 0) {
+      throw new Unsupported(this.#harness, "control", ability, "the session is to see niwa actions, but no MCP server was given to bring them into pi");
+    }
+    refuseServers(this.#harness, ability, servers ?? []);
   }
 
   /** The turn a resume carries into a session just opened; a session whose turn fails is not left running. */

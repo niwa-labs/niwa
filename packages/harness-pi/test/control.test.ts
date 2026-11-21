@@ -60,18 +60,6 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test("pi refuses niwa actions, servers and a tool switch by name, before a process is started", async () => {
-  const pi = new PiControl({ mode: "full", harness: "pi-fake", binary: join(dir, "pi") });
-  const seen = { actions: ["niwa-x"], disabledTools: [] };
-  const failure = await pi.start({ prompt: promptFromText("go"), visible: seen }).catch((error: unknown) => error);
-  expect(failure).toBeInstanceOf(Unsupported);
-  const server = { name: "niwa", command: "niwa", args: ["mcp"], env: {} };
-  const withServer = await pi.start({ prompt: promptFromText("go"), servers: [server] }).catch((error: unknown) => error);
-  expect(withServer).toBeInstanceOf(Unsupported);
-  expect(await readFile(join(dir, "pid"), "utf8").catch(() => "none")).toBe("none");
-  await pi.dispose();
-});
-
 test("pi has only the full mode: ask and auto are refused naming it, before a process is started; with none chosen it starts in full", async () => {
   const bare = new PiControl({ harness: "pi-fake", binary: join(dir, "pi") });
   for (const mode of ["ask", "auto"] as const) {

@@ -8,6 +8,8 @@
 
 import { z } from "zod";
 
+import type { McpServerSpec } from "@niwa-labs/harness";
+
 /** The environment variable that carries the servers of a session to the extension inside pi. */
 export const PI_MCP_SERVERS_ENV = "NIWA_PI_MCP_SERVERS";
 
@@ -21,7 +23,7 @@ export const PiMcpServerSchema = z.object({
 export type PiMcpServer = z.output<typeof PiMcpServerSchema>;
 
 /** The servers as text for the environment. */
-export function encodeServers(servers: readonly PiMcpServer[]): string {
+export function encodeServers(servers: readonly McpServerSpec[]): string {
   return JSON.stringify(servers.map(({ name, command, args, env }) => ({ name, command, args, env })));
 }
 

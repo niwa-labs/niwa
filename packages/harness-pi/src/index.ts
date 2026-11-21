@@ -144,6 +144,9 @@ export type { PiReadingOptions } from "./reading.ts";
 export { PiControl, PI_CONTROL_CAPABILITIES, PI_LAUNCH, piToolFlags, piToolsModeFlags } from "./control.ts";
 export type { PiControlOptions, PiSessionControl } from "./control.ts";
 
+export { default as niwaPiTools, PI_MCP_SERVERS_ENV, decodeServers, encodeServers, piToolPattern } from "./mcp/index.ts";
+export type { PiMcpApi, PiMcpServer, PiMcpServerConfig } from "./mcp/index.ts";
+
 export { piSkills } from "./skills.ts";
 
 export { PI_EXTENSION_FILE, PI_HARNESS, PI_INSTANCE_ENV, PiInsert, installPiInsert, piExtensionSource, piSession, default as niwaPiExtension } from "./insert/index.ts";

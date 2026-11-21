@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { InputNotSent, InputPossiblySent, Unavailable, Unsupported, promptFromText, sessionId } from "@niwa-labs/harness";
 import type { HarnessId, LifeEvent, SessionId } from "@niwa-labs/harness";
 import { PiControl, piToolFlags, piToolsModeFlags } from "../src/control.ts";
+import { PI_MCP_SERVERS_ENV, decodeServers } from "../src/mcp/index.ts";
 import { eventually, tempDir } from "@niwa-labs/testing";
 
 /**
@@ -27,6 +28,7 @@ appendFileSync(dir + "/spawns.log", JSON.stringify({
   cwd: process.cwd(),
   session: process.env.NIWA_SESSION ?? null,
   instance: process.env.NIWA_PI_INSTANCE ?? null,
+  servers: process.env.NIWA_PI_MCP_SERVERS ?? null,
 }) + "\\n");
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
 const mode = process.env.FAKE_PROMPT ?? "started";
@@ -92,6 +94,7 @@ interface Spawn {
   readonly cwd: string;
   readonly session: string | null;
   readonly instance: string | null;
+  readonly servers: string | null;
 }
 
 async function logged<T>(name: string): Promise<T[]> {
@@ -135,7 +138,22 @@ test("an allow-list reaches pi as exactly the names given, with its MCP tools sw
   expect(piToolsModeFlags(HARNESS as HarnessId, "start", undefined)).toEqual([]);
 });
 
-test("a name pi would read as a pattern, or niwa's tools alone, is refused before a process is started", async () => {
+const NIWA = { name: "niwa", command: "/bin/bun", args: ["/opt/niwa/bin/niwa.ts", "--home", "/h", "mcp"], env: { NIWA_ID: "tok", NIWA_VISIBLE: "task.create" } };
+
+test("with niwa's server the modes name its tools, and pi's MCP stays on for them", () => {
+  const flags = (tools: Parameters<typeof piToolsModeFlags>[2]) => piToolsModeFlags(HARNESS as HarnessId, "start", tools, [NIWA]);
+  // niwa's tools alone: pi's built-in tools off, and the list holds the tools of niwa's server and no others.
+  expect(flags("niwa-only")).toEqual(["--no-builtin-tools", "--tools", "mcp__niwa__*"]);
+  // An allow-list names pi's own tools and the tools of niwa's server; `--no-mcp` would switch the server off.
+  expect(flags({ allow: ["read", "grep"] })).toEqual(["--tools", "read,grep,mcp__niwa__*"]);
+  expect(flags({ allow: [] })).toEqual(["--tools", "mcp__niwa__*"]);
+  expect(flags("all")).toEqual([]);
+  expect(flags(undefined)).toEqual([]);
+  // A session of niwa's tools alone that is given no server has no tool at all.
+  expect(piToolsModeFlags(HARNESS as HarnessId, "start", "niwa-only", [])).toEqual(["--no-tools"]);
+});
+
+test("a name pi would read as a pattern is refused before a process is started", async () => {
   const pi = side();
   const patterns = ["*", "re*", "+read", "-write", "read,bash", "read bash", "mcp__radius__x", "", " read"];
   for (const name of patterns) {
@@ -143,10 +161,73 @@ test("a name pi would read as a pattern, or niwa's tools alone, is refused befor
     expect(refusal, name).toBeInstanceOf(Unsupported);
     expect(String(refusal)).toContain("start");
   }
-  const alone = await pi.start({ prompt: promptFromText("go"), tools: "niwa-only" }).catch((error: unknown) => error);
-  expect(alone).toBeInstanceOf(Unsupported);
-  // A cold resume is refused for the same reason before its file is looked for.
-  const resumed = await pi.resume(idOf("s1"), { tools: "niwa-only" }).catch((error: unknown) => error);
+  expect(await spawns()).toEqual([]);
+});
+
+// -- the tools of niwa ------------------------------------------------------------
+
+test("a session given niwa's server is started with the extension that registers it, and told the servers", async () => {
+  const pi = side();
+  await pi.start({ prompt: promptFromText(""), servers: [NIWA], tools: "niwa-only", env: { NIWA_ID: "tok" } });
+  const [spawn] = await spawns();
+  const args = spawn!.args;
+  const at = args.indexOf("--extension");
+  expect(at).toBeGreaterThan(-1);
+  expect(args[at + 1]!.endsWith("/src/mcp/extension.ts")).toBe(true);
+  expect(args.slice(args.indexOf("--no-builtin-tools"))).toEqual(expect.arrayContaining(["--no-builtin-tools", "--tools", "mcp__niwa__*"]));
+  expect(args).not.toContain("--no-mcp");
+  // The servers reach the extension through the environment, as the server spec says them.
+  expect(decodeServers(spawn!.servers!)).toEqual([NIWA]);
+});
+
+test("a session given no server is not given the extension, nor the servers", async () => {
+  const pi = side();
+  await pi.start({ prompt: promptFromText("") });
+  const [spawn] = await spawns();
+  expect(spawn!.args).not.toContain("--extension");
+  expect(spawn!.servers).toBeNull();
+  expect(PI_MCP_SERVERS_ENV in process.env).toBe(false);
+});
+
+test("a session resumed from its file is given the extension and the servers again", async () => {
+  await sessionFile("s1", dir);
+  const pi = side({ cwd: dir, home: dir });
+  await pi.resume(idOf("s1"), { servers: [NIWA], tools: { allow: ["read"] } });
+  const [spawn] = await spawns();
+  expect(spawn!.args).toContain("--session");
+  expect(spawn!.args).toContain("--extension");
+  expect(spawn!.args).toEqual(expect.arrayContaining(["--tools", "read,mcp__niwa__*"]));
+  expect(decodeServers(spawn!.servers!)).toEqual([NIWA]);
+});
+
+test("a process that is held cannot be given servers by a resume: they are fixed when it starts", async () => {
+  const pi = side();
+  const { session } = await pi.start({ prompt: promptFromText("") });
+  const refusal = await pi.resume(session, { servers: [NIWA] }).catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(Unsupported);
+  expect(await spawns()).toHaveLength(1);
+});
+
+test("what pi would not give a session as niwa asked is refused before a process is started", async () => {
+  const pi = side();
+  const start = (options: object) => pi.start({ prompt: promptFromText("go"), ...options }).catch((error: unknown) => error);
+  // Niwa actions that no server brings.
+  expect(await start({ visible: { actions: ["task.create"], disabledTools: [] } })).toBeInstanceOf(Unsupported);
+  // A tool switched off singly.
+  expect(await start({ servers: [NIWA], visible: { actions: ["task.create"], disabledTools: ["bash"] } })).toBeInstanceOf(Unsupported);
+  // A server pi would read in another way than niwa wrote it.
+  for (const server of [
+    { ...NIWA, name: "ni wa" },
+    { ...NIWA, args: ["~/bin/niwa.ts"] },
+    { ...NIWA, command: "~/bin/bun" },
+    { ...NIWA, env: { NIWA_ID: "${HOME}" } },
+    { ...NIWA, env: { NIWA_ID: "!echo hi" } },
+  ]) {
+    expect(await start({ servers: [server] }), JSON.stringify(server)).toBeInstanceOf(Unsupported);
+  }
+  // Two names that are one server to pi.
+  expect(await start({ servers: [{ ...NIWA, name: "a-b" }, { ...NIWA, name: "a_b" }] })).toBeInstanceOf(Unsupported);
+  const resumed = await pi.resume(idOf("s1"), { servers: [{ ...NIWA, name: "ni wa" }] }).catch((error: unknown) => error);
   expect(resumed).toBeInstanceOf(Unsupported);
   expect(await spawns()).toEqual([]);
 });
