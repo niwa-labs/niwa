@@ -41,6 +41,12 @@ const TextPartSchema = z.looseObject({
   time: TimeSchema.optional(),
 });
 
+const ReasoningPartSchema = z.looseObject({
+  type: z.literal("reasoning"),
+  text: z.string().optional(),
+  time: TimeSchema.optional(),
+});
+
 const ToolPartSchema = z.looseObject({
   type: z.literal("tool"),
   callID: z.string().min(1),
@@ -65,7 +71,7 @@ const bare = <T extends string>(type: T) => z.looseObject({ type: z.literal(type
 /** Every part type ZCode writes; the reading side says what each comes to. */
 export const PartDataSchema = z.discriminatedUnion("type", [
   TextPartSchema,
-  bare("reasoning"),
+  ReasoningPartSchema,
   bare("file"),
   bare("agent"),
   CompactionPartSchema,

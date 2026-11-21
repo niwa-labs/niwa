@@ -184,8 +184,10 @@ function recordsOf(
   const part = read.part;
   const at = (value: unknown): number | undefined => millisOf(value) ?? millisOf(row.ptime);
   switch (part.type) {
-    // The harness's own bookkeeping and the model's thoughts are not conversation: no record.
+    // The model's thought: the text it wrote, from when it began. Only the tail can still be thinking.
     case "reasoning":
+      return [{ sub: 0, record: { kind: "thinking", text: part.text ?? "", redacted: false, at: at(part.time?.start), incomplete: running } }];
+    // The harness's own bookkeeping is not conversation: no record.
     case "step-start":
     case "step-finish":
     case "timeline":

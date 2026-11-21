@@ -78,7 +78,7 @@ test("a database that is not there lists nothing and reads as unavailable", asyn
   expect(listed).toEqual([]);
 });
 
-test("maps text, tool calls and results; the harness's own messages, thoughts and markers are not records", async () => {
+test("maps text, thoughts, tool calls and results; the harness's own messages and markers are not records", async () => {
   writeSession(db, "sess_a", [
     { id: "m0", data: { role: "assistant", time: { created: 1, completed: 1 } }, parts: [{ type: "timeline", timelineType: "model_change" }] },
     user("m1", "do it"),
@@ -92,7 +92,7 @@ test("maps text, tool calls and results; the harness's own messages, thoughts an
       data: { role: "assistant", time: { created: 2, completed: 3 }, modelId: "GLM-5.3-Flash", providerId: "builtin:zai" },
       parts: [
         { type: "step-start" },
-        { type: "reasoning", text: "thinking" },
+        { type: "reasoning", text: "weighing it", time: { start: 2200, end: 2300 } },
         { type: "text", text: "synthetic", synthetic: true },
         { type: "text", text: "on it", time: { start: 2500 } },
         { type: "step-finish", tokens: { input: 1 } },
@@ -102,12 +102,13 @@ test("maps text, tool calls and results; the harness's own messages, thoughts an
     tool("m4", "error", { error: "no such file" }),
   ]);
   const records = await all(reading().read(id("sess_a")));
-  expect(records.map((record) => record.kind)).toEqual(["user", "assistant", "tool-call", "tool-result", "tool-call", "tool-result"]);
+  expect(records.map((record) => record.kind)).toEqual(["user", "thinking", "assistant", "tool-call", "tool-result", "tool-call", "tool-result"]);
   expect(records[0]).toMatchObject({ kind: "user", text: "do it", incomplete: false });
-  expect(records[1]).toMatchObject({ kind: "assistant", text: "on it", model: "builtin:zai/GLM-5.3-Flash", at: 2500 });
-  expect(records[2]).toMatchObject({ kind: "tool-call", callId: "call_m3", name: "Bash", input: { command: "ls" }, at: 2000 });
-  expect(records[3]).toMatchObject({ kind: "tool-result", callId: "call_m3", output: "a.txt", ok: true, at: 2010 });
-  expect(records[5]).toMatchObject({ kind: "tool-result", output: "no such file", ok: false });
+  expect(records[1]).toMatchObject({ kind: "thinking", text: "weighing it", redacted: false, at: 2200, incomplete: false });
+  expect(records[2]).toMatchObject({ kind: "assistant", text: "on it", model: "builtin:zai/GLM-5.3-Flash", at: 2500 });
+  expect(records[3]).toMatchObject({ kind: "tool-call", callId: "call_m3", name: "Bash", input: { command: "ls" }, at: 2000 });
+  expect(records[4]).toMatchObject({ kind: "tool-result", callId: "call_m3", output: "a.txt", ok: true, at: 2010 });
+  expect(records[6]).toMatchObject({ kind: "tool-result", output: "no such file", ok: false });
 });
 
 test("a call is named by its category and its target, in ZCode's tool names", async () => {
@@ -163,6 +164,17 @@ test("only the tail of a running session is incomplete; an older unfinished mess
   expect(marks.slice(0, 5)).toEqual(["user:false", "assistant:false", "user:false", "tool-call:false", "tool-result:false"]);
   // The running message is the tail: from the running tool on, nothing is whole, the late result included.
   expect(marks.slice(5)).toEqual(["tool-call:true", "tool-result:true", "tool-call:true", "tool-call:true", "tool-result:true"]);
+});
+
+test("a thought still being written at the tail is incomplete, and one in an older message is whole", async () => {
+  writeSession(db, "sess_a", [
+    user("m1", "go"),
+    { id: "m2", data: { role: "assistant", time: { created: 2 } }, parts: [{ type: "reasoning", text: "old", time: { start: 2 } }] },
+    user("m3", "go on"),
+    { id: "m4", data: { role: "assistant", time: { created: 4 } }, parts: [{ type: "reasoning", text: "live", time: { start: 4 } }] },
+  ]);
+  const records = await all(reading().read(id("sess_a")));
+  expect(records.map((record) => `${record.kind}:${record.incomplete}`)).toEqual(["user:false", "thinking:false", "user:false", "thinking:true"]);
 });
 
 test("a call left running in an older message does not hold back what came after it", async () => {
@@ -268,7 +280,7 @@ test("an unfamiliar or broken part is unknown with what it was, and raw gives th
 /** One row of each part type ZCode writes, as small as it can be, and the records the reading side makes of it. */
 const PART_ROWS: Record<(typeof PART_TYPES)[number], { part: Record<string, unknown>; kinds: SessionRecord["kind"][] }> = {
   text: { part: { type: "text", text: "said" }, kinds: ["assistant"] },
-  reasoning: { part: { type: "reasoning", text: "thinking" }, kinds: [] },
+  reasoning: { part: { type: "reasoning", text: "thinking" }, kinds: ["thinking"] },
   file: { part: { type: "file", mime: "image/png", url: "file:///a.png" }, kinds: ["unknown"] },
   agent: { part: { type: "agent", name: "reviewer" }, kinds: ["unknown"] },
   compaction: { part: { type: "compaction", auto: true }, kinds: ["compaction"] },
