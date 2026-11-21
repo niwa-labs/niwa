@@ -127,3 +127,19 @@ test("the hints of a tool come from what its action declares, and an unknown one
     a_put: { readOnlyHint: false, openWorldHint: false, destructiveHint: true, idempotentHint: true },
   });
 });
+
+test("an action the session does not see cannot take the name of one it sees", () => {
+  const base = { description: "x", recovery: "repeat" as const, effect: "read" as const, input: { type: "object" }, output: { type: "object" } };
+  const description: Description = {
+    actions: [
+      { ...base, name: actionName("hello") },
+      { ...base, name: actionName("a.b") },
+      { ...base, name: actionName("a-b") },
+    ],
+    types: [],
+  };
+  expect(catalogOf(description, ["hello"]).tools.map((tool) => tool.name)).toEqual(["hello"]);
+  // When both that make one name are seen, the clash is still reported.
+  expect(() => catalogOf(description, ["a.b", "a-b"])).toThrow(/already taken/);
+  expect(() => catalogOf(description)).toThrow(/already taken/);
+});

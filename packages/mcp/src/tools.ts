@@ -55,12 +55,15 @@ export interface Catalog {
  * list names: the actions by their action name ("session.send"). A session that was given
  * nothing sees nothing.
  *
- * @throws when two actions get the same tool name.
+ * @throws when two of the actions the session sees get the same tool name.
  */
 export function catalogOf(description: Description, visible?: readonly string[]): Catalog {
+  // Only what the session may see takes a name: an action it cannot see never collides with one it can.
+  const allowed = visible === undefined ? undefined : new Set(visible);
   const taken = new Set<string>();
   const declared: Array<{ tool: Tool; action: ActionName }> = [];
   for (const action of description.actions) {
+    if (allowed !== undefined && !allowed.has(action.name)) continue;
     const name = toolNameOf(action.name);
     if (taken.has(name)) {
       throw new Error(`the action "${action.name}" would make the tool "${name}", which is already taken`);
@@ -76,19 +79,9 @@ export function catalogOf(description: Description, visible?: readonly string[])
       action: action.name,
     });
   }
-
-  if (visible === undefined) {
-    return {
-      tools: declared.map((entry) => entry.tool),
-      actions: new Map(declared.map((entry) => [entry.tool.name, entry.action])),
-    };
-  }
-
-  const allowed = new Set(visible);
-  const kept = declared.filter((entry) => allowed.has(entry.action));
   return {
-    tools: kept.map((entry) => entry.tool),
-    actions: new Map(kept.map((entry) => [entry.tool.name, entry.action])),
+    tools: declared.map((entry) => entry.tool),
+    actions: new Map(declared.map((entry) => [entry.tool.name, entry.action])),
   };
 }
 
