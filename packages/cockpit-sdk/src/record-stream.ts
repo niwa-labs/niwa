@@ -138,17 +138,17 @@ export function createRecordStream(client: HostClient, options: RecordStreamOpti
 
   function ingest(incoming: readonly StoredRecord[]): void {
     const { records, seq } = store.getState();
-    const oldest = records[0]?.seq ?? seq + 1;
     const known = new Set(records.map((r) => r.seq));
-    const older = incoming.filter((r) => r.seq < oldest && !known.has(r.seq));
-    if (older.length > 0) {
-      const merged = new Map<number, StoredRecord>();
-      for (const r of [...older, ...records]) merged.set(r.seq, r);
-      const all = [...merged.values()].sort((a, b) => a.seq - b.seq);
-      generation += 1;
-      store.setState({ records: keep(all), seq: Math.max(seq, all[all.length - 1]!.seq) });
-    }
-    append(incoming.filter((r) => r.seq >= oldest && !known.has(r.seq)));
+    const unknown = incoming.filter((r) => !known.has(r.seq));
+    // Records after the newest held simply extend the stream.
+    if (unknown.every((r) => r.seq > seq)) return append(unknown);
+    const merged = new Map<number, StoredRecord>();
+    for (const r of [...records, ...unknown]) merged.set(r.seq, r);
+    const all = keep([...merged.values()].sort((a, b) => a.seq - b.seq));
+    // Records that land before the newest one change what every projection has seen, unless
+    // the retention limit drops them again at once.
+    if (all.some((r) => r.seq <= seq && !known.has(r.seq))) generation += 1;
+    store.setState({ records: all, seq: Math.max(seq, all[all.length - 1]?.seq ?? seq) });
   }
 
   async function follow(after: number, signal: AbortSignal): Promise<void> {

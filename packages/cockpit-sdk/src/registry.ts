@@ -303,7 +303,14 @@ function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: re
     href(entity) {
       const ref = typeof entity === "string" ? entityRegistry.resolve(entity) : entity;
       if (ref === undefined) return undefined;
-      return entities.get(ref.kind)?.href(ref.id);
+      const kind = entities.get(ref.kind);
+      try {
+        return kind?.href(ref.id);
+      } catch (error) {
+        // A module's own code: a link it cannot build is no link, not a broken page.
+        console.error(`niwa cockpit: ${kind?.plugin} could not link ${ref.kind} ${ref.id}`, error);
+        return undefined;
+      }
     },
   };
 
@@ -326,6 +333,9 @@ function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: re
  * nothing, by the cockpit, by itself, or by a module that fits. A module that only clashes with
  * a module that is itself about to go, or needs a slot of one, waits: it may fit once that one
  * is gone. When every misfit waits on another, the first in load order goes.
+ *
+ * A module left out early may have lost only to modules that were left out after it, so at the
+ * end each one is offered again, in load order, and kept when everything still fits.
  */
 export function assembleRegistry(
   base: ReadonlyArray<{ name: string; kind: SlotKind }>,
@@ -335,7 +345,7 @@ export function assembleRegistry(
   let remaining = drafts;
   for (;;) {
     const { registry, misfits } = build(base, remaining);
-    if (misfits.length === 0) return { registry, faults };
+    if (misfits.length === 0) return readmit(base, drafts, remaining, registry, faults);
     const failing = new Set(misfits.map((m) => m.fault.plugin));
     const certain = misfits.filter(
       (m) => m.holder === undefined || m.holder === m.fault.plugin || !failing.has(m.holder),
@@ -346,6 +356,28 @@ export function assembleRegistry(
     faults.push(first.fault);
     remaining = remaining.filter((d) => d.plugin !== first.fault.plugin);
   }
+}
+
+function readmit(
+  base: ReadonlyArray<{ name: string; kind: SlotKind }>,
+  drafts: readonly PluginDraft[],
+  kept: readonly PluginDraft[],
+  registry: CockpitRegistry,
+  faults: PluginFault[],
+): { registry: CockpitRegistry; faults: PluginFault[] } {
+  let inside = new Set(kept);
+  let current = registry;
+  let left = faults;
+  for (const draft of drafts) {
+    if (inside.has(draft)) continue;
+    const trial = drafts.filter((d) => inside.has(d) || d === draft);
+    const built = build(base, trial);
+    if (built.misfits.length > 0) continue;
+    inside = new Set(trial);
+    current = built.registry;
+    left = left.filter((f) => f.plugin !== draft.plugin);
+  }
+  return { registry: current, faults: left };
 }
 
 /** Run a module's setup into a draft. A setup that throws yields a fault and no draft. */

@@ -5,7 +5,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient, type UseMutationResult, type UseQueryResult } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useStore } from "zustand";
 
 import type { ActionRefLike } from "./host-client.ts";
@@ -53,30 +53,47 @@ export function useCall<I, O, In = I>(
   const { host, records } = useCockpit();
   const queryClient = useQueryClient();
   const queryKey = callKey(action, input);
-  const { refreshOn } = options;
+  const keyText = JSON.stringify(queryKey);
+  // The latest match, read when records arrive: a match written inline does not resubscribe.
+  const refreshOn = useRef(options.refreshOn);
+  // A matching record arrived while a read was in flight: read again once it settles.
+  const missed = useRef(false);
+  useEffect(() => {
+    refreshOn.current = options.refreshOn;
+  });
+  const watching = options.refreshOn !== undefined;
 
   useEffect(() => {
-    if (refreshOn === undefined) return;
+    if (!watching) return;
     return records.store.subscribe((state, previous) => {
-      if (state.seq === previous.seq) return;
+      const match = refreshOn.current;
+      if (match === undefined || state.seq === previous.seq) return;
       for (let i = state.records.length - 1; i >= 0 && state.records[i]!.seq > previous.seq; i -= 1) {
-        if (matchRecord(refreshOn, state.records[i]!)) {
-          // A read in flight is let finish rather than restarted, so a steady stream of records
-          // cannot keep a slow call from ever answering.
-          void queryClient.invalidateQueries({ queryKey, exact: true }, { cancelRefetch: false });
-          return;
-        }
+        if (!matchRecord(match, state.records[i]!)) continue;
+        // A read in flight is let finish rather than restarted, so a steady stream of records
+        // cannot keep a slow call from ever answering; it is followed by one more read.
+        if (queryClient.isFetching({ queryKey, exact: true }) > 0) missed.current = true;
+        else void queryClient.invalidateQueries({ queryKey, exact: true });
+        return;
       }
     });
     // The key is compared by value: a new object with the same input is the same query.
-  }, [records, queryClient, refreshOn, JSON.stringify(queryKey)]);
+  }, [records, queryClient, watching, keyText]);
 
-  return useQuery({
+  const result = useQuery({
     queryKey,
     queryFn: ({ signal }) => host.call(action, input, { signal }),
     enabled: options.enabled,
     staleTime: options.staleTime,
   });
+
+  useEffect(() => {
+    if (result.isFetching || !missed.current) return;
+    missed.current = false;
+    void queryClient.invalidateQueries({ queryKey, exact: true });
+  }, [result.isFetching, queryClient, keyText]);
+
+  return result;
 }
 
 /** An action to call on demand, such as from a button. */

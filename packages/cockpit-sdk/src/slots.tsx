@@ -96,7 +96,13 @@ export function EntityLink({ entity, label, short, className }: EntityLinkProps)
   if (kind?.chip !== undefined && href !== undefined) {
     const Chip = kind.chip;
     return (
-      <PluginBoundary plugin={kind.plugin} place={`entity.${kind.kind}.chip`} fallback={() => <IdChip id={id} short={short} href={href} />}>
+      <PluginBoundary
+        plugin={kind.plugin}
+        place={`entity.${kind.kind}.chip`}
+        fallback={() => (
+          <IdChip id={id} label={label} short={short} className={className} href={href} onNavigate={() => navigator.navigate(href)} />
+        )}
+      >
         <Chip id={id} href={href} navigate={() => navigator.navigate(href)} label={label} short={short} className={className} />
       </PluginBoundary>
     );

@@ -191,6 +191,32 @@ describe("slots", () => {
     expect(registry.slot("record.view").find((c) => c.key === "run.started")?.plugin).toBe("one");
   });
 
+  test("a module that lost only to modules left out later is let back in", async () => {
+    const page = (ctx: PluginContext, path: string) => ctx.pages.add({ path, title: path, component: Part });
+    const { faults, registry } = await load(
+      source("a", (ctx) => {
+        page(ctx, "/p");
+        page(ctx, "/q");
+        ctx.slots.register("b.s" as "rin.panel", { key: "k", component: Part });
+      }),
+      source("b", (ctx) => {
+        ctx.slots.declare("b.s" as "rin.panel", "list");
+        page(ctx, "/q");
+      }),
+      source("m", (ctx) => {
+        page(ctx, "/p");
+        page(ctx, "/h");
+      }),
+      source("h", (ctx) => {
+        page(ctx, "/h");
+        page(ctx, "/z");
+      }),
+      source("z", (ctx) => page(ctx, "/z")),
+    );
+    expect(registry.plugins).toEqual(["b", "m", "z"]);
+    expect(faults.map((f) => f.plugin).sort()).toEqual(["a", "h"]);
+  });
+
   test("dropping a module that owns a slot drops what others put into it", async () => {
     const { faults, registry } = await load(
       source("pages", (ctx) => ctx.pages.add({ path: "/rin", title: "Taken", component: Part })),

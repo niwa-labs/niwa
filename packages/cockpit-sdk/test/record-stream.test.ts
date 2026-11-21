@@ -89,6 +89,19 @@ describe("the record stream", () => {
     expect(stream.project(counter)).toEqual({ n: 3 });
   });
 
+  test("records that fill a gap are merged; history the limit drops at once changes nothing", () => {
+    const stream = createRecordStream(scriptedClient().client, { retain: 3 });
+    stream.ingest([rec(4, "run.started"), rec(5, "run.started"), rec(10, "run.started")]);
+    const before = stream.project(counter);
+    expect(before).toEqual({ n: 3 });
+    stream.ingest([rec(1, "run.started")]);
+    expect(stream.store.getState().records.map((r) => Number(r.seq))).toEqual([4, 5, 10]);
+    expect(stream.project(counter)).toBe(before);
+    stream.ingest([rec(8, "run.started")]);
+    expect(stream.store.getState().records.map((r) => Number(r.seq))).toEqual([5, 8, 10]);
+    expect(stream.project(counter)).toEqual({ n: 3 });
+  });
+
   test("ingesting skips known positions and keeps order", () => {
     const stream = createRecordStream(scriptedClient().client);
     stream.ingest([rec(3), rec(1), rec(2)]);

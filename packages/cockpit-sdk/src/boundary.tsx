@@ -21,7 +21,9 @@ export type PluginBoundaryProps = {
   children?: ReactNode;
 };
 
-type BoundaryState = { failed: false } | { failed: true; error: unknown };
+type Shown = { plugin: string; place: string; resetKey: string | undefined };
+
+type BoundaryState = ({ failed: false } | { failed: true; error: unknown }) & { shown: Shown };
 
 export function FaultNotice({ fault, retry, className }: { fault: PluginFault; retry?: (() => void) | undefined; className?: string }) {
   return (
@@ -46,10 +48,21 @@ export function FaultNotice({ fault, retry, className }: { fault: PluginFault; r
 export class PluginBoundary extends Component<PluginBoundaryProps, BoundaryState> {
   static override contextType = CockpitContext;
   declare context: ContextType<typeof CockpitContext>;
-  override state: BoundaryState = { failed: false };
+  override state: BoundaryState = {
+    failed: false,
+    shown: { plugin: this.props.plugin, place: this.props.place, resetKey: this.props.resetKey },
+  };
 
-  static getDerivedStateFromError(error: unknown): BoundaryState {
+  static getDerivedStateFromError(error: unknown): Partial<BoundaryState> {
     return { failed: true, error };
+  }
+
+  // A failure belongs to what was shown: another module, place or page starts clean, without
+  // showing the old failure once under the new place.
+  static getDerivedStateFromProps(props: PluginBoundaryProps, state: BoundaryState): Partial<BoundaryState> | null {
+    const { shown } = state;
+    if (shown.plugin === props.plugin && shown.place === props.place && shown.resetKey === props.resetKey) return null;
+    return { failed: false, shown: { plugin: props.plugin, place: props.place, resetKey: props.resetKey } };
   }
 
   private fault(error: unknown): PluginFault {
@@ -63,13 +76,6 @@ export class PluginBoundary extends Component<PluginBoundaryProps, BoundaryState
   }
 
   private readonly retry = (): void => this.setState({ failed: false });
-
-  override componentDidUpdate(previous: PluginBoundaryProps): void {
-    // A failure belongs to what was shown: another module, place or page starts clean.
-    const moved =
-      previous.plugin !== this.props.plugin || previous.place !== this.props.place || previous.resetKey !== this.props.resetKey;
-    if (moved && this.state.failed) this.setState({ failed: false });
-  }
 
   override render(): ReactNode {
     if (!this.state.failed) return this.props.children;

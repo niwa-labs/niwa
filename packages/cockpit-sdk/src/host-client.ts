@@ -166,7 +166,6 @@ export function httpHostClient(options: HttpHostClientOptions = {}): HostClient 
         });
         if (response.body === null) throw new HostCallError(502, "the record feed has no body");
         opts?.onOpen?.();
-        attempt = 0;
         for await (const event of serverEvents(textChunks(response.body))) {
           const record: unknown = JSON.parse(event.data);
           if (!isRecord(record)) continue;
