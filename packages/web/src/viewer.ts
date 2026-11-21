@@ -10,7 +10,8 @@ import { z } from "zod";
 
 import { accessMine, grant, match, principalSchema, RuleSpecSchema } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
-import { HostError } from "@niwa-labs/client";
+
+import { isDenied } from "./denial.ts";
 
 /** What the cockpit's SDK builds a viewer from. */
 export interface Viewer {
@@ -41,7 +42,7 @@ export async function viewerOf(api: NiwaApi, fallbackId: string): Promise<Viewer
   try {
     mine = Mine.parse(await api.call(accessMine, {}));
   } catch (error) {
-    if (error instanceof HostError && error.denied !== undefined) return { id: fallbackId, owner: false, actions: [] };
+    if (isDenied(error)) return { id: fallbackId, owner: false, actions: [] };
     throw error;
   }
   const id = mine.principal === undefined ? fallbackId : String(mine.principal.id);

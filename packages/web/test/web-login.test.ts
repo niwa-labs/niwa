@@ -162,7 +162,7 @@ test("web login: without speaksFor the page is a plain client and cannot answer 
     const web = await serveWebPages({ home, port: 0 });
     try {
       const result = await answerThroughPage(home, web);
-      expect(result.status).toBe(409);
+      expect(result.status).toBe(403);
       expect(of(result.seen, "request.answered")).toHaveLength(0);
       expect(of(result.seen, "web-login.done")).toHaveLength(0);
     } finally {

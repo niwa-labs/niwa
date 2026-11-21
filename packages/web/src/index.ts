@@ -43,13 +43,14 @@
 import { z } from "zod";
 
 import { actionName, RESOLVE_ACTION, RecordQuerySchema, recordId, seq } from "@niwa-labs/core";
-import { readOwnerToken, connect, HostError, RECORDS_READ_ACTION } from "@niwa-labs/client";
+import { readOwnerToken, connect, RECORDS_READ_ACTION } from "@niwa-labs/client";
 import type { ActionName, Description, RecordQuery, SpeaksFor } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
 
 import { ASSETS_PREFIX, assetFile, catalogueOf, MODULES_PREFIX, ModuleBuilds, pageOf, typeOf } from "./app.ts";
 import type { WebApp } from "./app.ts";
 import { followFeed, readFeed } from "./feed.ts";
+import { isDenied } from "./denial.ts";
 import { viewerOf } from "./viewer.ts";
 import { LOGIN_PATH, WebLogin } from "./login.ts";
 import { runSource } from "./source.ts";
@@ -174,7 +175,8 @@ export async function serveWeb(options: WebOptions): Promise<WebServer> {
           if (response.headers.get("content-type") === SSE_TYPE) listener.timeout(request, 0);
           return response;
         } catch (error) {
-          return text(500, `the web surface failed: ${errorText(error)}`);
+          // A refusal by the grant is a refusal wherever it surfaces; anything else is the surface's own failure.
+          return isDenied(error) ? text(403, errorText(error)) : text(500, `the web surface failed: ${errorText(error)}`);
         }
       },
     });
@@ -285,9 +287,7 @@ async function route(context: Context, request: Request): Promise<Response> {
           }
           return json(200, await api.call(actionName(action), input));
         } catch (error) {
-          // The grant of this connection decided the call: say so, so a page can tell a refusal from a failure.
-          if (error instanceof HostError && error.denied !== undefined) return text(403, errorText(error));
-          return text(409, errorText(error));
+          return refused(error, errorText(error));
         }
       });
     case "/api/history":
@@ -310,7 +310,7 @@ async function route(context: Context, request: Request): Promise<Response> {
           await api.call(actionName(RESOLVE_ACTION), body);
           return json(200, { resolved: true });
         } catch (error) {
-          return text(409, `the invocation was not answered: ${errorText(error)}`);
+          return refused(error, `the invocation was not answered: ${errorText(error)}`);
         }
       });
     default:
@@ -332,7 +332,7 @@ async function route(context: Context, request: Request): Promise<Response> {
             ...(verdict.data.reason === undefined ? {} : { reason: verdict.data.reason }),
           });
         } catch (error) {
-          return text(409, `the request was not answered: ${errorText(error)}`);
+          return refused(error, `the request was not answered: ${errorText(error)}`);
         }
       });
   }
@@ -448,7 +448,7 @@ async function journalEnd(api: NiwaApi): Promise<number> {
     const next = (read as { next?: unknown }).next;
     return typeof next === "number" ? next : 0;
   } catch (error) {
-    if (error instanceof HostError && error.denied !== undefined) return 0;
+    if (isDenied(error)) return 0;
     throw error;
   }
 }
@@ -673,6 +673,14 @@ function text(status: number, body: string): Response {
     status,
     headers: { "content-type": "text/plain; charset=utf-8", ...SECURITY_HEADERS },
   });
+}
+
+/**
+ * The answer to a call the host did not carry out: 403 when the grant of this connection refused it, so a page can tell a
+ * missing permission from a state that does not allow the call, which is 409.
+ */
+function refused(error: unknown, message: string): Response {
+  return text(isDenied(error) ? 403 : 409, message);
 }
 
 function errorText(error: unknown): string {
