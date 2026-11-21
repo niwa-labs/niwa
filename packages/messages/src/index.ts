@@ -24,7 +24,7 @@
 
 import type { z } from "zod";
 
-import { UnknownId, action, actionName } from "@niwa-labs/core";
+import { NotSent, UnknownId, action, actionName } from "@niwa-labs/core";
 import type { Action, ActionContext, ActionName, Address, Caller, IdIndex } from "@niwa-labs/core";
 import { bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, MessagesOptions, Plugin } from "@niwa-labs/plugin";
@@ -82,10 +82,10 @@ function senderOf(caller: Caller, given: Address | undefined, bind: CallerBindin
   const bound = bind(caller);
   if (bound !== undefined) return bound;
   if (caller.kind === "client") {
-    throw new Error("the client is not bound to an address, so it cannot send a message");
+    throw new NotSent("the client is not bound to an address, so it cannot send a message");
   }
   if (given === undefined) {
-    throw new Error("the sender of the message is not known: the caller is not bound to an address");
+    throw new NotSent("the sender of the message is not known: the caller is not bound to an address");
   }
   return given;
 }
