@@ -486,3 +486,20 @@ test("the cancel of the branches left is the same on the replay, whichever of th
   const settled = ofType(await t.records(), "workflow.scope.settled").map((row) => row.data as { key: string; outcome: string });
   expect(settled.map(({ key, outcome }) => `${key}:${outcome}`).sort()).toEqual(["a:done", "b:cancelled", "c:cancelled"]);
 }, 30_000);
+
+test("a branch that runs its own code after a wait is not stopped while another branch waits", async () => {
+  const t = await setup();
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    return await race("either", {
+      a: async () => { await wait("stub.finished", { filter: { id: "a" } }); await new Promise((r) => setTimeout(r, 300)); return "a"; },
+      b: () => wait("stub.finished", { filter: { id: "b" } }),
+    });
+  });`);
+  await eventually(
+    async () => ofType(await t.records(), "niwa.step.intent").filter((row) => (row.data as { action: string }).action === "niwa.wait").length === 2,
+    10_000,
+    "the run should wait for both records",
+  );
+  await t.niwa.call("stub.finish" as ActionName, { id: "a" } as never);
+  expect(await t.ended(run)).toEqual({ status: "done", result: { key: "a", value: "a" } });
+}, 30_000);

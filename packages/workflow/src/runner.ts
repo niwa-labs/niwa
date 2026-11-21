@@ -103,8 +103,11 @@ interface Running {
 
 const children = new Map<string, Running>();
 
-/** How long a child that has a suspended call may stay silent before it is stopped. */
-const QUIET_MS = 50;
+/**
+ * How long a child that has a suspended call may stay silent before it is stopped. A child ends by
+ * itself once only parked calls are left; this stops one that something of the script keeps alive.
+ */
+const QUIET_MS = 30_000;
 
 /**
  * Stop the child process of a run.
@@ -183,8 +186,8 @@ export async function spawnScriptChild(mode: "run" | "describe", file: string, e
  * of it. The runner waits for the child and nothing else.
  *
  * A call that waits for a record that has not arrived suspends the invocation it runs in. That
- * is not a failure of the script: the child is stopped, the calls that are in flight are waited
- * for, and the suspend is passed on, so the invocation ends as "waiting" and the run goes on
+ * is not a failure of the script: the child ends once it has nothing but parked calls left, the
+ * calls that are in flight are waited for, and the suspend is passed on, so the invocation ends as "waiting" and the run goes on
  * when the answer arrives.
  */
 export async function runScript(
@@ -208,9 +211,9 @@ export async function runScript(
   let busy = 0;
   let quiet: ReturnType<typeof setTimeout> | undefined;
   /**
-   * A call suspended: the child goes on while the host still makes calls for it, so the branches
-   * that do not wait move on and their steps are recorded. Once the host makes none and the child
-   * asks for nothing more for a moment, the child is stopped and the suspend is passed on.
+   * A call suspended: the child is told the call is parked and goes on, so the branches that do not
+   * wait move on and their steps are recorded. It ends by itself once only parked calls are left and
+   * its code has nothing more to run; one that stays silent past the quiet time is stopped.
    */
   const stopWhenQuiet = (): void => {
     if (suspended === undefined || busy > 0) return;
@@ -220,7 +223,7 @@ export async function runScript(
     }, QUIET_MS);
   };
 
-  const answer = (ordinal: number, reply: { ok: boolean; value?: unknown; error?: string; name?: string; pauses?: boolean; fresh?: boolean }): void => {
+  const answer = (ordinal: number, reply: { ok?: boolean; parked?: boolean; value?: unknown; error?: string; name?: string; pauses?: boolean; fresh?: boolean }): void => {
     if (stopped) return;
     child.stdin.write(`${JSON.stringify({ ordinal, ...reply })}\n`);
   };
@@ -251,9 +254,10 @@ export async function runScript(
             (value) => answer(message.ordinal, { ok: true, value: value ?? null, ...(deps.fresh?.(message.key) === true ? { fresh: true } : {}) }),
             (error: unknown) => {
               // A call that suspends is not a failure: the invocation waits, and the call is made
-              // again when the answer arrives. The child is stopped once it is quiet, and the suspend is passed on.
+              // again when the answer arrives. The child is told, ends once only parked calls are left, and the suspend is passed on.
               if (isSuspend(error)) {
                 suspended ??= error;
+                answer(message.ordinal, { parked: true });
                 return;
               }
               answer(message.ordinal, {
@@ -308,7 +312,7 @@ export async function runScript(
       }
     }
     const code = await exited;
-    // A call suspended: the child is stopped, the calls that are in flight are waited for, and
+    // A call suspended: the child has ended, the calls that are in flight are waited for, and
     // the suspend is passed on. The invocation ends as "waiting", and the run goes on when the
     // answer arrives.
     if (suspended !== undefined) {

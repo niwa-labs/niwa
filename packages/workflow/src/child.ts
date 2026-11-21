@@ -37,7 +37,21 @@ const [mode, scriptUrl, argsJson] = process.argv.slice(2);
 
 let calls = 0;
 let outside = 0;
-const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; branch?: Branch | undefined }>();
+const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; branch?: Branch | undefined; parked?: boolean; clock?: boolean }>();
+
+/**
+ * Let the process end once nothing is left for it to do.
+ *
+ * A call the host parked (a wait for a record that has not arrived) is answered by a later start of
+ * the run, not by this process, and a wait for the deadline of a scope is answered when the process
+ * is gone. When every call in flight is one of those, stdin no longer holds the process: it ends
+ * once the script's own code has nothing more to run, and the run waits. Any other call holds it.
+ */
+function holdWhileNeeded(): void {
+  const calls = [...pending.values()];
+  if (calls.some((one) => one.parked === true) && calls.every((one) => one.parked === true || one.clock === true)) process.stdin.unref();
+  else process.stdin.ref();
+}
 
 /** The branch a call belongs to: its path in the script, and the calls made in it. */
 interface Branch {
@@ -198,6 +212,7 @@ function request(body: ScriptRequest, label: string | undefined): Promise<unknow
   const after = divergedIn(branch);
   return new Promise((resolve, reject) => {
     pending.set(ordinal, { resolve, reject, branch });
+    holdWhileNeeded();
     say({ kind: "call", ordinal, key, ...(phase === undefined ? {} : { phase }), ...(after ? { after: true } : {}), request: body });
   }).finally(() => inflightLabels.delete(key));
 }
@@ -209,7 +224,8 @@ const inflightLabels = new Map<string, string>();
 function requestAt(body: ScriptRequest, key: string): Promise<unknown> {
   const ordinal = ++calls;
   return new Promise((resolve, reject) => {
-    pending.set(ordinal, { resolve, reject });
+    pending.set(ordinal, { resolve, reject, ...(body.op === "scope-deadline" ? { clock: true } : {}) });
+    holdWhileNeeded();
     say({ kind: "call", ordinal, key, request: body });
   });
 }
@@ -1212,9 +1228,16 @@ if (mode === "describe") {
       const line = buffer.slice(0, at).trim();
       buffer = buffer.slice(at + 1);
       if (line === "") continue;
-      const answer = JSON.parse(line) as { ordinal: number; ok: boolean; value?: unknown; error?: string; name?: string; pauses?: boolean; fresh?: boolean };
+      const answer = JSON.parse(line) as { ordinal: number; ok?: boolean; parked?: boolean; value?: unknown; error?: string; name?: string; pauses?: boolean; fresh?: boolean };
       const waiter = pending.get(answer.ordinal);
+      if (answer.parked === true) {
+        // The call waits for a record: a later start of the run gets its answer.
+        if (waiter !== undefined) waiter.parked = true;
+        holdWhileNeeded();
+        continue;
+      }
       pending.delete(answer.ordinal);
+      holdWhileNeeded();
       // The call ran instead of being taken from an earlier start: what comes after it in its branch runs too.
       if (answer.fresh === true && waiter !== undefined) diverge(waiter.branch);
       if (answer.ok) waiter?.resolve(answer.value);
@@ -1229,20 +1252,24 @@ if (mode === "describe") {
   // The parent is gone: nobody is left to answer, so the process ends instead of waiting for ever.
   process.stdin.on("end", () => exitWith(1));
 
-  try {
-    const declared = await loadScript();
-    const args: unknown = JSON.parse(argsJson ?? "null");
-    // A script that starts on records is given the record; any other is given its input, parsed and with the defaults put in.
-    const input = isZod(declared.declaration.input) ? await declared.declaration.input.parseAsync(args) : args;
-    const result = await (declared.declaration.input === undefined && declared.declaration.on === undefined ? declared.run() : declared.run(input));
-    // A stream the script left open is closed: nothing it started outlives it.
-    await closeStreams(rootStreams);
-    say({ kind: "done", result: result ?? null }, () => exitWith(0));
-  } catch (error) {
-    // The name goes with the message: the host tells an `ask` that ended with no answer from any other error.
-    say(
-      { kind: "failed", error: error instanceof Error ? error.message : String(error), ...(error instanceof Error ? { name: error.name } : {}) },
-      () => exitWith(0),
-    );
-  }
+  // The script runs outside the top level of the module: a top level that is still waiting would hold
+  // the process, and one whose calls are all parked must be free to end.
+  void (async (): Promise<void> => {
+    try {
+      const declared = await loadScript();
+      const args: unknown = JSON.parse(argsJson ?? "null");
+      // A script that starts on records is given the record; any other is given its input, parsed and with the defaults put in.
+      const input = isZod(declared.declaration.input) ? await declared.declaration.input.parseAsync(args) : args;
+      const result = await (declared.declaration.input === undefined && declared.declaration.on === undefined ? declared.run() : declared.run(input));
+      // A stream the script left open is closed: nothing it started outlives it.
+      await closeStreams(rootStreams);
+      say({ kind: "done", result: result ?? null }, () => exitWith(0));
+    } catch (error) {
+      // The name goes with the message: the host tells an `ask` that ended with no answer from any other error.
+      say(
+        { kind: "failed", error: error instanceof Error ? error.message : String(error), ...(error instanceof Error ? { name: error.name } : {}) },
+        () => exitWith(0),
+      );
+    }
+  })();
 }
