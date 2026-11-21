@@ -319,38 +319,20 @@ export type WriteTextFileRequest = z.output<typeof WriteTextFileRequest>;
 export const AgentRequest = z.object({ "id": RequestId, "method": z.string(), "params": z.union([z.union([WriteTextFileRequest, ReadTextFileRequest, RequestPermissionRequest, CreateTerminalRequest, TerminalOutputRequest, ReleaseTerminalRequest, WaitForTerminalExitRequest, KillTerminalRequest, CreateElicitationRequest, ConnectMcpRequest, MessageMcpRequest, DisconnectMcpRequest, ExtRequest]), z.null()]).optional() });
 export type AgentRequest = z.output<typeof AgentRequest>;
 
-export const AuthenticateResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type AuthenticateResponse = z.output<typeof AuthenticateResponse>;
-
-export const CloseNesResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type CloseNesResponse = z.output<typeof CloseNesResponse>;
-
-export const CloseSessionResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type CloseSessionResponse = z.output<typeof CloseSessionResponse>;
-
-export const DeleteSessionResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type DeleteSessionResponse = z.output<typeof DeleteSessionResponse>;
-
-export const DisableProviderResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type DisableProviderResponse = z.output<typeof DisableProviderResponse>;
-
 export const ErrorCode = z.union([z.literal(-32700), z.literal(-32600), z.literal(-32601), z.literal(-32602), z.literal(-32603), z.literal(-32800), z.literal(-32000), z.literal(-32002), z.number().int()]);
 export type ErrorCode = z.output<typeof ErrorCode>;
 
 export const Error = z.object({ "code": ErrorCode, "message": z.string(), "data": z.unknown().optional().catch(undefined).optional() });
 export type Error = z.output<typeof Error>;
 
-export const ExtResponse = z.unknown();
-export type ExtResponse = z.output<typeof ExtResponse>;
+export const AgentResponse = z.union([z.object({ "id": RequestId, "result": z.unknown() }), z.object({ "id": RequestId, "error": Error })]);
+export type AgentResponse = z.output<typeof AgentResponse>;
 
-export const SessionMode = z.object({ "id": SessionModeId, "name": z.string(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type SessionMode = z.output<typeof SessionMode>;
+export const AudioContent = z.object({ "annotations": z.union([Annotations, z.null()]).optional().catch(undefined).optional(), "data": z.string(), "mimeType": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type AudioContent = z.output<typeof AudioContent>;
 
-export const SessionModeState = z.object({ "currentModeId": SessionModeId, "availableModes": z.array(SessionMode).optional().catch(undefined), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type SessionModeState = z.output<typeof SessionModeState>;
-
-export const ForkSessionResponse = z.object({ "sessionId": SessionId, "modes": z.union([SessionModeState, z.null()]).optional().catch(undefined).optional(), "configOptions": z.union([z.array(SessionConfigOption), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ForkSessionResponse = z.output<typeof ForkSessionResponse>;
+export const AuthCapabilities = z.object({ "terminal": z.boolean().optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type AuthCapabilities = z.output<typeof AuthCapabilities>;
 
 export const AuthEnvVar = z.object({ "name": z.string(), "label": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "secret": z.boolean().optional().catch(undefined).optional(), "optional": z.boolean().optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type AuthEnvVar = z.output<typeof AuthEnvVar>;
@@ -364,96 +346,6 @@ export type AuthMethodAgent = z.output<typeof AuthMethodAgent>;
 export const AuthMethod = z.union([z.object({ "id": AuthMethodId, "name": z.string(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "vars": z.array(AuthEnvVar).optional().catch(undefined), "link": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "type": z.literal("env_var") }), z.object({ "id": AuthMethodId, "name": z.string(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "args": z.array(z.string()).optional().catch(undefined).optional(), "env": z.record(z.string(), z.string()).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "type": z.literal("terminal") }), AuthMethodAgent]);
 export type AuthMethod = z.output<typeof AuthMethod>;
 
-export const Implementation = z.object({ "name": z.string(), "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "version": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type Implementation = z.output<typeof Implementation>;
-
-export const ProtocolVersion = z.number().int().gte(0).lte(65535);
-export type ProtocolVersion = z.output<typeof ProtocolVersion>;
-
-export const InitializeResponse = z.object({ "protocolVersion": ProtocolVersion, "agentCapabilities": AgentCapabilities.optional().catch(undefined).optional(), "authMethods": z.array(AuthMethod).optional().catch(undefined).optional(), "agentInfo": z.union([Implementation, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type InitializeResponse = z.output<typeof InitializeResponse>;
-
-export const LlmProtocol = z.union([z.literal("anthropic"), z.literal("openai"), z.literal("azure"), z.literal("vertex"), z.literal("bedrock"), z.string()]);
-export type LlmProtocol = z.output<typeof LlmProtocol>;
-
-export const ProviderCurrentConfig = z.object({ "apiType": LlmProtocol, "baseUrl": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ProviderCurrentConfig = z.output<typeof ProviderCurrentConfig>;
-
-export const ProviderId = z.string().brand<"AcpProviderId">();
-export type ProviderId = z.output<typeof ProviderId>;
-
-export const ProviderInfo = z.object({ "providerId": ProviderId, "supported": z.array(LlmProtocol).optional().catch(undefined), "required": z.boolean(), "current": z.union([ProviderCurrentConfig, z.null()]).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ProviderInfo = z.output<typeof ProviderInfo>;
-
-export const ListProvidersResponse = z.object({ "providers": z.array(ProviderInfo), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ListProvidersResponse = z.output<typeof ListProvidersResponse>;
-
-export const SessionInfo = z.object({ "sessionId": SessionId, "cwd": z.string(), "additionalDirectories": z.array(z.string()).optional().catch(undefined).optional(), "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "updatedAt": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type SessionInfo = z.output<typeof SessionInfo>;
-
-export const ListSessionsResponse = z.object({ "sessions": z.array(SessionInfo).optional().catch(undefined), "nextCursor": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ListSessionsResponse = z.output<typeof ListSessionsResponse>;
-
-export const LoadSessionResponse = z.object({ "modes": z.union([SessionModeState, z.null()]).optional().catch(undefined).optional(), "configOptions": z.union([z.array(SessionConfigOption), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type LoadSessionResponse = z.output<typeof LoadSessionResponse>;
-
-export const LogoutResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type LogoutResponse = z.output<typeof LogoutResponse>;
-
-export const MessageMcpResponse = z.unknown();
-export type MessageMcpResponse = z.output<typeof MessageMcpResponse>;
-
-export const NewSessionResponse = z.object({ "sessionId": SessionId, "modes": z.union([SessionModeState, z.null()]).optional().catch(undefined).optional(), "configOptions": z.union([z.array(SessionConfigOption), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type NewSessionResponse = z.output<typeof NewSessionResponse>;
-
-export const StopReason = z.enum(["end_turn","max_tokens","max_turn_requests","refusal","cancelled"]);
-export type StopReason = z.output<typeof StopReason>;
-
-export const Usage = z.object({ "totalTokens": z.number().int().gte(0), "inputTokens": z.number().int().gte(0), "outputTokens": z.number().int().gte(0), "thoughtTokens": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "cachedReadTokens": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "cachedWriteTokens": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type Usage = z.output<typeof Usage>;
-
-export const PromptResponse = z.object({ "stopReason": StopReason, "usage": z.union([Usage, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type PromptResponse = z.output<typeof PromptResponse>;
-
-export const ResumeSessionResponse = z.object({ "modes": z.union([SessionModeState, z.null()]).optional().catch(undefined).optional(), "configOptions": z.union([z.array(SessionConfigOption), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ResumeSessionResponse = z.output<typeof ResumeSessionResponse>;
-
-export const SetProviderResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type SetProviderResponse = z.output<typeof SetProviderResponse>;
-
-export const SetSessionConfigOptionResponse = z.object({ "configOptions": z.array(SessionConfigOption).optional().catch(undefined), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type SetSessionConfigOptionResponse = z.output<typeof SetSessionConfigOptionResponse>;
-
-export const SetSessionModeResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type SetSessionModeResponse = z.output<typeof SetSessionModeResponse>;
-
-export const StartNesResponse = z.object({ "sessionId": SessionId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type StartNesResponse = z.output<typeof StartNesResponse>;
-
-export const Position = z.object({ "line": z.number().int().gte(0), "character": z.number().int().gte(0), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type Position = z.output<typeof Position>;
-
-export const Range = z.object({ "start": Position, "end": Position, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type Range = z.output<typeof Range>;
-
-export const NesTextEdit = z.object({ "range": Range, "newText": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type NesTextEdit = z.output<typeof NesTextEdit>;
-
-export const NesSuggestion = z.discriminatedUnion("kind", [z.object({ "id": NesSuggestionId, "uri": z.string(), "edits": z.array(NesTextEdit), "cursorPosition": z.union([Position, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "kind": z.literal("edit") }), z.object({ "id": NesSuggestionId, "uri": z.string(), "position": Position, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "kind": z.literal("jump") }), z.object({ "id": NesSuggestionId, "uri": z.string(), "position": Position, "newName": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "kind": z.literal("rename") }), z.object({ "id": NesSuggestionId, "uri": z.string(), "search": z.string(), "replace": z.string(), "isRegex": z.union([z.boolean(), z.null()]).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "kind": z.literal("searchAndReplace") })]);
-export type NesSuggestion = z.output<typeof NesSuggestion>;
-
-export const SuggestNesResponse = z.object({ "suggestions": z.array(NesSuggestion), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type SuggestNesResponse = z.output<typeof SuggestNesResponse>;
-
-export const AgentResponse = z.union([z.object({ "id": RequestId, "result": z.union([InitializeResponse, AuthenticateResponse, ListProvidersResponse, SetProviderResponse, DisableProviderResponse, LogoutResponse, NewSessionResponse, LoadSessionResponse, ListSessionsResponse, DeleteSessionResponse, ForkSessionResponse, ResumeSessionResponse, CloseSessionResponse, SetSessionModeResponse, SetSessionConfigOptionResponse, PromptResponse, StartNesResponse, SuggestNesResponse, CloseNesResponse, ExtResponse, MessageMcpResponse]) }), z.object({ "id": RequestId, "error": Error })]);
-export type AgentResponse = z.output<typeof AgentResponse>;
-
-export const AudioContent = z.object({ "annotations": z.union([Annotations, z.null()]).optional().catch(undefined).optional(), "data": z.string(), "mimeType": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type AudioContent = z.output<typeof AudioContent>;
-
-export const AuthCapabilities = z.object({ "terminal": z.boolean().optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type AuthCapabilities = z.output<typeof AuthCapabilities>;
-
 export const AuthMethodEnvVar = z.object({ "id": AuthMethodId, "name": z.string(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "vars": z.array(AuthEnvVar).optional().catch(undefined), "link": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type AuthMethodEnvVar = z.output<typeof AuthMethodEnvVar>;
 
@@ -462,6 +354,9 @@ export type AuthMethodTerminal = z.output<typeof AuthMethodTerminal>;
 
 export const AuthenticateRequest = z.object({ "methodId": AuthMethodId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type AuthenticateRequest = z.output<typeof AuthenticateRequest>;
+
+export const AuthenticateResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type AuthenticateResponse = z.output<typeof AuthenticateResponse>;
 
 export const AvailableCommandsUpdate = z.object({ "availableCommands": z.array(AvailableCommand).optional().catch(undefined), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type AvailableCommandsUpdate = z.output<typeof AvailableCommandsUpdate>;
@@ -514,6 +409,12 @@ export type PlanCapabilities = z.output<typeof PlanCapabilities>;
 export const ClientCapabilities = z.object({ "fs": FileSystemCapabilities.optional().catch(undefined).optional(), "terminal": z.boolean().optional().catch(undefined).optional(), "session": z.union([ClientSessionCapabilities, z.null()]).optional().catch(undefined).optional(), "plan": z.union([PlanCapabilities, z.null()]).optional().catch(undefined).optional(), "auth": AuthCapabilities.optional().catch(undefined).optional(), "elicitation": z.union([ElicitationCapabilities, z.null()]).optional().catch(undefined).optional(), "nes": z.union([ClientNesCapabilities, z.null()]).optional().catch(undefined).optional(), "positionEncodings": z.array(PositionEncodingKind).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type ClientCapabilities = z.output<typeof ClientCapabilities>;
 
+export const Position = z.object({ "line": z.number().int().gte(0), "character": z.number().int().gte(0), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type Position = z.output<typeof Position>;
+
+export const Range = z.object({ "start": Position, "end": Position, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type Range = z.output<typeof Range>;
+
 export const TextDocumentContentChangeEvent = z.object({ "range": z.union([Range, z.null()]).optional(), "text": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type TextDocumentContentChangeEvent = z.output<typeof TextDocumentContentChangeEvent>;
 
@@ -550,6 +451,9 @@ export type CloseSessionRequest = z.output<typeof CloseSessionRequest>;
 export const DeleteSessionRequest = z.object({ "sessionId": SessionId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type DeleteSessionRequest = z.output<typeof DeleteSessionRequest>;
 
+export const ProviderId = z.string().brand<"AcpProviderId">();
+export type ProviderId = z.output<typeof ProviderId>;
+
 export const DisableProviderRequest = z.object({ "providerId": ProviderId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type DisableProviderRequest = z.output<typeof DisableProviderRequest>;
 
@@ -564,6 +468,12 @@ export type McpServer = z.output<typeof McpServer>;
 
 export const ForkSessionRequest = z.object({ "sessionId": SessionId, "cwd": z.string(), "additionalDirectories": z.array(z.string()).optional().catch(undefined).optional(), "mcpServers": z.array(McpServer).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type ForkSessionRequest = z.output<typeof ForkSessionRequest>;
+
+export const Implementation = z.object({ "name": z.string(), "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "version": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type Implementation = z.output<typeof Implementation>;
+
+export const ProtocolVersion = z.number().int().gte(0).lte(65535);
+export type ProtocolVersion = z.output<typeof ProtocolVersion>;
 
 export const InitializeRequest = z.object({ "protocolVersion": ProtocolVersion, "clientCapabilities": ClientCapabilities.optional().catch(undefined).optional(), "clientInfo": z.union([Implementation, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type InitializeRequest = z.output<typeof InitializeRequest>;
@@ -588,6 +498,9 @@ export type PromptRequest = z.output<typeof PromptRequest>;
 
 export const ResumeSessionRequest = z.object({ "sessionId": SessionId, "cwd": z.string(), "additionalDirectories": z.array(z.string()).optional().catch(undefined).optional(), "mcpServers": z.array(McpServer).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type ResumeSessionRequest = z.output<typeof ResumeSessionRequest>;
+
+export const LlmProtocol = z.union([z.literal("anthropic"), z.literal("openai"), z.literal("azure"), z.literal("vertex"), z.literal("bedrock"), z.string()]);
+export type LlmProtocol = z.output<typeof LlmProtocol>;
 
 export const SetProviderRequest = z.object({ "providerId": ProviderId, "apiType": LlmProtocol, "baseUrl": z.string(), "headers": z.record(z.string(), z.string()).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type SetProviderRequest = z.output<typeof SetProviderRequest>;
@@ -643,8 +556,26 @@ export type SuggestNesRequest = z.output<typeof SuggestNesRequest>;
 export const ClientRequest = z.object({ "id": RequestId, "method": z.string(), "params": z.union([z.union([InitializeRequest, AuthenticateRequest, ListProvidersRequest, SetProviderRequest, DisableProviderRequest, LogoutRequest, NewSessionRequest, LoadSessionRequest, ListSessionsRequest, DeleteSessionRequest, ForkSessionRequest, ResumeSessionRequest, CloseSessionRequest, SetSessionModeRequest, SetSessionConfigOptionRequest, PromptRequest, StartNesRequest, SuggestNesRequest, CloseNesRequest, MessageMcpRequest, ExtRequest]), z.null()]).optional() });
 export type ClientRequest = z.output<typeof ClientRequest>;
 
+export const ClientResponse = z.union([z.object({ "id": RequestId, "result": z.unknown() }), z.object({ "id": RequestId, "error": Error })]);
+export type ClientResponse = z.output<typeof ClientResponse>;
+
+export const CloseNesResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type CloseNesResponse = z.output<typeof CloseNesResponse>;
+
+export const CloseSessionResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type CloseSessionResponse = z.output<typeof CloseSessionResponse>;
+
+export const ConfigOptionUpdate = z.object({ "configOptions": z.array(SessionConfigOption).optional().catch(undefined), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ConfigOptionUpdate = z.output<typeof ConfigOptionUpdate>;
+
 export const ConnectMcpResponse = z.object({ "connectionId": McpConnectionId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type ConnectMcpResponse = z.output<typeof ConnectMcpResponse>;
+
+export const Content = z.object({ "content": ContentBlock, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type Content = z.output<typeof Content>;
+
+export const ContentChunk = z.object({ "content": ContentBlock, "messageId": z.union([MessageId, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ContentChunk = z.output<typeof ContentChunk>;
 
 export const ElicitationContentValue = z.union([z.string(), z.number().int(), z.number(), z.boolean(), z.array(z.string())]);
 export type ElicitationContentValue = z.output<typeof ElicitationContentValue>;
@@ -655,53 +586,20 @@ export type CreateElicitationResponse = z.output<typeof CreateElicitationRespons
 export const CreateTerminalResponse = z.object({ "terminalId": TerminalId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type CreateTerminalResponse = z.output<typeof CreateTerminalResponse>;
 
-export const DisconnectMcpResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type DisconnectMcpResponse = z.output<typeof DisconnectMcpResponse>;
-
-export const KillTerminalResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type KillTerminalResponse = z.output<typeof KillTerminalResponse>;
-
-export const ReadTextFileResponse = z.object({ "content": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ReadTextFileResponse = z.output<typeof ReadTextFileResponse>;
-
-export const ReleaseTerminalResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ReleaseTerminalResponse = z.output<typeof ReleaseTerminalResponse>;
-
-export const RequestPermissionOutcome = z.discriminatedUnion("outcome", [z.object({ "outcome": z.literal("cancelled") }), z.object({ "optionId": PermissionOptionId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "outcome": z.literal("selected") })]);
-export type RequestPermissionOutcome = z.output<typeof RequestPermissionOutcome>;
-
-export const RequestPermissionResponse = z.object({ "outcome": RequestPermissionOutcome, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type RequestPermissionResponse = z.output<typeof RequestPermissionResponse>;
-
-export const TerminalExitStatus = z.object({ "exitCode": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "signal": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type TerminalExitStatus = z.output<typeof TerminalExitStatus>;
-
-export const TerminalOutputResponse = z.object({ "output": z.string(), "truncated": z.boolean(), "exitStatus": z.union([TerminalExitStatus, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type TerminalOutputResponse = z.output<typeof TerminalOutputResponse>;
-
-export const WaitForTerminalExitResponse = z.object({ "exitCode": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "signal": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type WaitForTerminalExitResponse = z.output<typeof WaitForTerminalExitResponse>;
-
-export const WriteTextFileResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type WriteTextFileResponse = z.output<typeof WriteTextFileResponse>;
-
-export const ClientResponse = z.union([z.object({ "id": RequestId, "result": z.union([WriteTextFileResponse, ReadTextFileResponse, RequestPermissionResponse, CreateTerminalResponse, TerminalOutputResponse, ReleaseTerminalResponse, WaitForTerminalExitResponse, KillTerminalResponse, CreateElicitationResponse, ConnectMcpResponse, DisconnectMcpResponse, MessageMcpResponse, ExtResponse]) }), z.object({ "id": RequestId, "error": Error })]);
-export type ClientResponse = z.output<typeof ClientResponse>;
-
-export const ConfigOptionUpdate = z.object({ "configOptions": z.array(SessionConfigOption).optional().catch(undefined), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ConfigOptionUpdate = z.output<typeof ConfigOptionUpdate>;
-
-export const Content = z.object({ "content": ContentBlock, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type Content = z.output<typeof Content>;
-
-export const ContentChunk = z.object({ "content": ContentBlock, "messageId": z.union([MessageId, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
-export type ContentChunk = z.output<typeof ContentChunk>;
-
 export const CurrentModeUpdate = z.object({ "currentModeId": SessionModeId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type CurrentModeUpdate = z.output<typeof CurrentModeUpdate>;
 
+export const DeleteSessionResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type DeleteSessionResponse = z.output<typeof DeleteSessionResponse>;
+
 export const Diff = z.object({ "path": z.string(), "oldText": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "newText": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type Diff = z.output<typeof Diff>;
+
+export const DisableProviderResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type DisableProviderResponse = z.output<typeof DisableProviderResponse>;
+
+export const DisconnectMcpResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type DisconnectMcpResponse = z.output<typeof DisconnectMcpResponse>;
 
 export const ElicitationAcceptAction = z.object({ "content": z.union([z.record(z.string(), ElicitationContentValue), z.null()]).optional() });
 export type ElicitationAcceptAction = z.output<typeof ElicitationAcceptAction>;
@@ -709,11 +607,50 @@ export type ElicitationAcceptAction = z.output<typeof ElicitationAcceptAction>;
 export const EmbeddedResource = z.object({ "annotations": z.union([Annotations, z.null()]).optional().catch(undefined).optional(), "resource": EmbeddedResourceResource, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type EmbeddedResource = z.output<typeof EmbeddedResource>;
 
+export const ExtResponse = z.unknown();
+export type ExtResponse = z.output<typeof ExtResponse>;
+
+export const SessionMode = z.object({ "id": SessionModeId, "name": z.string(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type SessionMode = z.output<typeof SessionMode>;
+
+export const SessionModeState = z.object({ "currentModeId": SessionModeId, "availableModes": z.array(SessionMode).optional().catch(undefined), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type SessionModeState = z.output<typeof SessionModeState>;
+
+export const ForkSessionResponse = z.object({ "sessionId": SessionId, "modes": z.union([SessionModeState, z.null()]).optional().catch(undefined).optional(), "configOptions": z.union([z.array(SessionConfigOption), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ForkSessionResponse = z.output<typeof ForkSessionResponse>;
+
 export const ImageContent = z.object({ "annotations": z.union([Annotations, z.null()]).optional().catch(undefined).optional(), "data": z.string(), "mimeType": z.string(), "uri": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type ImageContent = z.output<typeof ImageContent>;
 
+export const InitializeResponse = z.object({ "protocolVersion": ProtocolVersion, "agentCapabilities": AgentCapabilities.optional().catch(undefined).optional(), "authMethods": z.array(AuthMethod).optional().catch(undefined).optional(), "agentInfo": z.union([Implementation, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type InitializeResponse = z.output<typeof InitializeResponse>;
+
 export const IntegerPropertySchema = z.object({ "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "minimum": z.union([z.number().int(), z.null()]).optional(), "maximum": z.union([z.number().int(), z.null()]).optional(), "default": z.union([z.number().int(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type IntegerPropertySchema = z.output<typeof IntegerPropertySchema>;
+
+export const KillTerminalResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type KillTerminalResponse = z.output<typeof KillTerminalResponse>;
+
+export const ProviderCurrentConfig = z.object({ "apiType": LlmProtocol, "baseUrl": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ProviderCurrentConfig = z.output<typeof ProviderCurrentConfig>;
+
+export const ProviderInfo = z.object({ "providerId": ProviderId, "supported": z.array(LlmProtocol).optional().catch(undefined), "required": z.boolean(), "current": z.union([ProviderCurrentConfig, z.null()]).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ProviderInfo = z.output<typeof ProviderInfo>;
+
+export const ListProvidersResponse = z.object({ "providers": z.array(ProviderInfo), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ListProvidersResponse = z.output<typeof ListProvidersResponse>;
+
+export const SessionInfo = z.object({ "sessionId": SessionId, "cwd": z.string(), "additionalDirectories": z.array(z.string()).optional().catch(undefined).optional(), "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "updatedAt": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type SessionInfo = z.output<typeof SessionInfo>;
+
+export const ListSessionsResponse = z.object({ "sessions": z.array(SessionInfo).optional().catch(undefined), "nextCursor": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ListSessionsResponse = z.output<typeof ListSessionsResponse>;
+
+export const LoadSessionResponse = z.object({ "modes": z.union([SessionModeState, z.null()]).optional().catch(undefined).optional(), "configOptions": z.union([z.array(SessionConfigOption), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type LoadSessionResponse = z.output<typeof LoadSessionResponse>;
+
+export const LogoutResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type LogoutResponse = z.output<typeof LogoutResponse>;
 
 export const McpServerAcp = z.object({ "name": z.string(), "serverId": McpServerAcpId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type McpServerAcp = z.output<typeof McpServerAcp>;
@@ -724,8 +661,14 @@ export type McpServerHttp = z.output<typeof McpServerHttp>;
 export const McpServerSse = z.object({ "name": z.string(), "url": z.string(), "headers": z.array(HttpHeader), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type McpServerSse = z.output<typeof McpServerSse>;
 
+export const MessageMcpResponse = z.unknown();
+export type MessageMcpResponse = z.output<typeof MessageMcpResponse>;
+
 export const MultiSelectPropertySchema = z.object({ "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "minItems": z.union([z.number().int().gte(0), z.null()]).optional(), "maxItems": z.union([z.number().int().gte(0), z.null()]).optional(), "items": MultiSelectItems, "default": z.union([z.array(z.string()), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type MultiSelectPropertySchema = z.output<typeof MultiSelectPropertySchema>;
+
+export const NesTextEdit = z.object({ "range": Range, "newText": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type NesTextEdit = z.output<typeof NesTextEdit>;
 
 export const NesEditSuggestion = z.object({ "id": NesSuggestionId, "uri": z.string(), "edits": z.array(NesTextEdit), "cursorPosition": z.union([Position, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type NesEditSuggestion = z.output<typeof NesEditSuggestion>;
@@ -738,6 +681,12 @@ export type NesRenameSuggestion = z.output<typeof NesRenameSuggestion>;
 
 export const NesSearchAndReplaceSuggestion = z.object({ "id": NesSuggestionId, "uri": z.string(), "search": z.string(), "replace": z.string(), "isRegex": z.union([z.boolean(), z.null()]).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type NesSearchAndReplaceSuggestion = z.output<typeof NesSearchAndReplaceSuggestion>;
+
+export const NesSuggestion = z.discriminatedUnion("kind", [z.object({ "id": NesSuggestionId, "uri": z.string(), "edits": z.array(NesTextEdit), "cursorPosition": z.union([Position, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "kind": z.literal("edit") }), z.object({ "id": NesSuggestionId, "uri": z.string(), "position": Position, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "kind": z.literal("jump") }), z.object({ "id": NesSuggestionId, "uri": z.string(), "position": Position, "newName": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "kind": z.literal("rename") }), z.object({ "id": NesSuggestionId, "uri": z.string(), "search": z.string(), "replace": z.string(), "isRegex": z.union([z.boolean(), z.null()]).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "kind": z.literal("searchAndReplace") })]);
+export type NesSuggestion = z.output<typeof NesSuggestion>;
+
+export const NewSessionResponse = z.object({ "sessionId": SessionId, "modes": z.union([SessionModeState, z.null()]).optional().catch(undefined).optional(), "configOptions": z.union([z.array(SessionConfigOption), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type NewSessionResponse = z.output<typeof NewSessionResponse>;
 
 export const NumberPropertySchema = z.object({ "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "minimum": z.union([z.number(), z.null()]).optional(), "maximum": z.union([z.number(), z.null()]).optional(), "default": z.union([z.number(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type NumberPropertySchema = z.output<typeof NumberPropertySchema>;
@@ -760,8 +709,32 @@ export type PlanRemoved = z.output<typeof PlanRemoved>;
 export const PlanUpdate = z.object({ "plan": PlanUpdateContent, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type PlanUpdate = z.output<typeof PlanUpdate>;
 
+export const StopReason = z.enum(["end_turn","max_tokens","max_turn_requests","refusal","cancelled"]);
+export type StopReason = z.output<typeof StopReason>;
+
+export const Usage = z.object({ "totalTokens": z.number().int().gte(0), "inputTokens": z.number().int().gte(0), "outputTokens": z.number().int().gte(0), "thoughtTokens": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "cachedReadTokens": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "cachedWriteTokens": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type Usage = z.output<typeof Usage>;
+
+export const PromptResponse = z.object({ "stopReason": StopReason, "usage": z.union([Usage, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type PromptResponse = z.output<typeof PromptResponse>;
+
+export const ReadTextFileResponse = z.object({ "content": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ReadTextFileResponse = z.output<typeof ReadTextFileResponse>;
+
+export const ReleaseTerminalResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ReleaseTerminalResponse = z.output<typeof ReleaseTerminalResponse>;
+
+export const RequestPermissionOutcome = z.discriminatedUnion("outcome", [z.object({ "outcome": z.literal("cancelled") }), z.object({ "optionId": PermissionOptionId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional(), "outcome": z.literal("selected") })]);
+export type RequestPermissionOutcome = z.output<typeof RequestPermissionOutcome>;
+
+export const RequestPermissionResponse = z.object({ "outcome": RequestPermissionOutcome, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type RequestPermissionResponse = z.output<typeof RequestPermissionResponse>;
+
 export const ResourceLink = z.object({ "annotations": z.union([Annotations, z.null()]).optional().catch(undefined).optional(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "mimeType": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "name": z.string(), "size": z.union([z.number().int(), z.null()]).optional().catch(undefined).optional(), "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "uri": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type ResourceLink = z.output<typeof ResourceLink>;
+
+export const ResumeSessionResponse = z.object({ "modes": z.union([SessionModeState, z.null()]).optional().catch(undefined).optional(), "configOptions": z.union([z.array(SessionConfigOption), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type ResumeSessionResponse = z.output<typeof ResumeSessionResponse>;
 
 export const SelectedPermissionOutcome = z.object({ "optionId": PermissionOptionId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type SelectedPermissionOutcome = z.output<typeof SelectedPermissionOutcome>;
@@ -775,14 +748,35 @@ export type SessionConfigSelect = z.output<typeof SessionConfigSelect>;
 export const SessionInfoUpdate = z.object({ "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "updatedAt": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type SessionInfoUpdate = z.output<typeof SessionInfoUpdate>;
 
+export const SetProviderResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type SetProviderResponse = z.output<typeof SetProviderResponse>;
+
+export const SetSessionConfigOptionResponse = z.object({ "configOptions": z.array(SessionConfigOption).optional().catch(undefined), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type SetSessionConfigOptionResponse = z.output<typeof SetSessionConfigOptionResponse>;
+
+export const SetSessionModeResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type SetSessionModeResponse = z.output<typeof SetSessionModeResponse>;
+
+export const StartNesResponse = z.object({ "sessionId": SessionId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type StartNesResponse = z.output<typeof StartNesResponse>;
+
 export const StringMultiSelectItems = z.object({ "enum": z.array(z.string()), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type StringMultiSelectItems = z.output<typeof StringMultiSelectItems>;
 
 export const StringPropertySchema = z.object({ "title": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "description": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "minLength": z.union([z.number().int().gte(0), z.null()]).optional(), "maxLength": z.union([z.number().int().gte(0), z.null()]).optional(), "pattern": z.union([z.string(), z.null()]).optional(), "format": z.union([StringFormat, z.null()]).optional(), "default": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "enum": z.union([z.array(z.string()), z.null()]).optional(), "oneOf": z.union([z.array(EnumOption), z.null()]).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type StringPropertySchema = z.output<typeof StringPropertySchema>;
 
+export const SuggestNesResponse = z.object({ "suggestions": z.array(NesSuggestion), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type SuggestNesResponse = z.output<typeof SuggestNesResponse>;
+
 export const Terminal = z.object({ "terminalId": TerminalId, "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type Terminal = z.output<typeof Terminal>;
+
+export const TerminalExitStatus = z.object({ "exitCode": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "signal": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type TerminalExitStatus = z.output<typeof TerminalExitStatus>;
+
+export const TerminalOutputResponse = z.object({ "output": z.string(), "truncated": z.boolean(), "exitStatus": z.union([TerminalExitStatus, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type TerminalOutputResponse = z.output<typeof TerminalOutputResponse>;
 
 export const TextContent = z.object({ "annotations": z.union([Annotations, z.null()]).optional().catch(undefined).optional(), "text": z.string(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type TextContent = z.output<typeof TextContent>;
@@ -792,6 +786,12 @@ export type ToolCall = z.output<typeof ToolCall>;
 
 export const UsageUpdate = z.object({ "used": z.number().int().gte(0), "size": z.number().int().gte(0), "cost": z.union([Cost, z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
 export type UsageUpdate = z.output<typeof UsageUpdate>;
+
+export const WaitForTerminalExitResponse = z.object({ "exitCode": z.union([z.number().int().gte(0), z.null()]).optional().catch(undefined).optional(), "signal": z.union([z.string(), z.null()]).optional().catch(undefined).optional(), "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type WaitForTerminalExitResponse = z.output<typeof WaitForTerminalExitResponse>;
+
+export const WriteTextFileResponse = z.object({ "_meta": z.union([z.record(z.string(), z.unknown()), z.null()]).optional().catch(undefined).optional() });
+export type WriteTextFileResponse = z.output<typeof WriteTextFileResponse>;
 
 /** A request the agent sends the client, by method. */
 
@@ -862,3 +862,45 @@ export interface AgentToClientMethods {
   "terminal/release": { readonly params: ReleaseTerminalRequest; readonly result: ReleaseTerminalResponse };
   "terminal/wait_for_exit": { readonly params: WaitForTerminalExitRequest; readonly result: WaitForTerminalExitResponse };
 }
+
+/** The schema of the result of each request a client sends the agent, by method. */
+
+export const ClientToAgentResults = {
+  "authenticate": AuthenticateResponse,
+  "initialize": InitializeResponse,
+  "logout": LogoutResponse,
+  "mcp/message": MessageMcpResponse,
+  "nes/close": CloseNesResponse,
+  "nes/start": StartNesResponse,
+  "nes/suggest": SuggestNesResponse,
+  "providers/disable": DisableProviderResponse,
+  "providers/list": ListProvidersResponse,
+  "providers/set": SetProviderResponse,
+  "session/close": CloseSessionResponse,
+  "session/delete": DeleteSessionResponse,
+  "session/fork": ForkSessionResponse,
+  "session/list": ListSessionsResponse,
+  "session/load": LoadSessionResponse,
+  "session/new": NewSessionResponse,
+  "session/prompt": PromptResponse,
+  "session/resume": ResumeSessionResponse,
+  "session/set_config_option": SetSessionConfigOptionResponse,
+  "session/set_mode": SetSessionModeResponse,
+} as const;
+
+/** The schema of the result of each request the agent sends a client, by method. */
+
+export const AgentToClientResults = {
+  "elicitation/create": CreateElicitationResponse,
+  "fs/read_text_file": ReadTextFileResponse,
+  "fs/write_text_file": WriteTextFileResponse,
+  "mcp/connect": ConnectMcpResponse,
+  "mcp/disconnect": DisconnectMcpResponse,
+  "mcp/message": MessageMcpResponse,
+  "session/request_permission": RequestPermissionResponse,
+  "terminal/create": CreateTerminalResponse,
+  "terminal/kill": KillTerminalResponse,
+  "terminal/output": TerminalOutputResponse,
+  "terminal/release": ReleaseTerminalResponse,
+  "terminal/wait_for_exit": WaitForTerminalExitResponse,
+} as const;
