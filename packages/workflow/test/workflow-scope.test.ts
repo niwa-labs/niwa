@@ -400,3 +400,22 @@ test("a branch that waits does not stop the others: they go on and record their 
   );
   expect(ofType(await t.records(), "workflow.scope.settled").map((row) => (row.data as { key: string }).key)).toEqual(["works"]);
 }, 30_000);
+
+test("workflow.inspect lists the steps of scopes and of keyed parallel branches, with the branch each one is in", async () => {
+  const t = await setup();
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    await scope("probe", undefined, async (s) => {
+      s.start("slow", () => niwa.scope.work({ name: "slow" }));
+      await niwa.scope.work({ name: "block" });
+    });
+    await parallel({ left: () => niwa.scope.work({ name: "left" }) });
+    return null;
+  });`);
+  expect((await t.ended(run)).status).toBe("done");
+  const inspected = (await t.niwa.call("workflow.inspect" as ActionName, { run } as never)) as { steps: Array<{ key: string; branch?: string }> };
+  expect(inspected.steps.map((step) => [step.key, step.branch]).sort()).toEqual([
+    ["@probe.call-1", "@probe"],
+    ["@probe.slow.call-1", "@probe.slow"],
+    ["p1.left.call-1", "p1.left"],
+  ]);
+}, 30_000);
