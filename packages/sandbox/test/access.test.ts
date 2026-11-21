@@ -252,3 +252,19 @@ test("a command line item is read as a mode and a place, or as a name", () => {
   expect(itemOf("read:.")).toEqual({ read: "." });
   expect(itemOf("net:crates.io")).toEqual({ net: "crates.io" });
 });
+
+test("a runtime or a package a profile names through bin stays open to a box whose project holds it", () => {
+  const made = sandbox();
+  const pkg = at("repo", "node_modules", "@vendor", "sdk");
+  mkdirSync(pkg, { recursive: true });
+  made.install("claude", ({ bin }) => ({ read: [...bin(pkg)], write: [at("claude-home")] }));
+  const plan = made.plan({ cwd: at("repo"), defaults: { allow: ["project"] }, network: false });
+  expect(closes(plan, pkg)).toBe(false);
+  expect(closes(plan, at("claude-home"))).toBe(true);
+});
+
+test("a program found through a link keeps the link's name in the box beside its target", () => {
+  const plan = host().plan({ cwd: at("work"), defaults: { allow: ["tool"] }, network: false });
+  expect(allows(plan, at("bin", "tool"), "read")).toBe(true);
+  expect(allows(plan, at("lib", "node_modules", "@acme", "tool", "bin", "tool.js"), "read")).toBe(true);
+});

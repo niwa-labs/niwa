@@ -23,8 +23,10 @@ export interface ProfileContext {
   readonly home: string;
   readonly env: Readonly<Record<string, string | undefined>>;
   /**
-   * A program found through the PATH of `env`: the path it is found at, its real path, and the
-   * root of the package it belongs to when it lies in a `node_modules`. Empty when it is not there.
+   * A program found through the PATH of `env`, or given by its absolute path (a runtime, an
+   * installed package): the path, its real path, and the root of the package it belongs to when it
+   * lies in a `node_modules`. Empty when it is not there. What it gives is never closed to another
+   * box: a profile names programs through it, and its own data without it.
    */
   bin(name: string): readonly string[];
 }
@@ -65,6 +67,16 @@ function resolvedLinks(absolute: string): string {
   }
 }
 
+/**
+ * A path with the links of the directories above it resolved but not its own: a program found
+ * through a link is run by the link's name, so the name has to stay reachable beside its target.
+ */
+export function linkPlace(path: string, home: string = homedir()): string {
+  const absolute = resolve(homeExpanded(path, home));
+  const parent = dirname(absolute);
+  return parent === absolute ? absolute : join(resolvedLinks(parent), basename(absolute));
+}
+
 /** Is `path` the place `root` names, or under it? */
 export function covers(root: string, path: string): boolean {
   return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
@@ -80,7 +92,10 @@ function packageRoot(real: string): string | undefined {
   return end > parts.length ? undefined : parts.slice(0, end).join(sep);
 }
 
-/** A program on the PATH of `env`: where it is found, its real path, and its package. */
+/**
+ * A program on the PATH of `env`, or a program, runtime or installed package given by its absolute
+ * path: where it is, its real path, and its package. Nothing when it is not there.
+ */
 export function programPaths(name: string, env: Readonly<Record<string, string | undefined>>): string[] {
   const found = isAbsolute(name) ? name : Bun.which(name, { PATH: env["PATH"] ?? "" });
   if (found === null) return [];

@@ -24,7 +24,7 @@ import { isAbsolute, join, resolve } from "node:path";
 
 import { z } from "zod";
 
-import { covers, homeExpanded, programPaths, realPlace, resolveProfile } from "./profile.ts";
+import { covers, homeExpanded, linkPlace, programPaths, realPlace, resolveProfile } from "./profile.ts";
 import type { BoxProfile, ResolvedProfile } from "./profile.ts";
 import { catalog } from "./profiles.ts";
 import { BoxRefused } from "./sandbox.ts";
@@ -246,12 +246,14 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
   const profileOf = (name: string, profile: BoxProfile): ResolvedProfile => {
     let found = resolved.get(name);
     if (found === undefined) {
-      found = resolveProfile(profile, name, { home, env });
+      const given = resolveProfile(profile, name, { home, env });
+      // A program keeps the name it is found by: a link stays a link beside its target.
+      const place = (path: string) => (given.programs.includes(path) ? linkPlace(path, home) : realPlace(path, home));
       found = {
-        read: found.read.map((path) => realPlace(path, home)),
-        write: found.write.map((path) => realPlace(path, home)),
-        net: found.net,
-        programs: found.programs.map((path) => realPlace(path, home)),
+        read: [...new Set(given.read.map(place))],
+        write: [...new Set(given.write.map(place))],
+        net: given.net,
+        programs: [...new Set(given.programs.map(place))],
       };
       resolved.set(name, found);
     }
@@ -407,7 +409,7 @@ function toolchains(env: Readonly<Record<string, string | undefined>>, home: str
   const out: { path: string; program: boolean }[] = [];
   const seen = new Set<string>();
   const add = (path: string, program: boolean) => {
-    const real = realPlace(path, home);
+    const real = program ? linkPlace(path, home) : realPlace(path, home);
     if (seen.has(real)) return;
     seen.add(real);
     out.push({ path: real, program });
