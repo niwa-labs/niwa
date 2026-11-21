@@ -112,6 +112,10 @@
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
         "@niwa-labs/script": "workspace:*",
+        "zod": "^4.6.7",
+      },
+      "devDependencies": {
+        "@niwa-labs/testing": "workspace:*",
       },
     },
     "packages/harness": {
