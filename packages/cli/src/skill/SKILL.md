@@ -78,6 +78,8 @@ harness's own subagents. Your private todo list is not a niwa task.
    session waiting.
 
 `session.list`, `session.search` and `session.read` also cover sessions that niwa did not start.
+`session.list` answers one page, the most recently active first; when `nextCursor` is present, pass it as
+`cursor` (with the same filters) for the next page, or narrow by `harness` or `cwd`.
 (`session.start.<instance>` actions exist too: they are what a workflow's `agent()` calls, a start
 that waits for the answer. For handing work over, use `session.start`.)
 

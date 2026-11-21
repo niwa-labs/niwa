@@ -181,6 +181,53 @@ test("list merges niwa's records with the reading side and states a failing side
   expect(filtered.sessions.map((s: { ref: string }) => s.ref)).toEqual(["a s2"]);
 });
 
+test("list pages through sessions of every harness, newest first, each exactly once", async () => {
+  const kinds = ["a", "b", "c", "d", "e"];
+  const harnesses = kinds.map((kind) => ({
+    instance: instance(kind, true),
+    reading: fakeReading({
+      list: Array.from({ length: 230 }, (_, n) => ({ ...info(kind, `s${n}`, "/w", `session ${n} of ${kind}`), updatedAt: (n % 97) * 1000 + kinds.indexOf(kind) })),
+    }),
+  }));
+  const actions = install({ harnesses });
+  const list = actions["session.list"]!;
+
+  // With no limit said, one page is bounded and says where the rest is.
+  const first = await list({});
+  expect(first.sessions).toHaveLength(100);
+  expect(first.total).toBe(1150);
+  expect(first.nextCursor).toBeDefined();
+  expect(first.hint).toContain("nextCursor");
+  expect(first.belongings).toEqual([]);
+
+  const seen: string[] = [];
+  const times: number[] = [];
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    const page = await list({ limit: 70, ...(cursor === undefined ? {} : { cursor }) });
+    expect(page.sessions.length).toBeLessThanOrEqual(70);
+    expect(page.total).toBe(1150);
+    for (const entry of page.sessions) {
+      seen.push(entry.ref);
+      times.push(entry.lastActivityAt ?? 0);
+    }
+    cursor = page.nextCursor;
+    if (cursor === undefined) expect(page.hint).toBeUndefined();
+    pages += 1;
+  } while (cursor !== undefined);
+  expect(pages).toBe(17);
+  expect(new Set(seen).size).toBe(1150);
+  expect(times).toEqual([...times].sort((a, b) => b - a));
+
+  // A list that fits one page has no cursor.
+  const whole = await list({ harness: "a", limit: 500 });
+  expect(whole.sessions).toHaveLength(230);
+  expect(whole.nextCursor).toBeUndefined();
+
+  await expect(list({ cursor: "not-a-cursor" })).rejects.toThrow("cursor");
+});
+
 test("managed list reads the journal without listing harness sessions", async () => {
   const managed = sessionRef(sessionId(harnessId("a"), "s1"));
   const excluded = sessionRef(sessionId(harnessId("a"), "s2"));
@@ -208,13 +255,14 @@ test("managed list reads the journal without listing harness sessions", async ()
   const own = await list({ managedOnly: true, harness: "a", cwd: "/w" });
   expect(own).toEqual({
     sessions: [{ ref: managed, id: "s-a1a1a1", cwd: "/w", model: "model-actually-running", startedAt: BEFORE, state: "unknown" }],
+    total: 1,
     belongings: [{ session: managed, to, source: "explicit" }],
     unreadable: [],
   });
   expect(listed).toBe(0);
 
   const all = await list({ managedOnly: false, harness: "a", cwd: "/w" });
-  expect(all.sessions).toMatchObject([{ ref: "a external" }, { ref: managed, title: "the release" }]);
+  expect(all.sessions).toMatchObject([{ ref: managed, title: "the release" }, { ref: "a external" }]);
   expect(listed).toBe(1);
 });
 

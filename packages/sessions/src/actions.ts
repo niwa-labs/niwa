@@ -72,17 +72,31 @@ export const BelongingSchema = z.object({
 /** A harness whose sessions could not be listed: its absence from the list proves nothing. */
 export const UnreadableSchema = z.object({ harness: z.string().min(1), reason: z.string() });
 
+/** How many sessions a page of `session.list` holds when no limit is said. */
+export const SESSION_LIST_DEFAULT = 100;
+/** The most sessions one page may hold: a page must stay far below the wire line limit. */
+export const SESSION_LIST_MAX = 500;
+
 export const sessionList = actionRef("session.list", {
-  description: "Lists the sessions niwa knows about, each with a readable title when one is known, and whom each serves.",
+  description: "Lists the sessions niwa knows about, most recently active first and a page at a time (`nextCursor` gives the next page), each with a readable title when one is known, and whom each serves.",
   input: z.object({
     /** Only sessions of this harness. */
     harness: z.string().min(1).optional(),
     /** Only sessions in this working directory. */
     cwd: z.string().min(1).optional(),
     managedOnly: z.boolean().describe("List only sessions that niwa started, using its own catalog.").optional(),
+    limit: z.number().int().positive().max(SESSION_LIST_MAX).describe(`How many sessions one page holds; ${SESSION_LIST_DEFAULT} when not said.`).optional(),
+    cursor: z.string().min(1).describe("The `nextCursor` of the previous page: the page that follows it. Keep the other fields the same.").optional(),
   }),
   output: z.object({
+    /** One page of the sessions, the most recently active first. */
     sessions: z.array(SessionEntrySchema),
+    /** How many sessions match in all, across every page. */
+    total: z.number().int().nonnegative(),
+    /** Pass as `cursor` to get the next page; absent on the last page. */
+    nextCursor: z.string().min(1).optional(),
+    /** Says that the page is not the whole list, and how to get the rest; absent on the last page. */
+    hint: z.string().optional(),
     /** The attachments of the listed sessions, each with its source. */
     belongings: z.array(BelongingSchema),
     unreadable: z.array(UnreadableSchema),

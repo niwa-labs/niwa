@@ -118,6 +118,7 @@ import {
   sessionGet,
   sessionInterrupt,
   sessionList,
+  SESSION_LIST_DEFAULT,
   sessionOpenQuestions,
   sessionRead,
   sessionResume,
@@ -138,6 +139,35 @@ const PLUGIN_NAME = "sessions";
 
 /** How many sessions `session.running` lists of each kind when it is not told. */
 const DEFAULT_RUNNING_LIMIT = 20;
+
+/** Where a page of sessions ends: the activity time and the ref of its last session. */
+const PageCursor = z.tuple([z.number(), z.string()]);
+
+const recency = (entry: SessionEntry): number => entry.lastActivityAt ?? entry.startedAt ?? 0;
+
+/**
+ * One page of the sessions, the most recently active first. The cursor names the last session
+ * given, not an offset, so a session that appears or ends between two calls moves none of the
+ * others across a page.
+ */
+function pageOf(entries: readonly SessionEntry[], limit: number, cursor: string | undefined): { page: SessionEntry[]; nextCursor?: string } {
+  const ordered = [...entries].sort((a, b) => recency(b) - recency(a) || a.ref.localeCompare(b.ref));
+  let start = 0;
+  if (cursor !== undefined) {
+    let after: z.infer<typeof PageCursor>;
+    try {
+      after = PageCursor.parse(JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")));
+    } catch {
+      throw new Error("the cursor is not one that session.list gave: pass nextCursor of the previous page unchanged");
+    }
+    start = ordered.findIndex((entry) => recency(entry) < after[0] || (recency(entry) === after[0] && entry.ref.localeCompare(after[1]) > 0));
+    if (start < 0) start = ordered.length;
+  }
+  const page = ordered.slice(start, start + limit);
+  const last = page.at(-1);
+  if (last === undefined || start + limit >= ordered.length) return { page };
+  return { page, nextCursor: Buffer.from(JSON.stringify([recency(last), last.ref])).toString("base64url") };
+}
 
 /** A session as one line: its id (the pointer for a session niwa did not start), the time of its last sign of life, its model, and its title. */
 function runningLine(entry: SessionEntry): string {
@@ -614,9 +644,14 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         recovery: "repeat",
         run: async (input) => {
           const { catalog, entries, unreadable } = await survey(input.harness, input.cwd, input.managedOnly);
+          const { page, nextCursor } = pageOf(entries, input.limit ?? SESSION_LIST_DEFAULT, input.cursor);
           return {
-            sessions: entries,
-            belongings: catalog.belongings(new Set(entries.map((entry) => entry.ref))),
+            sessions: page,
+            total: entries.length,
+            ...(nextCursor === undefined
+              ? {}
+              : { nextCursor, hint: `${page.length} of ${entries.length} sessions shown: pass nextCursor as cursor for the next page, or narrow by harness or cwd.` }),
+            belongings: catalog.belongings(new Set(page.map((entry) => entry.ref))),
             unreadable,
           };
         },
