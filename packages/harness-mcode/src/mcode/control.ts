@@ -62,8 +62,8 @@ import type {
 import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
 
-import { acpVariant, answerText, readVariant } from "@niwa-labs/acp";
-import type { UnknownVariant } from "@niwa-labs/acp";
+import { AcpClient, acpVariant, answerText, readVariant } from "@niwa-labs/acp";
+import type { AgentNotification, AgentRequest, RpcOutcome, UnknownVariant } from "@niwa-labs/acp";
 
 import {
   NCODE_ACP_PROTOCOL,
@@ -285,30 +285,6 @@ function currentModelOf(configOptions: unknown): ModelName | undefined {
 // The wire
 // ---------------------------------------------------------------------------
 
-/** One JSON-RPC message on the wire. */
-interface RpcMessage {
-  readonly id?: number | string;
-  readonly method?: string;
-  readonly params?: Record<string, unknown>;
-  readonly result?: Record<string, unknown>;
-  readonly error?: { readonly code?: number; readonly message?: string; readonly data?: unknown };
-}
-
-/** What a caller waits for. */
-interface Pending {
-  readonly resolve: (value: Record<string, unknown>) => void;
-  readonly reject: (error: Error) => void;
-  readonly timer: ReturnType<typeof setTimeout> | undefined;
-  /**
-   * The turn this request is the prompt of, when it is one.
-   *
-   * The reply to `session/prompt` is what ends the turn: it carries the stop reason. The
-   * number is checked on the reply, so the late reply of a turn that was given up on cannot
-   * end the turn that came after it.
-   */
-  readonly turn?: number;
-}
-
 /** The fork's decision on a tool call, as niwa records it: without the fork's free-text reason. */
 function permissionMarkOf(mark: NcodePermissionMark): PermissionMark {
   return { decision: mark.decision, decidedBy: mark.decidedBy, ruleKind: mark.ruleKind, mode: mark.mode };
@@ -347,9 +323,9 @@ type Watcher = (event: LifeEvent | undefined) => void;
 /** The stop reason that means the agent finished its turn. */
 const STOP_TURN = "end_turn";
 
-/** The ACP cancel notification of a session. */
-function cancelMessage(nativeId: string): Record<string, unknown> {
-  return { jsonrpc: "2.0", method: "session/cancel", params: { sessionId: nativeId } };
+/** Whether a value is a JSON object. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -404,12 +380,12 @@ class AcpSession {
    * caller has the session to watch. The first watcher is given them; after it nothing is kept.
    */
   private unwatched: LifeEvent[] | undefined = [];
-  readonly pending = new Map<number, Pending>();
+  /** The connection to the agent: set as soon as the child is spawned, before anything is written. */
+  client!: AcpClient;
   /** Who is waiting for the running turn to settle. */
   turnWaiters: TurnWaiters | undefined;
   /** Who is waiting for no turn to be running. */
   private readonly idleWaiters: Array<() => void> = [];
-  nextId = 1;
 
   /**
    * Why the running turn is over its time, once it is: the turn was cancelled, and it ends as a
@@ -554,11 +530,7 @@ class AcpSession {
     this.cancelAsking();
     const reason = new Error(failure ?? "the mcode process is gone");
     this.dropQueue(reason.message);
-    for (const pending of [...this.pending.values()]) {
-      if (pending.timer !== undefined) clearTimeout(pending.timer);
-      pending.reject(reason);
-    }
-    this.pending.clear();
+    this.client.close(reason.message);
     const waiters = this.turnWaiters;
     this.turnWaiters = undefined;
     waiters?.reject(reason);
@@ -585,7 +557,7 @@ class AcpSession {
         const overdue = new Error("the turn did not end in time");
         this.overdue = overdue;
         const cancelledAt = Date.now();
-        this.write(cancelMessage(this.nativeId));
+        this.notify("session/cancel", { sessionId: this.nativeId });
         // A cancelled turn is answered with cancelled to what it still asks, as ACP wants.
         this.cancelAsking();
         this.emit({ kind: "activity", at: Date.now(), detail: "the turn did not end in time: it was cancelled" });
@@ -619,11 +591,10 @@ class AcpSession {
     });
   }
 
-  /** Send one JSON-RPC message. */
-  write(message: Record<string, unknown>): void {
-    if (this.ended || this.stopping) return;
+  /** Send a notification; a child that is stopping or gone is not written to. */
+  notify(method: string, params: Record<string, unknown>): void {
     try {
-      this.child.stdin?.write(`${JSON.stringify(message)}\n`);
+      this.client.notify(method, params);
     } catch {
       // The child is gone: the end handler releases everyone.
     }
@@ -636,19 +607,33 @@ class AcpSession {
    * streamed while it ran.
    */
   sendPrompt(text: string): void {
-    const id = this.nextId++;
-    this.pending.set(id, {
-      resolve: () => undefined,
-      reject: () => undefined,
-      timer: undefined,
-      turn: this.current,
-    });
-    this.write({
-      jsonrpc: "2.0",
-      id,
-      method: "session/prompt",
-      params: { sessionId: this.nativeId, prompt: [{ type: "text", text }] },
-    });
+    const turn = this.current;
+    this.client.send(
+      "session/prompt",
+      { sessionId: this.nativeId, prompt: [{ type: "text", text }] },
+      (outcome) => this.promptAnswered(turn, outcome),
+      { timeoutMs: null },
+    );
+  }
+
+  /**
+   * The answer to the prompt of `turn`. Only the answer of the turn that is running ends a turn:
+   * the late answer of a turn that was given up on says nothing about the one that came after it.
+   */
+  promptAnswered(turn: number, outcome: RpcOutcome): void {
+    if (turn !== this.current || !this.running) return;
+    if (!outcome.ok) {
+      // A prompt that was refused is not a turn that ended: it never ran.
+      this.failTurn(outcome.dispatch === "refused" ? new AgentRefusal(outcome.error, outcome.code) : new Error(outcome.error));
+      return;
+    }
+    if (this.overdue !== undefined) {
+      // The answer to a prompt that was cancelled for its time: the turn is over now, and it failed.
+      this.failTurn(this.overdue);
+      return;
+    }
+    const result = isRecord(outcome.result) ? outcome.result : {};
+    this.endTurn({ stopReason: typeof result["stopReason"] === "string" ? result["stopReason"] : "", text: this.text });
   }
 }
 
@@ -722,53 +707,6 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     });
   }
 
-  /** One JSON-RPC message arrived. */
-  function handleMessage(session: AcpSession, message: RpcMessage): void {
-    // A reply to a request of ours.
-    if (message.id !== undefined && message.method === undefined) {
-      const pending = session.pending.get(Number(message.id));
-      if (pending === undefined) return;
-      session.pending.delete(Number(message.id));
-      if (pending.timer !== undefined) clearTimeout(pending.timer);
-      // Only the reply of the turn that is running ends a turn: the late reply of a turn that
-      // was given up on says nothing about the one that came after it.
-      const endsTurn =
-        pending.turn !== undefined && pending.turn === session.current && session.running;
-      if (message.error !== undefined) {
-        const reason = new AgentRefusal(
-          message.error.message ??
-            `the agent refused the request with code ${String(message.error.code ?? "?")}`,
-          message.error.code,
-        );
-        pending.reject(reason);
-        // A prompt that was refused is not a turn that ended: it never ran.
-        if (endsTurn) session.failTurn(reason);
-        return;
-      }
-      const result = message.result ?? {};
-      if (endsTurn && session.overdue !== undefined) {
-        // The answer to a prompt that was cancelled for its time: the turn is over now, and it
-        // failed.
-        session.failTurn(session.overdue);
-      } else if (endsTurn) {
-        session.endTurn({
-          stopReason: typeof result["stopReason"] === "string" ? result["stopReason"] : "",
-          text: session.text,
-        });
-      }
-      pending.resolve(result);
-      return;
-    }
-
-    // A request from the agent: it asks for permission or puts a question, and this side answers.
-    if (message.method !== undefined && message.id !== undefined) {
-      answerRequest(session, message.id, message);
-      return;
-    }
-
-    if (message.method !== undefined) handleNotification(session, message);
-  }
-
   /** The protocol of this side's lineage, as the unknowns it records name it. */
   const protocol = lineage === "fork" ? NCODE_ACP_PROTOCOL : MCODE_ACP_PROTOCOL;
 
@@ -779,11 +717,11 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
 
   /** Refuse a request of the agent, so it never waits on this side. */
   function refuse(session: AcpSession, requestId: number | string, method: string): void {
-    session.write({ jsonrpc: "2.0", id: requestId, error: { code: -32601, message: `niwa does not serve ${method}` } });
+    session.client.refuse(requestId, -32601, `niwa does not serve ${method}`);
   }
 
   /** A request of the agent: a permission or a questionnaire is answered, anything else refused. */
-  function answerRequest(session: AcpSession, requestId: number | string, message: RpcMessage): void {
+  function answerRequest(session: AcpSession, requestId: number | string, message: AgentRequest): void {
     const read = readVariant(McodeAgentRequest, message, protocol, acpVariant);
     if (!read.ok) {
       emitUnknown(session, read.unknown);
@@ -791,13 +729,15 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       return;
     }
     const asked = read.value;
+    // The params as they came, with what the snapshot of the protocol does not name.
+    const params = isRecord(message.params) ? message.params : undefined;
     switch (asked.method) {
       case "session/request_permission":
-        void answerPermission(session, requestId, asked.params, message.params);
+        void answerPermission(session, requestId, asked.params, params);
         return;
       case "elicitation/create":
         if (session.reverse === undefined) refuse(session, requestId, asked.method);
-        else void answerElicitation(session, requestId, message.params, session.reverse);
+        else void answerElicitation(session, requestId, params, session.reverse);
         return;
       // The client advertises no file system, no terminal and no MCP transport, and mcode asks for none.
       case "fs/read_text_file":
@@ -818,7 +758,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   }
 
   /** A notification: each one is a sign of life, so a silent run and a hung run do not look the same. */
-  function handleNotification(session: AcpSession, message: RpcMessage): void {
+  function handleNotification(session: AcpSession, message: AgentNotification): void {
     const read = readVariant(McodeAgentNotification, message, protocol, acpVariant);
     if (!read.ok) {
       emitUnknown(session, read.unknown);
@@ -945,11 +885,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   ): Promise<void> {
     const steps = formSteps(params);
     if (steps === undefined) {
-      session.write({
-        jsonrpc: "2.0",
-        id: requestId,
-        error: { code: -32602, message: "the questionnaire is not a form niwa can ask" },
-      });
+      session.client.refuse(requestId, -32602, "the questionnaire is not a form niwa can ask");
       return;
     }
     const answers = await reverseAnswer(session, handler, requestId, steps.map((step) => step.question), "elicitation/create", params);
@@ -1003,7 +939,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
 
   /** Answer a request of the agent, once. */
   function replyTo(session: AcpSession, requestId: number | string, result: Record<string, unknown>): void {
-    session.write({ jsonrpc: "2.0", id: requestId, result });
+    session.client.reply(requestId, result);
   }
 
   // -- the child ------------------------------------------------------------
@@ -1048,32 +984,30 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     // A write to a dead child is reported by the closing child, not thrown as an unhandled event.
     child.stdin?.on("error", () => undefined);
 
-    let buffer = "";
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      buffer += chunk;
-      let index = buffer.indexOf("\n");
-      while (index !== -1) {
-        const line = buffer.slice(0, index);
-        buffer = buffer.slice(index + 1);
-        if (line.trim().length > 0) {
-          let message: RpcMessage | undefined;
-          try {
-            message = JSON.parse(line) as RpcMessage;
-          } catch {
-            handleGarbage(session, line);
-          }
-          if (message !== undefined) handleMessage(session, message);
+    session.client = new AcpClient({
+      write: (line) => {
+        // A session that is stopping or gone is not written to; a write to a dead child is
+        // reported by the closing child.
+        if (session.ended || session.stopping) return;
+        try {
+          child.stdin?.write(`${line}\n`);
+        } catch {
+          // The child is gone: the end handler releases everyone.
         }
-        index = buffer.indexOf("\n");
-      }
-      if (Buffer.byteLength(buffer, "utf8") > MAX_LINE_BYTES) {
+      },
+      onRequest: (request) => answerRequest(session, request.id, request),
+      onNotification: (notification) => handleNotification(session, notification),
+      onUnreadable: (line) => handleGarbage(session, line),
+      onOverflow: () => {
         // One line longer than the budget is a transport failure, not a session.
-        buffer = "";
         session.end("a line of the agent's output was longer than the frame budget");
         void stopSession(session);
-      }
+      },
+      callTimeoutMs,
+      maxLineBytes: MAX_LINE_BYTES,
     });
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => session.client.feed(chunk));
 
     let stderr = "";
     child.stderr?.setEncoding("utf8");
@@ -1098,23 +1032,23 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     return session;
   }
 
-  /** Send a request and wait for its reply. */
-  function request(
+  /**
+   * Send a request and wait for its reply: a refusal of the agent is an `AgentRefusal` with its
+   * code, an answer that did not come in time a `RequestTimeout` (whether the agent acted on it is
+   * unknown).
+   */
+  async function request(
     session: AcpSession,
     method: string,
     params: Record<string, unknown>,
     label: string,
   ): Promise<Record<string, unknown>> {
-    if (session.ended || session.stopping) return Promise.reject(new Error("the agent process is gone"));
-    const id = session.nextId++;
-    return new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        session.pending.delete(id);
-        reject(new RequestTimeout(`${label} did not finish in time`));
-      }, callTimeoutMs);
-      session.pending.set(id, { resolve, reject, timer });
-      session.write({ jsonrpc: "2.0", id, method, params });
-    });
+    if (session.ended || session.stopping) throw new Error("the agent process is gone");
+    const outcome = await session.client.request(method, params);
+    if (outcome.ok) return isRecord(outcome.result) ? outcome.result : {};
+    if (outcome.dispatch === "refused") throw new AgentRefusal(outcome.error, outcome.code);
+    if (outcome.timedOut === true) throw new RequestTimeout(`${label} did not finish in time`);
+    throw new Error(outcome.error);
   }
 
   /** The refusal of an old daemon, which cannot take the mode of a session, as an error that says what to do. */
@@ -1361,7 +1295,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       }
       if (cancelled === undefined && Date.now() >= deadline) {
         cancelled = Date.now();
-        session.write(cancelMessage(session.nativeId));
+        session.notify("session/cancel", { sessionId: session.nativeId });
         session.emit({ kind: "activity", at: Date.now(), detail: "the turn did not end in time: it was cancelled" });
       }
       if (!dropped && cancelled !== undefined && Date.now() >= cancelled + cancelGraceMs) {
@@ -1500,7 +1434,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       // An explicit stop drops what waited behind the turn: firing it would be a surprise.
       session.dropQueue("the turn was interrupted");
       // The cancel is a hint; only the agent ending the turn proves it.
-      session.write(cancelMessage(session.nativeId));
+      session.notify("session/cancel", { sessionId: session.nativeId });
       // A cancelled turn is answered with cancelled to what it still asks, as ACP wants.
       session.cancelAsking();
       const confirmed = await Promise.race([
@@ -1606,7 +1540,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     const gone = (): boolean => child.exitCode !== null || child.signalCode !== null;
     if (!gone() && !session.stopping) {
       // The polite way first, while writes still go out: the agent stops the turn itself.
-      if (session.nativeId !== "") session.write(cancelMessage(session.nativeId));
+      if (session.nativeId !== "") session.notify("session/cancel", { sessionId: session.nativeId });
       session.stopping = true;
     }
     // Everyone waiting is released now: a stop does not leave a call hanging.

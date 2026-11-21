@@ -1,3 +1,5 @@
+export { AcpClient } from "./client.ts";
+export type { AcpClientOptions, AgentNotification, AgentRequest, CallOptions, RpcFrame, RpcOutcome } from "./client.ts";
 export { answerText } from "./content.ts";
 export type { AcpContent } from "./content.ts";
 export { acpVariant, readVariant } from "./variant.ts";

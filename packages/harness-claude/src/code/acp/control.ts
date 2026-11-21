@@ -63,8 +63,8 @@ import {
 } from "@niwa-labs/harness";
 import { LIVE_PROCESS_REFUSAL, SandboxUnavailable, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess } from "@niwa-labs/sandbox";
-import { answerText, acpVariant, readVariant } from "@niwa-labs/acp";
-import type { UnknownVariant } from "@niwa-labs/acp";
+import { AcpClient, answerText, acpVariant, readVariant } from "@niwa-labs/acp";
+import type { AgentNotification, AgentRequest, RpcOutcome, UnknownVariant } from "@niwa-labs/acp";
 import { claudeEnv } from "../options.ts";
 import { CLAUDE_CODE_LAUNCH } from "../launch.ts";
 import {
@@ -252,28 +252,6 @@ const STOP_MISSING = "<missing>";
 // The wire protocol
 // ---------------------------------------------------------------------------
 
-/**
- * One JSON-RPC envelope.
- *
- * The same shape carries a response, a notification and a request from the agent, so every
- * field is optional and the shape is decided by what is present.
- */
-interface RpcFrame {
-  readonly jsonrpc?: string;
-  readonly id?: number | string | null;
-  readonly method?: string;
-  readonly params?: unknown;
-  readonly result?: unknown;
-  readonly error?: { readonly code?: number; readonly message?: string };
-}
-
-/** The result of one call. */
-interface RpcOutcome {
-  readonly ok: boolean;
-  readonly result?: unknown;
-  readonly error?: string;
-}
-
 /** The result of a prompt: the answer and why the turn ended. */
 interface ClaudeAcpTurn {
   /** Why the agent ended the turn. */
@@ -396,11 +374,8 @@ class LiveSession {
    */
   private unwatched: LifeEvent[] | undefined = [];
 
-  /** The calls in flight, by request id. */
-  readonly pending = new Map<number, (outcome: RpcOutcome) => void>();
-
-  /** The request-id counter. */
-  nextId = 1;
+  /** The connection to the agent: set as soon as the child is spawned, before anything is written. */
+  client!: AcpClient;
 
   /** The messages that wait behind the running turn. */
   readonly queue: QueuedMessage[] = [];
@@ -474,9 +449,7 @@ class LiveSession {
     const reason = this.failure ?? "the session process closed";
     this.cancelAsking();
     this.dropQueue(reason);
-    const pending = [...this.pending.values()];
-    this.pending.clear();
-    for (const settle of pending) settle({ ok: false, error: reason });
+    this.client.close(reason);
     this.settleIdle();
     for (const watcher of [...this.endWatchers]) watcher();
   }
@@ -541,7 +514,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
 
   // -- the JSON-RPC client --------------------------------------------------
 
-  /** Write one JSON-RPC line to the child. */
+  /** Write one JSON-RPC line to the child; a session that is stopping or gone is not written to. */
   function writeLine(session: LiveSession, line: string): void {
     const stdin = session.child.stdin;
     if (stdin === null || stdin.destroyed || session.stopping || session.ended) {
@@ -551,126 +524,29 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   }
 
   /**
-   * One call: write the request and wait for its answer.
-   *
-   * The id is matched, not guessed: every call has its own id, and the answer to one call can
-   * never settle another.
+   * One call: write the request and wait for its answer (the shared ACP client matches it by id).
    *
    * A call that is over its time and has an `overdue` is not abandoned at once: `overdue` is run
    * (it cancels the work), and the call stays registered until the agent answers it or the
    * grace is over. Either way it fails with the timeout, so the caller never learns of a
-   * cancelled answer as of a success.
+   * cancelled answer as of a success. A call that could not be written because the child is
+   * going fails with why it went, when that is known.
    */
-  function call(
+  async function call(
     session: LiveSession,
     method: string,
     params: Record<string, unknown>,
     timeoutMs: number = callTimeoutMs,
     overdue?: () => void,
   ): Promise<RpcOutcome> {
-    const id = session.nextId;
-    session.nextId += 1;
-
-    // The wait is registered before the request is written, so an answer that arrives in the
-    // same read as the write is never missed.
-    return new Promise<RpcOutcome>((resolve) => {
-      const timedOut: RpcOutcome = { ok: false, error: `the call ${method} timed out` };
-      let late = false;
-      let grace: ReturnType<typeof setTimeout> | undefined;
-      const timer = setTimeout(() => {
-        if (!session.pending.has(id)) return;
-        if (overdue === undefined) {
-          session.pending.delete(id);
-          resolve(timedOut);
-          return;
-        }
-        late = true;
-        try {
-          overdue();
-        } catch {
-          // The child is gone; there is nothing to cancel.
-        }
-        grace = setTimeout(() => {
-          if (session.pending.delete(id)) resolve(timedOut);
-        }, callTimeoutMs);
-        if (typeof grace.unref === "function") grace.unref();
-      }, timeoutMs);
-      if (typeof timer.unref === "function") timer.unref();
-      session.pending.set(id, (outcome) => {
-        clearTimeout(timer);
-        clearTimeout(grace);
-        resolve(late ? timedOut : outcome);
-      });
-      try {
-        writeLine(session, JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-      } catch (error) {
-        // A child that cannot be written to is going: its own end says why, and that is the
-        // answer, not the refusal to write to it. The call stays registered for that end.
-        if (!session.ended) return;
-        clearTimeout(timer);
-        session.pending.delete(id);
-        resolve({ ok: false, error: session.failure ?? (error instanceof Error ? error.message : String(error)) });
-      }
-    });
+    const outcome = await session.client.request(method, params, { timeoutMs, ...(overdue === undefined ? {} : { overdue }) });
+    if (outcome.ok || outcome.dispatch !== "unsent" || session.failure === undefined) return outcome;
+    return { ...outcome, error: session.failure };
   }
 
   /** A notification: no id, no answer expected. */
   function notify(session: LiveSession, method: string, params: Record<string, unknown> = {}): void {
-    writeLine(session, JSON.stringify({ jsonrpc: "2.0", method, params }));
-  }
-
-  // -- the demux ------------------------------------------------------------
-
-  /**
-   * Read one line of stdout and act on it.
-   *
-   * One demux, one place where a frame is understood: a response settles a call, a
-   * notification is a sign of life, and a request from the agent is answered.
-   */
-  function handleLine(session: LiveSession, line: string): void {
-    if (line.length === 0) return;
-
-    let frame: RpcFrame;
-    try {
-      frame = JSON.parse(line) as RpcFrame;
-    } catch (error) {
-      session.emit({
-        kind: "activity",
-        at: Date.now(),
-        detail: `a line of the output stream could not be read: ${String(error)}`,
-      });
-      return;
-    }
-
-    // A frame that is not JSON-RPC is not ours.
-    if (frame.jsonrpc !== "2.0") return;
-
-    const method = frame.method;
-    const hasId = frame.id !== undefined && frame.id !== null;
-
-    // A request from the agent: it must be answered, or the agent waits forever.
-    if (method !== undefined && hasId) {
-      answerAgentRequest(session, frame);
-      return;
-    }
-
-    // A response: it settles exactly one call.
-    if (method === undefined && typeof frame.id === "number") {
-      const settle = session.pending.get(frame.id);
-      if (settle === undefined) return;
-      session.pending.delete(frame.id);
-      if (frame.error !== undefined) {
-        settle({ ok: false, error: frame.error.message ?? "the call failed" });
-      } else {
-        settle({ ok: true, result: frame.result });
-      }
-      return;
-    }
-
-    // A notification: a sign of life.
-    if (method !== undefined) {
-      handleNotification(session, frame);
-    }
+    session.client.notify(method, params);
   }
 
   /** A message the snapshot of the protocol does not know: recorded as it came, never a crash. */
@@ -679,11 +555,8 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   }
 
   /** Refuse a request of the agent, so it never waits on this side. */
-  function refuse(session: LiveSession, frame: RpcFrame, method: string): void {
-    writeLine(
-      session,
-      JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: { code: -32601, message: `this control side cannot serve ${method}` } }),
-    );
+  function refuse(session: LiveSession, frame: AgentRequest, method: string): void {
+    session.client.refuse(frame.id, -32601, `this control side cannot serve ${method}`);
   }
 
   /**
@@ -694,7 +567,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
    * reverse requests sends them there, and any other session answers a permission by its policy.
    * Every other request is refused with a shape the agent understands, so the agent never waits.
    */
-  function answerAgentRequest(session: LiveSession, frame: RpcFrame): void {
+  function answerAgentRequest(session: LiveSession, frame: AgentRequest): void {
     const read = readVariant(ClaudeAgentRequest, frame, CLAUDE_ACP_PROTOCOL, acpVariant);
     if (!read.ok) {
       emitUnknown(session, read.unknown);
@@ -726,9 +599,9 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   }
 
   /** Answer an agent's request, once; a session that is gone has nobody to answer. */
-  function reply(session: LiveSession, frame: RpcFrame, result: Record<string, unknown>): void {
+  function reply(session: LiveSession, frame: AgentRequest, result: Record<string, unknown>): void {
     try {
-      writeLine(session, JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }));
+      session.client.reply(frame.id, result);
     } catch {
       // The child is gone; its end says why.
     }
@@ -745,7 +618,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
    * The agent offers its options and this side picks one of them: an id the agent does not
    * know is a refusal, so the id must come from the offer.
    */
-  async function answerPermission(session: LiveSession, frame: RpcFrame, params: Acp.RequestPermissionRequest): Promise<void> {
+  async function answerPermission(session: LiveSession, frame: AgentRequest, params: Acp.RequestPermissionRequest): Promise<void> {
     const options: ClaudeAcpPermissionOption[] = params.options.map((option) => ({
       kind: option.kind,
       optionId: option.optionId,
@@ -843,13 +716,10 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
    * a multi-select question joins the labels with a comma. A question left without an answer
    * ends the call: the tool is told nobody answered.
    */
-  async function answerQuestions(session: LiveSession, frame: RpcFrame, handler: ReverseHandler): Promise<void> {
+  async function answerQuestions(session: LiveSession, frame: AgentRequest, handler: ReverseHandler): Promise<void> {
     const parsed = AskUserQuestionParams.safeParse(frame.params);
     if (!parsed.success) {
-      writeLine(
-        session,
-        JSON.stringify({ jsonrpc: "2.0", id: frame.id, error: { code: -32602, message: "the questions of the tool call are not well formed" } }),
-      );
+      session.client.refuse(frame.id, -32602, "the questions of the tool call are not well formed");
       return;
     }
     const answers: Record<string, string> = {};
@@ -915,7 +785,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   }
 
   /** The notifications that are signs of life. */
-  function handleNotification(session: LiveSession, frame: RpcFrame): void {
+  function handleNotification(session: LiveSession, frame: AgentNotification): void {
     const read = readVariant(ClaudeAgentNotification, frame, CLAUDE_ACP_PROTOCOL, acpVariant);
     if (!read.ok) {
       emitUnknown(session, read.unknown);
@@ -1057,26 +927,24 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
 
     const session = new LiveSession(child);
     owned.add(session);
-    let buffer = "";
     let stderrTail = "";
-
-    child.stdout?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk: string) => {
-      buffer += chunk;
-      let newline = buffer.indexOf("\n");
-      while (newline !== -1) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        handleLine(session, line);
-        newline = buffer.indexOf("\n");
-      }
-      if (Buffer.byteLength(buffer, "utf8") > MAX_FRAME_BYTES) {
+    session.client = new AcpClient({
+      write: (line) => writeLine(session, line),
+      onRequest: (request) => answerAgentRequest(session, request),
+      onNotification: (notification) => handleNotification(session, notification),
+      onUnreadable: (_line, error) =>
+        session.emit({ kind: "activity", at: Date.now(), detail: `a line of the output stream could not be read: ${String(error)}` }),
+      onOverflow: () => {
         // One line longer than the budget is a transport failure, not a session.
-        buffer = "";
         session.end("a line of the output stream was longer than the frame budget");
         void stopSession(session);
-      }
+      },
+      callTimeoutMs,
+      maxLineBytes: MAX_FRAME_BYTES,
     });
+
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => session.client.feed(chunk));
 
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
