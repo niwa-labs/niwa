@@ -8,6 +8,7 @@
 export {
   Builtin,
   BuiltinPromoted,
+  BuiltinTrial,
   BuiltinsWanted,
   InstallationId,
   PhaseEntered,
@@ -43,6 +44,7 @@ export {
   workflowInstallationList,
   workflowList,
   workflowBuiltinPromote,
+  workflowBuiltinTrial,
   workflowPause,
   workflowRegister,
   workflowResume,

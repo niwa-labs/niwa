@@ -20,6 +20,7 @@ import {
   JsonSchemaValue,
   RunId,
   Subscription,
+  TrialVersion,
   WorkflowId,
   WorkflowVersion,
 } from "./records.ts";
@@ -35,7 +36,7 @@ export const StartInput = z.object({
   id: IdText.optional(),
   /**
    * With `id`: run this version of it instead of the latest. A candidate version of a gated built-in is started only by a
-   * run of a built-in of the same plugin: the suite that tries it.
+   * run in the trusted suite's pinned trial.
    */
   version: WorkflowVersion.optional(),
   /** A script file to run once, unregistered. A start names `id` or `file`, not both. */
@@ -185,11 +186,20 @@ export const workflowPause = actionRef("workflow.pause", {
   output: RunStatus,
 });
 
+export const workflowBuiltinTrial = actionRef("workflow.builtin.trial", {
+  description: "Pin the offered versions for an approved built-in suite run and its descendants. Only the plugin's designated suite may open a trial.",
+  input: z.strictObject({}),
+  output: z.object({ entries: z.array(TrialVersion) }),
+});
+
 export const workflowBuiltinPromote = actionRef("workflow.builtin.promote", {
-  description:
-    "Accept candidate versions of gated built-ins together: each becomes the latest version of its workflow, the promotion is recorded with the run that made it, and the workflow module installs each at its new version. For a run of a built-in of the same plugin, the suite that tried them. A version already accepted is left as it is; one that is no version of a built-in of that plugin refuses the whole set.",
-  input: z.object({ versions: z.array(z.object({ workflow: WorkflowId, version: WorkflowVersion })).min(1) }),
-  output: z.object({ run: RunId, versions: z.array(z.object({ workflow: WorkflowId, version: WorkflowVersion })) }),
+  description: "Accept all candidates pinned by this suite run. If the proposal or the accepted set has changed, accept none and return stale.",
+  input: z.strictObject({}),
+  output: z.object({
+    status: z.enum(["promoted", "stale"]),
+    run: RunId,
+    versions: z.array(z.object({ workflow: WorkflowId, version: WorkflowVersion })),
+  }),
 });
 
 export const workflowContinue = actionRef("workflow.continue", {
@@ -362,6 +372,8 @@ export const WorkflowVersionEntry = z.object({
   broken: z.string().optional(),
   /** A candidate version of a gated built-in: not accepted yet, it is started only by name of its version. */
   candidate: z.literal(true).optional(),
+  /** A candidate superseded by another proposal before acceptance. */
+  superseded: z.literal(true).optional(),
 });
 
 export const workflowList = listRef("workflow.list", {

@@ -11,19 +11,22 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
+import type { z } from "zod";
 
+import { stableJson } from "@niwa-labs/core";
 import type { EntityDescription, IssuedId, JournalReader, RecordId } from "@niwa-labs/core";
 
 import { contractOf } from "./describe.ts";
 import type { Described } from "./describe.ts";
 import { SCRIPT_TYPES } from "./language.ts";
 import type { WorkflowPhases } from "./language.ts";
-import { BuiltinPromoted, WorkflowRechecked, WorkflowRegistered, WorkflowVersion } from "./records.ts";
+import { BuiltinsWanted, BuiltinPromoted, WorkflowRechecked, WorkflowRegistered, WorkflowVersion } from "./records.ts";
 import type { Builtin, ContractHash, EmittedRecord, FlowCall, JsonSchemaValue, Subscription, WorkflowId } from "./records.ts";
 
 /** One version of a registered workflow. */
 export interface RegisteredVersion {
   version: WorkflowVersion;
+  revision: RecordId;
   file: string;
   description: EntityDescription;
   input?: JsonSchemaValue;
@@ -45,6 +48,8 @@ export interface RegisteredVersion {
   broken?: string;
   /** A candidate version of a gated built-in, not accepted yet. */
   candidate?: true;
+  /** A candidate replaced by another proposal before it was accepted. */
+  superseded?: true;
 }
 
 /** A registered workflow: its id, the record that issued it, and its versions, the latest last. */
@@ -69,7 +74,7 @@ export function workflowsOf(journal: JournalReader): RegisteredWorkflow[] {
         const known = byId.get(workflow);
         const was = known?.versions.find((one) => one.version === version);
         if (known === undefined || was === undefined) continue;
-        const { candidate: _, ...accepted } = was;
+        const { candidate: _, superseded: _superseded, ...accepted } = was;
         known.versions = [...known.versions.filter((one) => one !== was), accepted];
         known.latest = accepted;
       }
@@ -79,6 +84,7 @@ export function workflowsOf(journal: JournalReader): RegisteredWorkflow[] {
     const last = checks.filter((check) => check.workflow === data.workflow && check.version === data.version).at(-1);
     const version: RegisteredVersion = {
       version: data.version,
+      revision: row.id,
       file: data.file,
       description: data.description,
       ...(data.input === undefined ? {} : { input: data.input }),
@@ -102,12 +108,26 @@ export function workflowsOf(journal: JournalReader): RegisteredWorkflow[] {
       const was = known.versions.find((one) => one.version === data.version);
       const candidate = data.candidate === true && (was === undefined || was.candidate === true);
       const now = candidate ? { ...version, candidate: true as const } : version;
-      // A version registered again is the same version: it moves to the end, it is not listed twice.
-      known.versions = [...known.versions.filter((one) => one.version !== data.version), now];
+      const older = known.versions.filter((one) => one.version !== data.version).map((one) => {
+        if (known.builtin === undefined || one.candidate !== true) return one;
+        const { candidate: _, ...superseded } = one;
+        return { ...superseded, superseded: true as const };
+      });
+      known.versions = [...older, now];
       if (!candidate || known.latest.candidate === true) known.latest = now;
     }
   }
   return [...byId.values()];
+}
+
+/** The current offer, keeping its generation when the same set is requested again for installation. */
+export function builtinOfferOf(journal: JournalReader): { id: RecordId; data: z.output<typeof BuiltinsWanted.schema> } | undefined {
+  let current: { id: RecordId; data: z.output<typeof BuiltinsWanted.schema> } | undefined;
+  for (const row of journal.find({ type: BuiltinsWanted.name })) {
+    const data = BuiltinsWanted.schema.parse(row.data);
+    if (current === undefined || stableJson(current.data.items) !== stableJson(data.items)) current = { id: row.id, data };
+  }
+  return current;
 }
 
 /**

@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 
 import { z } from "zod";
 
-import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, cancelHolds, keyUnder, runIdOfPrincipal, callerOf, fillRule, grant, isRuleTemplate, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, storedOutcome, toJsonSchema } from "@niwa-labs/core";
+import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RecordRefused, RESOLVE_ACTION, action, cancelHolds, keyUnder, runIdOfPrincipal, callerOf, fillRule, grant, isRuleTemplate, jsonOf, narrow, principalOf, record, recordId, rule, seq, stableJson, ruleText, specsOf, storedOutcome, toJsonSchema } from "@niwa-labs/core";
 import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -57,6 +57,7 @@ import {
   workflowExtend,
   workflowPause,
   workflowBuiltinPromote,
+  workflowBuiltinTrial,
   workflowGet,
   workflowGuide,
   workflowInspect,
@@ -89,6 +90,7 @@ import {
   Builtin,
   BuiltinsWanted,
   BuiltinPromoted,
+  BuiltinTrial,
   InstallationId,
   ContractHash,
   Issue,
@@ -120,7 +122,7 @@ import {
   WorkflowVersion,
 } from "./records.ts";
 import type { EmittedRecord, FlowCall, Subscription, WorkflowId } from "./records.ts";
-import { builtinOf, declaredBy, dependentsOf, flowActionName, readersOf, versionOf, workflowIdsOf, workflowsOf } from "./registry.ts";
+import { builtinOf, builtinOfferOf, declaredBy, dependentsOf, flowActionName, readersOf, versionOf, workflowIdsOf, workflowsOf } from "./registry.ts";
 import { packageRoots } from "./installation.ts";
 import { linkOfferedPackages, offeredPackageOf, storedEntry, storedVersion, storeVersion, workflowsDir } from "./store.ts";
 import type { OfferedPackage } from "./store.ts";
@@ -130,7 +132,7 @@ import type { CurrentCall, RecordedCall, RevisionReport } from "./revise.ts";
 import { runScript, stopRun } from "./runner.ts";
 import { StatsFold, workflowStats } from "./stats.ts";
 import type { ScriptBox } from "./runner.ts";
-import { activeHold, activeManualPause, deadlineOf, deadlineReached, holdOver, manualPausesOf, openRequestsOfInvocations, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
+import { activeHold, activeManualPause, deadlineOf, deadlineReached, holdOver, manualPausesOf, openRequestsOfInvocations, parentRunOf, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
 import type { PendingOperations, RunState as RunStateName, RunStatus } from "./status.ts";
 import { installationIdsOf, installationsOf, profileOf, profileRulesOf, standing } from "./subscriptions.ts";
 import type { Installation } from "./subscriptions.ts";
@@ -473,35 +475,58 @@ export function workflow(opts: WorkflowOptions = {}) {
       return stored.entry;
     };
 
-    /** The plugin whose built-in a caller is a run of; undefined for any other caller. */
-    const builtinPluginOf = (caller: Caller): string | undefined => {
-      if (caller.kind !== "client" || caller.principal?.kind !== "run") return undefined;
-      const id = factsOf(journal(), runIdOfPrincipal(caller.principal.id))?.workflow;
-      return id === undefined ? undefined : workflowsOf(journal()).find((one) => one.id === id)?.builtin?.plugin;
+    /** Only a run of the shipped suite can create or finish its own trial. */
+    const trialRun = (caller: Caller): { run: RunId; plugin: string } => {
+      if (caller.kind !== "client" || caller.principal?.kind !== "run") throw new DeniedError("only a designated built-in suite may manage a trial");
+      const run = RunId.parse(runIdOfPrincipal(caller.principal.id));
+      const facts = factsOf(journal(), run);
+      const builtin = workflowsOf(journal()).find((one) => one.id === facts?.workflow)?.builtin;
+      if (builtin !== undefined && facts?.workflow !== undefined && facts.version !== undefined && api.offers(BUILTIN_WORKFLOW).some(({ plugin, value }) =>
+        plugin === builtin.plugin && value.name === builtin.name && value.suite === true)) {
+        const archived = storedVersion(api.home(), facts.workflow, facts.version);
+        if (archived !== undefined && !("problem" in archived) && archived.entry === facts.file) return { run, plugin: builtin.plugin };
+      }
+      throw new DeniedError("only a designated built-in suite may manage a trial");
     };
 
-    /**
-     * What a start of a registered workflow runs: the stored copy of its latest version, or of the version it names. A
-     * broken version does not start, and a candidate starts only by its version, for a run of a built-in of its plugin.
-     */
-    const registeredTarget = (registered: RegisteredWorkflow, version?: WorkflowVersion, caller?: Caller): { file: string } & RunOrigin => {
-      if (version !== undefined) {
-        const named = registered.versions.find((one) => one.version === version);
-        if (named === undefined) throw new RunRefusal("unknown-version", `the workflow ${registered.id} has no version ${version}`);
-        if (named.candidate === true && (caller === undefined || registered.builtin === undefined || builtinPluginOf(caller) !== registered.builtin.plugin)) {
-          throw new RunRefusal("candidate", `the version ${version} of ${registered.id} is a candidate: only a run of a built-in of the plugin "${registered.builtin?.plugin ?? ""}" starts it`);
+    const trialOf = (run: string) => {
+      const row = journal().find({ type: BuiltinTrial.name, field: "run", equals: run }).at(-1);
+      return row === undefined ? undefined : BuiltinTrial.schema.parse(row.data);
+    };
+
+    /** Trial authority follows the journaled parent of a run. It is absent from workflow inputs. */
+    const inheritedTrial = (caller: Caller | undefined) => {
+      if (caller?.kind !== "client" || caller.principal?.kind !== "run") return undefined;
+      const seen = new Set<string>();
+      for (let run: string | undefined = runIdOfPrincipal(caller.principal.id); run !== undefined && !seen.has(run); run = parentRunOf(journal(), run)) {
+        seen.add(run);
+        const trial = trialOf(run);
+        if (trial === undefined) continue;
+        try {
+          trialRun({ ...caller, principal: principalOf("run", run) });
+          return trial;
+        } catch (error) {
+          if (!(error instanceof DeniedError)) throw error;
         }
-        if (named.broken !== undefined) throw new RunRefusal("workflow-broken", `the version ${version} of ${registered.id} is broken, it does not start: ${named.broken}`);
-        return { file: storedOf(registered.id, version), workflow: registered.id, version };
       }
-      const latest = registered.latest;
-      if (latest.candidate === true) {
-        throw new RunRefusal("candidate", `the workflow ${registered.id} has only a candidate version: it is not started by its id until a version is promoted`);
+      return undefined;
+    };
+
+    /** A registered start uses its accepted version, or the version fixed by a trusted trial. */
+    const registeredTarget = (registered: RegisteredWorkflow, version?: WorkflowVersion, caller?: Caller): { file: string } & RunOrigin => {
+      const trial = registered.builtin === undefined ? undefined : inheritedTrial(caller);
+      const pinned = trial?.entries.find((one) => one.workflow === registered.id)?.version;
+      if (pinned !== undefined && version !== undefined && version !== pinned) {
+        throw new RunRefusal("trial-version", `the suite trial for ${registered.id} pins ${pinned}, not ${version}`);
       }
-      if (latest.broken !== undefined) {
-        throw new RunRefusal("workflow-broken", `the workflow ${registered.id} is broken, it does not start: ${latest.broken}. Register a version that passes`);
+      const selected = version ?? pinned;
+      const target = selected === undefined ? registered.latest : registered.versions.find((one) => one.version === selected);
+      if (target === undefined) throw new RunRefusal("unknown-version", `the workflow ${registered.id} has no version ${selected}`);
+      if ((target.candidate === true || target.superseded === true) && pinned !== target.version) {
+        throw new RunRefusal("candidate", `the version ${target.version} of ${registered.id} is an unaccepted candidate: only its designated suite trial may start it`);
       }
-      return { file: storedOf(registered.id, latest.version), workflow: registered.id, version: latest.version };
+      if (target.broken !== undefined) throw new RunRefusal("workflow-broken", `the version ${target.version} of ${registered.id} is broken, it does not start: ${target.broken}`);
+      return { file: storedOf(registered.id, target.version), workflow: registered.id, version: target.version };
     };
 
     const known = (run: string): RunFacts => {
@@ -1629,7 +1654,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         }
         const version = versionOf(value.file);
         if (version === undefined) throw new Error(`the built-in workflow "${value.name}" of "${by}" has no script at "${value.file}"`);
-        wanted.push(WantedBuiltin.parse({ plugin: by, name: value.name, file: value.file, description: value.description, version, ...(value.gated === true ? { gated: true } : {}) }));
+        wanted.push(WantedBuiltin.parse({ plugin: by, name: value.name, file: value.file, description: value.description, version, ...(value.gated === true ? { gated: true } : {}), ...(value.suite === true ? { suite: true } : {}) }));
       }
       return wanted;
     };
@@ -1652,7 +1677,7 @@ export function workflow(opts: WorkflowOptions = {}) {
      */
     const isRegistered = (registered: RegisteredWorkflow, item: WantedBuiltin): boolean => {
       if (item.gated !== true) return registered.latest.version === item.version && registered.latest.description === item.description;
-      return registered.versions.some((one) => one.version === item.version && one.description === item.description);
+      return registered.versions.some((one) => one.version === item.version);
     };
 
     /**
@@ -1688,7 +1713,11 @@ export function workflow(opts: WorkflowOptions = {}) {
       }
       void (async () => {
         const wanted = wantedBuiltins();
-        if (!builtinsSettled(journal(), wanted)) await ctx.emit(BuiltinsWanted, { items: wanted });
+        const reader = journal();
+        const current = builtinOfferOf(reader);
+        if (stableJson(wanted) !== stableJson(current?.data.items ?? []) || !builtinsSettled(reader, wanted)) {
+          await ctx.emit(BuiltinsWanted, { items: wanted });
+        }
       })().catch((error: unknown) => {
         console.error(`niwa: the built-in workflows could not be installed: ${error instanceof Error ? error.message : String(error)}`);
       });
@@ -1761,42 +1790,67 @@ export function workflow(opts: WorkflowOptions = {}) {
     });
     api.action(builtinRetire);
 
-    /**
-     * Candidates of gated built-ins accepted together by the run of a built-in of the same plugin that tried them: one
-     * record with the run. The built-ins are then asked for again, so the module's own handler installs each at its new
-     * latest version, as it installs every built-in: not the run, whose grant is not the built-in's. A set already
-     * accepted writes nothing.
-     */
-    api.action(
-      action(workflowBuiltinPromote, {
-        recovery: "repeat",
-        effect: "record",
-        world: "niwa",
-        run: async (input, ctx) => {
-          const caller = ctx.caller;
-          const plugin = builtinPluginOf(caller);
-          if (plugin === undefined || caller.kind !== "client" || caller.principal === undefined) {
-            throw new DeniedError("only a run of a built-in workflow promotes the candidates of its plugin");
+    api.action(action(workflowBuiltinTrial, {
+      recovery: "repeat",
+      effect: "record",
+      world: "niwa",
+      async run(_, ctx) {
+        const { run, plugin } = trialRun(ctx.caller);
+        const existing = trialOf(run);
+        if (existing !== undefined) return { entries: existing.entries };
+        const reader = journal();
+        const offer = builtinOfferOf(reader);
+        if (offer === undefined) throw new RunRefusal("no-builtin-offer", "the built-in offer is not recorded yet");
+        const workflows = workflowsOf(reader);
+        const entries = offer.data.items.filter((item) => item.plugin === plugin && item.gated === true).map((item) => {
+          const registered = builtinOf(workflows, item);
+          const offered = registered?.versions.find((one) => one.version === item.version);
+          if (registered === undefined || offered === undefined) throw new RunRefusal("pending-builtin", `the offered version of ${item.name} is still registering`);
+          const selected = offered.candidate === true ? offered : registered.latest;
+          if (selected.superseded === true || (selected.candidate === true && selected !== offered)) {
+            throw new RunRefusal("superseded-builtin", `the offered version of ${item.name} has already been superseded`);
           }
-          const workflows = workflowsOf(journal());
-          // Every version must be one of the plugin's built-ins, a candidate or accepted already: one that is not refuses the set.
-          const named = input.versions.map(({ workflow: id, version }) => {
-            const registered = workflows.find((one) => one.id === id);
-            const found = registered?.versions.find((one) => one.version === version);
-            if (registered?.builtin?.plugin !== plugin || found === undefined) {
-              throw new RunRefusal("not-a-candidate", `${id} at ${version} is no version of a built-in of the plugin "${plugin}": nothing is promoted`);
-            }
-            return { registered, found };
-          });
-          const run = RunId.parse(runIdOfPrincipal(caller.principal.id));
-          if (named.some(({ found }) => found.candidate === true)) {
-            await ctx.emit(BuiltinPromoted, { run, versions: input.versions.map(({ workflow: id, version }) => ({ workflow: id, version })) });
-            await ctx.emit(BuiltinsWanted, { items: wantedBuiltins() });
-          }
-          return { run, versions: input.versions };
-        },
-      }),
-    );
+          return { name: item.name, workflow: registered.id, version: selected.version, revision: selected.revision, ...(selected.candidate === true ? { candidate: true as const } : {}) };
+        });
+        try {
+          await ctx.emit(BuiltinTrial, { run, plugin, offer: offer.id, entries });
+          return { entries };
+        } catch (error) {
+          if (!(error instanceof RecordRefused) || error.code !== "builtin-trial-exists") throw error;
+          return { entries: trialOf(run)!.entries };
+        }
+      },
+    }));
+
+    api.action(action(workflowBuiltinPromote, {
+      recovery: "repeat",
+      effect: "record",
+      world: "niwa",
+      async run(_, ctx) {
+        const { run, plugin } = trialRun(ctx.caller);
+        const reader = journal();
+        const previous = reader.find({ type: BuiltinPromoted.name, field: "run", equals: run }).at(-1);
+        if (previous !== undefined) return { status: "promoted", run, versions: BuiltinPromoted.schema.parse(previous.data).versions };
+        const trial = trialOf(run);
+        if (trial === undefined || trial.plugin !== plugin) throw new RunRefusal("no-builtin-trial", "the suite has not pinned an offered set");
+        const versions = trial.entries.filter((entry) => entry.candidate === true).map(({ workflow, version }) => ({ workflow, version }));
+        if (versions.length === 0) return { status: "promoted", run, versions };
+        const offer = builtinOfferOf(reader);
+        if (offer?.id !== trial.offer) return { status: "stale", run, versions: [] };
+        try {
+          await ctx.emitAll([
+            { type: BuiltinPromoted, data: { ...trial, versions } },
+            { type: BuiltinsWanted, data: offer.data },
+          ]);
+        } catch (error) {
+          if (!(error instanceof RecordRefused) || error.code !== "stale-builtin-trial") throw error;
+          const completed = journal().find({ type: BuiltinPromoted.name, field: "run", equals: run }).at(-1);
+          if (completed !== undefined) return { status: "promoted", run, versions: BuiltinPromoted.schema.parse(completed.data).versions };
+          return { status: "stale", run, versions: [] };
+        }
+        return { status: "promoted", run, versions };
+      },
+    }));
 
     api.on(BuiltinsWanted, { id: BUILTINS_HANDLER }, async (data, step) => {
       await step(builtinRetire, { keep: data.items.map(({ plugin, name }) => ({ plugin, name })) }, { key: "retire" });
@@ -2674,6 +2728,7 @@ async function planCalls(
 export {
   Builtin,
   BuiltinPromoted,
+  BuiltinTrial,
   BuiltinsWanted,
   InstallationId,
   RunFinished,
@@ -2709,6 +2764,7 @@ export { sessionAgent } from "./agent.ts";
 export type { HarnessLaunch } from "./agent.ts";
 export {
   workflowBuiltinPromote,
+  workflowBuiltinTrial,
   workflowCancel,
   workflowStop,
   workflowCheck,

@@ -17,7 +17,7 @@
  * journal holds them like any other step.
  */
 
-import { EntityDescription, JsonSchemaValue, JsonValueSchema, idSchema, principalSchema, record } from "@niwa-labs/core";
+import { EntityDescription, JsonSchemaValue, JsonValueSchema, idSchema, principalSchema, record, stableJson } from "@niwa-labs/core";
 import { Subscription } from "@niwa-labs/script";
 import { z } from "zod";
 
@@ -331,6 +331,23 @@ export type EmittedRecord = z.infer<typeof EmittedRecord>;
 export const FlowCall = z.object({ workflow: WorkflowId, contract: ContractHash });
 export type FlowCall = z.infer<typeof FlowCall>;
 
+/** State shared by offer, registration and promotion guards at journal append. */
+interface BuiltinAdmission {
+  offer?: string;
+  wanted: readonly { plugin: string; name: string; version: string; gated?: true }[];
+  registered: Map<string, { revision: string; version: string; candidate: boolean }>;
+}
+
+const builtinKey = (builtin: { plugin: string; name: string }): string => JSON.stringify([builtin.plugin, builtin.name]);
+
+const builtinAdmission = {
+  group: "workflow.builtin.admission",
+  key: () => "builtin",
+  initial: (): BuiltinAdmission => ({ wanted: [], registered: new Map() }),
+};
+
+const staleTrial = { code: "stale-builtin-trial", reason: "The offered or accepted versions changed after the trial began" };
+
 /**
  * A version of a workflow was registered: from now on `flow.<id>` runs it.
  *
@@ -365,6 +382,23 @@ export const WorkflowRegistered = record(
     /** A candidate version of a gated built-in: it moves neither the latest version nor the installation. */
     candidate: z.literal(true).optional(),
   }),
+  {
+    guard: {
+      ...builtinAdmission,
+      admit(state, data) {
+        if (data.candidate !== true) return;
+        if (!state.wanted.some((one) => one.gated && one.plugin === data.builtin?.plugin && one.name === data.builtin?.name && one.version === data.version)) {
+          return { code: "superseded-builtin", reason: "The plugin no longer offers this candidate" };
+        }
+      },
+      fold(state, data, row) {
+        if (data.builtin !== undefined) {
+          state.registered.set(builtinKey(data.builtin), { revision: row.id, version: data.version, candidate: data.candidate === true });
+        }
+        return state;
+      },
+    },
+  },
 );
 
 /** One built-in as the host wants it now: the plugin's declaration, and the version its file is. */
@@ -374,6 +408,7 @@ export const WantedBuiltin = Builtin.extend({
   version: WorkflowVersion,
   /** Its new versions come in as candidates. */
   gated: z.literal(true).optional(),
+  suite: z.literal(true).optional(),
 });
 export type WantedBuiltin = z.infer<typeof WantedBuiltin>;
 
@@ -382,16 +417,64 @@ export type WantedBuiltin = z.infer<typeof WantedBuiltin>;
  * missing, of another version, or one no plugin offers any more. Its handler registers and installs what is wanted
  * and uninstalls the rest.
  */
-export const BuiltinsWanted = record("workflow.builtins.wanted", z.object({ items: z.array(WantedBuiltin) }));
+export const BuiltinsWanted = record("workflow.builtins.wanted", z.object({ items: z.array(WantedBuiltin) }), {
+  guard: {
+    ...builtinAdmission,
+    admit: () => undefined,
+    fold(state, { items }, row) {
+      return stableJson(state.wanted) === stableJson(items) ? state : { ...state, wanted: items, offer: row.id };
+    },
+  },
+});
 
 /** One version of a workflow, by its id and its version. */
 export const VersionOf = z.object({ workflow: WorkflowId, version: WorkflowVersion });
 
-/**
- * Candidate versions of gated built-ins were accepted together, by the run that tried them: each becomes the latest
- * version of its workflow, which is installed at it.
- */
-export const BuiltinPromoted = record("workflow.builtin.promoted", z.object({ run: RunId, versions: z.array(VersionOf).min(1) }));
+/** An offered version and the registration that was current when it was selected. */
+export const TrialVersion = VersionOf.extend({
+  name: z.string(),
+  revision: z.string(),
+  candidate: z.literal(true).optional(),
+});
+
+/** The exact set a trusted suite run and its children try. */
+export const BuiltinTrial = record("workflow.builtin.trial", z.object({
+  run: RunId,
+  plugin: z.string(),
+  offer: z.string(),
+  entries: z.array(TrialVersion),
+}), {
+  guard: {
+    group: "workflow.builtin.trial",
+    key: (data) => data.run,
+    initial: () => false,
+    admit: (exists) => exists ? { code: "builtin-trial-exists", reason: "This suite run already pinned a trial" } : undefined,
+    fold: () => true,
+  },
+});
+
+/** Update the accepted version of every trial candidate in one journal transition. */
+export const BuiltinPromoted = record("workflow.builtin.promoted", BuiltinTrial.schema.and(z.object({
+  versions: z.array(VersionOf).min(1),
+})), {
+  guard: {
+    ...builtinAdmission,
+    admit(state, data) {
+      if (state.offer !== data.offer) return staleTrial;
+      for (const entry of data.entries) {
+        const current = state.registered.get(builtinKey({ plugin: data.plugin, name: entry.name }));
+        if (current?.revision !== entry.revision || current.version !== entry.version || current.candidate !== (entry.candidate === true)) return staleTrial;
+      }
+    },
+    fold(state, data) {
+      for (const entry of data.entries) {
+        if (entry.candidate !== true) continue;
+        state.registered.set(builtinKey({ plugin: data.plugin, name: entry.name }), { revision: entry.revision, version: entry.version, candidate: false });
+      }
+      return state;
+    },
+  },
+});
 
 /** One error of a check, with its place in the file. */
 export const CheckProblem = z.object({ file: z.string(), line: z.number().int(), column: z.number().int(), code: z.string(), message: z.string() });
@@ -482,5 +565,6 @@ export const WORKFLOW_TYPES = [
   WorkflowRegistered,
   WorkflowRechecked,
   BuiltinsWanted,
+  BuiltinTrial,
   BuiltinPromoted,
 ];

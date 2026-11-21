@@ -41,6 +41,8 @@ export interface BuiltinWorkflow {
    * nothing.
    */
   readonly gated?: boolean;
+  /** This built-in runs the plugin's trials and may promote their checked versions. */
+  readonly suite?: true;
 }
 
 /** Where a plugin offers a built-in workflow: `api.offer(BUILTIN_WORKFLOW, { name, file, description, triggers })`. */

@@ -185,7 +185,7 @@ export function childRunsOf(journal: JournalReader, run: string): string[] {
 }
 
 /** The run that started a run, when a run did: the parent its request names, or the run its grant came from. */
-function parentRunOf(journal: JournalReader, run: string): string | undefined {
+export function parentRunOf(journal: JournalReader, run: string): string | undefined {
   const requested = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1);
   const named = requested === undefined ? undefined : RunRequested.schema.parse(requested.data).parent?.run;
   if (named !== undefined) return named;
