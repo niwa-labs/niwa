@@ -14,7 +14,7 @@ export const PI_TOOLS: ToolTable = {
   ls: { category: "search", target: ["path"] },
 };
 
-/** A call of a pi tool, in the common model's words. pi has no MCP of its own. */
+/** A call of a pi tool, in the common model's words. pi names a tool of an MCP server `mcp__<server>__<tool>`. */
 export function piToolShape(name: string, input: unknown): ToolShape {
-  return shapeOf(PI_TOOLS, name, input, () => false);
+  return shapeOf(PI_TOOLS, name, input);
 }

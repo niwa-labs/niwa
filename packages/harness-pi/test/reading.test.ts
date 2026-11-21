@@ -353,7 +353,7 @@ test("a call without an id or a name is kept whole", async () => {
   expect(records[0]?.kind).toBe("unknown");
 });
 
-test("a call is named by its category and its target; a tool an extension adds is other", async () => {
+test("a call is named by its category and its target; a tool of an MCP server is mcp, one an extension adds is other", async () => {
   const call = (id: string, name: string, args: object) => ({ type: "toolCall", id, name, arguments: args });
   writeFileSync(
     sessionFile("tools"),
@@ -365,7 +365,7 @@ test("a call is named by its category and its target; a tool an extension adds i
         timestamp: "2026-10-27T09:15:02.000Z",
         message: {
           role: "assistant",
-          content: [call("c1", "bash", { command: "ls -la" }), call("c2", "write", { path: "a.md", content: "x" }), call("c3", "mcp__x__y", {})],
+          content: [call("c1", "bash", { command: "ls -la" }), call("c2", "write", { path: "a.md", content: "x" }), call("c3", "mcp__x__y", {}), call("c4", "cbmem_search", {})],
         },
       })}\n`,
   );
@@ -373,6 +373,7 @@ test("a call is named by its category and its target; a tool an extension adds i
   expect(calls.map((c) => [c.category, c.target])).toEqual([
     ["shell", "ls -la"],
     ["edit", "a.md"],
+    ["mcp", undefined],
     ["other", undefined],
   ]);
 });
