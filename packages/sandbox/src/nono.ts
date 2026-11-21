@@ -74,6 +74,38 @@ function grant(path: string, mode: "read" | "write"): string[] {
 }
 
 /**
+ * nono supplies proxy variables to the confined child, including a bypass list for loopback.
+ * A domain grant opens the proxy only. Send requests for the granted loopback names through
+ * that proxy too, keeping every other bypass entry and the parent's environment intact.
+ */
+function proxyCommand(hosts: readonly string[], argv: readonly string[]): readonly string[] {
+  const local = hosts.filter((host) => ["127.0.0.1", "localhost", "::1", "[::1]"].includes(host));
+  if (local.length === 0 || !argv.length || argv[0]?.includes("=")) return argv;
+  const script = `
+granted=$1
+shift
+filter() {
+  /usr/bin/awk -v granted="$granted" -F, '
+    BEGIN {
+      count = split(granted, hosts, ",")
+      for (i = 1; i <= count; i++) skip[hosts[i]] = 1
+    }
+    {
+      for (i = 1; i <= NF; i++) {
+        if ($i in skip) continue
+        printf "%s%s", separator, $i
+        separator = ","
+      }
+    }'
+}
+if [ "\${NO_PROXY+x}" ]; then NO_PROXY=$(printf "%s" "$NO_PROXY" | filter); export NO_PROXY; fi
+if [ "\${no_proxy+x}" ]; then no_proxy=$(printf "%s" "$no_proxy" | filter); export no_proxy; fi
+exec /usr/bin/env -- "$@"
+`;
+  return ["/bin/sh", "-c", script, "niwa-proxy", local.join(","), ...argv];
+}
+
+/**
  * What the nono process runs with: the host's, fixed. nono reads its own configuration from `HOME`
  * and finds its tools through PATH before it confines anything, so the spec's environment is not
  * given to it.
@@ -304,7 +336,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
       const config = manifest(spec);
       const wrapper = await wrapped(config);
       try {
-        return spawnBox("nono", wrapper.command, { cwd: config.cwd, env: config.env, argv }, launcherEnv(), TRUSTED_DIRECTORY, wrapper.cleanup, options);
+        return spawnBox("nono", wrapper.command, { cwd: config.cwd, env: config.env, argv: proxyCommand(spec.net, argv) }, launcherEnv(), TRUSTED_DIRECTORY, wrapper.cleanup, options);
       } catch (error) {
         await wrapper.cleanup();
         throw error;

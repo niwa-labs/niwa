@@ -135,6 +135,21 @@ for (const sandbox of [srt(), nono()]) {
       }
     });
 
+    test.skipIf(!present || sandbox.name !== "nono")("routes a granted loopback host through the domain filter", async () => {
+      const cwd = await realpath(await tempDir("box-loopback"));
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("allowed") });
+      try {
+        const spec = boxSpec({ cwd, net: ["127.0.0.1"], env: { PATH: "/usr/bin:/bin" } });
+        const ok = await run(sandbox, spec, CURL(`http://127.0.0.1:${server.port}/`));
+        expect(ok.stdout).toBe("200");
+        const other = await run(sandbox, spec, CURL(`http://localhost:${server.port}/`));
+        expect(other.stdout).not.toBe("200");
+      } finally {
+        await server.stop(true);
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
     test.skipIf(!present)("reaches only the hosts in `net`", async () => {
       const cwd = await realpath(await tempDir("box-net"));
       try {
