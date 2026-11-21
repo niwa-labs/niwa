@@ -1,7 +1,8 @@
 /**
  * The names a workflow script is given: `call` and the generated
  * `niwa.<group>.<action>` wrappers, `agent`, `wait`, `sleep`, `ask`, `emit`, `read`, `now`,
- * `random`, `parallel`, `pipeline`, `phase`, `log` and `workflow`. The script is
+ * `random`, `scope`, `parallel`, `stream`, `race`, `moveOnAfter`, `failAfter`, `pipeline`, `phase`, `log`
+ * and `workflow`. The script is
  * `export default workflow({ description, input, output, uses, on }, async (input) => { ... })` and
  * ends by returning its result; the names are globals of the disposable process it runs in (see `child.ts`).
  *
@@ -104,6 +105,14 @@ export function durationMs(value: Duration): number {
   return Math.round(Number(amount) * (UNITS[unit] ?? 1));
 }
 
+/** How a branch of a group ended. */
+export const ScopeOutcome = z.enum(["done", "failed", "cancelled"]);
+export type ScopeOutcome = z.infer<typeof ScopeOutcome>;
+
+/** How a group closed: its block returned, threw, or ran out of time. */
+export const ScopeClosing = z.enum(["done", "failed", "deadline"]);
+export type ScopeClosing = z.infer<typeof ScopeClosing>;
+
 /** What the child asks the parent to do: every request has a key, and the key says which one it is. */
 export const ScriptRequest = z.discriminatedUnion("op", [
   /** `agent()`: start a session of a harness and ask it. */
@@ -147,6 +156,35 @@ export const ScriptRequest = z.discriminatedUnion("op", [
   z.object({ op: z.literal("read-records"), query: z.record(z.string(), z.unknown()) }),
   z.object({ op: z.literal("now") }),
   z.object({ op: z.literal("random") }),
+  /**
+   * `scope()` opens a group of branches: its key prefix, what leaving it does, its deadline and
+   * whether an outer cancel waits for it. The answer is what the host knows of the group already.
+   */
+  z.object({
+    op: z.literal("scope-open"),
+    scope: z.string().min(1),
+    onExit: z.enum(["wait", "cancel"]),
+    deadlineMs: z.number().nonnegative().optional(),
+    onDeadline: z.enum(["skip", "fail"]).optional(),
+    shield: z.boolean().optional(),
+    concurrency: z.number().int().positive().optional(),
+  }),
+  /** A branch of a group ended: the host commits its outcome and answers its place among the outcomes of the group. */
+  z.object({
+    op: z.literal("scope-settled"),
+    scope: z.string().min(1),
+    key: z.string().min(1),
+    outcome: ScopeOutcome,
+    error: z.object({ name: z.string(), message: z.string() }).optional(),
+  }),
+  /** Cancel branches of a group: the steps under the prefixes end as cancelled. */
+  z.object({ op: z.literal("scope-cancel"), scope: z.string().min(1), prefixes: z.array(z.string().min(1)).min(1), reason: z.string().min(1) }),
+  /** What `pending()` or `ready()` sees, recorded once so a replay sees the same. */
+  z.object({ op: z.literal("scope-snapshot"), scope: z.string().min(1), keys: z.array(z.string()) }),
+  /** Answer when the clock of the host reaches the deadline of a group, or when the script process is gone. */
+  z.object({ op: z.literal("scope-deadline"), scope: z.string().min(1), at: z.number() }),
+  /** A group closed: how it ended. */
+  z.object({ op: z.literal("scope-close"), scope: z.string().min(1), outcome: ScopeClosing }),
 ]);
 
 export type ScriptRequest = z.infer<typeof ScriptRequest>;

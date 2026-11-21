@@ -120,8 +120,22 @@ Time and the outside:
 Steps and replay:
 - Every call is a step under its label, or under its place among the calls of its branch. Give a label to any
   call that must keep its result when the script is reordered. A finished step is never repeated.
-- parallel([() => ...]) and pipeline([() => ..., (previous) => ...]) (two to four stages, each given the value before it, typed) group calls; phase(title)
-  says where the script is (below); log(text) writes a line to the log of the run.
+- parallel([() => ...]) or parallel({ a: () => ..., b: () => ... }, { concurrency }) and pipeline([() => ..., (previous) => ...])
+  (two to four stages, each given the value before it, typed) group calls; phase(title) says where the script is (below);
+  log(text) writes a line to the log of the run.
+
+Scopes:
+- scope(name, { concurrency, onExit, deadline, onDeadline, shield }, async (s) => { s.start(key, fn); await s.next(); }) is a
+  group of branches that never outlive it. s.next() gives the outcomes ({ key, result: { ok, value } | { ok: false, error } })
+  in the order the host committed them, and null when all were read; s.ready(), s.rest(), s.pending(), s.cancel(reason, keys)
+  and s.run(key, { id, args }) (a branch that is a child run) go with it. Keys and names are words: no ".", "~", "/" or ":".
+- Leaving the block waits for the branches left (onExit "wait") or cancels them ("cancel"); a block that throws cancels them,
+  and a cancel goes down into the scopes inside, except a shield ({ shield: true }), whose block an outer cancel waits for.
+  A cancelled branch gives { ok: false, error: { name: "Cancelled" } }; a branch that ended keeps its result.
+- deadline cancels the scope when it runs out: onDeadline "skip" gives undefined, "fail" throws DeadlineExceeded;
+  moveOnAfter(name, "5m", fn) and failAfter(name, "5m", fn) are the short forms. stream(name, { a: fn, b: fn }) starts the
+  branches and gives their outcomes one at a time (next(), for await) until it is closed; race(name, { a: fn, b: fn }) gives the
+  first branch that succeeds. parallel, stream and race are scopes; workflow.start { concurrency } caps every scope of a run.
 
 Phases:
 - workflow({ phases: [{ title: "Review" }, { title: "Fix", detail: "fix what was confirmed" }], ... }) declares the plan of the

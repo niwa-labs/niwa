@@ -21,7 +21,7 @@ import { EntityDescription, JsonSchemaValue, JsonValueSchema, idSchema, principa
 import { Subscription } from "@niwa-labs/script";
 import { z } from "zod";
 
-import { WorkflowPhases } from "./language.ts";
+import { ScopeClosing, ScopeOutcome, WorkflowPhases } from "./language.ts";
 
 /** The id of a run: `run-3fa9c2`, issued by niwa. */
 export const RunId = idSchema("run");
@@ -49,6 +49,12 @@ const RunOrigin = {
   installation: InstallationId.optional(),
   /** The directory the run was started for, an absolute path: the project it belongs to. Absent when the caller named none. */
   directory: z.string().optional(),
+  /** The run and the step of it that started this run, when a run started it: the tree a cancel and a pause go down. */
+  parent: z.object({ run: z.string(), step: z.string() }).optional(),
+  /** The most branches each group of the run runs at once, set from outside; the script's own limit holds when it is lower. */
+  concurrency: z.number().int().positive().optional(),
+  /** The limits of the run: how deep its tree of runs may go below it. A child run takes the limits of its parent. */
+  limits: z.object({ depth: z.number().int().positive().optional() }).optional(),
 };
 
 export { JsonSchemaValue };
@@ -374,6 +380,40 @@ export const WorkflowRechecked = record(
 export const ScriptRecord = record("wf.*", z.unknown());
 
 /** The types of the workflow module. */
+/** A group of branches of a run opened: its key prefix, what leaving it does, its deadline, and whether an outer cancel waits for it. */
+export const ScopeOpened = record(
+  "workflow.scope.opened",
+  z.object({
+    run: RunId,
+    scope: z.string(),
+    onExit: z.enum(["wait", "cancel"]),
+    /** The moment the group runs out of time, in milliseconds since the epoch. */
+    deadline: z.number().optional(),
+    onDeadline: z.enum(["skip", "fail"]).optional(),
+    shield: z.boolean().optional(),
+    concurrency: z.number().int().positive().optional(),
+  }),
+);
+
+/** A branch joined a group: written before the branch makes its first step. */
+export const ScopeBranched = record("workflow.scope.branched", z.object({ run: RunId, scope: z.string(), key: z.string() }));
+
+/** A branch of a group ended. `order` is its place among the outcomes of the group: the order `next()` gives them in. */
+export const ScopeSettled = record(
+  "workflow.scope.settled",
+  z.object({
+    run: RunId,
+    scope: z.string(),
+    key: z.string(),
+    order: z.number().int().nonnegative(),
+    outcome: ScopeOutcome,
+    error: z.object({ name: z.string(), message: z.string() }).optional(),
+  }),
+);
+
+/** A group closed: its block returned, threw, or ran out of time, and every branch of it ended. */
+export const ScopeClosed = record("workflow.scope.closed", z.object({ run: RunId, scope: z.string(), outcome: ScopeClosing }));
+
 export const WORKFLOW_TYPES = [
   ScriptRecord,
   RunRequested,
@@ -386,6 +426,10 @@ export const WORKFLOW_TYPES = [
   RunPauseRequested,
   RunContinued,
   RunFinished,
+  ScopeOpened,
+  ScopeBranched,
+  ScopeSettled,
+  ScopeClosed,
   SubscriptionInstalled,
   SubscriptionUninstalled,
   WorkflowRegistered,

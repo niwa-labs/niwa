@@ -61,7 +61,57 @@ declare function emit<S extends import("zod").z.ZodType>(record: NiwaRecordType<
 declare function now(opts?: NiwaCallOptions): Promise<number>;
 /** A random number, recorded. */
 declare function random(opts?: NiwaCallOptions): Promise<number>;
-declare function parallel<T>(thunks: Array<() => T | Promise<T>>): Promise<T[]>;
+/** How a branch ended: its value, or its error by name and message (a cancelled branch is named Cancelled). */
+type NiwaSettled<T> = { ok: true; value: T } | { ok: false; error: { name: string; message: string } };
+/** A branch of a scope: its key, its outcome, and its value (which throws what the branch threw). */
+interface NiwaBranch<R> { readonly key: string; settled(): Promise<NiwaSettled<R>>; value(): Promise<R> }
+/** A scope: start branches in it, read their outcomes in the order the host committed them, cancel the ones left. */
+interface NiwaScope {
+  readonly path: string[];
+  start<R>(key: string, fn: () => R | Promise<R>): NiwaBranch<Awaited<R>>;
+  /** A branch that is a run of a registered workflow, started as a child of this run. */
+  run<R = unknown>(key: string, child: { id: string; version?: string; args?: unknown }): NiwaBranch<R>;
+  /** The next outcome, or null when every branch ended and was read. */
+  next(): Promise<{ key: string; result: NiwaSettled<unknown> } | null>;
+  /** The outcomes ready now and not read yet. */
+  ready(): Promise<Array<{ key: string; result: NiwaSettled<unknown> }>>;
+  /** Every branch, by key, once each ended. */
+  rest(): Promise<Record<string, NiwaSettled<unknown>>>;
+  /** The keys of the branches still going. */
+  pending(): Promise<string[]>;
+  /** Cancel the branches still going, or those named. */
+  cancel(reason?: string, keys?: string[]): Promise<void>;
+}
+type NiwaScopeOptions = { concurrency?: number; onExit?: "wait" | "cancel"; deadline?: NiwaDuration; onDeadline?: "skip" | "fail"; shield?: boolean };
+/**
+ * A group of branches: nothing started in it outlives it. Leaving the block waits for the branches (onExit "wait", the default)
+ * or cancels them ("cancel"); a block that throws cancels them, and so does an outer cancel unless the scope is a shield. With a
+ * deadline the scope is cancelled when it runs out: onDeadline "skip" gives undefined, "fail" throws DeadlineExceeded.
+ */
+declare function scope<T>(name: string, opts: NiwaScopeOptions | undefined, fn: (s: NiwaScope) => Promise<T>): Promise<T>;
+declare function scope<T>(name: string, fn: (s: NiwaScope) => Promise<T>): Promise<T>;
+/** Run the block for at most the duration: past it the block is cancelled and the call gives undefined. */
+declare function moveOnAfter<T>(name: string, duration: NiwaDuration, fn: () => Promise<T>): Promise<T | undefined>;
+/** Run the block for at most the duration: past it the block is cancelled and the call throws DeadlineExceeded. */
+declare function failAfter<T>(name: string, duration: NiwaDuration, fn: () => Promise<T>): Promise<T>;
+/** The error a scope that ran out of time throws with onDeadline "fail". */
+declare class DeadlineExceeded extends Error {}
+/** Branches at once, by the index of a list or the keys of an object; the answer has the same shape. A branch that fails cancels the others. */
+declare function parallel<T>(thunks: Array<() => T | Promise<T>>, opts?: { concurrency?: number }): Promise<T[]>;
+declare function parallel<B extends Record<string, () => unknown>>(branches: B, opts?: { concurrency?: number }): Promise<{ [K in keyof B]: Awaited<ReturnType<B[K]>> }>;
+/** A stream of branches: their outcomes one at a time, in the order the host committed them; closing it cancels the rest. */
+interface NiwaStream<K extends string, T> extends AsyncIterable<{ key: K; result: NiwaSettled<T> }> {
+  next(): Promise<{ key: K; result: NiwaSettled<T> } | null>;
+  ready(): Promise<Array<{ key: K; result: NiwaSettled<T> }>>;
+  rest(): Promise<Record<K, NiwaSettled<T>>>;
+  pending(): Promise<K[]>;
+  cancel(keys?: K[]): Promise<void>;
+  close(): Promise<void>;
+  [Symbol.asyncDispose](): Promise<void>;
+}
+declare function stream<K extends string, T>(name: string, branches: Record<K, () => T | Promise<T>>, opts?: { concurrency?: number }): NiwaStream<K, Awaited<T>>;
+/** The first branch to succeed, with its key; the others are cancelled. When every branch fails, the first error is thrown. */
+declare function race<K extends string, T>(name: string, branches: Record<K, () => T | Promise<T>>): Promise<{ key: K; value: Awaited<T> }>;
 /** Stages run one after another; each is given what the one before gave, awaited, and the call gives all of them. From two to four stages. */
 declare function pipeline<A, B>(stages: [() => A, (previous: Awaited<A>) => B]): Promise<[Awaited<A>, Awaited<B>]>;
 declare function pipeline<A, B, C>(stages: [() => A, (previous: Awaited<A>) => B, (previous: Awaited<B>) => C]): Promise<[Awaited<A>, Awaited<B>, Awaited<C>]>;

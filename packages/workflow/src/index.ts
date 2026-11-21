@@ -96,6 +96,7 @@ import {
   RunContinued,
   PhaseEntered,
   PhaseLeft,
+  ScopeBranched,
   StepPhase,
   RunId,
   RunRequested,
@@ -175,6 +176,9 @@ interface RunOrigin {
   version?: WorkflowVersion;
   installation?: InstallationId;
   directory?: string;
+  parent?: { run: string; step: string };
+  concurrency?: number;
+  limits?: { depth?: number };
 }
 
 /** A run as `workflow.run.started` records it. */
@@ -240,6 +244,13 @@ export function workflow(opts: WorkflowOptions = {}) {
   }
 
   return plugin("workflow", (api) => {
+    /** The clock of the host, once it serves: what the deadline of a group is measured by. */
+    let hostClock: { schedule(at: number, fn: () => void): () => void } | undefined;
+    const scheduleAt = (at: number, fn: () => void): (() => void) => {
+      if (hostClock !== undefined) return hostClock.schedule(at, fn);
+      const timer = setTimeout(fn, Math.max(0, at - Date.now()));
+      return () => clearTimeout(timer);
+    };
     // The page of this plugin in the cockpit: a client module, offered by the path of its source.
     api.offer(COCKPIT_MODULE, { id: "workflow", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     api.declare(...WORKFLOW_TYPES, ...emits.values());
@@ -469,6 +480,8 @@ export function workflow(opts: WorkflowOptions = {}) {
             ...(input.label === undefined ? {} : { label: input.label }),
             ...(input.box === undefined ? {} : { box: input.box }),
             ...(input.directory === undefined ? {} : { directory: input.directory }),
+            ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
+            ...(input.limits === undefined ? {} : { limits: input.limits }),
           });
           if (input.wait !== true) return { run, finished: false };
           const status = await settle(run, input.timeoutMs);
@@ -520,6 +533,9 @@ export function workflow(opts: WorkflowOptions = {}) {
         ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
         ...(input.version === undefined ? {} : { version: input.version }),
         ...(input.directory === undefined ? {} : { directory: input.directory }),
+        ...(input.parent === undefined ? {} : { parent: input.parent }),
+        ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
+        ...(input.limits === undefined ? {} : { limits: input.limits }),
       });
       return run;
     }
@@ -1274,6 +1290,7 @@ export function workflow(opts: WorkflowOptions = {}) {
     // When the host starts, the built-ins are compared with what stands, and asked for when they differ: a new build of
     // niwa with a changed script, a plugin that offers a new one or no longer offers one.
     api.service((ctx) => {
+      hostClock = ctx;
       void (async () => {
         const wanted = wantedBuiltins();
         if (!builtinsSettled(journal(), wanted)) await ctx.emit(BuiltinsWanted, { items: wanted });
@@ -1445,6 +1462,9 @@ export function workflow(opts: WorkflowOptions = {}) {
       const call = bridge({
         step,
         run: principal,
+        runId: run,
+        ...(data.concurrency === undefined ? {} : { concurrency: data.concurrency }),
+        schedule: scheduleAt,
         journal,
         agentAction: actionFor,
         agentName: actionNameOf,
@@ -1549,6 +1569,8 @@ export function workflow(opts: WorkflowOptions = {}) {
             if (titles.includes(phase)) noteAt(PhaseEntered, { run, branch, phase }, `phase-entered:${branch === "" ? "script" : branch}:${String(ordinal)}`);
           },
           left: (branch) => noteAt(PhaseLeft, { run, branch }, `phase-left:${branch}`),
+          branched: ({ scope, key }) => noteAt(ScopeBranched, { run, scope, key }, `scope-branch:${scope}.${key}`),
+          gone: () => call.gone(),
           log: (text) => note(RunLog, { run, text }, "log"),
           // A cancelled run's calls that are in flight fail because of the cancel: they pause nothing.
           stopped: () => step.abandon(),
@@ -1861,6 +1883,9 @@ function originOf(from: RunOrigin): RunOrigin {
     ...(from.version === undefined ? {} : { version: from.version }),
     ...(from.installation === undefined ? {} : { installation: from.installation }),
     ...(from.directory === undefined ? {} : { directory: from.directory }),
+    ...(from.parent === undefined ? {} : { parent: from.parent }),
+    ...(from.concurrency === undefined ? {} : { concurrency: from.concurrency }),
+    ...(from.limits === undefined ? {} : { limits: from.limits }),
   };
 }
 
@@ -1926,6 +1951,7 @@ async function planCalls(
   box: ScriptBox | undefined,
 ): Promise<{ calls: CurrentCall[]; error?: string }> {
   const calls: CurrentCall[] = [];
+  let orders = 0;
   const ended = await runScript(
     {
       call: async ({ key, request }) => {
@@ -1956,6 +1982,18 @@ async function planCalls(
           case "now":
           case "random":
             return 0;
+          case "scope-open":
+            return { known: [] };
+          case "scope-settled":
+            return { order: (orders += 1) - 1 };
+          case "scope-cancel":
+          case "scope-close":
+            return null;
+          case "scope-snapshot":
+            return request.keys;
+          case "scope-deadline":
+            // The reading runs with no clock: a deadline never comes.
+            return new Promise(() => undefined);
         }
       },
       phase: () => undefined,

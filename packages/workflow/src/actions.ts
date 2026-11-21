@@ -45,6 +45,10 @@ export const StartInput = z.object({
    * the MCP server fill it with their working directory when the caller names none; a start with none has no directory.
    */
   directory: z.string().regex(ABSOLUTE_PATH, "a directory is an absolute path").optional(),
+  /** The most branches each scope of the run runs at once; a scope's own lower limit holds. Default: no limit from outside. */
+  concurrency: z.number().int().positive().optional(),
+  /** The limits of the run: `depth`, how deep the runs it starts (and theirs) may go below it. Its child runs take them. */
+  limits: z.object({ depth: z.number().int().positive().optional() }).optional(),
   /** Answer when the run finishes or pauses, or when `timeoutMs` has passed, as `workflow.wait` does. Default: answer at once. */
   wait: z.boolean().optional(),
   /** With `wait`: how long to wait, in milliseconds. Default: a minute. */

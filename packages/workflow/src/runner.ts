@@ -55,10 +55,17 @@ export interface RunnerDeps {
   phase(entered: { branch: string; ordinal: number; phase: string }): void;
   /** A branch that was in a phase ended. */
   left(branch: string): void;
+  /** A branch joined a group of branches, before its first step. */
+  branched?(joined: { scope: string; key: string }): void;
   /** The script wrote a line to the log. */
   log(text: string): void;
   /** The run is being stopped: the calls of the script that are in flight are no longer wanted. */
   stopped?(): void;
+  /**
+   * The script process is gone: a call that waits for something only the process could bring
+   * about must answer now, or the calls in flight that the runner waits for never end.
+   */
+  gone?(): void;
 }
 
 /** What a run of a script ended with. */
@@ -122,6 +129,7 @@ const Message = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("phase"), branch: z.string(), ordinal: z.number().int().nonnegative(), phase: z.string() }),
   z.object({ kind: z.literal("left"), branch: z.string() }),
+  z.object({ kind: z.literal("branched"), scope: z.string(), key: z.string() }),
   z.object({ kind: z.literal("log"), text: z.string() }),
   z.object({ kind: z.literal("done"), result: z.unknown() }),
   z.object({ kind: z.literal("failed"), error: z.string(), name: z.string().optional() }),
@@ -231,6 +239,9 @@ export async function runScript(
       case "left":
         deps.left(message.branch);
         return;
+      case "branched":
+        deps.branched?.({ scope: message.scope, key: message.key });
+        return;
       case "log":
         deps.log(message.text);
         return;
@@ -260,6 +271,7 @@ export async function runScript(
     // the suspend is passed on. The invocation ends as "waiting", and the run goes on when the
     // answer arrives.
     if (suspended !== undefined) {
+      deps.gone?.();
       await Promise.allSettled([...calls]);
       throw suspended;
     }
@@ -270,6 +282,7 @@ export async function runScript(
     return { ok: false, error: reason !== "" ? reason : `the script exited with ${String(code)} without a result` };
   } finally {
     stopped = true;
+    deps.gone?.();
     child.kill();
     // The handle of the run goes with it: a run that is not going has nothing to stop.
     if (children.get(run) === running) children.delete(run);

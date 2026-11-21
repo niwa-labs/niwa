@@ -43,6 +43,12 @@ const pending = new Map<number, { resolve(value: unknown): void; reject(error: E
 interface Branch {
   /** The path of the branch: the branches of a parallel and the stages of a pipeline. */
   readonly path: string;
+  /** The group the branch belongs to: the one whose member or whose block it is. */
+  readonly group?: Group;
+  /** The member of the group the branch runs, when it is not the block of the group. */
+  readonly member?: Member;
+  /** The streams opened in the branch and not closed yet: they close when it ends. */
+  readonly streams: Set<StreamHandle>;
   /** How many calls the branch has made: the number of an unlabeled call within it. */
   ordinal: number;
   /** How many groups (a parallel or a pipeline) the branch has started: the number of the next. */
@@ -86,7 +92,7 @@ function inBranch<T>(group: string, name: string, body: () => T | Promise<T>): P
   const own = `${group}.${name}`;
   const path = parent === undefined ? own : `${parent.path}.${own}`;
   const phase = parent === undefined ? outsidePhase : parent.phase;
-  const branch: Branch = { path, ordinal: 0, groups: 0, phase, phases: 0 };
+  const branch: Branch = { path, ordinal: 0, groups: 0, phase, phases: 0, streams: new Set() };
   return BRANCH.run(branch, async () => {
     if (phase !== undefined) say({ kind: "phase", branch: path, ordinal: 0, phase });
     try {
@@ -132,7 +138,9 @@ function keyOf(label: string | undefined): string {
     if (label.includes("~")) throw new Error(`the label "${label}" holds "~", which is kept for the steps of a call`);
     if (labels.has(label)) throw new Error(`the label "${label}" is used twice in this run: a label names one call`);
     labels.add(label);
-    return `label:${label}`;
+    // In a scope the key of a labeled call starts with the path of its branch, so a cancel of the branch holds it.
+    const inScope = BRANCH.getStore();
+    return inScope !== undefined && inScope.path.includes("@") ? `${inScope.path}.label:${label}` : `label:${label}`;
   }
   const branch = BRANCH.getStore();
   if (branch === undefined) return `call-${String(++outside)}`;
@@ -168,9 +176,24 @@ function request(body: ScriptRequest, label: string | undefined): Promise<unknow
   } catch (error) {
     return Promise.reject(error);
   }
+  // A labeled call outside a scope is keyed by its label alone: a cancel of its branch names it while it is in flight.
+  const branch = BRANCH.getStore();
+  if (branch !== undefined && key.startsWith("label:")) inflightLabels.set(key, branch.path);
   return new Promise((resolve, reject) => {
     pending.set(ordinal, { resolve, reject });
     say({ kind: "call", ordinal, key, ...(phase === undefined ? {} : { phase }), request: body });
+  }).finally(() => inflightLabels.delete(key));
+}
+
+/** The labeled calls in flight outside any scope, by key: the path of the branch each one is in. */
+const inflightLabels = new Map<string, string>();
+
+/** Ask the parent something about a group, under a key the group gives it: it takes no number from the calls. */
+function requestAt(body: ScriptRequest, key: string): Promise<unknown> {
+  const ordinal = ++calls;
+  return new Promise((resolve, reject) => {
+    pending.set(ordinal, { resolve, reject });
+    say({ kind: "call", ordinal, key, request: body });
   });
 }
 
@@ -339,9 +362,530 @@ globals.read = {
 globals.now = (opts: CallOptions = {}): Promise<unknown> => request({ op: "now" }, opts.label);
 globals.random = (opts: CallOptions = {}): Promise<unknown> => request({ op: "random" }, opts.label);
 
-globals.parallel = (thunks: Array<() => unknown>): Promise<unknown[]> => {
-  const group = nextGroup("p");
-  return Promise.all(thunks.map((thunk, index) => inBranch(group, String(index), () => Promise.resolve().then(thunk))));
+// --- groups of branches ------------------------------------------------------------------
+//
+// A group is a scope of structured concurrency: the branches started in it never outlive it.
+// Leaving the block waits for the branches (`onExit: "wait"`) or cancels them (`"cancel"`); a
+// block that throws cancels them. The host keeps the group: its branches, their outcomes in the
+// order they were committed, its deadline and whether it is shielded, so a replay meets the
+// outcomes in the order the script met them.
+
+/** How a branch ended, as the script sees it. */
+type Settled = { ok: true; value: unknown } | { ok: false; error: { name: string; message: string } };
+
+/** A branch of a group. */
+interface Member {
+  readonly key: string;
+  /** The key prefix of the branch: the path of the group and the key. */
+  readonly path: string;
+  /** The outcome, once the branch ended and the host committed it. */
+  result?: Settled;
+  /** The error the branch threw, as it was thrown: what `parallel` throws again. */
+  error?: unknown;
+  /** The place of the outcome among the outcomes of the group. */
+  order?: number;
+  /** Why the branch was cancelled, when it was. */
+  cancelled?: string;
+  /** Ends when the branch has ended and its outcome is committed. */
+  done: Promise<Settled>;
+}
+
+/** What `scope()` takes. */
+interface ScopeOptions {
+  concurrency?: number;
+  onExit?: "wait" | "cancel";
+  deadline?: Duration;
+  onDeadline?: "skip" | "fail";
+  shield?: boolean;
+}
+
+/** What the host answers when a group opens. */
+interface OpenAnswer {
+  concurrency?: number;
+  deadline?: number;
+  known: Array<{ key: string; order: number; outcome: string }>;
+  closed?: "done" | "failed" | "deadline";
+}
+
+/** A group the script opened. */
+interface Group {
+  readonly path: string;
+  readonly segments: readonly string[];
+  /** The branch the group was opened in; the script itself when absent. */
+  readonly within: Branch | undefined;
+  readonly shield: boolean;
+  readonly members: Map<string, Member>;
+  /** The outcomes committed in this process, by their place. */
+  readonly settled: Map<number, Member>;
+  /** The places the run committed before for branches that have not ended in this process yet: key by place. */
+  readonly expected: Map<number, string>;
+  /** The places already given to the script. */
+  readonly given: Set<number>;
+  readonly listeners: Set<() => void>;
+  readonly queue: Array<() => void>;
+  limit: number;
+  running: number;
+  /** Why the whole group, its block with it, was cancelled. */
+  cancelled: string | undefined;
+  /** Why the branches of the group were cancelled: a branch started after that starts cancelled. */
+  branchesCancelled: string | undefined;
+  open: boolean;
+  requests: number;
+}
+
+/** A stream: a group whose branches are listened to one outcome at a time, closed when it is disposed. */
+interface StreamHandle {
+  close(): Promise<void>;
+}
+
+/** The error a scope with `onDeadline: "fail"` throws when it runs out of time. */
+class DeadlineExceeded extends Error {
+  override name = "DeadlineExceeded";
+}
+globals.DeadlineExceeded = DeadlineExceeded;
+
+/** The paths of the groups opened in this run: a path names one group. */
+const opened = new Set<string>();
+
+/** A key of a branch, or a name of a scope: one part of a key prefix, so none of the marks a key is made of. */
+function checkPart(part: unknown, what: string): string {
+  if (typeof part !== "string" || part === "") throw new TypeError(`${what} is a text that is not empty`);
+  if (/[.~/:\s]/.test(part) || part.startsWith("@") || /^call-\d+$/.test(part)) {
+    throw new TypeError(`${what} "${part}" may not hold ".", "~", "/", ":" or a space, start with "@" or be call-<n>`);
+  }
+  return part;
+}
+
+/** Why the branches of a group are cancelled from outside it: the group's own cancel, or one above it up to a shield. */
+function groupCancelled(group: Group): string | undefined {
+  return group.cancelled ?? (group.shield ? undefined : cancelledFor(group.within));
+}
+
+/** Why a branch is cancelled: its own cancel, its group's, or a cancel of the branch its group is in, up to a shield. */
+function cancelledFor(branch: Branch | undefined): string | undefined {
+  for (let at = branch; at !== undefined; ) {
+    if (at.member?.cancelled !== undefined) return at.member.cancelled;
+    const group = at.group;
+    if (group === undefined) return undefined;
+    if (group.cancelled !== undefined) return group.cancelled;
+    if (group.shield) return undefined;
+    at = group.within;
+  }
+  return undefined;
+}
+
+/** Tell those who wait on a group that something changed in it. */
+function changed(group: Group): void {
+  for (const listener of [...group.listeners]) listener();
+}
+
+/** Wait until something changes in the group. */
+function nextChange(group: Group): Promise<void> {
+  return new Promise((resolve) => {
+    const listener = (): void => {
+      group.listeners.delete(listener);
+      resolve();
+    };
+    group.listeners.add(listener);
+  });
+}
+
+/** Take a place to run a branch: a group with a limit runs no more branches than that at once. */
+async function enter(group: Group): Promise<void> {
+  if (group.running < group.limit) {
+    group.running += 1;
+    return;
+  }
+  // The place is handed on by the branch that leaves it.
+  await new Promise<void>((resolve) => group.queue.push(resolve));
+}
+
+function leave(group: Group): void {
+  const next = group.queue.shift();
+  if (next !== undefined) next();
+  else group.running -= 1;
+}
+
+/** Run the block or a branch of a group in a branch of its own, with the path it is keyed under. */
+function inGroup<T>(group: Group, path: string, member: Member | undefined, body: () => T | Promise<T>): Promise<T> {
+  const parent = BRANCH.getStore();
+  const phase = parent === undefined ? outsidePhase : parent.phase;
+  const branch: Branch = { path, ordinal: 0, groups: 0, phase, phases: 0, group, ...(member === undefined ? {} : { member }), streams: new Set() };
+  // The block of a group is the branch it was opened in, as far as phases go: only a member is a branch with a phase of its own.
+  const own = member !== undefined;
+  return BRANCH.run(branch, async () => {
+    if (own && phase !== undefined) say({ kind: "phase", branch: path, ordinal: 0, phase });
+    try {
+      return await body();
+    } finally {
+      await closeStreams(branch.streams);
+      if (own && branch.phase !== undefined) say({ kind: "left", branch: path });
+    }
+  });
+}
+
+/** Close the streams a branch left open: nothing started in a branch outlives it. */
+async function closeStreams(streams: Set<StreamHandle>): Promise<void> {
+  for (const stream of [...streams]) await stream.close();
+}
+
+/** What a thrown value says as an outcome: a cancel when the branch was cancelled or a step of it was. */
+function failureOf(error: unknown, cancelled: string | undefined): Settled {
+  const name = error instanceof Error ? error.name : "Error";
+  const message = error instanceof Error ? error.message : String(error);
+  if (name === "StepCancelled" || cancelled !== undefined) return { ok: false, error: { name: "Cancelled", message: cancelled ?? message } };
+  return { ok: false, error: { name, message } };
+}
+
+/** Start a branch of a group: it joins the group at once, and runs when the group has a place for it. */
+function startMember(group: Group, key: string, fn: () => unknown): Member {
+  checkPart(key, "the key of a branch");
+  if (!group.open) throw new Error(`the scope "${group.segments.join("/")}" is closed: start its branches inside its block`);
+  if (group.members.has(key)) throw new Error(`the scope "${group.segments.join("/")}" has a branch "${key}" already: a key names one branch`);
+  const path = `${group.path}.${key}`;
+  say({ kind: "branched", scope: group.path, key });
+  const member: Member = { key, path, done: Promise.resolve({ ok: true, value: undefined }) };
+  if (group.branchesCancelled !== undefined) member.cancelled = group.branchesCancelled;
+  group.members.set(key, member);
+  member.done = (async (): Promise<Settled> => {
+    let result: Settled;
+    await enter(group);
+    try {
+      const cancelled = member.cancelled ?? groupCancelled(group);
+      if (cancelled !== undefined) result = { ok: false, error: { name: "Cancelled", message: cancelled } };
+      else result = { ok: true, value: await inGroup(group, path, member, () => Promise.resolve().then(fn)) };
+    } catch (error) {
+      member.error = error;
+      result = failureOf(error, member.cancelled ?? groupCancelled(group));
+    } finally {
+      leave(group);
+    }
+    const outcome = result.ok ? "done" : result.error.name === "Cancelled" ? "cancelled" : "failed";
+    const committed = (await requestAt(
+      { op: "scope-settled", scope: group.path, key, outcome, ...(result.ok ? {} : { error: result.error }) },
+      `${path}~settled`,
+    )) as { order: number };
+    member.result = result;
+    member.order = committed.order;
+    for (const [order, expected] of group.expected) if (expected === key) group.expected.delete(order);
+    group.settled.set(committed.order, member);
+    changed(group);
+    return result;
+  })();
+  return member;
+}
+
+/**
+ * The next outcome of a group, in the order the host committed them.
+ *
+ * A place the run committed before for a branch that is going is waited for: the outcomes come
+ * in the order the script met them the first time, whichever branch ends first now.
+ */
+async function nextOf(group: Group): Promise<{ key: string; result: Settled } | null> {
+  for (;;) {
+    let best: number | undefined;
+    for (const order of group.settled.keys()) if (!group.given.has(order) && (best === undefined || order < best)) best = order;
+    for (const [order, key] of group.expected) {
+      const member = group.members.get(key);
+      if (member !== undefined && member.result === undefined && (best === undefined || order < best)) best = order;
+    }
+    const member = best === undefined ? undefined : group.settled.get(best);
+    if (best !== undefined && member?.result !== undefined) {
+      group.given.add(best);
+      return { key: member.key, result: member.result };
+    }
+    if (best === undefined && [...group.members.values()].every((one) => one.result !== undefined)) return null;
+    await nextChange(group);
+  }
+}
+
+/** Record what the group sees now, so a replay sees the same. */
+async function snapshot(group: Group, keys: string[]): Promise<string[]> {
+  return (await requestAt({ op: "scope-snapshot", scope: group.path, keys }, `snapshot:${group.path}:${String(++group.requests)}`)) as string[];
+}
+
+/** Cancel branches of a group: the host ends their steps, and those of the groups inside them up to a shield. */
+async function cancelMembers(group: Group, reason: string, targets: readonly Member[], whole: boolean): Promise<void> {
+  const prefixes = whole ? [group.path] : targets.map((member) => member.path);
+  for (const member of targets) member.cancelled ??= reason;
+  if (prefixes.length === 0) return;
+  for (const [key, path] of inflightLabels) {
+    if (prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}.`))) prefixes.push(key);
+  }
+  await requestAt({ op: "scope-cancel", scope: group.path, prefixes, reason }, `cancel:${group.path}:${String(++group.requests)}`);
+}
+
+/** The scope a block of a group is given. */
+function scopeApi(group: Group) {
+  const branchOf = (member: Member) => ({
+    key: member.key,
+    settled: (): Promise<Settled> => member.done,
+    value: async (): Promise<unknown> => {
+      const result = await member.done;
+      if (result.ok) return result.value;
+      throw member.error ?? Object.assign(new Error(result.error.message), { name: result.error.name });
+    },
+  });
+  const api = {
+    path: group.segments,
+    start: (key: string, fn: () => unknown) => branchOf(startMember(group, key, fn)),
+    run: (key: string, child: { id: string; version?: string; args?: unknown }) => {
+      if (typeof child?.id !== "string") throw new TypeError("run(key, { id, args }): the child is a registered workflow, by its id");
+      return branchOf(startMember(group, key, () => callOf(`flow.${child.id}`, child.args ?? {}, undefined)));
+    },
+    next: () => nextOf(group),
+    ready: async (): Promise<Array<{ key: string; result: Settled }>> => {
+      const now = [...group.settled.entries()].filter(([order]) => !group.given.has(order)).sort(([a], [b]) => a - b);
+      const keys = await snapshot(group, now.map(([, member]) => member.key));
+      const out: Array<{ key: string; result: Settled }> = [];
+      for (const key of keys) {
+        const member = group.members.get(key);
+        if (member === undefined) continue;
+        const result = await member.done;
+        if (member.order !== undefined) group.given.add(member.order);
+        out.push({ key, result });
+      }
+      return out;
+    },
+    rest: async (): Promise<Record<string, Settled>> => {
+      const all: Record<string, Settled> = {};
+      for (const member of [...group.members.values()]) {
+        all[member.key] = await member.done;
+        if (member.order !== undefined) group.given.add(member.order);
+      }
+      return all;
+    },
+    pending: (): Promise<string[]> =>
+      snapshot(group, [...group.members.values()].filter((member) => member.result === undefined).map((member) => member.key)),
+    cancel: async (reason?: string, keys?: string[]): Promise<void> => {
+      const why = reason ?? "cancelled by the script";
+      if (keys === undefined) group.branchesCancelled ??= why;
+      const targets = (keys ?? [...group.members.keys()]).flatMap((key) => {
+        const member = group.members.get(key);
+        return member === undefined || member.result !== undefined ? [] : [member];
+      });
+      await cancelMembers(group, why, targets, false);
+    },
+  };
+  groups.set(api, group);
+  return api;
+}
+
+type ScopeApi = ReturnType<typeof scopeApi>;
+
+/**
+ * Open a group under a path, run its block, and close it: nothing started in it outlives it.
+ *
+ * The block runs keyed under the path of the group, so a cancel of the whole group (its deadline)
+ * holds the block's own steps as well as those of its branches.
+ */
+async function runGroup<T>(path: string, segments: readonly string[], opts: ScopeOptions, fn: (s: ScopeApi) => Promise<T>): Promise<T | undefined> {
+  if (opened.has(path)) throw new Error(`the scope "${segments.join("/")}" is opened twice: give each scope its own name`);
+  opened.add(path);
+  const within = BRANCH.getStore();
+  const onExit = opts.onExit ?? "wait";
+  const answer = (await requestAt(
+    {
+      op: "scope-open",
+      scope: path,
+      onExit,
+      ...(opts.deadline === undefined ? {} : { deadlineMs: durationMs(opts.deadline) }),
+      ...(opts.onDeadline === undefined ? {} : { onDeadline: opts.onDeadline }),
+      ...(opts.shield === true ? { shield: true } : {}),
+      ...(opts.concurrency === undefined ? {} : { concurrency: opts.concurrency }),
+    },
+    `${path}~open`,
+  )) as OpenAnswer;
+  const group: Group = {
+    path,
+    segments,
+    within,
+    shield: opts.shield === true,
+    members: new Map(),
+    settled: new Map(),
+    expected: new Map(answer.known.map((known) => [known.order, known.key])),
+    given: new Set(),
+    listeners: new Set(),
+    queue: [],
+    limit: Math.min(opts.concurrency ?? Number.POSITIVE_INFINITY, answer.concurrency ?? Number.POSITIVE_INFINITY),
+    running: 0,
+    cancelled: undefined,
+    branchesCancelled: undefined,
+    open: true,
+    requests: 0,
+  };
+  let blockDone = false;
+  // The deadline is the host's: it answers when its clock reaches the moment, and a group that closed before keeps how it closed.
+  let ranOut = answer.closed === "deadline";
+  if (ranOut) group.cancelled = "the deadline passed";
+  if (answer.deadline !== undefined && answer.closed === undefined) {
+    void requestAt({ op: "scope-deadline", scope: path, at: answer.deadline }, `${path}~deadline`).then(async (reply) => {
+      if (blockDone || (reply as { fired?: boolean }).fired !== true) return;
+      ranOut = true;
+      group.cancelled = "the deadline passed";
+      changed(group);
+      await cancelMembers(group, "the deadline passed", [...group.members.values()].filter((member) => member.result === undefined), true);
+    });
+  }
+  let result: T | undefined;
+  let failure: unknown;
+  let failed = false;
+  try {
+    result = await inGroup(group, path, undefined, () => fn(scopeApi(group)));
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  blockDone = true;
+  if (failed || onExit === "cancel") {
+    const left = [...group.members.values()].filter((member) => member.result === undefined);
+    group.branchesCancelled ??= failed ? "the scope failed" : "the scope was left";
+    await cancelMembers(group, group.branchesCancelled, left, false);
+  }
+  group.open = false;
+  await Promise.all([...group.members.values()].map((member) => member.done));
+  const outcome = ranOut ? "deadline" : failed ? "failed" : "done";
+  await requestAt({ op: "scope-close", scope: path, outcome }, `${path}~close`);
+  if (ranOut) {
+    if (opts.onDeadline === "fail") throw new DeadlineExceeded(`the scope "${segments.join("/")}" ran out of time`);
+    return undefined;
+  }
+  if (failed) throw failure;
+  return result;
+}
+
+/** The path of a named scope opened where the caller is, and its segments. */
+function namedPath(name: string): { path: string; segments: string[] } {
+  checkPart(name, "the name of a scope");
+  const branch = BRANCH.getStore();
+  const segments = [...(branch?.group?.segments ?? []), ...(branch?.member === undefined ? [] : [branch.member.key]), name];
+  return { path: branch === undefined ? `@${name}` : `${branch.path}.@${name}`, segments };
+}
+
+/** The path of a numbered group (`parallel`) opened where the caller is. */
+function numberedPath(): { path: string; segments: string[] } {
+  const name = nextGroup("p");
+  const branch = BRANCH.getStore();
+  const segments = [...(branch?.group?.segments ?? []), ...(branch?.member === undefined ? [] : [branch.member.key]), name];
+  return { path: branch === undefined ? name : `${branch.path}.${name}`, segments };
+}
+
+globals.scope = (name: string, opts: ScopeOptions | ((s: ScopeApi) => Promise<unknown>) | undefined, fn?: (s: ScopeApi) => Promise<unknown>): Promise<unknown> => {
+  const block = typeof opts === "function" ? opts : fn;
+  const options = typeof opts === "function" || opts === undefined ? {} : opts;
+  if (typeof block !== "function") return Promise.reject(new TypeError("scope(name, opts, async (s) => { ... }): the block is a function"));
+  try {
+    const { path, segments } = namedPath(name);
+    return runGroup(path, segments, options, block);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+};
+
+globals.moveOnAfter = (name: string, deadline: Duration, fn: () => Promise<unknown>): Promise<unknown> =>
+  (globals.scope as (n: string, o: ScopeOptions, f: () => Promise<unknown>) => Promise<unknown>)(name, { deadline, onDeadline: "skip" }, () => fn());
+
+globals.failAfter = (name: string, deadline: Duration, fn: () => Promise<unknown>): Promise<unknown> =>
+  (globals.scope as (n: string, o: ScopeOptions, f: () => Promise<unknown>) => Promise<unknown>)(name, { deadline, onDeadline: "fail" }, () => fn());
+
+/**
+ * Branches at once, keyed by the index of a list or the keys of an object. The answer is in the
+ * same shape. A branch that fails cancels the others, and its error is thrown once they ended.
+ */
+globals.parallel = async (branches: Array<() => unknown> | Record<string, () => unknown>, opts: { concurrency?: number } = {}): Promise<unknown> => {
+  const entries: Array<[string, () => unknown]> = Array.isArray(branches)
+    ? branches.map((fn, index) => [String(index), fn])
+    : Object.entries(branches);
+  for (const [key, fn] of entries) {
+    checkPart(key, "the key of a branch");
+    if (typeof fn !== "function") throw new TypeError(`parallel: the branch "${key}" is not a function`);
+  }
+  const { path, segments } = numberedPath();
+  const results = (await runGroup(path, segments, { ...(opts.concurrency === undefined ? {} : { concurrency: opts.concurrency }) }, async (s) => {
+    const members = entries.map(([key, fn]) => [key, startMember(groupOf(s), key, fn)] as const);
+    const out: Record<string, unknown> = {};
+    for (let got = await s.next(); got !== null; got = await s.next()) {
+      if (!got.result.ok) {
+        const failedMember = members.find(([key]) => key === got?.key)?.[1];
+        throw failedMember?.error ?? Object.assign(new Error(got.result.error.message), { name: got.result.error.name });
+      }
+      out[got.key] = got.result.value;
+    }
+    return out;
+  })) as Record<string, unknown>;
+  return Array.isArray(branches) ? entries.map(([key]) => results[key]) : results;
+};
+
+/** The group behind a scope a block was given. */
+const groups = new WeakMap<object, Group>();
+function groupOf(s: ScopeApi): Group {
+  const group = groups.get(s);
+  if (group === undefined) throw new Error("not a scope of this script");
+  return group;
+}
+
+/**
+ * A stream: the branches start at once, and the outcomes are read one at a time in the order the
+ * host committed them. Closing it (or leaving the branch it was opened in) cancels what is left.
+ */
+globals.stream = (name: string, branches: Record<string, () => unknown>, opts: { concurrency?: number } = {}) => {
+  const { path, segments } = namedPath(name);
+  const owner = BRANCH.getStore();
+  let close: () => void = () => undefined;
+  const closed = new Promise<void>((resolve) => {
+    close = resolve;
+  });
+  let ready: (s: ScopeApi) => void = () => undefined;
+  const begun = new Promise<ScopeApi>((resolve) => {
+    ready = resolve;
+  });
+  const done = runGroup(path, segments, { onExit: "cancel", ...(opts.concurrency === undefined ? {} : { concurrency: opts.concurrency }) }, async (s) => {
+    for (const [key, fn] of Object.entries(branches)) s.start(key, fn);
+    ready(s);
+    await closed;
+  });
+  done.catch(() => undefined);
+  const streams = owner?.streams ?? rootStreams;
+  const handle = {
+    next: async () => (await begun).next(),
+    ready: async () => (await begun).ready(),
+    rest: async () => (await begun).rest(),
+    pending: async () => (await begun).pending(),
+    cancel: async (keys?: string[]) => (await begun).cancel("cancelled by the script", keys),
+    close: async (): Promise<void> => {
+      streams.delete(handle);
+      close();
+      await done;
+    },
+    async *[Symbol.asyncIterator]() {
+      for (let got = await handle.next(); got !== null; got = await handle.next()) yield got;
+    },
+    [Symbol.asyncDispose]: (): Promise<void> => handle.close(),
+  };
+  streams.add(handle);
+  return handle;
+};
+
+/** The streams the script itself opened and did not close: they close when the script ends. */
+const rootStreams = new Set<StreamHandle>();
+
+/** The first branch to succeed: its key and value. The others are cancelled; when every branch fails, the first error is thrown. */
+globals.race = (name: string, branches: Record<string, () => unknown>): Promise<unknown> => {
+  try {
+    const { path, segments } = namedPath(name);
+    return runGroup(path, segments, { onExit: "cancel" }, async (s) => {
+      const group = groupOf(s);
+      for (const [key, fn] of Object.entries(branches)) startMember(group, key, fn);
+      let first: unknown;
+      for (let got = await s.next(); got !== null; got = await s.next()) {
+        if (got.result.ok) return { key: got.key, value: got.result.value };
+        first ??= group.members.get(got.key)?.error ?? new Error(got.result.error.message);
+      }
+      throw first ?? new Error(`race "${name}": no branch to run`);
+    });
+  } catch (error) {
+    return Promise.reject(error);
+  }
 };
 
 globals.pipeline = async (thunks: Array<(previous: unknown) => unknown>): Promise<unknown[]> => {
@@ -493,7 +1037,7 @@ if (mode === "describe") {
   const unavailable = (name: string): (() => never) => () => {
     throw new Error(`${name} is not available while the module is read for its schemas: call it inside the function of the script`);
   };
-  for (const name of ["agent", "call", "wait", "sleep", "emit", "now", "random", "parallel", "pipeline", "phase", "log"]) {
+  for (const name of ["agent", "call", "wait", "sleep", "emit", "now", "random", "scope", "parallel", "stream", "race", "moveOnAfter", "failAfter", "pipeline", "phase", "log"]) {
     globals[name] = unavailable(name);
   }
   const stub = (name: string): unknown => new Proxy(unavailable(name), { get: (_target, key) => (typeof key === "symbol" || key === "then" ? undefined : stub(`${name}.${key}`)) });
@@ -533,6 +1077,8 @@ if (mode === "describe") {
     // A script that starts on records is given the record; any other is given its input, parsed and with the defaults put in.
     const input = isZod(declared.declaration.input) ? await declared.declaration.input.parseAsync(args) : args;
     const result = await (declared.declaration.input === undefined && declared.declaration.on === undefined ? declared.run() : declared.run(input));
+    // A stream the script left open is closed: nothing it started outlives it.
+    await closeStreams(rootStreams);
     say({ kind: "done", result: result ?? null }, () => exitWith(0));
   } catch (error) {
     // The name goes with the message: the host tells an `ask` that ended with no answer from any other error.

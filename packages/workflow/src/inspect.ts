@@ -49,7 +49,7 @@ export const WorkflowInspection = z.object({
 export type WorkflowInspection = z.infer<typeof WorkflowInspection>;
 
 const Intent = z.object({ key: z.string(), action: z.string(), operationId: z.string(), input: z.unknown().optional() });
-const Outcome = z.object({ outcome: z.object({ status: z.enum(["completed", "failed", "denied", "unknown"]) }) });
+const Outcome = z.object({ outcome: z.object({ status: z.enum(["completed", "failed", "denied", "unknown", "cancelled"]) }) });
 const Resolution = z.object({ key: z.string(), choice: z.enum(["retry", "skip", "cancel"]), attempt: z.number().int() });
 const State = z.object({ state: z.string(), reason: z.string().optional(), key: z.string().optional() });
 const Prompt = z.object({ prompt: z.string() });
@@ -57,7 +57,8 @@ const Question = z.object({ input: z.object({ title: z.string() }) });
 const AskEnd = z.object({ outcome: z.object({ status: z.literal("completed"), value: z.object({ ended: z.enum(["cancelled", "expired"]) }) }) });
 
 const at = (row: StoredRecord): string => new Date(row.at).toISOString();
-const scriptKey = /^((?:[ps]\d+\.\d+\.)*)call-\d+$/;
+// The key of a call of the script: the path of its branch (groups, scopes and their branches), then its number or its label.
+const scriptKey = /^((?:[^.~]+\.)*?)(call-\d+|label:[^~]+)$/;
 // Nested actions and waits use the parent attempt's key as their namespace.
 const nestedKey = /^(.+)\.(?:step|wait)-\d+$/;
 
@@ -137,14 +138,16 @@ function invocationSteps(
     const { action, input, key, operationId } = data;
     const nested = nestedKey.exec(key)?.[1];
     const owner = nested !== undefined && !authorized.has(`${key}~auth`) ? owners.get(nested) : undefined;
-    const branch = scriptKey.exec(key)?.[1]?.slice(0, -1);
+    const parsed = scriptKey.exec(key);
+    const branch = parsed?.[1]?.slice(0, -1);
+    const labeled = parsed?.[2]?.startsWith("label:") === true ? parsed[2].slice("label:".length) : undefined;
     if (owner !== undefined && (owner.outcomeSeq === undefined || row.seq < owner.outcomeSeq)) {
       if (action === "session.start" && owner.step.action.startsWith("session.start.")) {
         owner.step.session ??= sessionOf(journal, invocation, row, operationId);
       }
       continue;
     }
-    if (branch === undefined && (!key.startsWith("label:") || key.includes("~"))) continue;
+    if (parsed === null) continue;
     const resolution = resolutions.get(operationId);
     const outcome = outcomes.get(row.id.replace(/\/intent$/, "/outcome"));
     const askEnd = action === requestAsk.name ? outcomes.get(`${invocation}/step/${key}~ended/outcome`) : undefined;
@@ -162,7 +165,7 @@ function invocationSteps(
     const step: WorkflowStep = {
       id: row.id,
       key,
-      label: key.startsWith("label:") ? key.slice("label:".length) : action,
+      label: labeled ?? action,
       action,
       branch: branch || undefined,
       prompt,

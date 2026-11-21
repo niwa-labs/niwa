@@ -8,7 +8,7 @@
  * two branches that finish in another order on a replay keep their own answers.
  */
 
-import { CORE_TYPES, CatchableError, DeniedError, NOW_ACTION, RANDOM_ACTION, WAIT_ACTION, action, actionName, currentInvocation, grantId, jsonOf, record, recordId, seq, stableJson, timestamp } from "@niwa-labs/core";
+import { CANCEL_STEPS_ACTION, CORE_TYPES, CatchableError, DeniedError, NOW_ACTION, RANDOM_ACTION, WAIT_ACTION, action, actionName, currentInvocation, grantId, jsonOf, keyUnder, record, recordId, seq, stableJson, timestamp } from "@niwa-labs/core";
 import type { Action, ActionTarget, AuthorizeHow, JournalReader, Principal, RecordType, Step, Verb } from "@niwa-labs/core";
 import { owner } from "@niwa-labs/core";
 import { AskAnswered, answeredBy, QuestionName, RequestCancelled, RequestExpired, requestAsk } from "@niwa-labs/requests/records";
@@ -16,6 +16,8 @@ import { TimerSlept, sleepKey, timerSleepRequest } from "@niwa-labs/timer/record
 import { z } from "zod";
 
 import { valueOf } from "./ask.ts";
+import { ScopeClosed, ScopeOpened, ScopeSettled } from "./records.ts";
+import type { RunId } from "./records.ts";
 import type { ScriptRequest } from "./language.ts";
 import { holds } from "@niwa-labs/core";
 import { sameCall } from "./revise.ts";
@@ -31,6 +33,12 @@ export interface BridgeDeps {
   step: Step;
   /** The run, as a principal: what a script calls is called as it, never as the handler that runs it. */
   run: Principal;
+  /** The id of the run. */
+  runId: RunId;
+  /** The most branches a group of the run runs at once, set from outside the script. */
+  concurrency?: number;
+  /** Run `fn` when the clock of the host reaches `at`; the function returned forgets it. */
+  schedule(at: number, fn: () => void): () => void;
   /** The journal, when the host is serving. */
   journal(): JournalReader;
   /** The action an agent call of that harness goes to. */
@@ -186,15 +194,46 @@ const ASK_ENDED = action("workflow.ask.ended", {
 /** The moment a timeout ends, in milliseconds since the epoch. */
 const endOf = (now: number, ms: number): number => Math.round(now + ms);
 
+/** What a group of branches answers when it opens: the limit from outside, its deadline, and what the run knows of it already. */
+export interface ScopeOpenAnswer {
+  concurrency?: number;
+  deadline?: number;
+  /** The outcomes the run committed for its branches before, by key: their places among the outcomes of the group. */
+  known: Array<{ key: string; order: number; outcome: z.infer<typeof ScopeSettled.schema>["outcome"] }>;
+  /** How the group closed before, when the run closed it already. */
+  closed?: z.infer<typeof ScopeClosed.schema>["outcome"];
+}
+
+/** What a group sees of itself at one moment, recorded so a replay sees the same. */
+const SNAPSHOT = (keys: readonly string[]) =>
+  action("workflow.scope.snapshot", {
+    description: "Record the branches a group of the script sees at one moment.",
+    input: z.object({}),
+    output: z.array(z.string()),
+    recovery: "repeat",
+    run: () => [...keys],
+  });
+
+/** What a bridge is: the function that does what the script asks, and the end of the script process. */
+export interface Bridge {
+  (request: CallRequest): Promise<unknown>;
+  /** The script process is gone: what waits for the clock on its behalf answers now. */
+  gone(): void;
+}
+
 /**
  * Do what a request of the script asks.
  *
  * A step that does not complete pauses the invocation, as it does for a handler; an error the
  * caller is meant to catch (an ask that was cancelled or expired) is not a failed step.
  */
-export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unknown> {
+export function bridge(deps: BridgeDeps): Bridge {
   const { step } = deps;
   const own = readers(deps.journal);
+  /** The open groups whose block an outer cancel waits for. */
+  const shields = new Set<string>();
+  /** The waits for a deadline that are going, each with the way to answer it now. */
+  const deadlines = new Set<() => void>();
 
   const guarded = async <T>(body: () => Promise<T>): Promise<T> => {
     try {
@@ -356,7 +395,7 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
     }
   };
 
-  return async ({ key, request }) => {
+  const call = async ({ key, request }: CallRequest): Promise<unknown> => {
     switch (request.op) {
       case "agent": {
         const target = deps.agentAction(request.input.harness);
@@ -404,6 +443,112 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
         const before = finishedBefore(key, RANDOM_ACTION);
         return before === undefined ? guarded(() => step.random({ key })) : before.outcome;
       }
+      case "scope-open":
+        return openScope(request);
+      case "scope-settled":
+        return settleBranch(request);
+      case "scope-cancel": {
+        // A shielded group under a cancelled branch is spared: the cancel waits for its block to end.
+        const except = [...shields].filter((open) => request.prefixes.some((prefix) => open !== prefix && keyUnder(open, prefix)));
+        const invocation = currentInvocation()?.invocation;
+        if (invocation === undefined) throw new Error("a cancel of branches is a step of an invocation");
+        await guarded(() =>
+          step(CANCEL_STEPS_ACTION, { invocation, prefixes: request.prefixes, ...(except.length === 0 ? {} : { except }), reason: request.reason }, { key }),
+        );
+        return null;
+      }
+      case "scope-snapshot":
+        return guarded(() => step(SNAPSHOT(request.keys), {}, { key }));
+      case "scope-deadline":
+        return new Promise((resolve) => {
+          let forget: () => void = () => undefined;
+          const answer = (fired: boolean): void => {
+            forget();
+            deadlines.delete(gone);
+            resolve({ fired });
+          };
+          const gone = (): void => answer(false);
+          deadlines.add(gone);
+          forget = deps.schedule(request.at, () => answer(true));
+        });
+      case "scope-close":
+        shields.delete(request.scope);
+        await step.emit(ScopeClosed, { run: deps.runId, scope: request.scope, outcome: request.outcome }, { key: `scope-closed:${request.scope}` });
+        return null;
     }
   };
+
+  /** The records of one type this run wrote for one group, in the order they were written. */
+  const groupRecords = <T extends { scope: string }>(type: { name: string; schema: z.ZodType<T> }, scope: string): T[] =>
+    deps
+      .journal()
+      .find({ type: type.name as never, field: "run", equals: deps.runId })
+      .map((row) => type.schema.parse(row.data))
+      .filter((data) => data.scope === scope);
+
+  /**
+   * Open a group: its deadline is read from the clock once, as a step, so a replay keeps the moment; the answer
+   * says what the run committed of the group before, so the order of its outcomes is the order it was.
+   */
+  const openScope = async (request: Extract<ScriptRequest, { op: "scope-open" }>): Promise<ScopeOpenAnswer> => {
+    const deadline = request.deadlineMs === undefined ? undefined : endOf(await clock(`scope-now:${request.scope}`), request.deadlineMs);
+    if (request.shield === true) shields.add(request.scope);
+    await step.emit(
+      ScopeOpened,
+      {
+        run: deps.runId,
+        scope: request.scope,
+        onExit: request.onExit,
+        ...(deadline === undefined ? {} : { deadline }),
+        ...(request.onDeadline === undefined ? {} : { onDeadline: request.onDeadline }),
+        ...(request.shield === true ? { shield: true } : {}),
+        ...(request.concurrency === undefined ? {} : { concurrency: request.concurrency }),
+      },
+      { key: `scope-open:${request.scope}` },
+    );
+    const known = new Map<string, ScopeOpenAnswer["known"][number]>();
+    for (const settled of groupRecords(ScopeSettled, request.scope)) known.set(settled.key, { key: settled.key, order: settled.order, outcome: settled.outcome });
+    const closed = groupRecords(ScopeClosed, request.scope).at(-1)?.outcome;
+    return {
+      ...(deps.concurrency === undefined ? {} : { concurrency: deps.concurrency }),
+      ...(deadline === undefined ? {} : { deadline }),
+      known: [...known.values()],
+      ...(closed === undefined ? {} : { closed }),
+    };
+  };
+
+  /**
+   * Commit the outcome of a branch and answer its place among the outcomes of its group.
+   *
+   * The place is the order of the commits, not of the ends of outside work. A branch the run committed
+   * before with the same outcome keeps its place, so a replay and a resume give the outcomes in the
+   * order the script saw them; any other outcome takes the next place.
+   */
+  const settleBranch = async (request: Extract<ScriptRequest, { op: "scope-settled" }>): Promise<{ order: number }> => {
+    const committed = groupRecords(ScopeSettled, request.scope);
+    const before = committed.filter((one) => one.key === request.key).at(-1);
+    const order =
+      before !== undefined && before.outcome === request.outcome
+        ? before.order
+        : committed.reduce((highest, one) => Math.max(highest, one.order + 1), 0);
+    await step.emit(
+      ScopeSettled,
+      {
+        run: deps.runId,
+        scope: request.scope,
+        key: request.key,
+        order,
+        outcome: request.outcome,
+        ...(request.error === undefined ? {} : { error: request.error }),
+      },
+      { key: `scope-settled:${request.scope}.${request.key}` },
+    );
+    return { order };
+  };
+
+  return Object.assign(call, {
+    gone: (): void => {
+      for (const answer of [...deadlines]) answer();
+    },
+  });
 }

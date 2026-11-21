@@ -179,10 +179,73 @@ export interface ScriptApi {
      */
     records(query?: ScriptRecordQuery & { limit?: number; tail?: number }, opts?: CallOptions): Promise<{ records: any[]; next: number }>;
   };
+  /** Open a scope: a group of branches that never outlive it. */
+  scope<T>(name: string, opts: ScopeOptions | undefined, fn: (s: Scope) => Promise<T>): Promise<T>;
+  /** Branches at once, by the index of a list or the keys of an object; a branch that fails cancels the others. */
+  parallel<T>(branches: Array<() => T | Promise<T>>, opts?: { concurrency?: number }): Promise<Awaited<T>[]>;
+  parallel<B extends Record<string, () => unknown>>(branches: B, opts?: { concurrency?: number }): Promise<{ [K in keyof B]: Awaited<ReturnType<B[K]>> }>;
+  stream<K extends string, T>(name: string, branches: Record<K, () => T | Promise<T>>, opts?: { concurrency?: number }): Stream<K, Awaited<T>>;
+  /** The first branch to succeed, with its key; the others are cancelled. */
+  race<K extends string, T>(name: string, branches: Record<K, () => T | Promise<T>>): Promise<{ key: K; value: Awaited<T> }>;
+  /** The block for at most the duration: past it, undefined. */
+  moveOnAfter<T>(name: string, duration: Duration, fn: () => Promise<T>): Promise<T | undefined>;
+  /** The block for at most the duration: past it, `DeadlineExceeded` is thrown. */
+  failAfter<T>(name: string, duration: Duration, fn: () => Promise<T>): Promise<T>;
   /** The clock of the host, recorded: a replay reads the same moment. */
   now(opts?: CallOptions): Promise<number>;
   /** A random number, recorded: a replay reads the same one. */
   random(opts?: CallOptions): Promise<number>;
+}
+
+/** How a branch ended: its value, or its error by name and message. A cancelled branch is named `Cancelled`. */
+export type Settled<T> = { ok: true; value: T } | { ok: false; error: { name: string; message: string } };
+
+/** A branch of a scope: its key, its outcome, and its value, which throws what the branch threw. */
+export interface ScopeBranch<R> {
+  readonly key: string;
+  settled(): Promise<Settled<R>>;
+  value(): Promise<R>;
+}
+
+/** What a scope takes: how many branches run at once, what leaving it does, its deadline, and whether it is a shield. */
+export interface ScopeOptions {
+  concurrency?: number;
+  /** Leaving the block normally waits for the branches left (the default) or cancels them. A block that throws cancels them. */
+  onExit?: "wait" | "cancel";
+  /** Past it the scope is cancelled; `onDeadline` says whether the call gives undefined or throws `DeadlineExceeded`. */
+  deadline?: Duration;
+  onDeadline?: "skip" | "fail";
+  /** An outer cancel waits for the block to end; the owner can still stop it by force. */
+  shield?: boolean;
+}
+
+/**
+ * A group of branches of structured concurrency. Nothing started in it outlives it; the host keeps
+ * its branches, their outcomes and the order they were committed in, so a replay reads them in the
+ * order the script read them.
+ */
+export interface Scope {
+  readonly path: string[];
+  start<R>(key: string, fn: () => R | Promise<R>): ScopeBranch<Awaited<R>>;
+  /** A branch that is a run of a registered workflow, a child of this run. */
+  run<R = unknown>(key: string, child: { id: string; version?: string; args?: unknown }): ScopeBranch<R>;
+  /** The next outcome after the ones read, or null when every branch ended and was read. */
+  next(): Promise<{ key: string; result: Settled<unknown> } | null>;
+  ready(): Promise<Array<{ key: string; result: Settled<unknown> }>>;
+  rest(): Promise<Record<string, Settled<unknown>>>;
+  pending(): Promise<string[]>;
+  cancel(reason?: string, keys?: string[]): Promise<void>;
+}
+
+/** A stream of branches: their outcomes one at a time, in the order the host committed them. Closing it cancels the rest. */
+export interface Stream<K extends string, T> extends AsyncIterable<{ key: K; result: Settled<T> }> {
+  next(): Promise<{ key: K; result: Settled<T> } | null>;
+  ready(): Promise<Array<{ key: K; result: Settled<T> }>>;
+  rest(): Promise<Record<K, Settled<T>>>;
+  pending(): Promise<K[]>;
+  cancel(keys?: K[]): Promise<void>;
+  close(): Promise<void>;
+  [Symbol.asyncDispose](): Promise<void>;
 }
 
 /** What `record(name, schema)` gives: a record a script lists in `workflow({ emits })` and writes with `emit`. */
