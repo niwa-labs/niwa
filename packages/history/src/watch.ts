@@ -73,7 +73,8 @@ export interface WatchOptions {
 
 /**
  * Watch a session until it ends or the signal is aborted. A half-written record is waited for; a
- * read that fails is taken for a read that found nothing new, and is tried again.
+ * read that fails is tried again, and is not a quiet one: while the tail cannot be read the watch
+ * neither pauses nor guesses an end by idleness, and the time it was unavailable does not count as quiet.
  */
 export async function* watchSession(reading: SessionReading, id: SessionId, options: WatchOptions): AsyncGenerator<WatchEvent> {
   const timing = options.timing ?? DEFAULT_WATCH_TIMING;
@@ -84,6 +85,7 @@ export async function* watchSession(reading: SessionReading, id: SessionId, opti
   let paused = false;
   while (!options.signal.aborted) {
     let grew = false;
+    let failed = false;
     const said: Progress[] = [];
     try {
       for await (const record of reading.read(id, upto)) {
@@ -99,6 +101,7 @@ export async function* watchSession(reading: SessionReading, id: SessionId, opti
       }
     } catch {
       // The file may be moving under the harness: the next read tries again.
+      failed = true;
     }
     for (const each of said) yield { kind: "progress", ...each };
     const now = clock.now();
@@ -109,6 +112,9 @@ export async function* watchSession(reading: SessionReading, id: SessionId, opti
     if (grew) {
       lastRecordAt = now;
       paused = false;
+    } else if (failed) {
+      // What could not be read is not known to be quiet: the quiet starts over once the tail can be read.
+      lastRecordAt = now;
     } else if (options.guessEnd !== false && now - lastRecordAt >= timing.endMs) {
       yield { kind: "ended", certainty: "guessed", why: "idle" };
       return;

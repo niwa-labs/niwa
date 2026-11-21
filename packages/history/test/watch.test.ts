@@ -92,3 +92,29 @@ test("a half-written record is waited for, not read past", async () => {
   expect(events).toEqual([{ kind: "progress", done: 1, total: 1 }]);
 });
 
+
+test("a read that fails is not a quiet one: the watch neither pauses nor ends while the tail is unavailable, and goes on when it recovers", async () => {
+  const records: SessionRecord[] = [said(1)];
+  let unavailable = false;
+  const flaky: SessionReading = {
+    ...growing(records),
+    async *read(id, from) {
+      if (unavailable) throw new Error("EIO");
+      yield* growing(records).read(id, from);
+    },
+  };
+  const controller = new AbortController();
+  const events: WatchEvent[] = [];
+  const clock = steppedClock((now) => {
+    if (now === 10) unavailable = true;
+    if (now === 200) {
+      unavailable = false;
+      records.push(checklist(2, 1, 1));
+    }
+    if (now === 220) controller.abort();
+  });
+  for await (const event of watchSession(flaky, ID, { signal: controller.signal, clock, timing: { pollMs: 10, pauseMs: 30, endMs: 60 } })) {
+    events.push(event);
+  }
+  expect(events).toEqual([{ kind: "progress", done: 1, total: 1 }]);
+});
