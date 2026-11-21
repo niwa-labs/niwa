@@ -1,0 +1,296 @@
+// The Claude Code reading side against small synthetic logs in a temp dir: the mapping of the
+// native kinds, the tool names remembered by the id of the call, the subagent that is linked to
+// the call that spawned it, and the half-written tail of a running session.
+
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { harnessId, sessionId } from "@niwa-labs/harness";
+import type { Locator, SessionRecord } from "@niwa-labs/harness";
+
+import { timestamp } from "@niwa-labs/core";
+import { ClaudeCodeReading } from "../../src/code/reading.ts";
+import { tempDirSync } from "@niwa-labs/testing";
+import type { BlockType } from "../../src/code/format.ts";
+
+import { ADVISOR_CALL, BLOCKS } from "./blocks.ts";
+
+const HARNESS = harnessId("claude-code-test");
+const SESSION = "11111111-2222-3333-4444-555555555555";
+
+let home: string;
+const reading = () => new ClaudeCodeReading({ harness: HARNESS, home });
+
+beforeEach(() => {
+  home = tempDirSync("claude-code-reading");
+});
+afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+/** The directory of the project the logs live in. */
+function projectDir(): string {
+  const dir = join(home, "projects", "-work-project");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** The log of the session. */
+function logPath(): string {
+  return join(projectDir(), `${SESSION}.jsonl`);
+}
+
+const record = (value: object): string => `${JSON.stringify(value)}\n`;
+
+const user = (text: string): string =>
+  record({
+    type: "user",
+    uuid: "u1",
+    timestamp: "2026-10-07T12:00:00.000Z",
+    cwd: "/work/project",
+    sessionId: SESSION,
+    message: { role: "user", content: text },
+  });
+
+const assistant = (blocks: unknown[], model = "claude-test-1"): string =>
+  record({
+    type: "assistant",
+    uuid: "a1",
+    timestamp: "2026-10-07T12:00:01.000Z",
+    cwd: "/work/project",
+    sessionId: SESSION,
+    message: { role: "assistant", model, content: blocks },
+  });
+
+async function all(iter: AsyncIterable<SessionRecord>): Promise<SessionRecord[]> {
+  const out: SessionRecord[] = [];
+  for await (const r of iter) out.push(r);
+  return out;
+}
+
+const ID = sessionId(HARNESS, SESSION);
+
+test("lists a session with its working directory, its title and its times", async () => {
+  writeFileSync(
+    logPath(),
+    user("hello") + record({ type: "ai-title", aiTitle: "the title", sessionId: SESSION }),
+  );
+  const infos = [];
+  for await (const info of reading().list()) infos.push(info);
+  expect(infos).toHaveLength(1);
+  expect(String(infos[0]?.id.native)).toBe(SESSION);
+  expect(infos[0]?.cwd).toBe("/work/project");
+  expect(infos[0]?.title).toBe("the title");
+  expect(infos[0]?.startedAt).toBe(timestamp(Date.parse("2026-10-07T12:00:00.000Z")));
+});
+
+test("a listing can be limited to some sessions", async () => {
+  writeFileSync(logPath(), user("hello"));
+  const natives = async (filter?: { natives: string[] }) => {
+    const out: string[] = [];
+    for await (const info of reading().list(filter)) out.push(String(info.id.native));
+    return out;
+  };
+  expect(await natives({ natives: [SESSION] })).toEqual([SESSION]);
+  expect(await natives({ natives: ["other"] })).toEqual([]);
+  expect(await natives()).toEqual([SESSION]);
+});
+
+test("a session with no title of its own is titled by the first message of the person, machine tags cut out", async () => {
+  writeFileSync(
+    logPath(),
+    user("<local-command-caveat>Caveat: the command below was run by hand.</local-command-caveat>") +
+      user(`<system-reminder>be brief</system-reminder>Please rewrite the reading side of the codex harness so that it streams`),
+  );
+  const infos = [];
+  for await (const info of reading().list()) infos.push(info);
+  expect(infos[0]?.title).toBe("Please rewrite the reading side of the codex harness so that…");
+});
+
+test("maps the common kinds: the message, the answer, the call and its answer", async () => {
+  writeFileSync(
+    logPath(),
+    user("go") +
+      assistant([
+        { type: "text", text: "working" },
+        { type: "tool_use", id: "call_1", name: "Bash", input: { command: "ls" } },
+      ]) +
+      record({
+        type: "user",
+        uuid: "u2",
+        timestamp: "2026-10-07T12:00:02.000Z",
+        sessionId: SESSION,
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "call_1", content: "a.txt", is_error: false }],
+        },
+      }),
+  );
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(["user", "assistant", "tool-call", "tool-result"]);
+  expect(records[1]).toMatchObject({ text: "working", model: "claude-test-1" });
+  expect(records[2]).toMatchObject({ callId: "call_1", name: "Bash", input: { command: "ls" } });
+  // The name of the tool is not written in its answer: it is remembered by the id of the call.
+  expect(records[3]).toMatchObject({ callId: "call_1", name: "Bash", ok: true });
+});
+
+/** What each block type of an answer becomes: every type has its deliberate record. */
+const BLOCK_KINDS: { readonly [K in BlockType]: SessionRecord["kind"] } = {
+  text: "assistant",
+  image: "unknown",
+  document: "unknown",
+  search_result: "unknown",
+  thinking: "thinking",
+  redacted_thinking: "thinking",
+  tool_use: "tool-call",
+  server_tool_use: "tool-call",
+  mcp_tool_use: "tool-call",
+  tool_result: "tool-result",
+  mcp_tool_result: "tool-result",
+  advisor_tool_result: "tool-result",
+  web_search_tool_result: "tool-result",
+  web_fetch_tool_result: "tool-result",
+  code_execution_tool_result: "tool-result",
+  bash_code_execution_tool_result: "tool-result",
+  text_editor_code_execution_tool_result: "tool-result",
+  tool_search_tool_result: "tool-result",
+  container_upload: "unknown",
+  compaction: "compaction",
+  fallback: "unknown",
+  mcp_tool_listing: "unknown",
+};
+
+test("every content block type becomes its typed record: a thought, a server tool's call and answer", async () => {
+  const blocks = Object.values(BLOCKS);
+  writeFileSync(logPath(), assistant(blocks));
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(blocks.map((block) => BLOCK_KINDS[block.type]));
+  const byKind = (kind: SessionRecord["kind"]) => records.filter((r) => r.kind === kind);
+  expect(byKind("thinking")).toMatchObject([
+    { text: "let me see", redacted: false },
+    { text: "", redacted: true },
+  ]);
+  // The advisor is a server tool: its answer is named by its call, and an error answer is not ok.
+  expect(records.find((r) => r.kind === "tool-call" && r.name === "advisor")).toMatchObject({ callId: ADVISOR_CALL });
+  expect(records.find((r) => r.kind === "tool-result" && r.callId === ADVISOR_CALL)).toMatchObject({
+    name: "advisor",
+    ok: true,
+    output: BLOCKS.advisor_tool_result.content,
+  });
+  expect(records.find((r) => r.kind === "tool-result" && r.callId === "srvtoolu_wf")).toMatchObject({ ok: false });
+  expect(records.find((r) => r.kind === "tool-result" && r.callId === "mcptoolu_1")).toMatchObject({
+    name: "lookup",
+    ok: false,
+  });
+  expect(byKind("compaction")).toMatchObject([{ summary: "what came before" }]);
+});
+
+test("a block of a type niwa does not know, or one that breaks its type's schema, is unknown with its raw data", async () => {
+  const strange = { type: "brand_new_block", payload: 1 };
+  const broken = { type: "tool_use", id: "", name: "Bash", input: {} };
+  writeFileSync(logPath(), assistant([strange, broken]));
+  const records = await all(reading().read(ID));
+  expect(records).toMatchObject([
+    { kind: "unknown", raw: strange },
+    { kind: "unknown", raw: broken },
+  ]);
+});
+
+test("a record of a kind niwa does not speak about is unknown with its raw data", async () => {
+  writeFileSync(logPath(), user("hi") + record({ type: "mode", mode: "plan" }));
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(["user", "unknown"]);
+  expect(records[1]).toMatchObject({ raw: { type: "mode", mode: "plan" } });
+});
+
+test("a compaction is the summary record; the boundary beside it is kept as unknown", async () => {
+  writeFileSync(
+    logPath(),
+    user("hi") +
+      record({
+        type: "system",
+        subtype: "compact_boundary",
+        uuid: "s1",
+        timestamp: "2026-10-07T12:00:03.000Z",
+        sessionId: SESSION,
+        content: "Conversation compacted",
+      }) +
+      record({
+        type: "user",
+        uuid: "u2",
+        isCompactSummary: true,
+        timestamp: "2026-10-07T12:00:03.100Z",
+        sessionId: SESSION,
+        message: { role: "user", content: "what happened so far" },
+      }),
+  );
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(["user", "unknown", "compaction"]);
+  expect(records[1]).toMatchObject({ raw: { subtype: "compact_boundary" } });
+  expect(records[2]).toMatchObject({ kind: "compaction", summary: "what happened so far" });
+});
+
+test("a subagent is linked to the call that spawned it", async () => {
+  const dir = join(projectDir(), SESSION, "subagents");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "agent-abc.meta.json"),
+    JSON.stringify({ agentType: "general-purpose", toolUseId: "toolu_01spawn" }),
+  );
+  writeFileSync(
+    join(dir, "agent-abc.jsonl"),
+    record({
+      type: "user",
+      uuid: "u9",
+      timestamp: "2026-10-07T12:00:05.000Z",
+      cwd: "/work/project",
+      sessionId: SESSION,
+      agentId: "abc",
+      isSidechain: true,
+      message: { role: "user", content: "the work" },
+    }),
+  );
+  writeFileSync(
+    logPath(),
+    user("go") +
+      assistant([
+        { type: "tool_use", id: "toolu_01spawn", name: "Agent", input: { description: "work" } },
+      ]),
+  );
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(["user", "tool-call", "nested"]);
+  expect(records[2]).toMatchObject({ child: { harness: HARNESS, native: "subagent-abc" } });
+
+  // The subagent's own log is a session of its own.
+  const child = await all(reading().read(sessionId(HARNESS, "subagent-abc")));
+  expect(child).toHaveLength(1);
+  expect(child[0]).toMatchObject({ kind: "user", text: "the work" });
+});
+
+test("H3 a half-written tail is marked incomplete and is not passed as a whole record", async () => {
+  const whole = assistant([{ type: "text", text: "the finished answer" }]);
+  writeFileSync(logPath(), user("first") + whole.slice(0, whole.length - 12));
+  const first = await all(reading().read(ID));
+  expect(first.map((r) => r.incomplete)).toEqual([false, true]);
+  expect(await reading().coverage(ID, first[0]?.locator)).toEqual({ status: "not-scanned" });
+
+  appendFileSync(logPath(), whole.slice(whole.length - 12));
+  const rest = await all(reading().read(ID, first[0]?.locator));
+  expect(rest).toHaveLength(1);
+  expect(rest[0]).toMatchObject({ kind: "assistant", text: "the finished answer", incomplete: false });
+});
+
+test("a locator resumes exactly, and raw gives the harness's own record", async () => {
+  writeFileSync(logPath(), user("one") + assistant([{ type: "text", text: "two" }]));
+  const full = await all(reading().read(ID));
+  expect(full).toHaveLength(2);
+  for (let i = 0; i < full.length; i += 1) {
+    const rest = await all(reading().read(ID, full[i]?.locator));
+    expect(rest.map((r) => r.locator)).toEqual(full.slice(i + 1).map((r) => r.locator));
+  }
+  expect(await reading().coverage(ID, full[1]?.locator)).toEqual({ status: "empty" });
+  expect(await reading().raw(ID, full[0]?.locator as Locator)).toMatchObject({
+    type: "user",
+    message: { role: "user", content: "one" },
+  });
+  await expect(reading().raw(ID, "bogus" as Locator)).rejects.toThrow("not of this side");
+});
