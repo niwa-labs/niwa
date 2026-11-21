@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { matchPath, pathFor, pathProblem, pathShape } from "../src/index.ts";
+import { isReserved, matchPath, pathFor, pathProblem, pathShape, RESERVED_SEGMENTS } from "../src/index.ts";
 
 describe("paths", () => {
   test("valid and invalid patterns", () => {
@@ -33,5 +33,16 @@ describe("paths", () => {
     expect(matchPath("/runs/$runId", "/tasks/x")).toBeUndefined();
     expect(matchPath("/", "/")).toEqual({});
     expect(matchPath("/runs/$runId", "/runs/%E0%A4%A")).toBeUndefined();
+  });
+});
+
+describe("the first segments reserved for the cockpit and its server", () => {
+  test("are exactly the pages of the cockpit and the endpoints the web surface answers", () => {
+    // The web surface's tests pin the endpoints; its journal is the cockpit's own page.
+    expect([...RESERVED_SEGMENTS].sort()).toEqual(
+      ["journal", "api", "assets", "modules", "login", "events", "feed", "resolve", "answer", "trace", "trace-data"].sort(),
+    );
+    for (const pattern of ["/", "/journal", "/Feed", "/api/$x", "/trace-data/$id"]) expect(isReserved(pattern), pattern).toBe(true);
+    for (const pattern of ["/runs", "/feeds", "/apidocs/$x", "/x/feed"]) expect(isReserved(pattern), pattern).toBe(false);
   });
 });

@@ -249,3 +249,34 @@ test("a module that imports a subpath of a shared package the page does not map 
   expect(body).toContain("react/compiler-runtime is not shared by the cockpit");
   expect(body).toContain("react/jsx-runtime");
 });
+
+test("a page of the app whose address ends like a file name is the app's page for a browser, and a missing file for anything else", async () => {
+  const { web } = await setup();
+  const opening = { headers: { accept: "text/html,application/xhtml+xml,*/*;q=0.8" } };
+  for (const path of ["/reports/v1.2", "/runs/run-1.5", "/notes.md"]) {
+    const page = await webFetch(`${web.url}${path}`, opening);
+    expect(page.status, path).toBe(200);
+    expect(await page.text(), path).toContain('type="importmap"');
+    expect((await webFetch(`${web.url}${path}`)).status, path).toBe(404);
+  }
+  // An asset is never the page, whatever is accepted.
+  expect((await webFetch(`${web.url}/assets/missing.js`, opening)).status).toBe(404);
+});
+
+// What the server answers itself, by the first segment of the address. The cockpit refuses a module page at any of these first
+// segments, so an address the app routes is never also one of these; the SDK's tests pin the same list.
+const ENDPOINTS: Record<string, string[]> = {
+  exact: ["/login", "/events", "/feed", "/resolve", "/answer"],
+  under: ["/api/x", "/assets/x", "/modules/x", "/trace/x", "/trace-data/x"],
+};
+
+test("the addresses the cockpit reserves for the server are answered by the server, and the cockpit's own journal is the app's page", async () => {
+  const { web } = await setup();
+  const opening = { headers: { accept: "text/html" }, redirect: "manual" as const };
+  for (const path of [...ENDPOINTS.exact!, ...ENDPOINTS.under!]) {
+    const answer = await webFetch(`${web.url}${path}`, opening);
+    expect(answer.headers.get("content-type"), path).not.toContain("text/html");
+    await answer.body?.cancel();
+  }
+  expect(await (await webFetch(`${web.url}/journal`, opening)).text()).toContain('type="importmap"');
+});

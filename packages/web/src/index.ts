@@ -261,7 +261,7 @@ async function route(context: Context, request: Request): Promise<Response> {
     if (app === undefined || path.startsWith("/api/")) return text(404, "there is no such page");
     // An address of the app: its files, the client modules, or a page the app routes itself.
     if (request.method !== "GET") return methodNotAllowed("GET");
-    return appResponse(context, app, path);
+    return appResponse(context, app, request);
   }
   if (request.method !== allowed) return methodNotAllowed(allowed);
 
@@ -671,8 +671,9 @@ const IMMUTABLE = "public, max-age=31536000, immutable";
 const MODULE_PATH = /^\/modules\/([^/]+)\/([0-9a-f]{64})\/(index\.js|style-(\d+)-([0-9a-f]{12})\.css)$/;
 
 /** What the app serves at an address that is none of the API's: its files, the client modules, or the app's own page. */
-async function appResponse(context: Context, app: WebApp, path: string): Promise<Response> {
+async function appResponse(context: Context, app: WebApp, request: Request): Promise<Response> {
   const { api } = context;
+  const path = new URL(request.url).pathname;
   if (path.startsWith(ASSETS_PREFIX)) {
     const file = await assetFile(app, path);
     if (file === undefined) return text(404, "there is no such file");
@@ -692,9 +693,15 @@ async function appResponse(context: Context, app: WebApp, path: string): Promise
       ? new Response(answer.code, { headers: { "content-type": typeOf("module.js"), ...headers } })
       : new Response(answer.css, { headers: { "content-type": typeOf("style.css"), ...headers } });
   }
-  // An address with an extension names a file that is not there; any other is a page of the app.
-  if (/\.[A-Za-z0-9]+$/.test(path)) return text(404, "there is no such file");
+  // A browser that opens an address asks for a page, whatever the address ends with: `/reports/v1.2` is a page of the app. Any
+  // other request for an address with an extension names a file that is not there.
+  if (/\.[A-Za-z0-9]+$/.test(path) && !wantsPage(request)) return text(404, "there is no such file");
   return appPage(app);
+}
+
+/** Whether the request is a browser opening an address, which accepts a page; a script or an image does not. */
+function wantsPage(request: Request): boolean {
+  return (request.headers.get("accept") ?? "").includes("text/html");
 }
 
 function json(status: number, body: unknown): Response {
