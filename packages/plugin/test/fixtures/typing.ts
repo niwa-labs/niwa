@@ -3,8 +3,8 @@
 import { record } from "@niwa-labs/core";
 import { z } from "zod";
 
-import { offerKey, plugin, trigger as triggerOf, TIMER_OFFER } from "../../src/index.ts";
-import type { PluginApi, TimerDef, TimerOffer, Trigger } from "../../src/index.ts";
+import { offerKey, plugin, trigger as triggerOf, AGENT, TIMER_OFFER } from "../../src/index.ts";
+import type { AgentOffer, PluginApi, TimerDef, TimerOffer, Trigger } from "../../src/index.ts";
 
 plugin("typing-sync", (api) => {
   api.declare();
@@ -39,3 +39,11 @@ export const offered = triggerOf(Ping, { name: "ping", filter: {}, offer: { key:
 export const offerOfAnother = triggerOf(Ping, { name: "ping", filter: {}, offer: { key: TIMER_OFFER, value: 123 } }); // error
 export const offerOfNone = triggerOf(Ping, { name: "ping", filter: {}, offer: { key: offerKey<string>("typing.point", "reader"), value: "x" } });
 export const wrongOffer = triggerOf(Ping, { name: "ping", filter: {}, offer: { key: offerKey<string>("typing.point", "reader"), value: 1 } }); // error
+
+plugin("typing-agents", (api) => {
+  api.offer(AGENT, { name: "a", harness: "h", prompt: "p" });
+  api.offer(AGENT, { name: "a", role: "r", prompt: "p" });
+  api.offer(AGENT, { name: "a", prompt: "p" }); // error
+  api.offer(AGENT, { name: "a", harness: "h", role: "r", prompt: "p" }); // error
+});
+export const anAgent: AgentOffer = { name: "a", role: "r", prompt: "p" };

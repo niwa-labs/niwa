@@ -131,16 +131,24 @@ export const COCKPIT_MODULE: OfferKey<CockpitModuleOffer> = offerKey("cockpit.mo
  * options. The name is the agent's address (`agent:<name>`); it runs on a harness installation or on a
  * role, is told its prompt and character, and its sessions see the niwa actions of its hands.
  */
-export interface AgentOffer {
+interface AgentOfferBase {
   readonly name: string;
-  readonly harness?: string;
-  readonly role?: string;
   readonly prompt: string;
   readonly character?: string;
   readonly hands?: readonly string[];
   readonly tools?: "all" | "niwa-only" | { readonly allow: readonly string[] };
   readonly project?: { readonly cwd: string; readonly direction?: string };
 }
+
+/**
+ * An agent runs on exactly one of a harness installation (`harness`) and a role (`role`): an offer with
+ * neither would not be an agent and one with both is not a choice anybody can make, so neither is an offer.
+ */
+export type AgentOffer = AgentOfferBase &
+  (
+    | { readonly harness: string; readonly role?: never }
+    | { readonly role: string; readonly harness?: never }
+  );
 
 /** Where a plugin defines an agent it needs (`api.offer(AGENT, { name, harness, prompt })`): the agents module reads it. */
 export const AGENT: OfferKey<AgentOffer> = offerKey("agent", "agents");
