@@ -4,7 +4,7 @@
 // when their command says so.
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { selfTestVerdict } from "../src/index.ts";
@@ -101,6 +101,57 @@ test("review and fix sends blocking findings to the author and stops once the re
   expect(out).toMatchObject({ rounds: 2, stopped: "accepted", history: ["FAIL", "PASS"] });
   expect(flow.calls.author?.[0]?.prompt).toContain("no error handling");
   expect(gitIn(dirOf(flow.calls.author?.[0] ?? {}), "rev-parse", "HEAD")).toBe(out.sha);
+}, 30_000);
+
+test("the commit a review round reports is the one the worktree is at, not the one the author names", async () => {
+  const flow = await host({
+    author: (call) => {
+      commitFile(dirOf(call), "fix.txt", "fixed\n");
+      // The author names a commit that is not the one it made.
+      return { sha: "0".repeat(40) };
+    },
+    reviewer: (call) => (call.prompt.includes(`to the commit ${"0".repeat(40)}`) ? { verdict: "FAIL", findings: [{ title: "no such commit", evidence: "x", severity: "blocks" }] } : { verdict: "PASS", findings: [] }),
+  });
+  const ended = await flow.run(`
+    import { commitBy, inWorktree, reviewFix } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, async (wt) => {
+        const built = await commitBy("author", wt, "Fix it");
+        const out = await reviewFix("review", { wt, base: "main", author: "author", reviewers: ["reviewer"] });
+        return { built, sha: out.value.sha, verdict: out.judged.verdict };
+      }));`);
+  const out = resultOf(ended) as { built: { sha: string; dirty: boolean }; sha: string; verdict: string };
+  const worktree = dirOf(flow.calls.author?.[0] ?? {});
+  expect(out.built).toEqual({ sha: gitIn(worktree, "rev-parse", "HEAD"), dirty: false });
+  expect(out.built.sha).not.toBe("0".repeat(40));
+  expect(out.verdict).toBe("PASS");
+}, 30_000);
+
+test("a fix left uncommitted is sent back to the author without being reviewed", async () => {
+  let fixes = 0;
+  let reviews = 0;
+  const flow = await host({
+    author: (call) => {
+      fixes += 1;
+      // The first fix is written and not committed: the review would not see it.
+      if (fixes === 1) writeFileSync(join(dirOf(call), "fix.txt"), "fixed\n");
+      else commitFile(dirOf(call), "fix.txt", "fixed\n");
+      return { summary: "done" };
+    },
+    reviewer: () => {
+      reviews += 1;
+      return reviews === 1 ? { verdict: "FAIL", findings: [{ title: "not handled", evidence: "main.ts", severity: "blocks" }] } : { verdict: "PASS", findings: [] };
+    },
+  });
+  const ended = await flow.run(`
+    import { inWorktree, reviewFix } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, async (wt) => {
+        const out = await reviewFix("review", { wt, base: "main", author: "author", reviewers: ["reviewer"] });
+        return { history: out.history.map((j) => j.verdict), titles: out.history.map((j) => j.findings.map((f) => f.title)) };
+      }));`);
+  expect(resultOf(ended)).toEqual({ history: ["FAIL", "FAIL", "PASS"], titles: [["not handled"], ["the work was left uncommitted"], []] });
+  expect(reviews).toBe(2);
 }, 30_000);
 
 test("test first takes a test that fails before the change, then a change that makes it pass", async () => {

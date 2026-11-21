@@ -9,8 +9,8 @@ import type { Attempt, Judged, Seat } from "@niwa-labs/flow";
 import { runCheck } from "@niwa-labs/proc/flow";
 import type { ArtifactRef, Check } from "@niwa-labs/proc/flow";
 
-import { checkFailed, commitBy, findingsText } from "./review.ts";
-import { seatIn } from "./worktree.ts";
+import { checkFailed, commitBy, findingsText, uncommitted } from "./review.ts";
+import { seatIn, stateOf } from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 
 const passed = (what: string): Judged => ({ verdict: "PASS", findings: [], method: `check (${what})` });
@@ -38,11 +38,15 @@ export async function tddLoop(
           outcome.set(round, { verdict: "FAIL", findings: [{ title: "the new test passes before the change", evidence: before.summary, severity: "blocks" }], method: "check (red)" });
           return { sha: red.sha, redSha: "", check: before.artifact };
         }
+        if (red.dirty) {
+          outcome.set(round, uncommitted());
+          return { sha: red.sha, redSha: "", check: before.artifact };
+        }
         redSha = red.sha;
       }
       const green = await commitBy(opts.author, opts.wt, `Make the failing test of the commit ${redSha} pass, for this task:\n${opts.task}${notes}`);
       const after = await runCheck("green", opts.test);
-      outcome.set(round, after.ok ? passed("green") : checkFailed("the test", after.summary));
+      outcome.set(round, green.dirty ? uncommitted() : after.ok ? passed("green") : checkFailed("the test", after.summary));
       return { sha: green.sha, redSha, check: after.artifact };
     },
     judge: async (_value, round) => outcome.get(round) as Judged,
@@ -107,23 +111,24 @@ export async function debugLoop(
         judged: { verdict: "INCONCLUSIVE" as const, findings: [{ title: "the repro passes before any change", evidence: before.summary, severity: "note" as const }], method: "check (before)" },
       };
     }
-    const results = new Map<number, { ok: boolean; summary: string; artifact: ArtifactRef }>();
+    const results = new Map<number, { ok: boolean; dirty: boolean; summary: string; artifact: ArtifactRef }>();
     const attempt = await revise("fix", {
       ...(opts.max === undefined ? {} : { max: opts.max }),
       write: async (feedback, round) => {
         const fixed = await askSeat(
           seatIn(opts.author, opts.wt.path),
           `Fix this bug: ${opts.symptom}\n\nThe repro fails:\n${(feedback === null ? before.summary : findingsText(feedback.findings))}\n\n` +
-            `Work in ${opts.wt.path} on the branch ${opts.wt.branch}. Commit the fix; answer with its commit id (sha) and the cause you found.`,
-          z.object({ sha: z.string(), cause: z.string() }),
+            `Work in ${opts.wt.path} on the branch ${opts.wt.branch}. Commit the fix; answer with the cause you found.`,
+          z.object({ cause: z.string() }),
         );
+        const { sha, dirty } = await stateOf(opts.wt);
         const after = await runCheck("after", opts.repro);
-        results.set(round, { ok: after.ok, summary: after.summary, artifact: after.artifact });
-        return fixed;
+        results.set(round, { ok: after.ok, dirty, summary: after.summary, artifact: after.artifact });
+        return { sha, cause: fixed.cause };
       },
       judge: async (_value, round) => {
-        const after = results.get(round) as { ok: boolean; summary: string };
-        return after.ok ? passed("repro") : checkFailed("the repro", after.summary);
+        const after = results.get(round) as { ok: boolean; dirty: boolean; summary: string };
+        return after.dirty ? uncommitted() : after.ok ? passed("repro") : checkFailed("the repro", after.summary);
       },
     });
     return { cause: attempt.value.cause, sha: attempt.value.sha, before: before.artifact, after: (results.get(attempt.rounds) as { artifact: ArtifactRef }).artifact, judged: attempt.judged };
@@ -157,14 +162,20 @@ export async function coverageLoop(
   return script().scope(key, undefined, async () => {
     const before = await read("before");
     const raised = await loop("raise", {
-      init: { coverage: before, sha: "" },
+      init: { coverage: before, sha: "", clean: true },
       max: opts.max ?? 3,
-      done: (state) => state.coverage >= opts.threshold,
+      done: (state) => state.clean && state.coverage >= opts.threshold,
       step: async (state) => {
-        const added = await commitBy(opts.author, opts.wt, `Add tests that raise the coverage from ${String(state.coverage)} to at least ${String(opts.threshold)}. Change no code under test.`);
-        return { coverage: await read("measure"), sha: added.sha };
+        const added = await commitBy(
+          opts.author,
+          opts.wt,
+          `Add tests that raise the coverage from ${String(state.coverage)} to at least ${String(opts.threshold)}. Change no code under test.` +
+            (state.clean ? "" : "\n\nThe last round left changes uncommitted: commit them."),
+        );
+        return { coverage: await read("measure"), sha: added.sha, clean: !added.dirty };
       },
     });
-    return { before, after: raised.state.coverage, sha: raised.state.sha, reached: raised.state.coverage >= opts.threshold };
+    const { coverage, sha, clean } = raised.state;
+    return { before, after: coverage, sha, reached: clean && coverage >= opts.threshold };
   });
 }

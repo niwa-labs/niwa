@@ -9,7 +9,7 @@ import type { Attempt, Finding, Judged, Seat } from "@niwa-labs/flow";
 import { runCheck } from "@niwa-labs/proc/flow";
 import type { ArtifactRef, Check } from "@niwa-labs/proc/flow";
 
-import { headOf, seatIn } from "./worktree.ts";
+import { seatIn, stateOf } from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 
 /** What reviewers are asked to judge: the changes of a worktree's branch against a base, at a commit. */
@@ -22,10 +22,24 @@ export function findingsText(findings: readonly Finding[]): string {
   return findings.length === 0 ? "(none listed)" : findings.map((finding) => `- [${finding.severity}] ${finding.title}: ${finding.evidence}`).join("\n");
 }
 
-/** Ask an author to change the worktree and commit: the commit it made. */
-export function commitBy(author: Seat, wt: Worktree, prompt: string): Promise<{ sha: string }> {
+/**
+ * Ask an author to change the worktree and commit. What comes back is read from the worktree after
+ * the author is done, not from the author's word: the commit its branch is at, and whether changes
+ * are left out of it (`dirty`). A check of the worktree applies to that commit only when nothing is.
+ */
+export async function commitBy(author: Seat, wt: Worktree, prompt: string): Promise<{ sha: string; dirty: boolean }> {
   const { z } = script();
-  return askSeat(seatIn(author, wt.path), `${prompt}\n\nWork in ${wt.path} on the branch ${wt.branch}. Commit what you change and answer with the commit id (sha).`, z.object({ sha: z.string() }));
+  await askSeat(seatIn(author, wt.path), `${prompt}\n\nWork in ${wt.path} on the branch ${wt.branch}. Commit what you change, and answer with a short account of what you did.`, z.object({ summary: z.string().optional() }));
+  return stateOf(wt);
+}
+
+/** Changes left out of the commit a check was run for, as a judgement that blocks. */
+export function uncommitted(): Judged {
+  return {
+    verdict: "FAIL",
+    findings: [{ title: "the work was left uncommitted", evidence: "the worktree holds changes (or new files) that are not in the commit it is at: commit them, or remove what is not part of the work", severity: "blocks" }],
+    method: "check (worktree)",
+  };
 }
 
 /** A check that did not pass, as a judgement that blocks. */
@@ -36,7 +50,10 @@ export function checkFailed(what: string, summary: string): Judged {
 /**
  * Review the changes of a worktree against `base` and have `author` fix what blocks, for at most
  * `max` reviews (three by default). The first review is of the worktree as it is. With `test`, the
- * check runs before each review and a failing check is sent back to the author unreviewed.
+ * check runs before each review and a failing check is sent back to the author unreviewed. So is a
+ * worktree that holds changes outside the commit (the commit is read from the worktree, not taken
+ * from the author's word), which includes files a check leaves behind: a check has to leave the
+ * worktree as it found it, or have its output ignored by git.
  */
 export async function reviewFix(
   key: string,
@@ -44,28 +61,23 @@ export async function reviewFix(
 ): Promise<Attempt<{ sha: string; check?: ArtifactRef }>> {
   checkKey(key, "the key of a review");
   if (opts.reviewers.length === 0) throw new TypeError(`reviewFix "${key}": give at least one reviewer`);
-  const tested = new Map<number, { ok: boolean; summary: string }>();
+  const blocked = new Map<number, Judged>();
   return revise(key, {
     ...(opts.max === undefined ? {} : { max: opts.max }),
     write: async (feedback, round) => {
-      const sha =
-        feedback === null
-          ? await headOf("head", opts.wt)
-          : (await commitBy(opts.author, opts.wt, `Fix what the review found in the changes against ${opts.base}:\n${findingsText(feedback.findings)}`)).sha;
-      if (opts.test === undefined) return { sha };
-      const check = await runCheck("test", opts.test);
-      tested.set(round, { ok: check.ok, summary: check.summary });
-      return { sha, check: check.artifact };
+      const state = feedback === null ? await stateOf(opts.wt, "head") : await commitBy(opts.author, opts.wt, `Fix what the review found in the changes against ${opts.base}:\n${findingsText(feedback.findings)}`);
+      const check = opts.test === undefined ? undefined : await runCheck("test", opts.test);
+      if (state.dirty) blocked.set(round, uncommitted());
+      else if (check !== undefined && !check.ok) blocked.set(round, checkFailed("the test", check.summary));
+      return { sha: state.sha, ...(check === undefined ? {} : { check: check.artifact }) };
     },
-    judge: async ({ sha }, round) => {
-      const check = tested.get(round);
-      if (check !== undefined && !check.ok) return checkFailed("the test", check.summary);
-      return verify("review", {
+    judge: async ({ sha }, round) =>
+      blocked.get(round) ??
+      verify("review", {
         subject: reviewSubject(opts.wt, opts.base, sha),
         by: opts.reviewers.map((reviewer) => seatIn(reviewer, opts.wt.path)),
         ...(opts.focus === undefined ? {} : { lenses: opts.focus }),
-      });
-    },
+      }),
   });
 }
 
@@ -82,7 +94,7 @@ export async function reviewPanel(
   const { z } = script();
   const legs = opts.reviewers.flatMap((seat, at) => opts.lenses.map((lens, index) => ({ seat, lens, key: `${keys[at] as string}-l${String(index + 1)}` })));
   const answers = await script().scope(key, undefined, async () => {
-    const sha = await headOf("head", opts.wt);
+    const { sha } = await stateOf(opts.wt, "head");
     return map("legs", legs, { key: (leg) => leg.key }, (leg) =>
       askSeat(
         seatIn(leg.seat, opts.wt.path),

@@ -46,14 +46,21 @@ export function seatIn(seat: Seat, cwd: string): SeatOptions {
 }
 
 /**
- * The commit a worktree's branch is at, as the git module reports it (`git.worktree.get`) under
- * `key`. The module reads it outside any box: a command run in the worktree is boxed to that
- * directory, and a linked worktree keeps its git directory in the repository it belongs to.
+ * How a worktree stands now, as the git module reports it (`git.worktree.get`): the commit its
+ * branch is at and whether anything in it is not in that commit. The module reads it outside any
+ * box: a command run in the worktree is boxed to that directory, and a linked worktree keeps its git
+ * directory in the repository it belongs to. A step of the script, under `key` when one is given.
  */
-export async function headOf(key: string, wt: Worktree): Promise<string> {
-  const got = (await script().scope(key, undefined, () => script().call("git.worktree.get", { id: wt.id }))) as { head?: string };
+export async function stateOf(wt: Worktree, key?: string): Promise<{ sha: string; dirty: boolean }> {
+  const ask = () => script().call("git.worktree.get", { id: wt.id });
+  const got = (await (key === undefined ? ask() : script().scope(key, undefined, ask))) as { head?: string; dirty: boolean };
   if (got.head === undefined) throw new Error(`the head of the worktree ${wt.id} could not be read: its directory is gone`);
-  return got.head;
+  return { sha: got.head, dirty: got.dirty };
+}
+
+/** The commit a worktree's branch is at: read under `key` by `stateOf`. */
+export async function headOf(key: string, wt: Worktree): Promise<string> {
+  return (await stateOf(wt, key)).sha;
 }
 
 /**

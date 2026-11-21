@@ -3,6 +3,8 @@
 // a confirmed cause, and a self-test that fails on a failed scenario.
 
 import { afterEach, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { codeHost, commitFile, gitIn, resultOf } from "./support.ts";
 import type { CodeHost, Reply } from "./support.ts";
@@ -41,6 +43,31 @@ test("an economy implementation commits in a new worktree and is judged by its t
   expect(out.verdict).toBe("PASS");
   expect(gitIn(out.path, "rev-parse", "HEAD")).toBe(out.sha);
   expect(out.path).not.toBe(flow.repo);
+}, 30_000);
+
+test("an economy implementation whose author leaves the work uncommitted is not judged by its test", async () => {
+  const flow = await host({
+    author: (call) => {
+      writeFileSync(join(dirOf(call), "work.txt"), "done\n");
+      return { summary: "done" };
+    },
+  });
+  const ended = await flow.run(`
+    import { implement } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const done = await implement("task", {
+        task: "Add work.txt",
+        repo: "$REPO",
+        mode: "economy",
+        seats: { author: "author" },
+        test: { cmd: ["sh", "-c", "test -f work.txt"], cwd: "$REPO" },
+      });
+      return { sha: done.sha, path: done.worktree.path, judged: done.judged };
+    });`);
+  const out = resultOf(ended) as { sha: string; path: string; judged: { verdict: string; findings: Array<{ title: string }> } };
+  expect(out.judged.verdict).toBe("FAIL");
+  expect(out.judged.findings.map((one) => one.title)).toEqual(["the work was left uncommitted"]);
+  expect(out.sha).toBe(gitIn(out.path, "rev-parse", "HEAD"));
 }, 30_000);
 
 test("a safe implementation the owner declines to start stops before any worktree or agent", async () => {

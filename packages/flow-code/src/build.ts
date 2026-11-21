@@ -8,8 +8,8 @@ import type { Judged, Seat, Verdict } from "@niwa-labs/flow";
 import { runCheck } from "@niwa-labs/proc/flow";
 import type { Check } from "@niwa-labs/proc/flow";
 
-import { checkFailed, commitBy, reviewFix } from "./review.ts";
-import { forkSelect, makeWorktree, seatIn } from "./worktree.ts";
+import { checkFailed, commitBy, reviewFix, uncommitted } from "./review.ts";
+import { forkSelect, makeWorktree, seatIn, stateOf } from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 
 /** How a scenario of a self-test went: passed, failed, held behind a gate it cannot pass, or could not be run. */
@@ -101,16 +101,17 @@ export async function implement(
           const built = await commitBy(seat, wt, prompt);
           const test = testIn(opts.test, wt);
           if (test !== undefined) ok.set(wt.id, (await runCheck("test", test)).ok);
-          return { sha: built.sha, wt };
+          return { sha: built.sha, dirty: built.dirty, wt };
         },
         pick: async (candidates) => {
           const ids = Object.keys(candidates);
           return ids.find((id) => ok.get((candidates[id] as { wt: Worktree }).wt.id) === true) ?? (ids[0] as string);
         },
       });
-      const { sha, wt } = forks.winner.value;
-      const judged =
-        opts.seats.reviewer === undefined
+      const { sha, dirty, wt } = forks.winner.value;
+      const judged = dirty
+        ? uncommitted()
+        : opts.seats.reviewer === undefined
           ? ok.get(wt.id) === true
             ? { verdict: "PASS" as const, findings: [], method: "check (test)" }
             : await judgedBy(testIn(opts.test, wt), "judge")
@@ -120,7 +121,7 @@ export async function implement(
     const wt = await makeWorktree({ repo: opts.repo, ...(opts.base === undefined ? {} : { base: opts.base }), description: `implement ${key}` });
     const built = await commitBy(opts.seats.author, wt, prompt);
     const test = testIn(opts.test, wt);
-    if (opts.mode === "economy") return { sha: built.sha, worktree: wt, judged: await judgedBy(test, "judge") };
+    if (opts.mode === "economy") return { sha: built.sha, worktree: wt, judged: built.dirty ? uncommitted() : await judgedBy(test, "judge") };
     const reviewed = await reviewFix("review", { wt, base: wt.baseSha, author: opts.seats.author, reviewers: [opts.seats.reviewer ?? opts.seats.author], ...(test === undefined ? {} : { test }) });
     if (opts.mode === "safe") {
       const done = await humanGate("accept", { summary: `Hand back the work on ${wt.branch} (${reviewed.value.sha}), judged ${reviewed.judged.verdict}?`, options: ["accept"] });
@@ -146,10 +147,11 @@ export async function integrate(
     const merged = await askSeat(
       seatIn(opts.integrator, wt.path),
       `Merge these branches, in this order, into the branch ${wt.branch} checked out in ${wt.path} (made from ${opts.into}): ${opts.branches.join(", ")}.\n` +
-        "Resolve every conflict so both sides' intent holds, and commit. Answer with the final commit id (sha) and, for each merge that conflicted, the files.",
-      z.object({ sha: z.string(), conflicts: z.array(z.object({ files: z.array(z.string()) })) }),
+        "Resolve every conflict so both sides' intent holds, and commit. Answer with, for each merge that conflicted, the files.",
+      z.object({ conflicts: z.array(z.object({ files: z.array(z.string()) })) }),
     );
-    const judged = await judgedBy(testIn(opts.test, wt), "test");
-    return { sha: merged.sha, conflicts: merged.conflicts.map((one) => ({ files: one.files, resolvedBy: opts.integrator })), judged };
+    const { sha, dirty } = await stateOf(wt);
+    const judged = dirty ? uncommitted() : await judgedBy(testIn(opts.test, wt), "test");
+    return { sha, conflicts: merged.conflicts.map((one) => ({ files: one.files, resolvedBy: opts.integrator })), judged };
   });
 }
