@@ -76,12 +76,13 @@ export function makePlugin(home: string) {
     const counter = api.state("counter", z.number(), 0);
     const batch = api.state("batch", z.array(z.string()), []);
 
-    api.on(Add, async (data, step) => {
+    // Every update of the counter is in flight at once: the subscriptions let them all run.
+    api.on(Add, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       await step(tick, { n: data.n });
       counter.update((value) => value + data.n);
     });
 
-    api.on(Bump, async (data, step) => {
+    api.on(Bump, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       await step(tick, { n: data.n });
       counter.update((value) => value + data.n);
     });

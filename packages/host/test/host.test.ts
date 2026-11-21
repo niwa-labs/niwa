@@ -31,8 +31,9 @@ function callerName(caller: Caller): string {
 const jobs = plugin("host-rules", (api) => {
   api.declare(Job, Gate, Seen);
   api.action(whoami);
-  api.on(Job, async (job, step) => {
-    if (job.wait) await step.wait(Gate, () => true);
+  // A job that waits for the gate holds no other job.
+  api.on(Job, { concurrency: Number.POSITIVE_INFINITY }, async (job, step) => {
+    if (job.wait) await step.wait(Gate);
     await step.emit(Seen, { n: job.n });
   });
 });

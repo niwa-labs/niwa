@@ -210,7 +210,7 @@ const SESSION_ASK: ActionName = actionName("session.ask");
 function asker(session: string): Plugin {
   return plugin("session-asker", (api) => {
     api.declare(Ask, Answered, Other);
-    api.on(Ask, async (_data, step) => {
+    api.on(Ask, { concurrency: Number.POSITIVE_INFINITY }, async (_data, step) => {
       const answer = await step<unknown, { value: unknown }>(SESSION_ASK, {
         session,
         prompt: "good?",

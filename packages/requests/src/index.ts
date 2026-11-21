@@ -452,7 +452,8 @@ export function requests(opts: RequestsOptions = {}): Plugin {
     });
 
     // A request reaches its resolvers as soon as it exists; a resolver that fails leaves it open.
-    api.on(RequestCreated, async (data, step) => {
+    // A resolver may take its time over one request: the others do not wait for it.
+    api.on(RequestCreated, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       rearm?.();
       if (resolvers.resolversFor(data.question).length === 0) return;
       await step(written.resolve, { id: data.id });

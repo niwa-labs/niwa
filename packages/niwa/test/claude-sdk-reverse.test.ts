@@ -370,6 +370,8 @@ test("a tool the grant covers is allowed with no request", async () => {
   const { niwa, records, fake } = await stack([bash("ls")]);
   await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:Bash"] } });
   expect(await answered(fake, 1)).toEqual([{ behavior: "allow", updatedInput: { command: "ls" } }]);
+  // The records reach this reader by a live stream: the answer may come before its record does.
+  await eventually(() => records.some((record) => record.type === "session.reverse.answered"));
   expect(records.filter((record) => record.type === "request.created")).toEqual([]);
   expect(records.find((record) => record.type === "session.reverse.answered")?.data).toMatchObject({ by: "grant" });
 });

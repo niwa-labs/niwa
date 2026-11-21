@@ -169,7 +169,8 @@ export function installReverse(api: PluginApi): ReverseRouting {
     await step.emit(SessionReverseAnswered, { id: data.id, session: data.session, by: "cancelled", answer: { cancelled: true } });
   };
 
-  api.on(SessionReverseAsked, { id: "session-reverse-ask" }, async (data, step) => {
+  // Each question waits for its own answer: one that waits holds no other.
+  api.on(SessionReverseAsked, { id: "session-reverse-ask", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
     if (data.route !== "starter") return;
     // Nobody waits for it in this process: the harness has gone, or this process is not the one that was asked.
     // The request, if there is one, is closed so the starter is not left holding it.

@@ -154,11 +154,15 @@ test("niwa log shows a short subject: the request by its id, the invocation by i
   await openAsks(owner, [runLog]);
   const waiting = (line: string): boolean => line.includes("invocation.state") && line.includes("waiting");
   let lines: string[] = [];
+  let created: string | undefined;
   await eventually(async () => {
-    lines = (await host.records.read(seq(0))).map((one) => logLine(one, 200));
+    const rows = await host.records.read(seq(0));
+    lines = rows.map((one) => logLine(one, 200));
+    // The record itself, not another that names its type (the position of a subscription to it).
+    const row = rows.find((one) => one.type === "request.created");
+    created = row === undefined ? undefined : logLine(row, 200);
     return lines.some(waiting);
   }, 20_000, "the invocation should be logged as waiting");
-  const created = lines.find((line) => line.includes("request.created"));
   expect(created).toMatch(/request\.created +req-[0-9a-f]{6,8} /);
   expect(created).not.toContain("op_");
   const state = lines.find(waiting);

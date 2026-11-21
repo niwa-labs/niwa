@@ -460,7 +460,8 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     // The poll loop only records. Delivery is a step of this handler, so it never holds up the
     // messages after it. A delivery that failed, or was cut off by a restart, is never resent by
     // itself: the owner is asked, and only his "retry" delivers again.
-    api.on(Received, { id: "agent" }, async (data, step) => {
+    // A message the agent cannot take waits for the owner's word: the messages after it do not.
+    api.on(Received, { id: "agent", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       if (toAgent === undefined || data.text === "") return;
       for (;;) {
         const outcome = await step.outcome(deliver, { text: data.text });

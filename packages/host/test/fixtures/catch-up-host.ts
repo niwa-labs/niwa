@@ -60,7 +60,8 @@ export function makePlugin(home: string, withHandler: boolean) {
     api.action(seen);
 
     if (withHandler) {
-      api.on(Item, async (data, step) => {
+      // A new subscription starts where the journal is; this one asks for what was written before it.
+      api.on(Item, { from: "start" }, async (data, step) => {
         await step(seen, { n: data.n });
       });
     }

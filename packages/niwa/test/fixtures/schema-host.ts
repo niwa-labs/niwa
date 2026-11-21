@@ -166,7 +166,7 @@ function asker(): ReturnType<typeof plugin> {
       },
     });
     api.action(report);
-    api.on(Asked, async (data, step) => {
+    api.on(Asked, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       const schema = data.schema === "impossible" ? IMPOSSIBLE_SCHEMA : ANSWER_SCHEMA;
       let outcome: { session: string; value?: unknown; error?: string };
       try {

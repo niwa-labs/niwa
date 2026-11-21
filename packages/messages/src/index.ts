@@ -202,7 +202,8 @@ export function messages(opts?: MessagesOptions): Plugin {
     );
 
     // A message to a session goes into that session, once, as the text of the envelope.
-    api.on(MessageToSession, async (message, step) => {
+    // A session slow to take a message holds no message to another session.
+    api.on(MessageToSession, { concurrency: Number.POSITIVE_INFINITY }, async (message, step) => {
       if (message.to.kind !== "session") return;
       const sent = await step<SessionSendInput, SessionSendOutput>(SESSION_SEND, {
         session: `${message.to.harness} ${message.to.id}`,

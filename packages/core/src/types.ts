@@ -620,4 +620,5 @@ export const CORE = {
   accessSwitched: "niwa.access.switched",         // { all }
   accessAnswered: "niwa.access.answered",         // { grant, principal, name, target?, scope, request? }
   pluginInstalled: "niwa.plugin.installed",       // { plugin, version, module, hash }
+  subscriptionPosition: "niwa.subscription.position", // { subscription, seq, reason }
 } as const;

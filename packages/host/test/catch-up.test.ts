@@ -7,8 +7,8 @@
 //      Item, but no handler is installed
 //   2. emit Item { n: 1 } … Item { n: 5 }; they are written and stay unhandled
 //   3. stop the host — a clean shutdown
-//   4. spawn the host in the variant "handler": it catches up with what the
-//      journal holds, and every item is handled — the action "seen" is called
+//   4. spawn the host in the variant "handler", whose handler asks for the
+//      history: it catches up with what the journal holds, and every item is handled — the action "seen" is called
 //      once per item, and the records the core writes for the outcomes carry
 //      the number of the item, so the order of the handling is visible
 //   5. the five items were handled exactly once each, and in order

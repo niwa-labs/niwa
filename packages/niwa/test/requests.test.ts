@@ -279,10 +279,10 @@ test("requests: a handler asks as the address it says, and cancels its own reque
   host.use(
     plugin("requests-planner", (api) => {
       api.declare(AskAsMe, WithdrawMine);
-      api.on(AskAsMe, async (_data, step) => {
+      api.on(AskAsMe, { concurrency: Number.POSITIVE_INFINITY }, async (_data, step) => {
         await step.outcome(requestAsk, { to: owner, ...ReleaseBranch, from: ME });
       });
-      api.on(WithdrawMine, async (data, step) => {
+      api.on(WithdrawMine, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
         try {
           await step(REQUEST_CANCEL, { id: data.id, reason: "not needed", by: ME });
         } catch (error) {
@@ -330,7 +330,7 @@ test("requests: a handler may say who cancels; a client that says it in the payl
   host.use(
     plugin("requests-canceller", (api) => {
       api.declare(CancelIt);
-      api.on(CancelIt, async (data, step) => {
+      api.on(CancelIt, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
         await step(REQUEST_CANCEL, { id: data.id, reason: "the handler decided", by: owner });
       });
     }),
@@ -474,7 +474,7 @@ test("requests: the list of open requests holds an invocation that is paused", a
   host.use(
     plugin("requests-boom", (api) => {
       api.declare(Boom);
-      api.on(Boom, async () => {
+      api.on(Boom, { concurrency: Number.POSITIVE_INFINITY }, async () => {
         throw new Error("the handler cannot do it");
       });
     }),
@@ -760,7 +760,7 @@ function probeQuestion(shape: "number" | "text" | "even") {
 function prober() {
   return plugin("requests-probe", (api) => {
     api.declare(Probe);
-    api.on(Probe, async (data, step) => {
+    api.on(Probe, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       const asked = probeQuestion(data.shape);
       // While the ask waits, the zod schema of the value checks it whole: JSON Schema cannot say "even".
       const check = data.shape === "even" ? z.number().refine((n) => n % 2 === 0, "an even number") : undefined;

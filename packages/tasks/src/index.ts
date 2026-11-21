@@ -141,7 +141,8 @@ export function tasks(opts: TasksOptions = {}): Plugin {
 
     // An assignment for an executor is work to do: the executor starts a session, asks it for
     // the result and ends the task with what the session said.
-    api.on(ExecutorAssignment, executorHandler(facts));
+    // Each task is worked on by its own session, for as long as it takes.
+    api.on(ExecutorAssignment, { concurrency: Number.POSITIVE_INFINITY }, executorHandler(facts));
 
     // The updates go where the task says to report: from the responsible party to that address.
     api.on(TaskUpdated, async (data, step) => {

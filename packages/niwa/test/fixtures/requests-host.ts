@@ -68,7 +68,7 @@ export const bind: CallerBinding = (caller) => {
 export function executor() {
   return plugin("requests-check", (api) => {
     api.declare(Start, Answered, Ended, Proceed);
-    api.on(Start, async (data, step) => {
+    api.on(Start, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       const deadline = data.deadline;
       try {
         const { answer: raw } = answeredBy(

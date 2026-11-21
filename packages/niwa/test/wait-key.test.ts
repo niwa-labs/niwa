@@ -66,7 +66,7 @@ function build(home: string, keyed: boolean | "malformed" | "text") {
     plugin("wait-key", (api) => {
       api.declare(Start, Answer, Done);
       api.action(waiter);
-      api.on(Start, async (data, step) => {
+      api.on(Start, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
         state.runs += 1;
         await step(actionName("waiter"), { n: data.n });
         await step.emit(Done, { n: data.n });
@@ -222,7 +222,7 @@ function buildParallel(home: string) {
     plugin("wait-key-parallel", (api) => {
       api.declare(Both, Answer, Pair);
       api.action(branch);
-      api.on(Both, async (data, step) => {
+      api.on(Both, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
         state.runs += 1;
         const ids = await Promise.all([
           step(actionName("branch"), { id: "a", delay: 0 }, { key: "a" }),
@@ -343,7 +343,7 @@ test("request.ask names its request id as the key: one answer among many open as
   niwa.use(
     plugin("wait-key-asks", (api) => {
       api.declare(Asked, Reply);
-      api.on(Asked, async (data, step) => {
+      api.on(Asked, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
         state.runs += 1;
         const { answer } = answeredBy(await step(requestAsk, { to: owner, ...Who, input: { ...Who.input, detail: String(data.n) } }));
         await step.emit(Reply, { n: "text" in answer ? Number(answer.text) : -1 });
@@ -407,7 +407,7 @@ function buildSlowEnd(home: string) {
     plugin("wait-key-slow", (api) => {
       api.declare(Both, Answer, Pair);
       api.action(branch);
-      api.on(Both, async (_data, step) => {
+      api.on(Both, { concurrency: Number.POSITIVE_INFINITY }, async (_data, step) => {
         state.runs += 1;
         // The wait suspends the invocation, but the run lasts until the timer is done.
         const [answered] = await Promise.allSettled([

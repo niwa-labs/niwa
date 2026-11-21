@@ -52,6 +52,7 @@ import {
   timestamp,
   readFiltered,
   targetName,
+  holds,
 } from "@niwa-labs/core";
 import type {
   Clock,
@@ -151,7 +152,7 @@ import { COCKPIT_MODULE, handlerSource, pluginVersion, pluginName, sealVersion }
 import { catalogOf } from "./cockpit-catalog.ts";
 import { StateStore } from "./state.ts";
 import type { HostMessage } from "@niwa-labs/client";
-import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle } from "@niwa-labs/plugin";
+import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle, SubscriptionStart } from "@niwa-labs/plugin";
 import type { Host, HostOptions } from "./host-types.ts";
 
 /** The reader of an offer point that the host itself reads. */
@@ -220,6 +221,10 @@ const AdmittedData = z.object({
   pluginVersion: z.string().min(1),
 });
 const AdmittedWithPosition = AdmittedData.extend({ recordSeq: z.number(), recordType: z.string() });
+const PositionData = z.object({ subscription: z.string(), seq: z.number().int().nonnegative(), reason: z.string() });
+
+/** Why a subscription's position moved past records without admitting them. */
+type PassReason = "installed" | "filtered" | "schema" | "self" | "reentry";
 const StateData = z.object({
   invocation: z.string(),
   state: z.string(),
@@ -243,6 +248,39 @@ const IntentData = z.object({
     .optional(),
 });
 
+/** What a handler says about the records it subscribes to, checked when it is registered. */
+interface Subscribing {
+  /** Equality on paths of the data: records that do not hold it advance the position and wake nothing. */
+  readonly filter: Readonly<Record<string, unknown>> | undefined;
+  readonly from: SubscriptionStart;
+  /** How many of its invocations may be unfinished at once. */
+  readonly concurrency: number;
+  /** How many of its own invocations may stand on the chain of a record that wakes it; 0 when none may. */
+  readonly depth: number;
+}
+
+/** The subscribing of a handler that says nothing: from now, one at a time, never its own records. */
+const SUBSCRIBING: Subscribing = { filter: undefined, from: "now", concurrency: 1, depth: 0 };
+
+/** The options of a handler as the host keeps them, refused when they cannot be served. */
+function subscribingOf(where: string, options: HandlerOptions<any>): Subscribing {
+  const concurrency = options.concurrency ?? 1;
+  if (!(concurrency === Number.POSITIVE_INFINITY || (Number.isInteger(concurrency) && concurrency >= 1))) {
+    throw new TypeError(`${where}: concurrency is a whole number from 1 or Infinity, not ${String(concurrency)}`);
+  }
+  const depth = options.reentrant?.depth ?? 0;
+  if (options.reentrant !== undefined && !(Number.isInteger(depth) && depth >= 1)) {
+    throw new TypeError(`${where}: the depth of a reentrant handler is a whole number from 1, not ${String(depth)}`);
+  }
+  const from = options.from ?? "now";
+  if (from !== "now" && from !== "start") throw new TypeError(`${where}: from is "now" or "start", not ${String(from)}`);
+  const filter = options.filter as Readonly<Record<string, unknown>> | undefined;
+  if (filter !== undefined && (typeof filter !== "object" || filter === null || Array.isArray(filter))) {
+    throw new TypeError(`${where}: a filter is an object of values by field name or dotted path`);
+  }
+  return { filter, from, concurrency, depth };
+}
+
 /** One handler a plugin declared. */
 interface HandlerEntry {
   readonly name: string;
@@ -250,6 +288,7 @@ interface HandlerEntry {
   readonly handler: Handler<any>;
   /** The record types another plugin has to declare for this handler to work. */
   readonly requires: readonly AnyType[];
+  readonly subscribing: Subscribing;
 }
 
 /** What one installed version of a plugin declared while its setup function ran. */
@@ -539,7 +578,7 @@ class Niwa implements Host {
   private readonly intercepts = new Map<ActionName, Intercepts>();
   private readonly handlers = new Map<
     HandlerId,
-    { type: AnyType; version: PluginVersion; handler: Handler<any> }
+    { type: AnyType; version: PluginVersion; handler: Handler<any>; subscribing: Subscribing }
   >();
   /** Everything that watches the journal: the host's own subscriptions and the clients'. */
   private readonly feeds = new Set<Feed>();
@@ -556,8 +595,14 @@ class Niwa implements Host {
   private readonly waitIndex = new Map<string, Set<InvocationId>>();
   /** For each type, the key fields some keyed waiter uses, with how many: the fields a record checks. */
   private readonly waitFields = new Map<RecordTypeName, Map<string, number>>();
-  /** How far each (handler, record type) has admitted: rebuilt from the journal on first use. */
-  private readonly positions = new Map<string, Seq>();
+  /** How far each subscription has looked: read from the journal on first use. */
+  private readonly positions = new Map<HandlerId, Seq>();
+  /** How far each subscription's position is kept in the journal: by a position record or an admission. */
+  private readonly kept = new Map<HandlerId, Seq>();
+  /** The unfinished invocations of each subscription: admitted and not done, the waiting and the paused too. */
+  private readonly active = new Map<HandlerId, Set<InvocationId>>();
+  /** The subscription of each unfinished invocation, to free its place when it is done. */
+  private readonly activeOf = new Map<InvocationId, HandlerId>();
   /** The state of the plugins: values by key, projected from the journal. */
   private readonly states = new StateStore();
   /** The functions that stop the running services, by the plugin that declared them. */
@@ -748,12 +793,12 @@ class Niwa implements Host {
       },
       on: (
         type: AnyType,
-        optsOrHandler: HandlerOptions | Handler<any>,
+        optsOrHandler: HandlerOptions<any> | Handler<any>,
         maybeHandler?: Handler<any>,
       ) => {
-        const [options, handler] =
+        const [options, handler]: [HandlerOptions<any>, Handler<any> | undefined] =
           typeof optsOrHandler === "function"
-            ? [{ id: undefined }, optsOrHandler]
+            ? [{}, optsOrHandler]
             : [optsOrHandler, maybeHandler];
         if (handler === undefined) throw new TypeError(`a handler of "${type.name}" is missing`);
         // A filtered type is a trigger: it names its handlers after what it watches, so two
@@ -770,7 +815,8 @@ class Niwa implements Host {
             `plugin "${plugin.name}" declares two handlers with the id "${name}": a handler id must name one handler`,
           );
         }
-        installed.handlers.push({ name, type, handler, requires: options.requires ?? [] });
+        const subscribing = subscribingOf(`plugin "${plugin.name}", handler "${name}"`, options);
+        installed.handlers.push({ name, type, handler, requires: options.requires ?? [], subscribing });
         sources.push(handlerSource(name, handler));
       },
       // The reader is a function: the journal opens when the host starts serving, which is
@@ -1173,6 +1219,7 @@ class Niwa implements Host {
           type: entry.type,
           version: installed.version,
           handler: entry.handler,
+          subscribing: entry.subscribing,
         });
       }
     }
@@ -1187,6 +1234,9 @@ class Niwa implements Host {
     for (const reader of this.readers) this.actions.set(reader.name, reader);
     // And the ones of access: profiles, a grant changed or closed, the switch, and the explanation.
     for (const entry of this.accessActionList) this.actions.set(entry.name, entry);
+    // A subscription installed while the host serves starts where the journal is now, not where
+    // it is when the host next looks for work.
+    if (this.journal !== undefined) this.placeSubscriptions(this.journal);
     this.requestPump();
   }
 
@@ -1363,6 +1413,10 @@ class Niwa implements Host {
       // The state is a projection of the journal: folded from it here, so a restart sees it.
       this.states.bind({ journal, append: (recs) => this.append(recs) });
       this.positions.clear();
+      this.kept.clear();
+      this.active.clear();
+      this.activeOf.clear();
+      this.placeSubscriptions(journal);
       this.resume(journal);
       this.pump(journal);
       rmSync(path, { force: true }); // the old holder's file: this host binds its own
@@ -1592,9 +1646,12 @@ class Niwa implements Host {
     const states = latestStates(journal);
     for (const row of journal.find({ type: CORE_TYPES.invocationAdmitted })) {
       const state = states.get(row.id);
-      if (state === "done" || state === "paused") continue;
+      if (state === "done") continue;
       const spec = this.specOf(journal, row);
-      if (spec !== undefined) this.schedule(spec);
+      if (spec === undefined) continue;
+      // A paused invocation is unfinished: it holds its place in its subscription until it is decided.
+      this.hold(spec.handlerId, spec.invocation);
+      if (state !== "paused") this.schedule(spec);
     }
   }
 
@@ -1640,26 +1697,46 @@ class Niwa implements Host {
     });
   }
 
-  /** Admit the records that no handler has seen yet. Runs to the end without waiting. */
+  /**
+   * Admit the records that no subscription has seen yet. Runs to the end without waiting.
+   *
+   * A subscription reads the records of its type after its position. A record it admits moves the
+   * position in the same commit as the admission, which carries it. A record it passes over — the
+   * filter does not hold, another version of the schema, a chain its own invocations caused — moves
+   * the position too, by one position record for the stretch it passed with the reason of the last
+   * one, so a restart does not read them again. A subscription that has as many unfinished
+   * invocations as it may have stops before the next record it would admit, and goes on when one
+   * of them is done.
+   */
   private pump(journal: Journal): void {
     for (const [id, entry] of this.handlers) {
-      const typeName = entry.type.name;
-      const key = `${id}|${typeName}`;
-      const after = this.positions.get(key) ?? this.loadPosition(journal, id, typeName);
-      for (const record of journal.find({ type: typeName, after })) {
-        // A record of another version of the type is not this handler's business: it is skipped
-        // and stays readable, because the journal is the history of what happened.
-        if (record.schema !== entry.type.version) continue;
-        // A filtered type is a trigger: it watches the records of the type that pass its
-        // filter, and no others.
-        if (entry.type.filter !== undefined && !this.accepts(entry.type.filter, id, record)) {
-          this.positions.set(key, record.seq);
+      const subscribing = entry.subscribing;
+      let after = this.positions.get(id) ?? this.loadPosition(journal, id, entry.type.name, subscribing.from);
+      let passed: { seq: Seq; reason: PassReason } | undefined;
+      for (const record of journal.query({ types: [entry.type.name], from: after })) {
+        // The positions of subscriptions are their own bookkeeping: no subscription is woken by one, and
+        // passing over one writes nothing, or two subscriptions of the family would answer each other.
+        if (record.type === CORE_TYPES.subscriptionPosition) {
+          after = record.seq;
           continue;
         }
+        const reason = this.passOver(journal, id, entry, record);
+        if (reason !== undefined) {
+          after = record.seq;
+          passed = { seq: record.seq, reason };
+          continue;
+        }
+        if ((this.active.get(id)?.size ?? 0) >= subscribing.concurrency) break;
         const spec = this.admit(journal, id, entry.version, record);
-        this.positions.set(key, record.seq);
-        if (spec !== undefined) this.schedule(spec);
+        after = record.seq;
+        this.keep(id, record.seq);
+        if (spec !== undefined) {
+          this.hold(id, spec.invocation);
+          this.schedule(spec);
+        }
       }
+      this.positions.set(id, after);
+      if (passed !== undefined && passed.seq > (this.kept.get(id) ?? seq(0))) this.writePosition(id, passed.seq, passed.reason);
     }
   }
 
@@ -1670,6 +1747,88 @@ class Niwa implements Host {
     } catch (error) {
       this.fail(`the filter of "${handler}" on ${record.id}`, error);
       return false;
+    }
+  }
+
+  /** Why a subscription does not admit a record of its type, or nothing when it admits it. */
+  private passOver(
+    journal: Journal,
+    id: HandlerId,
+    entry: { type: AnyType; subscribing: Subscribing },
+    record: StoredRecord,
+  ): PassReason | undefined {
+    // A record of another version of the type is not this handler's business: it is passed over and
+    // stays readable, because the journal is the history of what happened.
+    if (record.schema !== entry.type.version) return "schema";
+    // A filtered type is a trigger: it watches the records of the type that pass its filter, and no others.
+    if (entry.type.filter !== undefined && !this.accepts(entry.type.filter, id, record)) return "filtered";
+    if (!holds(record.data, entry.subscribing.filter)) return "filtered";
+    const chain = this.ownChain(journal, id, record);
+    if (chain.length > entry.subscribing.depth) {
+      if (entry.subscribing.depth === 0) return "self";
+      console.error(
+        `niwa: ${id} is not woken by ${record.id}: its own invocations caused it ${String(chain.length)} times, past its depth ${String(entry.subscribing.depth)} (${chain.join(" <- ")})`,
+      );
+      return "reentry";
+    }
+    return undefined;
+  }
+
+  /**
+   * The records on a record's chain of causes, itself first, that the subscription's own invocations
+   * wrote: what it would be woken by again if it were woken by this one.
+   */
+  private ownChain(journal: Journal, id: HandlerId, record: StoredRecord): RecordId[] {
+    const own: RecordId[] = [];
+    for (let row: StoredRecord | undefined = record; row !== undefined; row = row.cause === null ? undefined : journal.get(row.cause)) {
+      if (row.actor.kind === "handler" && row.actor.handler === id) own.push(row.id);
+    }
+    return own;
+  }
+
+  /** Count an invocation among the unfinished ones of its subscription. */
+  private hold(id: HandlerId, invocation: InvocationId): void {
+    const set = this.active.get(id) ?? new Set<InvocationId>();
+    set.add(invocation);
+    this.active.set(id, set);
+    this.activeOf.set(invocation, id);
+  }
+
+  /** An invocation is done: its place in its subscription is free, and the next record may start. */
+  private release(invocation: InvocationId): void {
+    const id = this.activeOf.get(invocation);
+    if (id === undefined) return;
+    this.activeOf.delete(invocation);
+    this.active.get(id)?.delete(invocation);
+    this.requestPump();
+  }
+
+  /** The position a subscription has kept in the journal moved to here. */
+  private keep(id: HandlerId, at: Seq): void {
+    if (at > (this.kept.get(id) ?? seq(0))) this.kept.set(id, at);
+  }
+
+  /** Record that a subscription has looked up to a position, and why it admitted nothing on the way. */
+  private writePosition(id: HandlerId, at: Seq, reason: PassReason): void {
+    this.append([
+      {
+        id: newRecordId("pos"),
+        stream: streamId(`subscription:${id}`),
+        type: CORE_TYPES.subscriptionPosition,
+        schema: 1,
+        data: { subscription: id, seq: at, reason },
+        actor: { kind: "host" },
+        cause: null,
+        root: recordId(`subscription:${id}`),
+      },
+    ]);
+    this.keep(id, at);
+  }
+
+  /** Read the positions of the subscriptions, and place the new ones where they start. */
+  private placeSubscriptions(journal: Journal): void {
+    for (const [id, entry] of this.handlers) {
+      if (!this.positions.has(id)) this.loadPosition(journal, id, entry.type.name, entry.subscribing.from);
     }
   }
 
@@ -1711,17 +1870,36 @@ class Niwa implements Host {
     return committed === undefined ? undefined : this.specOf(journal, committed, record);
   }
 
-  /** The highest position this handler has admitted for this record type, from the journal. */
-  private loadPosition(journal: Journal, id: HandlerId, type: RecordTypeName): Seq {
+  /**
+   * The position of a subscription, from the journal: the later of its last position record and its
+   * last admission. A subscription with neither is new: it starts at the beginning of the journal,
+   * or where the journal is now, written down once so a restart does not move it.
+   */
+  private loadPosition(journal: Journal, id: HandlerId, type: RecordTypeName, from: SubscriptionStart): Seq {
     let position = seq(0);
+    let known = false;
+    const last = PositionData.safeParse(
+      journal.find({ type: CORE_TYPES.subscriptionPosition, field: "subscription", equals: id }).at(-1)?.data,
+    );
+    if (last.success) {
+      position = seq(last.data.seq);
+      known = true;
+    }
     const rows = journal.find({ type: CORE_TYPES.invocationAdmitted, field: "handler", equals: id });
     for (const row of rows) {
       const data = AdmittedWithPosition.safeParse(row.data);
-      if (data.success && (type.endsWith(".*") ? data.data.recordType.startsWith(type.slice(0, -1)) : data.data.recordType === type) && data.data.recordSeq > position) {
-        position = seq(data.data.recordSeq);
-      }
+      if (!data.success) continue;
+      if (!(type.endsWith(".*") ? data.data.recordType.startsWith(type.slice(0, -1)) : data.data.recordType === type)) continue;
+      known = true;
+      if (data.data.recordSeq > position) position = seq(data.data.recordSeq);
     }
-    this.positions.set(`${id}|${type}`, position);
+    this.positions.set(id, position);
+    this.keep(id, position);
+    if (!known && from === "now" && journal.last() > 0) {
+      position = journal.last();
+      this.positions.set(id, position);
+      this.writePosition(id, position, "installed");
+    }
     return position;
   }
 
@@ -1990,6 +2168,10 @@ class Niwa implements Host {
     }
     for (const record of records) {
       if (record.type === CORE_TYPES.stepIntent) this.parkLate(record);
+      if (record.type === CORE_TYPES.invocationState) {
+        const state = StateData.safeParse(record.data);
+        if (state.success && state.data.state === "done") this.release(state.data.invocation as InvocationId);
+      }
       if (CORE_TYPE_NAMES.has(record.type)) {
         // A closed grant is the one core record that plugins react to: they stop what it covered.
         if (record.type === CORE_TYPES.accessClosed) this.requestPump();

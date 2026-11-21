@@ -90,7 +90,7 @@ test("a step that asks is told the id of its request together with the answer", 
   host.use(
     plugin("ids-asker", (api) => {
       api.declare(Ask, Told);
-      api.on(Ask, async (_data, step) => {
+      api.on(Ask, { concurrency: Number.POSITIVE_INFINITY }, async (_data, step) => {
         const { id, answer } = answeredBy(await step(requestAsk, { to: owner, ...ReleaseBranch }));
         await step.emit(Told, { id, answer });
       });

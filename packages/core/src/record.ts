@@ -105,6 +105,7 @@ export const CORE_TYPES = {
   accessSwitched: recordTypeName(CORE.accessSwitched),
   accessAnswered: recordTypeName(CORE.accessAnswered),
   pluginInstalled: recordTypeName(CORE.pluginInstalled),
+  subscriptionPosition: recordTypeName(CORE.subscriptionPosition),
 } as const;
 
 /**

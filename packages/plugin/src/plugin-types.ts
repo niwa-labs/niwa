@@ -24,12 +24,44 @@ import type {
   Token,
   Verb,
   Narrowed,
+  PathFilter,
   RuleSpec,
 } from "@niwa-labs/core";
 
-export interface HandlerOptions {
+/**
+ * Where a new subscription starts: `"now"`, the position of the journal when it is installed, or
+ * `"start"`, the beginning of the journal. A subscription that was installed before goes on from
+ * the position it reached, whatever this says.
+ */
+export type SubscriptionStart = "now" | "start";
+
+/** How deep a subscription may wake on records its own invocations caused. */
+export interface Reentry {
+  /** How many of its own invocations may stand on the chain of causes of a record that wakes it. */
+  readonly depth: number;
+}
+
+export interface HandlerOptions<T = unknown> {
   /** Handler name inside the plugin. Default: the record type name. */
   id?: string;
+  /**
+   * Equality on fields of the data, by field name or dotted path: only records whose data holds
+   * every field wake the handler. What equality cannot say, the handler checks itself.
+   */
+  filter?: PathFilter<T>;
+  /** Where the subscription starts when it is new. Default: `"now"`. */
+  from?: SubscriptionStart;
+  /**
+   * How many records of the subscription run at once. Default: 1, one after the other: the next
+   * record starts when the one before it is done, and a record that waits or is paused holds the
+   * ones after it. `Infinity` lets every record run as soon as it is admitted.
+   */
+  concurrency?: number;
+  /**
+   * A subscription is not woken by a record its own invocations caused. A reentrant one is, down to
+   * the depth it gives; past it the record is passed over and the host says so.
+   */
+  reentrant?: Reentry;
   /**
    * The record types this handler needs another plugin to declare, because the work it does
    * writes or waits for them (a durable sleep needs the timers). The host refuses to serve when
@@ -174,7 +206,7 @@ export interface PluginApi {
    */
   live(channel: string, frame: LiveFrame): void;
   on<T>(type: RecordType<T>, handler: Handler<T>): void;
-  on<T>(type: RecordType<T>, opts: HandlerOptions, handler: Handler<T>): void;
+  on<T>(type: RecordType<T>, opts: HandlerOptions<NoInfer<T>>, handler: Handler<T>): void;
   /**
    * Declare a value of this plugin's state.
    *

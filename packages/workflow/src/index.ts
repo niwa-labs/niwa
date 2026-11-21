@@ -208,6 +208,16 @@ const BuiltinRetired = z.object({ uninstalled: z.array(z.string()) });
 /** How long `workflow.wait` waits when it is not told, in milliseconds. */
 const DEFAULT_WAIT_MS = 60_000;
 
+/** How deep runs may call other workflows: a run whose request has more runs above it does not start. */
+const CALL_DEPTH = 16;
+
+/**
+ * How many starts of runs a record that starts runs may have on its chain of causes: a run that writes
+ * what another installation starts on, and so on. An installation never starts on what its own runs
+ * caused; this bounds the chains between installations.
+ */
+const RUN_CHAIN_DEPTH = 32;
+
 /** The plugin of the module. */
 export function workflow(opts: WorkflowOptions = {}) {
   // The agent action of every harness the plugin was given: a script that names a harness
@@ -899,6 +909,9 @@ export function workflow(opts: WorkflowOptions = {}) {
           filter: (data) => subscribed(type.name, data),
           handlerId: `workflow.on:${type.name}`,
         },
+        // One handler starts the runs of every installation on the type, and a run of one installation may
+        // write what another starts on: each installation keeps its own runs from starting it again.
+        { reentrant: { depth: RUN_CHAIN_DEPTH } },
         startRuns,
       );
     }
@@ -909,6 +922,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         filter: subscribedToScripts,
         handlerId: `workflow.on:${ScriptRecord.name}`,
       },
+      { reentrant: { depth: RUN_CHAIN_DEPTH } },
       startRuns,
     );
 
@@ -1379,7 +1393,12 @@ export function workflow(opts: WorkflowOptions = {}) {
       }
     };
 
-    api.on(RunRequested, async (data, step) => {
+    // Runs are independent of each other: one that waits for an answer holds no other. A run that calls
+    // another workflow requests a run from inside its own: the chain of calls goes as deep as CALL_DEPTH.
+    api.on(
+      RunRequested,
+      { concurrency: Number.POSITIVE_INFINITY, reentrant: { depth: CALL_DEPTH } },
+      async (data, step) => {
       const { run, file } = data;
       // The run acts as its own principal: its grant is what the script is held to.
       const principal = principalOf("run", run);

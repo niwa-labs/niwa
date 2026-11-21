@@ -46,7 +46,8 @@ const ReleaseBranch = question("answer.release.branch", { kind: "choice", title:
 function executor() {
   return plugin("answer-executor", (api) => {
     api.declare(Start, Answered);
-    api.on(Start, async (data, step) => {
+    // Each release waits for its own answer: one that waits holds no other.
+    api.on(Start, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       const { answer: raw } = answeredBy(
         await step(requestAsk, {
           to: data.other === true ? { kind: "client", id: "someone-else" } : owner,

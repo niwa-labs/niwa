@@ -152,7 +152,7 @@ function asker(): ReturnType<typeof plugin> {
       }),
     );
 
-    api.on(Asked, async (data, step) => {
+    api.on(Asked, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       let outcome: { ownerAnswer?: unknown; sessionAnswer?: unknown; error?: string };
       try {
         // 1. The owner is asked: the request is addressed to the owner, and only the owner may
