@@ -983,7 +983,7 @@ async function stdinsStartedBy(during: () => Promise<void>): Promise<Array<{ wri
   return found;
 }
 
-test("a prompt that could not be written is not sent: the receipt is InputNotSent and the session is as it was", async () => {
+test("a prompt whose frame was never written is not reported as started: the receipt is InputNotSent and the session is as it was", async () => {
   control = claudeCodeControl({ harness: "fake", command: [await fakeAgent({ turnMs: 0 })] });
   let id: SessionId | undefined;
   const [stdin] = await stdinsStartedBy(async () => {
@@ -995,17 +995,15 @@ test("a prompt that could not be written is not sent: the receipt is InputNotSen
     for await (const event of control!.life(id!)) seen.push(event);
   })().catch(() => {});
 
-  // The pipe to the agent is gone: the write throws, as it does to a pipe that closed under it.
-  const write = stdin.write;
-  stdin.write = () => {
-    throw new Error("EPIPE: the pipe to the agent is gone");
-  };
+  // The pipe is already closed on this side: the frame was never written, and sending it again is safe.
+  Object.defineProperty(stdin, "destroyed", { value: true, configurable: true });
   try {
     await expect(control.send(id, "two")).rejects.toBeInstanceOf(InputNotSent);
   } finally {
-    stdin.write = write;
+    Reflect.deleteProperty(stdin, "destroyed");
   }
-  // Nothing of it happened: no second turn began, and the session is idle and takes the message again.
+
+  // It began no turn: the session is idle and takes the message when the pipe is whole.
   await Bun.sleep(50);
   expect(kinds(seen).filter((sign) => sign.endsWith(":2"))).toEqual([]);
   expect(await control.state(id)).toBe("idle");

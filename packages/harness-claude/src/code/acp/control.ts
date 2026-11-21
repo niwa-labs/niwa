@@ -51,10 +51,12 @@ import type {
   SessionId,
   ReverseHandler,
   ClaudeOptions,
+  Dispatch,
   TurnOutcome,
 } from "@niwa-labs/harness";
 import {
   InputNotSent,
+  inputFailure,
   DEFAULT_TURN_TIMEOUT_MS,
   unknownVariantSigns,
   Unavailable,
@@ -1178,7 +1180,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     // fails is reported through the signs of life, so it is not an unhandled rejection.
     const turn = session.turn + 1;
     const sent = startPrompt(session, message, turn);
-    if (sent.unsent !== undefined) throw new InputNotSent(harnessId, "send", sent.unsent);
+    if (sent.failed !== undefined) throw inputFailure(harnessId, "send", sent.failed.dispatch, sent.failed.reason);
     session.turn = turn;
     beginTurn(session, turn);
     void sent.finish().catch(() => {});
@@ -1590,15 +1592,15 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   }
 
   /**
-   * Write one prompt, and say at once whether the frame went: `unsent` is why it did not, and then
-   * nothing reached the agent, and the turn is not to be finished. Otherwise `finish` ends the turn
-   * with the agent's answer.
+   * Write one prompt, and say at once whether the frame went: `failed` says how far a frame that
+   * could not be written got (never written, or it may have gone), and the turn is not to be
+   * finished. Otherwise `finish` ends the turn with the agent's answer.
    */
   function startPrompt(
     session: LiveSession,
     message: string,
     turn: number,
-  ): { readonly unsent: string | undefined; readonly finish: () => Promise<ClaudeAcpTurn> } {
+  ): { readonly failed: { readonly dispatch: Dispatch; readonly reason: string } | undefined; readonly finish: () => Promise<ClaudeAcpTurn> } {
     // The client settles a call it could not write inside `send`, before it returns.
     let writing = true;
     let refused: RpcOutcome | undefined;
@@ -1623,8 +1625,8 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       );
     });
     writing = false;
-    const unsent = refused !== undefined && !refused.ok && refused.dispatch === "unsent" ? failureOf(session, refused) : undefined;
-    return { unsent, finish: () => finishPrompt(session, answer, turn) };
+    const failed = refused !== undefined && !refused.ok ? { dispatch: refused.dispatch, reason: failureOf(session, refused) } : undefined;
+    return { failed, finish: () => finishPrompt(session, answer, turn) };
   }
 
   /** The reason a call failed: why the session went, when it is known, else what the client said. */
