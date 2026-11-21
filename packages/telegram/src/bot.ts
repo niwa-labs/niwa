@@ -108,6 +108,16 @@ export function createBot(opts: BotOptions): Bot {
   const apiBase = (opts.apiBase ?? API_BASE).replace(/\/$/, "");
   const token = opts.token;
 
+  /**
+   * The URL carries the token, and anything that came back may quote the URL: the token is never
+   * let out in an error, in either of the forms it can be written in a path.
+   */
+  const redact = (text: string): string =>
+    [token, encodeURIComponent(token)].reduce(
+      (kept, secret) => (secret === "" ? kept : kept.replaceAll(secret, "<token>")),
+      text,
+    );
+
   /** One call to the Bot API. */
   async function call<T>(
     method: string,
@@ -124,22 +134,26 @@ export function createBot(opts: BotOptions): Bot {
         ...(signal === undefined ? {} : { signal }),
       });
     } catch (error) {
-      // The URL carries the token, and a failed fetch may quote the URL: the token is never
-      // let out in an error.
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`telegram ${method} failed: ${message.replaceAll(token, "<token>")}`);
+      throw new Error(`telegram ${method} failed: ${redact(error instanceof Error ? error.message : String(error))}`);
     }
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error) {
+      throw new Error(
+        `telegram ${method} answered ${String(response.status)} and its body could not be read: ${redact(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
     let parsed: BotResult<T>;
     try {
       parsed = JSON.parse(text) as BotResult<T>;
     } catch {
-      throw new Error(`telegram answered ${method} with something that is not JSON: ${text.slice(0, 200)}`);
+      // The body of something that is not the Bot API is never quoted: it may echo the request.
+      throw new Error(`telegram answered ${method} with ${String(response.status)} and a body that is not JSON`);
     }
     if (!parsed.ok) {
-      throw new Error(
-        `telegram refused ${method}: ${parsed.description ?? `code ${String(parsed.error_code)}`}`,
-      );
+      const reason = parsed.description === undefined ? `code ${String(parsed.error_code)}` : redact(parsed.description).slice(0, 200);
+      throw new Error(`telegram refused ${method} (${String(response.status)}): ${reason}`);
     }
     if (parsed.result === undefined) {
       throw new Error(`telegram answered ${method} without a result`);
