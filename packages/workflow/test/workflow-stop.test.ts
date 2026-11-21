@@ -235,3 +235,20 @@ test("cancelling a run cancels its child runs, pausing it pauses them, and the l
     .find((row) => row.outcome.error?.includes("deep") === true);
   expect(refusal?.outcome.error).toContain("would be 2 deep in its tree, and its limits allow 1");
 }, 30_000);
+
+test("a branch runs a registered workflow that takes no input as its child", async () => {
+  const t = await setup();
+  const child = await t.register(`export default workflow({ description: "a child with no input", output: z.string() }, async () => {
+    await niwa.tree.work({ name: "plain-child" });
+    return "child done";
+  });`);
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    return await scope("kids", undefined, async (s) => {
+      const one = s.run("one", { id: "${child}" });
+      return await one.value();
+    });
+  });`);
+  await eventually(async () => ofRun(await t.records(), "workflow.run.finished", run).length > 0, 10_000, "the parent should finish");
+  const finished = ofRun(await t.records(), "workflow.run.finished", run)[0]?.data as { outcome: { status: string; result: unknown } };
+  expect(finished.outcome).toEqual({ status: "done", result: "child done" });
+}, 30_000);

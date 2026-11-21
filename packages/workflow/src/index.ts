@@ -1446,7 +1446,9 @@ export function workflow(opts: WorkflowOptions = {}) {
           // A run that calls a workflow is the parent of the run it starts: a cancel and a pause go down to it.
           const caller = ctx.caller.kind === "client" && ctx.caller.principal?.kind === "run" ? String(ctx.caller.principal.id) : undefined;
           const parent = caller === undefined ? undefined : { run: caller, step: String(ctx.operationId) };
-          const run = await requestRun(ctx, { ...registeredTarget(current), args: input, ...(parent === undefined ? {} : { parent }) });
+          // A workflow that takes no input is called with an empty object, and its run is given nothing.
+          const args = current.latest.input === undefined ? undefined : input;
+          const run = await requestRun(ctx, { ...registeredTarget(current), args, ...(parent === undefined ? {} : { parent }) });
           const status = await settleFully(run);
           const outcome = status.outcome;
           if (outcome?.status === "done") return outcome.result;
