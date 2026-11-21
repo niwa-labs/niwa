@@ -26,7 +26,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import { FaultLog, FaultsContext } from "./faults.tsx";
-import { createCockpitRouter, type CockpitRouter } from "./router.tsx";
+import { createCockpitRouter, SHELL_PATHS, type CockpitRouter } from "./router.tsx";
 
 export type BootOptions = {
   /** The origin and path prefix of the web server; the page's own origin by default. */
@@ -106,7 +106,7 @@ export async function bootCockpit(options: BootOptions = {}): Promise<Cockpit> {
       options.importModule,
     ),
     { viewer, host, records: stream },
-    { timeoutMs: options.moduleTimeoutMs },
+    { timeoutMs: options.moduleTimeoutMs, paths: SHELL_PATHS },
   );
 
   const faults = new FaultLog(loaded.faults);

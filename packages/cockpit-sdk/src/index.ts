@@ -35,6 +35,7 @@ export {
   type CockpitRegistry,
   type EntityRegistry,
   type NavItem,
+  type Owned,
   type PluginDraft,
   type RegisteredContribution,
   type RegisteredEntity,

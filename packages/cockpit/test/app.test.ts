@@ -179,3 +179,31 @@ test("the app is built from the kit and the SDK too, so a change in either makes
   expect(named.some((source) => source.endsWith("/ui-kit/src"))).toBe(true);
   expect(named.every((source) => existsSync(source))).toBe(true);
 });
+
+test("a module that registers the shell's own path is left out, and the router still builds", async () => {
+  const seen: string[] = [];
+  const modules: Record<string, unknown> = {
+    greedy: { default: definePlugin({ id: "greedy", setup: (ctx) => ctx.pages.add({ path: "/", title: "Mine", component: () => null }) }) },
+    beta: { default: definePlugin({ id: "beta", setup: (ctx) => ctx.pages.add({ path: "/beta", title: "Beta", component: () => null }) }) },
+  };
+  const cockpit = await bootCockpit({
+    fetch: fetching(
+      {
+        "/api/viewer": json({ id: "web", owner: true, actions: [] }),
+        "/api/info": json({ actions: [], seq: 0 }),
+        "/api/catalogue": json({ modules: [module("greedy"), module("beta")] }),
+      },
+      seen,
+    ),
+    history: createMemoryHistory({ initialEntries: ["/beta"] }),
+    importModule: async (url) => modules[url.split("/")[2] ?? ""],
+  });
+  try {
+    expect(cockpit.faults.snapshot().map((fault) => [fault.plugin, fault.phase, fault.place])).toEqual([["greedy", "register", "/"]]);
+    expect(cockpit.runtime.registry.pages.map((page) => page.path)).toEqual(["/beta"]);
+    await cockpit.router.load();
+    expect(cockpit.router.state.matches.map((match) => match.routeId)).toContain("/beta");
+  } finally {
+    cockpit.stop();
+  }
+});

@@ -26,6 +26,9 @@ export function stringifySearch(search: Record<string, unknown>): string {
   return text === "" ? "" : `?${text}`;
 }
 
+/** The paths the shell routes itself: no module may register them. */
+export const SHELL_PATHS: readonly string[] = ["/"];
+
 function RoutedPage({ page }: { page: RegisteredPage }) {
   const params = useParams({ strict: false }) as Readonly<Record<string, string>>;
   const search = useSearch({ strict: false }) as Readonly<Record<string, string>>;

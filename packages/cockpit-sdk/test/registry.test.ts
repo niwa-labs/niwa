@@ -253,6 +253,19 @@ describe("slots", () => {
     ]);
   });
 
+  test("a path the cockpit owns is not for a module", async () => {
+    const { faults, registry } = await loadPlugins(
+      [
+        source("home", (ctx) => ctx.pages.add({ path: "/", title: "Home", component: Part })),
+        source("runs", (ctx) => ctx.pages.add({ path: "/runs", title: "Runs", component: Part })),
+      ],
+      services(),
+      { paths: ["/"] },
+    );
+    expect(faults).toEqual([{ plugin: "home", phase: "register", place: "/", message: "the path / is already taken by cockpit" }]);
+    expect(registry.pages.map((p) => p.path)).toEqual(["/runs"]);
+  });
+
   test("dropping a module that owns a slot drops what others put into it", async () => {
     const { faults, registry } = await load(
       source("pages", (ctx) => ctx.pages.add({ path: "/rin", title: "Taken", component: Part })),

@@ -47,6 +47,8 @@ export async function loadPlugins(
   services: Services,
   options: {
     slots?: ReadonlyArray<{ name: string; kind: SlotKind }> | undefined;
+    /** The paths of the cockpit's own pages: a module that registers one is left out. */
+    paths?: readonly string[] | undefined;
     /** Per module, for the import and again for the setup; a module that takes longer is left out. */
     timeoutMs?: number | undefined;
   } = {},
@@ -87,6 +89,6 @@ export async function loadPlugins(
     if ("fault" in outcome) faults.push(outcome.fault);
     else drafts.push(outcome.draft);
   }
-  const assembled = assembleRegistry(options.slots ?? CORE_SLOTS, drafts);
+  const assembled = assembleRegistry({ slots: options.slots ?? CORE_SLOTS, paths: options.paths }, drafts);
   return { registry: assembled.registry, faults: [...faults, ...assembled.faults] };
 }

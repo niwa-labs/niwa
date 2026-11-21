@@ -174,12 +174,18 @@ type Misfit = { fault: PluginFault; holder: string | undefined };
 
 type Built = { registry: CockpitRegistry; misfits: Misfit[] };
 
-function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: readonly PluginDraft[]): Built {
+/** What the cockpit owns, which modules cannot take: its slots, and the paths of its own pages. */
+export type Owned = {
+  readonly slots: ReadonlyArray<{ name: string; kind: SlotKind }>;
+  readonly paths?: readonly string[] | undefined;
+};
+
+function build(base: Owned, drafts: readonly PluginDraft[]): Built {
   const misfits: Misfit[] = [];
-  const slots = new Map<string, { kind: SlotKind; owner: string }>(base.map((s) => [s.name, { kind: s.kind, owner: "cockpit" }]));
+  const slots = new Map<string, { kind: SlotKind; owner: string }>(base.slots.map((s) => [s.name, { kind: s.kind, owner: "cockpit" }]));
   const entities = new Map<string, RegisteredEntity>();
   const prefixes = new Map<string, string>();
-  const shapes = new Map<string, string>();
+  const shapes = new Map<string, string>((base.paths ?? []).map((path) => [pathShape(path), "cockpit"]));
   const pages: RegisteredPage[] = [];
   const accepted: PluginDraft[] = [];
   const left: PluginDraft[] = [];
@@ -326,7 +332,7 @@ function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: re
 }
 
 /**
- * Assemble the drafts, in load order, over the slots the cockpit owns. A module that does not fit is
+ * Assemble the drafts, in load order, over what the cockpit owns. A module that does not fit is
  * left out whole and reported, and assembly starts again without it.
  *
  * Each round leaves out one module: the first in load order whose misfit is certain — caused by
@@ -339,9 +345,10 @@ function build(base: ReadonlyArray<{ name: string; kind: SlotKind }>, drafts: re
  * that comes back may be what another one needed, so they are offered again until none comes back.
  */
 export function assembleRegistry(
-  base: ReadonlyArray<{ name: string; kind: SlotKind }>,
+  owned: Owned | ReadonlyArray<{ name: string; kind: SlotKind }>,
   drafts: readonly PluginDraft[],
 ): { registry: CockpitRegistry; faults: PluginFault[] } {
+  const base: Owned = "slots" in owned ? owned : { slots: owned };
   const faults: PluginFault[] = [];
   let remaining = drafts;
   for (;;) {
@@ -360,7 +367,7 @@ export function assembleRegistry(
 }
 
 function readmit(
-  base: ReadonlyArray<{ name: string; kind: SlotKind }>,
+  base: Owned,
   drafts: readonly PluginDraft[],
   kept: readonly PluginDraft[],
   registry: CockpitRegistry,
