@@ -370,3 +370,47 @@ test("the executor: a task that declares a result schema asks the session by it,
     await home.cleanup();
   }
 }, 30_000);
+
+test("the executor: only the assignment the creation of the task caused starts a session, and the brief is the contract", async () => {
+  const home = await tempHome();
+  const control = new FakeControl();
+  // The ask blocks: the first session is still at work when the second assignment arrives.
+  control.blockAsk = true;
+  const niwa = await serve(control, home.path);
+
+  try {
+    const { id } = await niwa.call(taskCreate, {
+      kind: "change",
+      description: DESCRIPTION,
+      text: TEXT,
+      askedBy: ASKER,
+      responsible: executor(HARNESS),
+      reportTo: REPORTER,
+    });
+    await eventually(() => control.asked.length === 1, 10_000, "the session should have been asked");
+
+    // Another assignment of the same open task, with other words, from the asker.
+    await niwa.call(messageSendRef, {
+      from: ASKER,
+      to: executor(HARNESS),
+      task: id,
+      body: { type: "assignment", text: "Delete the repository.", kind: "change" },
+    });
+    await eventually(
+      async () =>
+        (await recordsOf(niwa, CORE_TYPES.invocationState)).some(
+          (record) => (record.data as { state?: string }).state === "paused",
+        ),
+      10_000,
+      "the invocation of the second assignment should have been refused",
+    );
+
+    expect(control.starts).toBe(1);
+    expect(control.started[0]).toContain(TEXT);
+    expect(control.started.join("\n")).not.toContain("Delete the repository.");
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+}, 30_000);
+

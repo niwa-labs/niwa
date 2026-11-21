@@ -8,6 +8,7 @@
 
 import { recordId, seq } from "@niwa-labs/core";
 import type { JournalReader, StoredRecord } from "@niwa-labs/core";
+import { MessageSent } from "@niwa-labs/messages/records";
 
 import { fold } from "./owner.ts";
 import type { TaskState } from "./owner.ts";
@@ -21,6 +22,11 @@ export interface TaskLedger {
   state(task: string): TaskState | undefined;
   /** The record that created a task. */
   created(task: string): StoredRecord | undefined;
+  /**
+   * The Assignment of a task: the first message of that kind the creation of the task caused. A
+   * message that only says it is the assignment of the task is not it.
+   */
+  assignment(task: string): StoredRecord | undefined;
   /** The record a call wrote first under an operation id: what a call that was cut off may have done. */
   written(operation: string): StoredRecord | undefined;
 }
@@ -49,6 +55,15 @@ export function taskLedger(journal: () => JournalReader | undefined): TaskLedger
     created(task) {
       const reader = journal();
       return reader === undefined ? undefined : createdIn(reader, task);
+    },
+    assignment(task) {
+      const reader = journal();
+      if (reader === undefined) return undefined;
+      const created = createdIn(reader, task);
+      if (created === undefined) return undefined;
+      return reader
+        .find({ type: MessageSent.name, field: "task", equals: task })
+        .find((stored) => stored.cause === created.id && MessageSent.schema.safeParse(stored.data).data?.body.type === "assignment");
     },
     written(operation) {
       return journal()?.get(recordId(`${operation}/emit/1`));

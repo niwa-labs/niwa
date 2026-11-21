@@ -54,7 +54,8 @@ export type TaskRefusalCode =
   | "result-schema"
   | "result-invalid"
   | "no-task"
-  | "not-an-executor";
+  | "not-an-executor"
+  | "not-the-assignment";
 
 /**
  * A refusal: a command that breaks a rule. Nothing was written, so it is the caller's to catch

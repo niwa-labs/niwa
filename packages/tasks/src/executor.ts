@@ -15,7 +15,7 @@
  */
 
 import { actionName, jsonOf } from "@niwa-labs/core";
-import type { ActionName, Address, RecordType, Step } from "@niwa-labs/core";
+import type { ActionName, Address, Step, StoredRecord } from "@niwa-labs/core";
 import { z } from "zod";
 
 import { trigger } from "@niwa-labs/plugin";
@@ -74,11 +74,16 @@ export function forExecutor(message: Message): boolean {
  * is written here, by the responsible party itself:
  * the executor is the party the task named, so it may end it, and it does it through the same
  * rule and the same record the actions "task.finish" and "task.fail" use.
+ *
+ * The work is the work of the contract, once: only the Assignment the creation of the task caused
+ * starts a session, and the brief is made from the contract, not from the message. Another message
+ * that calls itself an assignment of the task is refused, and the assignment that was delivered
+ * again finds its invocation, with the session it started.
  */
 export function executorHandler(
   ledger: TaskLedger,
-): (message: Message, step: Step) => Promise<void> {
-  return async (message, step) => {
+): (message: Message, step: Step, record: StoredRecord) => Promise<void> {
+  return async (message, step, record) => {
     if (!forExecutor(message)) return;
     if (message.task === undefined) {
       throw new TaskRefusal("no-task", "the assignment names no task");
@@ -91,11 +96,27 @@ export function executorHandler(
     const before = ledger.state(task);
     if (before?.status === "done") return;
     decide(before, { kind: "finish", task, by: address });
-    const declared = before?.contract.result;
+    if (before === undefined) return;
+    if (ledger.assignment(task)?.id !== record.id) {
+      throw new TaskRefusal("not-the-assignment", `the message is not the assignment of the task "${task}"`);
+    }
+    const contract = before.contract;
+    const declared = contract.result;
 
     const { session } = await step<{ harness: string; prompt: string }, { session: string }>(SESSION_START, {
       harness,
-      prompt: render(message),
+      prompt: render({
+        id: message.id,
+        from: contract.askedBy,
+        to: contract.responsible,
+        task,
+        body: {
+          type: "assignment",
+          text: contract.text,
+          kind: contract.kind,
+          ...(declared === undefined ? {} : { result: declared }),
+        },
+      }),
     });
 
     const { value } = await step<
