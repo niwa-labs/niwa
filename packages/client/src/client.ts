@@ -179,7 +179,7 @@ class WireConnection {
           this.die();
         },
         drain: () => {
-          this.flush();
+          if (!this.flush()) this.die();
         },
       },
     });
@@ -250,7 +250,12 @@ class WireConnection {
     joined.set(this.outgoing, 0);
     joined.set(bytes, this.outgoing.length);
     this.outgoing = joined;
-    if (!this.flush()) throw this.closedError();
+    if (!this.flush()) {
+      // A write that failed leaves bytes of a request nobody will answer: the connection ends with
+      // them, and every request on it fails, so none starts after its caller was told it failed.
+      this.die();
+      throw this.closedError();
+    }
   }
 
   /** Write as much of the waiting bytes as the socket takes; false when the socket is gone. */
