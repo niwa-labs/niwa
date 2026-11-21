@@ -83,6 +83,7 @@ import type {
   TurnStatusResult as TurnStatus,
 } from "../ncode/protocol.ts";
 import { homeOfProfile } from "./paths.ts";
+import { inputOpen, writeLine } from "./transport.ts";
 import { formFields, formSteps, isQuestionnaire, permissionAsk } from "./reverse.ts";
 import { Acp, EXTENSIONS_META, MCODE_ACP_PROTOCOL, McodeAgentNotification, McodeAgentRequest, McodeInitializeMeta } from "./protocol.ts";
 import type { McodeMethod, McodePermissionMode } from "./protocol.ts";
@@ -393,6 +394,8 @@ class AcpSession {
    * and a stop finds them by it.
    */
   readonly mark = randomUUID();
+  /** The last line written to the child, settled when its input has taken it or failed it. */
+  accepted: Promise<void> = Promise.resolve();
   /** The text of the turn that is running. */
   text = "";
   /** The messages written while a turn ran; each becomes its turn when the previous one ends. */
@@ -628,16 +631,24 @@ class AcpSession {
    * Send one `session/prompt` for the running turn.
    *
    * The reply to it is what ends the turn: it carries the stop reason, and the text that was
-   * streamed while it ran.
+   * streamed while it ran. The reason is returned when the line could not be written at all.
    */
-  sendPrompt(text: string): void {
+  sendPrompt(text: string): { readonly dispatch: Dispatch; readonly error: string } | undefined {
     const turn = this.current;
+    let failed: { readonly dispatch: Dispatch; readonly error: string } | undefined;
     this.client.send(
       "session/prompt",
       { sessionId: this.nativeId, prompt: [{ type: "text", text }] },
-      (outcome) => this.promptAnswered(turn, outcome),
+      (outcome) => {
+        // A line the child's input refused, or failed on, is told before `send` returns.
+        if (!outcome.ok && (outcome.dispatch === "unsent" || (outcome.dispatch === "uncertain" && outcome.code === undefined && outcome.timedOut === undefined))) {
+          failed = { dispatch: outcome.dispatch, error: outcome.error };
+        }
+        this.promptAnswered(turn, outcome);
+      },
       { timeoutMs: null },
     );
+    return failed;
   }
 
   /**
@@ -1051,16 +1062,16 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
 
     session.client = new AcpClient({
       write: (line) => {
-        // A session that is stopping or gone is not written to; a write to a dead child is
-        // reported by the closing child.
+        // A session that is stopping or gone is not written to, and neither is a closed input: the
+        // line is certainly unsent then. A line the stream took is accepted, and the stream's own
+        // report of it (its callback) is kept for whoever must know the line went out.
         const stdin = child.stdin;
-        if (session.ended || session.stopping || stdin === null || stdin.destroyed) return "unsent";
-        try {
-          stdin.write(`${line}\n`);
-          return "accepted";
-        } catch {
-          return "unknown";
-        }
+        if (session.ended || session.stopping || !inputOpen(stdin)) return "unsent";
+        // A stream that throws on the write leaves it unknown what became of the line: the client says so.
+        const taken = writeLine(stdin, line);
+        taken.catch(() => undefined);
+        session.accepted = taken;
+        return "accepted";
       },
       onRequest: (request) => answerRequest(session, request.id, request),
       onNotification: (notification) => handleNotification(session, notification),
@@ -1385,7 +1396,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
    * idle one begins a turn with it. Nothing waits for the turn to end: its end and its failure
    * are signs of life.
    */
-  function deliver(session: AcpSession, text: string): DeliveryReceipt {
+  async function deliver(session: AcpSession, text: string): Promise<DeliveryReceipt> {
     const at = Date.now();
     const turn = session.reserveTurn();
     if (session.running) {
@@ -1398,9 +1409,22 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     // The waiter for this turn goes in before the prompt goes out: the reply to
     // `session/prompt` is what ends the turn, and it may arrive before this line returns.
     session.awaitTurn().catch(() => undefined);
-    session.sendPrompt(text);
+    const failed = session.sendPrompt(text);
+    if (failed !== undefined) {
+      if (failed.dispatch === "unsent") throw new InputNotSent(harnessId, "send", failed.error);
+      throw new InputPossiblySent(harnessId, "send", failed.error);
+    }
+    try {
+      await session.accepted;
+    } catch (error) {
+      // The input took the line and failed it: the message did not go out, and the turn it began never ran.
+      const reason = error instanceof Error ? error.message : String(error);
+      if (session.running && session.current === turn) session.failTurn(new Error(`the prompt could not be written: ${reason}`));
+      throw new InputNotSent(harnessId, "send", reason);
+    }
     return { status: "started", turn, at };
   }
+
 
   /** The cold resumes in progress, by native session id: a session has one process, however many ask for it. */
   const resuming = new Map<string, Promise<void>>();
@@ -1503,7 +1527,13 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       // like a send: the start does not wait for the agent to finish it.
       const text = promptText(startOptions.prompt);
       if (text.length === 0) return { session: id, mode };
-      return { session: id, first: deliver(session, text), mode };
+      try {
+        return { session: id, first: await deliver(session, text), mode };
+      } catch (error) {
+        // A start whose first message did not go out is not a start: nobody holds the id to stop it.
+        await stopSession(session);
+        throw error instanceof InputNotSent ? unavailable("start", `the first message could not be written: ${error.message}`) : error;
+      }
     },
 
     resume,
@@ -1534,7 +1564,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
           }
         }
       }
-      return deliver(session, message);
+      return await deliver(session, message);
     },
 
     async interrupt(id: SessionId): Promise<void> {
