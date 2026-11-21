@@ -1861,7 +1861,9 @@ class Niwa implements Host {
 
   /**
    * The records on a record's chain of causes, itself first, that the subscription's own invocations
-   * wrote: what it would be woken by again if it were woken by this one.
+   * wrote: what it would be woken by again if it were woken by this one. The writer is the actor: an
+   * invocation writes as its handler, and so does an action it calls, even as another principal. The
+   * cause alone cannot say it: every subscription that admitted a record is woken by the same one.
    */
   private ownChain(journal: Journal, id: HandlerId, record: StoredRecord): RecordId[] {
     const own: RecordId[] = [];

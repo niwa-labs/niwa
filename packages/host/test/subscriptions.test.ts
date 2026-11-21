@@ -344,3 +344,39 @@ test("a new subscription to a type the journal has no record of writes no positi
     await home.cleanup();
   }
 });
+
+test("a subscription is not woken by a record its invocation caused through an action called as another principal", async () => {
+  const home = await tempHome();
+  try {
+    const seen: number[] = [];
+    const write = action("sub-test.write", {
+      description: "Write an item.",
+      input: z.object({ n: z.number() }),
+      output: z.object({}),
+      recovery: "repeat",
+      run: async (input, ctx) => {
+        await ctx.emit(Item, { n: input.n });
+        return {};
+      },
+    });
+    const niwa = await serving(home.path, [
+      plugin("sub-loop", (api) => {
+        api.declare(Item, Answer);
+        api.action(write);
+        api.on(Item, async (data, step) => {
+          seen.push(data.n);
+          // The record is the action's, written as the principal: its actor is not the handler.
+          if (data.n < 5) await step(write, { n: data.n + 1 }, { as: { kind: "plugin", id: "sub-loop" as never } });
+        });
+      }),
+    ]);
+    await niwa.emit(Item, { n: 1 });
+    await eventually(() => seen.length >= 1);
+    await Bun.sleep(200);
+    expect(seen).toEqual([1]);
+    expect((await recordsOf(niwa, Item.name)).length).toBe(2);
+    await niwa.close();
+  } finally {
+    await home.cleanup();
+  }
+});
