@@ -167,7 +167,12 @@ test("a read resumes after a locator; a locator of a replaced history starts ove
 
   // The history is replaced and no longer holds that message: the read starts over.
   putBatch([full("mvs_d", "adopt", [envelope("n1", user("new"))])]);
-  expect((await all("mvs_d", first[2]!.locator)).map((r) => r.kind)).toEqual(["user"]);
+  const started = await all("mvs_d", first[2]!.locator);
+  expect(started.map((r) => r.kind)).toEqual(["user"]);
+  // The first record of a read that started over says so; a read that goes on does not.
+  expect(started[0]?.reanchored).toBe(true);
+  expect(fresh.some((r) => r.reanchored === true)).toBe(false);
+  expect(first.some((r) => r.reanchored === true)).toBe(false);
 });
 
 test("raw gives the envelope whole, and coverage follows the locator", async () => {
@@ -353,7 +358,9 @@ test("a session in the database only, and its journal that appears later: db loc
 
   // A message the journal does not hold starts the read over, as a rewritten file does.
   const unknown = "mcode-db:v1:9:0:0:1:nowhere" as Locator;
-  expect(texts(await all("mvs_l", unknown))).toEqual(["one", "two", "tool-call", "tool-result"]);
+  const startedOver = await all("mvs_l", unknown);
+  expect(texts(startedOver)).toEqual(["one", "two", "tool-call", "tool-result"]);
+  expect(startedOver.map((r) => r.reanchored)).toEqual([true, undefined, undefined, undefined]);
 });
 
 test("the active view does not take the entries of a session whose id starts the same", async () => {
@@ -574,7 +581,9 @@ test("a checkpoint taken from the ledger while the database was unreadable still
     db.run("rollback");
   }
   // The database answers again: a locator of the ledger names no record in it, so the read starts over.
-  expect(texts(await all("mvs_move", checkpoint))).toEqual(["one", "two"]);
+  const moved = await all("mvs_move", checkpoint);
+  expect(texts(moved)).toEqual(["one", "two"]);
+  expect(moved.map((r) => r.reanchored)).toEqual([true, undefined]);
   expect(await reading().coverage(id("mvs_move"), checkpoint)).toEqual({ status: "not-scanned" });
 });
 

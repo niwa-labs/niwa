@@ -60,7 +60,8 @@ test("lists a session from the files, with cwd from the preamble", async () => {
   // MiniMax Code names no session: the title is the first message, the preamble cut out.
   expect(infos[0]?.title).toBe("hello");
   const records = await all(reading().read(ID));
-  expect(records[0]).toMatchObject({ kind: "user", text: "hello" });
+  // What the harness inserted is cut out of the text, so nothing in it is marked as inserted.
+  expect(records[0]).toMatchObject({ kind: "user", text: "hello", inserted: [] });
 });
 
 test("the title is the one the harness keeps in its runtime state, else the first message", async () => {
@@ -262,6 +263,8 @@ test("a rewritten or truncated file is detected: read restarts, raw refuses the 
   writeFileSync(path, user("ONE") + user("TWO") + user("THREE"));
   const restarted = await all(reading().read(ID, old));
   expect(restarted).toHaveLength(3);
+  expect(restarted.map((r) => r.reanchored)).toEqual([true, undefined, undefined]);
+  expect((await all(reading().read(ID, restarted[0]?.locator))).some((r) => r.reanchored === true)).toBe(false);
   await expect(reading().raw(ID, old)).rejects.toThrow("does not belong");
 
   writeFileSync(path, user("ONE"));

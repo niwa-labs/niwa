@@ -346,6 +346,7 @@ test("a checkpoint of a ledger that was rewritten starts the read over", async (
   );
   const again = await all(reading().read(ID, second?.locator));
   expect(again.map((r) => (r.kind === "user" ? r.text : r.kind))).toEqual(["other", "again"]);
+  expect(again.map((r) => r.reanchored)).toEqual([true, undefined]);
 });
 
 test("the coverage of a ledger that cannot be read is failed, not an error", async () => {

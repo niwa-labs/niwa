@@ -371,8 +371,8 @@ function durableStart(
   turns: readonly DurableTurn[],
   position: DurablePosition | undefined,
   exact = false,
-): { turn: number; after: number } {
-  if (position === undefined) return { turn: 0, after: 0 };
+): { turn: number; after: number; stale: boolean } {
+  if (position === undefined) return { turn: 0, after: 0, stale: false };
   const at = turns.findIndex((turn) =>
     position.messageId === undefined
       ? turn.messageId === undefined &&
@@ -381,8 +381,8 @@ function durableStart(
         turn.index === position.index
       : turn.messageId === position.messageId,
   );
-  if (at < 0) return exact ? { turn: turns.length, after: 0 } : { turn: 0, after: 0 };
-  return { turn: at, after: position.after };
+  if (at < 0) return exact ? { turn: turns.length, after: 0, stale: true } : { turn: 0, after: 0, stale: true };
+  return { turn: at, after: position.after, stale: false };
 }
 
 /**
@@ -493,12 +493,15 @@ export class McodeReading implements SessionReading {
           : position !== undefined && (await positionHolds(handle, position))
             ? position
             : undefined;
+      // A locator of another source, or one the file no longer holds, starts the read over.
+      let restarted = from !== undefined && resume === undefined;
       for await (const line of scanLines(handle, resume?.offset ?? 0)) {
         if (isBlank(line.bytes)) continue;
         const skip = resume !== undefined && line.byte === resume.offset ? resume.after : 0;
         for (const [index, record] of this.#recordsOf(line).entries()) {
           if (index < skip) continue;
-          yield { ...record, locator: makeLocator(head, line, index + 1) } as SessionRecord;
+          yield { ...record, ...(restarted ? { reanchored: true } : {}), locator: makeLocator(head, line, index + 1) } as SessionRecord;
+          restarted = false;
         }
       }
     } finally {
@@ -558,12 +561,16 @@ export class McodeReading implements SessionReading {
 
   /** The records of a session that kept its history in the durable database. */
   async *#readDurable(turns: readonly DurableTurn[], from?: Locator): AsyncIterable<SessionRecord> {
-    const start = durableStart(turns, durableFrom(from));
+    const position = durableFrom(from);
+    const start = durableStart(turns, position);
+    // A locator of another source, or one the view no longer holds, starts the read over.
+    let restarted = from !== undefined && (position === undefined || start.stale);
     for (const [at, turn] of turns.entries()) {
       if (at < start.turn) continue;
       for (const [index, record] of this.#durableRecordsOf(turn).entries()) {
         if (at === start.turn && index < start.after) continue;
-        yield { ...record, locator: makeDurableLocator(turn, index + 1) } as SessionRecord;
+        yield { ...record, ...(restarted ? { reanchored: true } : {}), locator: makeDurableLocator(turn, index + 1) } as SessionRecord;
+        restarted = false;
       }
     }
   }
@@ -598,8 +605,12 @@ export class McodeReading implements SessionReading {
   async *#readLedger(found: FoundSession, from?: Locator): AsyncIterable<SessionRecord> {
     const content = await this.#ledgerOf(found);
     if (content === null) return;
-    for (const { record, line, at } of ledgerPending(content, this.#harness, ledgerFrom(from))) {
-      yield { ...record, locator: makeLedgerLocator(content.head, line, at + 1) } as SessionRecord;
+    const position = ledgerFrom(from);
+    // A locator of another source, or one the ledger no longer holds, starts the read over.
+    let restarted = from !== undefined && (position === undefined || !ledgerPositionHolds(content, position));
+    for (const { record, line, at } of ledgerPending(content, this.#harness, position)) {
+      yield { ...record, ...(restarted ? { reanchored: true } : {}), locator: makeLedgerLocator(content.head, line, at + 1) } as SessionRecord;
+      restarted = false;
     }
   }
 
@@ -1022,7 +1033,8 @@ function ledgerRecordsOf(turn: LedgerTurn, harness: HarnessId): Unlocated[] {
 function userRecords(record: McodeRecord, raw: unknown, base: RecordBase): Unlocated[] {
   const text = stripHarnessNoise(textOf(record.message.content));
   if (text.length === 0 || isWrappedNoise(text)) return [unknownRecord(raw, base)];
-  return [{ kind: "user", text, ...base }];
+  // The reader cut what the harness inserted out of the text itself, so what is left was typed.
+  return [{ kind: "user", text, inserted: [], ...base }];
 }
 
 function assistantRecords(message: McodeMessage, base: RecordBase, raw: unknown): Unlocated[] {
