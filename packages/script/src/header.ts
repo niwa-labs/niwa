@@ -48,18 +48,19 @@ export function declarationOf(ts: typeof Ts, source: Ts.SourceFile): Declaration
   return undefined;
 }
 
-/** What the declaration of a script says about one of its keys, read in the order the keys are written. */
+/** What the declaration of a script says about one of its keys, read in the order the members are written. */
 export interface DeclaredField {
   /** The value of the last key written under that name, when there is one. */
   value?: Ts.Expression;
   /**
-   * What may decide the key where the text does not: a spread, or a key computed at run time, written
-   * after the last key of that name. The expression is what the declaration takes it from.
+   * What may decide the key where the text does not, written after the last key of that name: a spread, a key
+   * computed at run time, or a getter, setter or method that is, or may be, under that name. The node is where the
+   * declaration takes it from.
    */
-  unknown?: Ts.Expression;
+  unknown?: Ts.Node;
 }
 
-/** The name a property is written under, when the text says it. */
+/** The name a member is written under, when the text says it. */
 function keyOf(ts: typeof Ts, name: Ts.PropertyName): string | undefined {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name) || ts.isNumericLiteral(name)) return name.text;
   if (ts.isComputedPropertyName(name)) {
@@ -71,7 +72,9 @@ function keyOf(ts: typeof Ts, name: Ts.PropertyName): string | undefined {
 
 /**
  * One key of the declaration of a script, read from the text. The last key of the name wins, as it does when the
- * object is built; a spread or a computed key after it may replace it, so the text does not settle the value then.
+ * object is built; a spread, a computed key or an accessor or method that may be under that name, written after it,
+ * may replace it, so the text does not settle the value then. A later key of that name written as a property
+ * settles it again.
  */
 export function declaredField(ts: typeof Ts, source: Ts.SourceFile, field: string): DeclaredField | undefined {
   const declaration = declarationOf(ts, source);
@@ -92,23 +95,32 @@ export function declaredField(ts: typeof Ts, source: Ts.SourceFile, field: strin
         delete declared.unknown;
       } else if (key === undefined && ts.isComputedPropertyName(property.name)) {
         declared.unknown = property.name.expression;
+      } else if (key === "__proto__" && !ts.isComputedPropertyName(property.name) && declared.value === undefined) {
+        // `__proto__: x` sets the prototype, which may hold the key: an own key written before it still wins.
+        declared.unknown = property.initializer;
       }
+    } else if (ts.isMethodDeclaration(property) || ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) {
+      // A member that is not a plain value replaces the key of its name, and a computed one may be any name.
+      const key = keyOf(ts, property.name);
+      if (key === field || (key === undefined && ts.isComputedPropertyName(property.name))) declared.unknown = property.name;
     }
   }
   return declared.value === undefined && declared.unknown === undefined ? undefined : declared;
 }
 
+/** What the declaration of a script says of one key: the value written, or that the text does not settle it. Absent: no such key. */
+export type DeclarationField = { value: Ts.Expression } | { unsettled: Ts.Node };
+
 /**
- * The value of one key of the declaration of a script, read from the text; absent when there is none.
- *
- * A key that a later spread or computed key may replace is not the text of its value any more: what is
- * returned then is the expression that may replace it, which is not a literal, so the readers refuse it.
- * A key that is only shorthand (`{ on }`) is its name, an identifier.
+ * One key of the declaration of a script, read from the text, in three results: absent (`undefined`), a value the
+ * text settles, or a key the text does not settle (a later spread, computed key, accessor or method may decide it).
+ * What may replace a key is never given as its value: a reader that takes the value as it reads it would take a
+ * spread of a literal for the list the script wrote.
  */
-export function declarationField(ts: typeof Ts, source: Ts.SourceFile, field: string): Ts.Expression | undefined {
+export function declarationField(ts: typeof Ts, source: Ts.SourceFile, field: string): DeclarationField | undefined {
   const declared = declaredField(ts, source, field);
   if (declared === undefined) return undefined;
-  return declared.value === undefined ? undefined : (declared.unknown ?? declared.value);
+  return declared.unknown !== undefined ? { unsettled: declared.unknown } : declared.value === undefined ? undefined : { value: declared.value };
 }
 
 /** A value written as a literal in the text: text, a number, a boolean, null, a list or an object of them. */

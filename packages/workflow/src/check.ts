@@ -118,7 +118,7 @@ export function isUse(text: string): boolean {
 /** The `name` of a parsed script, when it is written as text. */
 function nameOf(ts: typeof Ts, source: Ts.SourceFile): string | undefined {
   const field = declarationField(ts, source, "name");
-  const text = field === undefined ? undefined : bare(ts, field);
+  const text = field === undefined || !("value" in field) ? undefined : bare(ts, field.value);
   return text !== undefined && (ts.isStringLiteral(text) || ts.isNoSubstitutionTemplateLiteral(text)) ? text.text : undefined;
 }
 
@@ -140,11 +140,13 @@ function callsOf(ts: typeof Ts, source: Ts.SourceFile, name: string): Ts.CallExp
 function emitErrors(ts: typeof Ts, source: Ts.SourceFile, file: string): CheckError[] {
   const errors: CheckError[] = [];
   const field = declarationField(ts, source, "emits");
-  const list = field === undefined ? undefined : bare(ts, field);
-  if (list !== undefined && field !== undefined) {
-    if (!ts.isArrayLiteralExpression(list)) errors.push({ file, ...placeOf(ts, source, field), code: "emit", message: "emits must be a list of records written in the declaration: emits: [Blocked]" });
+  const list = field === undefined || !("value" in field) ? undefined : bare(ts, field.value);
+  if (field !== undefined && "unsettled" in field) {
+    errors.push({ file, ...placeOf(ts, source, field.unsettled), code: "emit", message: "emits must be a list of records written in the declaration: emits: [Blocked]; a spread or a computed key may decide it" });
+  } else if (list !== undefined && field !== undefined) {
+    if (!ts.isArrayLiteralExpression(list)) errors.push({ file, ...placeOf(ts, source, field.value), code: "emit", message: "emits must be a list of records written in the declaration: emits: [Blocked]" });
     else if (nameOf(ts, source) === undefined) {
-      errors.push({ file, ...placeOf(ts, source, field), code: "emit", message: `a script that emits declares a name: its records are "${SCRIPT_TYPES}<name>.<record>"` });
+      errors.push({ file, ...placeOf(ts, source, field.value), code: "emit", message: `a script that emits declares a name: its records are "${SCRIPT_TYPES}<name>.<record>"` });
     }
   }
   const listed = list !== undefined && ts.isArrayLiteralExpression(list) ? list.elements.map((element) => bare(ts, element).getText(source)) : [];
@@ -184,7 +186,9 @@ export async function scriptReads(source: ScriptSource): Promise<string[]> {
 function usesOf(ts: typeof Ts, source: Ts.SourceFile): Uses | undefined {
   const field = declarationField(ts, source, "uses");
   if (field === undefined) return undefined;
-  const list = bare(ts, field);
+  // A spread, a computed key or an accessor may decide `uses`: the masks are not the text's to give, and a run is not left unrestricted by it.
+  if ("unsettled" in field) return { bad: placeOf(ts, source, field.unsettled) };
+  const list = bare(ts, field.value);
   if (!ts.isArrayLiteralExpression(list)) return { bad: placeOf(ts, source, list) };
   const masks: Use[] = [];
   for (const element of list.elements) {
@@ -201,10 +205,11 @@ function usesOf(ts: typeof Ts, source: Ts.SourceFile): Uses | undefined {
 function phasesOf(ts: typeof Ts, source: Ts.SourceFile): { phases: WorkflowPhases } | { bad: { line: number; column: number; message: string } } | undefined {
   const field = declarationField(ts, source, "phases");
   if (field === undefined) return undefined;
-  const written = literalOf(ts, field);
-  if (written === undefined) return { bad: { ...placeOf(ts, source, field), message: "phases must be written in the declaration as a list: phases: [{ title: \"Review\" }, { title: \"Fix\", detail: \"...\" }]" } };
+  if ("unsettled" in field) return { bad: { ...placeOf(ts, source, field.unsettled), message: "phases is not settled by the declaration: a spread or a computed key may decide it" } };
+  const written = literalOf(ts, field.value);
+  if (written === undefined) return { bad: { ...placeOf(ts, source, field.value), message: "phases must be written in the declaration as a list: phases: [{ title: \"Review\" }, { title: \"Fix\", detail: \"...\" }]" } };
   const parsed = WorkflowPhases.safeParse(written.value);
-  return parsed.success ? { phases: parsed.data } : { bad: { ...placeOf(ts, source, field), message: `phases: ${z.prettifyError(parsed.error)}` } };
+  return parsed.success ? { phases: parsed.data } : { bad: { ...placeOf(ts, source, field.value), message: `phases: ${z.prettifyError(parsed.error)}` } };
 }
 
 /** The options of the check: a `.ts` script is strict, a `.js` one is read for its syntax unless it opts in with `// @ts-check`. */
@@ -486,7 +491,7 @@ function placesOf(ts: typeof Ts, source: Ts.SourceFile): Places {
   places.declaration = placeOf(ts, source, declaration.object);
   for (const key of ["input", "output", "emits", "phases"] as const) {
     const field = declarationField(ts, source, key);
-    if (field !== undefined) places[key] = placeOf(ts, source, field);
+    if (field !== undefined) places[key] = placeOf(ts, source, "value" in field ? field.value : field.unsettled);
   }
   return places;
 }

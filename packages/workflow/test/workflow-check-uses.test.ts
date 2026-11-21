@@ -13,7 +13,7 @@ import { createNiwa, describe, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 import { sessionAgent, workflow, workflowCheck } from "../src/index.ts";
 
-import { scriptChecker } from "../src/check.ts";
+import { scriptChecker, scriptUses } from "../src/check.ts";
 
 const homes: Array<{ cleanup(): Promise<void> }> = [];
 const hosts: Host[] = [];
@@ -124,3 +124,25 @@ test("workflow.check on a live host says so in its report", async () => {
   expect(dynamic.errors.length).toBeGreaterThan(0);
   expect(dynamic.warnings?.[0]).toMatchObject({ line: 2, code: "uses" });
 }, 60_000);
+
+test("uses that a spread, a computed key or an accessor may decide is an error, not a script with no uses", async () => {
+  const check = async (declaration: string) => {
+    const text = `const base = { uses: ["*"] };\nconst key = "uses";\nexport default workflow(${declaration}, async () => null);`;
+    const source = { file: join(process.cwd(), "uses-unsettled.ts"), text };
+    const checked = await scriptChecker()(source, { actions, callable });
+    return { codes: checked.errors.map((error) => error.code), uses: await scriptUses(source) };
+  };
+  for (const declaration of [
+    "{ output: z.json(), ...base }",
+    '{ output: z.json(), uses: ["task.create"], ...base }',
+    '{ output: z.json(), [key]: ["*"] }',
+    '{ output: z.json(), get uses() { return ["*"]; } }',
+    '{ output: z.json(), uses: ["task.create"], get uses() { return ["*"]; } }',
+    '{ output: z.json(), ...["*"] }',
+  ]) {
+    const found = await check(declaration);
+    expect({ declaration, codes: found.codes, bad: "bad" in (found.uses ?? {}) }).toEqual({ declaration, codes: expect.arrayContaining(["uses"]), bad: true });
+  }
+  const written = await check('{ output: z.json(), uses: ["task.create"] }');
+  expect(written).toEqual({ codes: [], uses: { masks: [expect.objectContaining({ mask: "task.create" })] } });
+});
