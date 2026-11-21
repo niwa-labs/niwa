@@ -1,6 +1,16 @@
 // The API a client holds: the shape the host and a connected client share.
 import type { ActionTarget, CallOptions, Description, EmitOptions, LiveFrame, RecordReadQuery, RecordId, RecordQuery, RecordType, StoredRecord, TracedRecord } from "@niwa-labs/core";
 
+/** The frames of one channel, from the moment the host registered the listener. */
+export interface LiveSubscription extends AsyncIterableIterator<LiveFrame> {
+  /**
+   * Resolves once the host has registered the listener: a frame sent after this is received. It
+   * rejects when the subscription ended before the host answered. Returning from the iterator
+   * ends the subscription, even while a read waits on a quiet channel.
+   */
+  readonly ready: Promise<void>;
+}
+
 /** The API shared by the host and a client. */
 export interface NiwaApi {
   /**
@@ -28,8 +38,8 @@ export interface NiwaApi {
   live: {
     /** Send a frame on a channel. A frame that nobody receives is simply lost. */
     send(channel: string, frame: LiveFrame): Promise<void>;
-    /** The frames of a channel, from now on. Never ends by itself. */
-    subscribe(channel: string): AsyncIterable<LiveFrame>;
+    /** The frames of a channel, from now on. Never ends by itself; `ready` says when it is listening. */
+    subscribe(channel: string): LiveSubscription;
   };
   /**
    * Everything that grew from a record: down through causes and links, depth-first, each record

@@ -56,14 +56,15 @@ async function readJournal(
 function listen(
   client: Awaited<ReturnType<typeof connect>>,
   channel: string,
-): { frames: LiveFrame[]; done: Promise<void> } {
+): { frames: LiveFrame[]; done: Promise<void>; ready: Promise<void> } {
   const frames: LiveFrame[] = [];
+  const subscription = client.live.subscribe(channel);
   const done = (async () => {
-    for await (const frame of client.live.subscribe(channel)) {
+    for await (const frame of subscription) {
       frames.push(frame);
     }
   })().catch(() => {});
-  return { frames, done };
+  return { frames, done, ready: subscription.ready };
 }
 
 test("live frames: a subscriber receives the frames, the journal holds none of them, and a late subscriber still receives the complete record", async () => {
@@ -80,7 +81,7 @@ test("live frames: a subscriber receives the frames, the journal holds none of t
 
     // 1. A subscriber connects to the channel.
     const subscriber = listen(client, CHANNEL);
-    await Bun.sleep(300);
+    await subscriber.ready;
 
     // 2. A message is written. The handler sends a live frame, and the
     //    subscriber receives it.
@@ -105,7 +106,7 @@ test("live frames: a subscriber receives the frames, the journal holds none of t
     //    still receives the complete record.
     late = await connectAsOwner(homePath);
     const lateSubscriber = listen(late, CHANNEL);
-    await Bun.sleep(300);
+    await lateSubscriber.ready;
 
     // The frames sent before the late subscriber connected are gone: they were
     // not received by it, and they are not in the journal either.

@@ -11,7 +11,7 @@
 import type { z } from "zod";
 
 import { expandHome } from "./home.ts";
-import { channelName, frameFor } from "./live.ts";
+import { MAX_QUEUED_FRAMES, channelName, frameFor } from "./live.ts";
 import { RetryPause } from "./pause.ts";
 import { RecordQuerySchema, resolveQuery, seq, targetName } from "@niwa-labs/core";
 import type {
@@ -35,7 +35,7 @@ import type {
   TracedRecord,
   Token,
 } from "@niwa-labs/core";
-import type { NiwaApi } from "./client-types.ts";
+import type { LiveSubscription, NiwaApi } from "./client-types.ts";
 import {
   clientMessageSchema,
   decodeHostMessage,
@@ -230,11 +230,23 @@ class WireConnection {
     this.send({ id, op: "since", query: onWire(query) });
   }
 
-  /** Subscribe to the live frames of a channel. */
-  subscribeLive(channel: string): void {
+  /**
+   * Subscribe to the live frames of a channel. Resolves when the host answered: it registered
+   * the listener before it did, so a frame sent after this is received. Rejects when the
+   * connection ended or the host refused first.
+   */
+  subscribeLive(channel: string): Promise<void> {
     const id = this.nextId++;
     this.subscriptionIds.add(id);
-    this.send({ id, op: "live.subscribe", channel });
+    return new Promise<void>((resolve, reject) => {
+      this.pending.set(id, { resolve: () => resolve(), reject });
+      try {
+        this.send({ id, op: "live.subscribe", channel });
+      } catch (error) {
+        this.pending.delete(id);
+        reject(asError(error));
+      }
+    });
   }
 
   /** Close the connection. Pending calls reject. */
@@ -302,18 +314,19 @@ class WireConnection {
     }
 
     const pending = this.pending.get(decoded.id);
-    this.pending.delete(decoded.id);
     if (decoded.ok) {
+      this.pending.delete(decoded.id);
       pending?.resolve(decoded.value);
       return;
     }
     const error = new HostError(decoded.error, decoded.code, decoded.denied);
-    if (pending !== undefined) {
-      pending.reject(error);
-    } else if (decoded.id === this.helloId || this.subscriptionIds.has(decoded.id)) {
+    if (decoded.id === this.helloId || this.subscriptionIds.has(decoded.id)) {
       // The host will not talk to this client, or refused the subscription: retrying would spin.
       this.die(error, true);
+      return;
     }
+    this.pending.delete(decoded.id);
+    pending?.reject(error);
   }
 
   /** The connection ends: every pending call is rejected at once, so nobody waits on a corpse. */
@@ -535,7 +548,7 @@ class RecordSubscription {
   }
 }
 
-interface LiveSubscriptionOptions {
+interface ChannelSubscriptionOptions {
   readonly home: string;
   readonly client: ClientId;
   readonly token: Token | undefined;
@@ -548,24 +561,40 @@ interface LiveSubscriptionOptions {
  * A view of one channel over one socket. A live frame is not a record: there is no cursor and
  * no history, and the frames sent while the socket was down are missed. A drop is not fatal; the
  * subscription reconnects and listens again.
+ *
+ * The socket opens when the subscription is made, not when it is first read, and `ready` says when
+ * the host has registered the listener.
  */
-class LiveSubscription {
-  private readonly options: LiveSubscriptionOptions;
+class ChannelSubscription {
+  private readonly options: ChannelSubscriptionOptions;
   private readonly queue: LiveFrame[] = [];
   private readonly waiters: Array<() => void> = [];
   private connection: WireConnection | null = null;
-  private runner: Promise<void> | null = null;
   private failure: Error | null = null;
   private isClosed = false;
   private finished = false;
   private readonly pause = new RetryPause();
+  readonly ready: Promise<void>;
+  private markReady: () => void = () => undefined;
+  private refuseReady: (error: Error) => void = () => undefined;
 
-  constructor(options: LiveSubscriptionOptions) {
+  constructor(options: ChannelSubscriptionOptions) {
     this.options = options;
+    this.ready = new Promise<void>((resolve, reject) => {
+      this.markReady = resolve;
+      this.refuseReady = reject;
+    });
+    // A subscription nobody waits on for readiness must not report its refusal as unhandled.
+    this.ready.catch(() => undefined);
+  }
+
+  /** Open the socket and keep it open until the subscription is closed. */
+  start(): void {
+    void this.run();
   }
 
   /** Return closes the socket even if a next call is waiting on a quiet channel. */
-  iterate(): AsyncIterableIterator<LiveFrame> {
+  iterate(): LiveSubscription {
     const frames = this.readFrames();
     return {
       [Symbol.asyncIterator]() { return this; },
@@ -574,13 +603,12 @@ class LiveSubscription {
         this.close();
         return frames.return();
       },
+      ready: this.ready,
     };
   }
 
   /** The frames, in order, until the subscription closes. */
   private async *readFrames(): AsyncGenerator<LiveFrame, void, undefined> {
-    if (this.isClosed) return;
-    this.runner ??= this.run();
     try {
       for (;;) {
         const frame = this.queue.shift();
@@ -603,6 +631,7 @@ class LiveSubscription {
     this.isClosed = true;
     this.closeConnection();
     this.pause.cancel();
+    this.refuseReady(this.failure ?? new HostError(CLOSED_MESSAGE));
     this.wake();
     this.finish();
   }
@@ -626,10 +655,11 @@ class LiveSubscription {
       if (connection !== null) {
         this.connection = connection;
         try {
-          connection.subscribeLive(this.options.channel);
+          await connection.subscribeLive(this.options.channel);
+          this.markReady();
           await connection.done;
         } catch {
-          // The write failed: the socket is gone; the next round reconnects.
+          // The write failed or the connection ended before the host answered: the next round reconnects.
         }
         this.closeConnection();
       }
@@ -667,7 +697,7 @@ class LiveSubscription {
 
   private onFrame(frame: LiveFrame): void {
     if (this.isClosed) return;
-    if (this.queue.length >= MAX_QUEUED_RECORDS) this.queue.shift(); // a slow reader loses the oldest frames
+    if (this.queue.length >= MAX_QUEUED_FRAMES) this.queue.shift(); // a slow reader loses the oldest frames
     this.queue.push(frame);
     this.wake();
   }
@@ -700,7 +730,7 @@ class Client implements NiwaApi {
 
   readonly live: {
     send(channel: string, frame: LiveFrame): Promise<void>;
-    subscribe(channel: string): AsyncIterable<LiveFrame>;
+    subscribe(channel: string): LiveSubscription;
   };
 
   private readonly home: string;
@@ -708,7 +738,7 @@ class Client implements NiwaApi {
   private readonly token: Token | undefined;
   private link: Promise<WireConnection>;
   private readonly subscriptions = new Set<RecordSubscription>();
-  private readonly liveSubscriptions = new Set<LiveSubscription>();
+  private readonly liveSubscriptions = new Set<ChannelSubscription>();
   private isClosed = false;
 
   constructor(home: string, client: ClientId, token: Token | undefined, connection: WireConnection) {
@@ -751,10 +781,10 @@ class Client implements NiwaApi {
         const data = frameFor(name, frame).data;
         await this.request((id) => ({ id, op: "live.send", channel: name, data }));
       },
-      subscribe: (channel: string): AsyncIterable<LiveFrame> => {
+      subscribe: (channel: string): LiveSubscription => {
         if (this.isClosed) throw new HostError(CLOSED_MESSAGE);
         const name = channelName(channel);
-        const subscription = new LiveSubscription({
+        const subscription = new ChannelSubscription({
           home: this.home,
           client: this.client,
           token: this.token,
@@ -764,6 +794,7 @@ class Client implements NiwaApi {
           },
         });
         this.liveSubscriptions.add(subscription);
+        subscription.start();
         return subscription.iterate();
       },
     };

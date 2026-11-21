@@ -7,6 +7,8 @@
 
 import type { LiveFrame } from "@niwa-labs/core";
 
+import type { LiveSubscription } from "./client-types.ts";
+
 /** The name of a channel: a key that travels through the socket, so no empty name and no whitespace. */
 export function channelName(value: string): string {
   if (typeof value !== "string") {
@@ -33,6 +35,9 @@ export function frameFor(channel: string, frame: LiveFrame): LiveFrame {
   return { channel: name, data: frame.data };
 }
 
+/** Frames a listener holds for a consumer that reads slowly; past it the oldest frame is dropped. */
+export const MAX_QUEUED_FRAMES = 1024;
+
 /** One listener of one channel: the frames are queued until the consumer takes them. */
 export class LiveFeed {
   private readonly queue: LiveFrame[] = [];
@@ -41,8 +46,26 @@ export class LiveFeed {
 
   constructor(private readonly onClose: () => void) {}
 
-  /** The frames from now on, until the feed is closed. Ending the iteration closes the feed. */
-  async *iterate(): AsyncGenerator<LiveFrame, void, undefined> {
+  /**
+   * The frames from now on, until the feed is closed. Returning from the iterator closes the feed
+   * first, so a read that waits on a quiet channel ends with it, and a feed that was never read
+   * leaves its channel all the same. The feed is registered already: it is ready.
+   */
+  iterate(): LiveSubscription {
+    const frames = this.frames();
+    const subscription: LiveSubscription = {
+      [Symbol.asyncIterator]() { return this; },
+      next: () => frames.next(),
+      return: () => {
+        this.close();
+        return frames.return();
+      },
+      ready: Promise.resolve(),
+    };
+    return subscription;
+  }
+
+  private async *frames(): AsyncGenerator<LiveFrame, void, undefined> {
     try {
       for (;;) {
         const frame = this.queue.shift();
@@ -60,6 +83,7 @@ export class LiveFeed {
 
   push(frame: LiveFrame): void {
     if (this.closed) return;
+    if (this.queue.length >= MAX_QUEUED_FRAMES) this.queue.shift();
     this.queue.push(frame);
     this.wake();
   }

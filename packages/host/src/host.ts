@@ -171,7 +171,7 @@ import { COCKPIT_MODULE, handlerSource, pluginVersion, pluginName, sealVersion }
 import { catalogOf } from "./cockpit-catalog.ts";
 import { StateStore } from "./state.ts";
 import { artifactStore, secretStore } from "./stores.ts";
-import type { HostMessage } from "@niwa-labs/client";
+import type { HostMessage, LiveSubscription } from "@niwa-labs/client";
 import { isTrigger } from "@niwa-labs/plugin";
 import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionStart } from "@niwa-labs/plugin";
 import type { Host, HostOptions } from "./host-types.ts";
@@ -2554,7 +2554,7 @@ class Niwa implements Host {
     send: async (channel: string, frame: LiveFrame): Promise<void> => {
       this.liveBus.send(channelName(channel), frameFor(channel, frame));
     },
-    subscribe: (channel: string): AsyncIterable<LiveFrame> => this.liveBus.subscribe(channelName(channel)).iterate(),
+    subscribe: (channel: string): LiveSubscription => this.liveBus.subscribe(channelName(channel)).iterate(),
   };
 
   /**
