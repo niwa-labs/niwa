@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@niwa-labs/client": "workspace:*",
-    "@niwa-labs/ui-kit": "workspace:*"
+    "@niwa-labs/ui-kit": "workspace:*",
+    "zustand": "^5.1.0"
   }
 }
