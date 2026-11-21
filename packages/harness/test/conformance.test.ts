@@ -432,6 +432,36 @@ test("the control suite fails a side that never reports the end of a turn", asyn
   expect(report.passed).toBe(false);
 });
 
+test("the control suite fails, and does not hang on, a side whose turn ends without having started", async () => {
+  const control: SessionControl = {
+    async start() {
+      return { session: sid("toy-1") };
+    },
+    async resume() {},
+    async send() {
+      return { status: "started" };
+    },
+    async interrupt() {},
+    async ask<T>() {
+      return { session: sid("toy-1"), value: "ok" as T, at: 0 as never };
+    },
+    async *life() {
+      yield { kind: "turn-ended", turn: 1 };
+      await new Promise(() => undefined);
+    },
+    async state() {
+      return "unknown";
+    },
+  };
+  const instance: Harness = {
+    ...toyInstance,
+    sides: { control: { start: true, resume: false, send: false, interrupt: true, ask: false, structuredOutput: false, launch: { model: false, effort: [], modes: [] } } },
+  };
+  const report = await controlConformance("toy", { instance, control })();
+  expect(failures(report).some((name) => name.includes("interrupt: the turn began before it was cut") && name.includes("without its start"))).toBe(true);
+  expect(report.passed).toBe(false);
+});
+
 test("the insert suite fails a side that declares an event it never reports", async () => {
   const insert: HarnessInsert = {
     async *events() {

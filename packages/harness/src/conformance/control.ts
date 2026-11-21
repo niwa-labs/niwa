@@ -209,8 +209,9 @@ export function controlConformance(
       if (sent === undefined) {
         wait.cancel();
       } else {
-        // The turn must have begun, so the interrupt has a running turn to cut.
-        await wait.started.catch(() => undefined);
+        // The turn must have begun, so the interrupt has a running turn to cut. A turn that
+        // ends without its start having been reported fails here, with that reason.
+        await attempt("interrupt: the turn began before it was cut", check, () => wait.started);
         await attempt("interrupt: a turn is interrupted", check, async () => {
           try {
             await control.interrupt(session);
@@ -285,6 +286,8 @@ function nextTurnEnd(control: SessionControl, session: SessionId, deadlineMs = T
   let refuse: ((reason: Error) => void) | undefined;
   let giveUp: (() => void) | undefined;
   let began: ((value: LifeEvent) => void) | undefined;
+  let beganNever: ((reason: Error) => void) | undefined;
+  let hasBegun = false;
 
   const ended = new Promise<LifeEvent[]>((resolve, reject) => {
     settle = resolve;
@@ -295,6 +298,7 @@ function nextTurnEnd(control: SessionControl, session: SessionId, deadlineMs = T
 
   const started = new Promise<LifeEvent>((resolve, reject) => {
     began = resolve;
+    beganNever = reject;
     // The start wait ends when the end wait does: both wait for the same turn.
     void ended.catch((error: unknown) =>
       reject(error instanceof Error ? error : new Error(String(error))),
@@ -336,8 +340,13 @@ function nextTurnEnd(control: SessionControl, session: SessionId, deadlineMs = T
           return;
         }
         seen.push(next.value.value);
-        if (next.value.value.kind === "turn-started") began?.(next.value.value);
+        if (next.value.value.kind === "turn-started") {
+          hasBegun = true;
+          began?.(next.value.value);
+        }
         if (next.value.value.kind === "turn-ended") {
+          // A turn that ends before its start was reported leaves nothing for `started` to wait for.
+          if (!hasBegun) beganNever?.(new Error("the turn ended without its start having been reported"));
           settle?.(seen);
           return;
         }
