@@ -79,13 +79,14 @@ export function dirIn(parent: string, ...parts: string[]): string {
   return path;
 }
 
-/** Every file under a directory, with its bytes. */
+/** Every regular file under a directory, with its bytes. */
 export function filesUnder(dir: string): Array<{ path: string; bytes: Buffer }> {
   const found: Array<{ path: string; bytes: Buffer }> = [];
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);
-    if (statSync(path).isDirectory()) found.push(...filesUnder(path));
-    else found.push({ path, bytes: readFileSync(path) });
+    const stat = statSync(path);
+    if (stat.isDirectory()) found.push(...filesUnder(path));
+    else if (stat.isFile()) found.push({ path, bytes: readFileSync(path) });
   }
   return found;
 }

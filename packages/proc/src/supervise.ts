@@ -11,6 +11,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { LaunchedBox } from "@niwa-labs/sandbox";
 
 import type { OutputCapture } from "./artifact.ts";
+import { ProcRefusal } from "./refusal.ts";
 import type { ProcOutcome } from "./records.ts";
 
 export interface SuperviseOptions {
@@ -82,4 +83,24 @@ export async function supervise(child: LaunchedBox, capture: OutputCapture, opti
   for (const reader of readers) void reader.cancel().catch(() => {});
 
   return { outcome: timedOut ? "timed-out" : "exited", exit: timedOut ? null : code, durationMs: Date.now() - started };
+}
+
+/**
+ * Starts a command with no box, leading its own process group, with exactly the environment given.
+ * A program that cannot be started is a refusal: nothing ran.
+ */
+export function launchPlain(cmd: readonly string[], cwd: string, env: Readonly<Record<string, string>>): LaunchedBox {
+  try {
+    const child = Bun.spawn([...cmd], { cwd, env: { ...env }, stdin: "pipe", stdout: "pipe", stderr: "pipe", detached: true });
+    return {
+      pid: child.pid,
+      stdin: child.stdin,
+      stdout: child.stdout,
+      stderr: child.stderr,
+      exited: child.exited,
+      kill: (signal) => child.kill(signal),
+    };
+  } catch (error) {
+    throw new ProcRefusal("not-started", `cannot start ${cmd[0] ?? "the command"}: ${(error as Error).message}`);
+  }
 }

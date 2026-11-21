@@ -7,6 +7,13 @@
  *   the box holds this, the class of the action is honest for any command: a write in the local world. It
  *   never runs without a box: a box that cannot run here stops the call before a process exists.
  *
+ * - **proc.exec** runs a command with no box. Nothing limits what it writes or reaches, so it is an
+ *   irreversible action in the external world, and a grant has to name it. It gets `PATH`, `HOME`,
+ *   what the call lists, and the secrets the call names. A secret is a reference, `secret("name")`; its value
+ *   is resolved here (`secrets.ts`), handed to the process, and removed from the output before the
+ *   artifact or the tail is made. Nothing the host holds goes into the environment of the command
+ *   unless the call lists it.
+ *
  * A command ends like this: the output is stored as an artifact before anything points at it, the
  * result has the exit code and a bounded tail, and a `proc.finished` record says how the command
  * ended. A non-zero exit is a result: the caller reads it.
@@ -19,7 +26,7 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { CatchableError, HOST_KEY_FILE, OWNER_TOKEN_FILE, action } from "@niwa-labs/core";
+import { HOST_KEY_FILE, OWNER_TOKEN_FILE, action } from "@niwa-labs/core";
 import type { ActionContext } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin } from "@niwa-labs/plugin";
@@ -27,12 +34,18 @@ import { boxSpec, nono, requireSandbox, srt } from "@niwa-labs/sandbox";
 import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
 
 import { OutputCapture } from "./artifact.ts";
-import { ProcFinished, procRun } from "./records.ts";
+import { ProcRefusal } from "./refusal.ts";
+import { ProcFinished, procExec, procRun } from "./records.ts";
 import type { BoxUsed, ProcFinishedData, ProcResult } from "./records.ts";
-import { supervise } from "./supervise.ts";
+import { resolveSecret } from "./secrets.ts";
+import { launchPlain, supervise } from "./supervise.ts";
 
 export * from "./records.ts";
 export { artifactDir, artifactPath } from "./artifact.ts";
+export { ProcRefusal } from "./refusal.ts";
+export type { ProcRefusalCode } from "./refusal.ts";
+export { SecretRefusal, resolveSecret, secretsDir } from "./secrets.ts";
+export type { SecretRefusalCode } from "./secrets.ts";
 
 /** What the module is given. Every field has a default. */
 export interface ProcOptions {
@@ -44,20 +57,6 @@ export interface ProcOptions {
   readonly tailBytes?: number;
   /** How long a stopped command has to end before it is killed, in milliseconds. Default: 2000. */
   readonly killGraceMs?: number;
-}
-
-/** Why a call was refused before a command started. */
-export type ProcRefusalCode = "bad-cwd";
-
-/** A refusal of the module: the caller's to catch, since nothing ran. */
-export class ProcRefusal extends CatchableError {
-  override name = "ProcRefusal";
-  override readonly code: ProcRefusalCode;
-
-  constructor(code: ProcRefusalCode, message: string) {
-    super(message);
-    this.code = code;
-  }
 }
 
 const DEFAULT_OUTPUT_LIMIT = 16 * 1024 * 1024;
@@ -137,6 +136,38 @@ export function proc(options: ProcOptions = {}): Plugin {
             const box: BoxUsed = { sandbox: sandbox.name, write: [...spec.write], net: [...spec.net] };
             await finish(ctx, { action: "proc.run", cwd, program: input.cmd[0] as string, box }, result);
             return { ...result, box };
+          } catch (error) {
+            capture.discard();
+            throw error;
+          }
+        },
+      }),
+    );
+
+    api.action(
+      action(procExec, {
+        recovery: "do-not-repeat",
+        async run(input, ctx) {
+          const cwd = directoryOf(input.cwd);
+          // Every secret is resolved before anything starts: one that cannot be given stops the call.
+          const values: string[] = [];
+          const env: Record<string, string> = { ...baseEnv() };
+          const given = (name: string): string => {
+            const value = resolveSecret(home(), name);
+            values.push(value);
+            return value;
+          };
+          for (const [name, value] of Object.entries(input.env ?? {})) {
+            env[name] = typeof value === "string" ? value : given(value.secret);
+          }
+          for (const name of input.secrets ?? []) env[name] = given(name);
+          const capture = new OutputCapture({ home: home(), secrets: values, limit, tailBytes });
+          try {
+            const child = launchPlain(input.cmd, cwd, env);
+            const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS });
+            const result: ProcResult = { ...ended, ...capture.finish() };
+            await finish(ctx, { action: "proc.exec", cwd, program: input.cmd[0] as string }, result);
+            return result;
           } catch (error) {
             capture.discard();
             throw error;
