@@ -60,8 +60,13 @@ export const ProcResult = z.strictObject({
   durationMs: z.number().int().nonnegative(),
   /** The end of the output, bounded. The rest is in `output`. */
   tail: z.string(),
-  /** The output was longer than what is kept: the artifact holds its start. */
+  /** The output was longer than what is kept: the artifact holds its start and `tail` its end. */
   truncated: z.boolean(),
+  /**
+   * Reading the output was given up while something the command started, outside its process group,
+   * still held the pipes open: what it wrote after that is in neither `output` nor `tail`.
+   */
+  outputCut: z.boolean(),
   /** The output, stdout and stderr in the order they came, as an artifact of the host. */
   output: ArtifactRefSchema,
 });

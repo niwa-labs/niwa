@@ -6,8 +6,6 @@
  * outlives its parent holds the output pipes open, and a run waiting for them would never end.
  */
 
-import { setTimeout as sleep } from "node:timers/promises";
-
 import type { LaunchedBox } from "@niwa-labs/sandbox";
 
 import type { OutputCapture } from "./artifact.ts";
@@ -29,6 +27,12 @@ export interface Ended {
   /** The exit code; null when the command was stopped for its time. */
   readonly exit: number | null;
   readonly durationMs: number;
+  /**
+   * Reading the output was given up while something the command started still held its pipes open
+   * (it had left the command's process group), or a pipe failed: what it wrote after that is not in
+   * the output.
+   */
+  readonly outputCut: boolean;
 }
 
 /** Signals the group a command leads; a group that is gone is not an error. */
@@ -46,16 +50,31 @@ interface Reader {
   cancel(): Promise<unknown>;
 }
 
-/** Reads a stream into the capture until it ends or is cancelled. */
-async function pump(reader: Reader, feed: (chunk: Uint8Array) => void): Promise<void> {
+/** What went wrong while the output was read. */
+interface ReadState {
+  /** The capture could not keep what it was given: the error is the call's. */
+  failure?: { readonly error: unknown };
+  /** A pipe failed before it ended. */
+  broken: boolean;
+}
+
+/** Reads a stream into the capture until it ends, fails or is cancelled. */
+async function pump(reader: Reader, feed: (chunk: Uint8Array) => void, state: ReadState, stop: () => void): Promise<void> {
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) return;
-      if (value !== undefined) feed(value);
+      if (value === undefined || state.failure !== undefined) continue;
+      try {
+        feed(value);
+      } catch (error) {
+        // The output cannot be kept: the command is stopped, and the call fails with this.
+        state.failure = { error };
+        stop();
+      }
     }
   } catch {
-    // A stream that fails has said all it will.
+    state.broken = true;
   }
 }
 
@@ -64,9 +83,11 @@ export async function supervise(child: LaunchedBox, capture: OutputCapture, opti
   const started = Date.now();
   child.stdin.end();
   const readers: readonly [Reader, Reader] = [child.stdout.getReader(), child.stderr.getReader()];
+  const state: ReadState = { broken: false };
+  const stop = () => signalGroup(child.pid, "SIGKILL");
   const reading = Promise.all([
-    pump(readers[0], (chunk) => capture.feed("out", chunk)),
-    pump(readers[1], (chunk) => capture.feed("err", chunk)),
+    pump(readers[0], (chunk) => capture.feed("out", chunk), state, stop),
+    pump(readers[1], (chunk) => capture.feed("err", chunk), state, stop),
   ]);
 
   let timedOut = false;
@@ -85,10 +106,18 @@ export async function supervise(child: LaunchedBox, capture: OutputCapture, opti
   clearTimeout(timer);
   clearTimeout(killer);
   signalGroup(child.pid, "SIGKILL");
-  await Promise.race([reading, sleep(options.drainMs)]);
+  let drain: ReturnType<typeof setTimeout> | undefined;
+  const drained = await Promise.race([
+    reading.then(() => true),
+    new Promise<boolean>((resolve) => {
+      drain = setTimeout(() => resolve(false), options.drainMs);
+    }),
+  ]);
+  clearTimeout(drain);
   for (const reader of readers) void reader.cancel().catch(() => {});
+  if (state.failure !== undefined) throw state.failure.error;
 
-  return { outcome: timedOut ? "timed-out" : "exited", exit: timedOut ? null : code, durationMs: Date.now() - started };
+  return { outcome: timedOut ? "timed-out" : "exited", exit: timedOut ? null : code, durationMs: Date.now() - started, outputCut: !drained || state.broken };
 }
 
 /**
