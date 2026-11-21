@@ -4,3 +4,4 @@ export { FAKE_HARNESS, FakeControl, fakeHarness } from "./fake-harness.ts";
 export type { FakeHarness, FakeHarnessOptions } from "./fake-harness.ts";
 export { baseStack } from "./stack.ts";
 export type { BaseStack, BaseStackOptions } from "./stack.ts";
+export { NO_ADVISOR } from "./harness-claude.ts";
