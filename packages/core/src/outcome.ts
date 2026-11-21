@@ -52,6 +52,47 @@ export const RESOLVE_ACTION: ActionName = actionName("niwa.invocation.resolve");
  */
 export const MOVE_ACTION: ActionName = actionName("niwa.invocation.move");
 
+/**
+ * The action the host registers for itself: cancel the steps of an invocation under some keys.
+ *
+ * The cancel is a record (`niwa.step.cancelled`), so it outlives the process that runs the
+ * invocation: a step under it that has not ended is not called, a call of it that is in flight is
+ * cut short through its signal, and either way its outcome is "cancelled". A step that ended
+ * before keeps its outcome.
+ */
+export const CANCEL_STEPS_ACTION: ActionName = actionName("niwa.invocation.cancel-steps");
+
+/** What a cancel of steps says: which invocation, the keys whose steps it cancels, the ones it spares, and why. */
+export interface StepsCancelled {
+  readonly invocation: InvocationId;
+  /** A step is cancelled when its key is one of these or lies under one: `a` holds `a.call-1` and `a~auth`, not `ab`. */
+  readonly prefixes: readonly string[];
+  /** The keys under a prefix that the cancel spares, as the prefixes hold them. */
+  readonly except?: readonly string[];
+  readonly reason: string;
+}
+
+/** Whether a key is the prefix or lies under it: the next character after the prefix starts a part of its own. */
+export function keyUnder(key: string, prefix: string): boolean {
+  if (!key.startsWith(prefix)) return false;
+  const next = key.charAt(prefix.length);
+  return next === "" || next === "." || next === "~";
+}
+
+/** Whether a cancel of steps holds a key: a prefix holds it and nothing it spares does. */
+export function cancelHolds(cancel: StepsCancelled, key: string): boolean {
+  return cancel.prefixes.some((prefix) => keyUnder(key, prefix)) && !(cancel.except ?? []).some((spared) => keyUnder(key, spared));
+}
+
+/** The cancel that holds a step of an invocation, the first one written, when one does. */
+export function cancelOf(journal: Pick<Journal, "find">, invocation: InvocationId, key: string): StepsCancelled | undefined {
+  for (const row of journal.find({ type: CORE_TYPES.stepCancelled, field: "invocation", equals: invocation })) {
+    const cancel = row.data as StepsCancelled;
+    if (cancelHolds(cancel, key)) return cancel;
+  }
+  return undefined;
+}
+
 /** What a resolution says: which invocation, which step, which choice. */
 export interface Resolution {
   readonly invocation: InvocationId;

@@ -222,6 +222,12 @@ export type Recovery = "repeat" | "repeat-with-key" | "do-not-repeat";
 export interface ActionContext {
   /** Stable across repeats of the same step. */
   operationId: OperationId;
+  /**
+   * Aborted when the step this call is made in is cancelled: the work it stood for is no longer
+   * wanted, and its outcome is written as cancelled whatever the call returns after that. Absent
+   * for a call made outside a step.
+   */
+  signal?: AbortSignal;
   caller: Caller;
   /**
    * The invocation this call runs in, as a step of it. Absent for a call made outside an
@@ -356,7 +362,9 @@ export type Outcome<O> =
   | { status: "completed"; value: O }
   | { status: "denied"; reason: string }
   | { status: "failed"; error: string; effectPossible: boolean }
-  | { status: "unknown" };
+  | { status: "unknown" }
+  /** The work the step stood for was given up: the step was not called, or its call was cut short. */
+  | { status: "cancelled"; reason: string };
 
 export interface StepOptions {
   /** Explicit step key. Default: ordinal of the call inside the invocation ("1", "2", ...). */
@@ -603,6 +611,7 @@ export const CORE = {
   stepDecision: "niwa.step.decision",             // { invocation, key, attempt, requested, final, denied, reason? }
   stepIntent: "niwa.step.intent",                 // { invocation, key, action, input, operationId }
   stepOutcome: "niwa.step.outcome",               // { invocation, key, outcome }
+  stepCancelled: "niwa.step.cancelled",           // { invocation, prefixes, except?, reason }
   stateChanged: "niwa.state.changed",             // { plugin, name, op, value }
   stateRead: "niwa.state.read",                   // { plugin, name, op, value }
   accessIssued: "niwa.access.issued",             // { mac, principal }

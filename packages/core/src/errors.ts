@@ -72,6 +72,25 @@ export class CatchableError extends Error {
 }
 
 /**
+ * The step was cancelled: the work it stood for was given up, by the code that made it or by the
+ * owner. The caller catches it: a cancelled step pauses nothing, and a replay throws it again.
+ */
+export class StepCancelled extends CatchableError {
+  override name = "StepCancelled";
+  override readonly code: string = "StepCancelled";
+  /** The key of the step that was cancelled. */
+  readonly key: string;
+  /** Why it was cancelled. */
+  readonly reason: string;
+
+  constructor(key: string, reason: string) {
+    super(`step ${key} was cancelled: ${reason}`);
+    this.key = key;
+    this.reason = reason;
+  }
+}
+
+/**
  * A handler waits for a trigger whose record type no installed plugin declares: it could never
  * fire. The host refuses to serve instead of waiting forever.
  */

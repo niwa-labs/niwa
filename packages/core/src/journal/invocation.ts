@@ -18,10 +18,14 @@ import {
   attemptOperationId,
   attemptRecordId,
   attemptsOf,
+  cancelHolds,
+  cancelOf,
   checkOutcome,
+  keyUnder,
   resolutionOf,
 } from "../outcome.ts";
-import { CatchableError, IntegrityError, UnknownAction } from "../errors.ts";
+import type { StepsCancelled } from "../outcome.ts";
+import { CatchableError, IntegrityError, StepCancelled, UnknownAction } from "../errors.ts";
 import { CORE_TYPES, newRecordId, recordId, stableJson, streamId } from "../record.ts";
 import type {
   ActionTarget,
@@ -205,6 +209,51 @@ interface RunContext {
   readonly flights: Map<StepKey, Flight>;
 }
 
+/**
+ * The calls of actions in flight in this process, by invocation and key: what a cancel of steps
+ * reaches. A call outlives the run of its invocation when another step of it suspended the run,
+ * so the calls are kept here, apart from any run, until each one ends.
+ */
+const CALLS = new Map<InvocationId, Map<StepKey, AbortController>>();
+
+/**
+ * Cut short the calls in flight that a cancel of steps holds, in this process.
+ *
+ * The cancel itself is the record the host writes; this reaches the calls that are running now,
+ * so a session of an agent is told to stop instead of working for nobody. It says how many calls
+ * were cut short.
+ */
+export function abortSteps(cancel: StepsCancelled): number {
+  const calls = CALLS.get(cancel.invocation);
+  if (calls === undefined) return 0;
+  let aborted = 0;
+  for (const [key, controller] of calls) {
+    if (!cancelHolds(cancel, key) || controller.signal.aborted) continue;
+    controller.abort(cancel.reason);
+    aborted += 1;
+  }
+  return aborted;
+}
+
+/** The outcome of a step a cancel holds. */
+const cancelledOutcome = (cancel: StepsCancelled): Outcome<never> => ({ status: "cancelled", reason: cancel.reason });
+
+/**
+ * The waits under a step that a cancel ended with it: an intent with no outcome under the key is
+ * given the cancelled outcome, so nothing is left waiting for a step that is over.
+ */
+function closeOpenWaits(ctx: RunContext, key: StepKey, cancel: StepsCancelled): void {
+  const open: NewRecord[] = [];
+  for (const row of ctx.deps.journal.find({ type: CORE_TYPES.stepIntent, field: "invocation", equals: ctx.invocation })) {
+    const data = row.data as { key?: unknown; action?: unknown };
+    if (typeof data.key !== "string" || data.key === key || !keyUnder(data.key, key) || data.action !== WAIT_ACTION) continue;
+    const nested = stepKey(data.key);
+    if (ctx.deps.journal.get(attemptRecordId(ctx.invocation, nested, 0, "outcome")) !== undefined) continue;
+    open.push(outcomeRecord(ctx, nested, cancelledOutcome(cancel), 0));
+  }
+  if (open.length > 0) commitAll(ctx, open);
+}
+
 /** One step that is being run: which call it is, and what it will come to. */
 interface Flight {
   readonly call: string;
@@ -371,6 +420,8 @@ function makeStep(ctx: RunContext, scope: KeyScope = handlerScope): Step {
     if (outcome.status === "completed") return outcome.value;
     // The owner said skip: the step is not called and the code continues without it.
     if (outcome.status === "skipped") return undefined as O;
+    // A cancelled step pauses nothing: the code that made it catches the cancel.
+    if (outcome.status === "cancelled") throw new StepCancelled(key, outcome.reason);
     pause(ctx, `step ${key}: ${outcome.status}`, key);
   };
   return Object.assign(call, {
@@ -645,6 +696,18 @@ async function runStepOnce<I, O, In = I>(
     return { key, outcome: { status: "completed", value: value.data } };
   }
 
+  // A cancel holds the step: it is not called, and a call of it that was cut off is not made again.
+  const cancel = cancelOf(ctx.deps.journal, ctx.invocation, key);
+  if (cancel !== undefined) {
+    const outcome = cancelledOutcome(cancel);
+    if (intent !== undefined) {
+      closeOpenWaits(ctx, key, cancel);
+      return settle<O>(ctx, key, outcome, attempt);
+    }
+    commitAll(ctx, [intentRecord(ctx, key, action.name, held, operation, attempt, action.recovery), outcomeRecord(ctx, key, outcome, attempt)]);
+    return { key, outcome };
+  }
+
   if (intent === undefined) {
     // Fresh: the decision is made and recorded before the intent, so the journal shows what was
     // decided and what was run.
@@ -854,17 +917,34 @@ async function callAction<I, O, In = I>(
 ): Promise<StepResult<O>> {
   let value: O;
   const nested = stepFor(ctx, key, attempt);
+  // A cancel of the step aborts the call: its outcome is written then, and what the call returns
+  // after that is not its outcome.
+  const controller = new AbortController();
+  const calls = CALLS.get(ctx.invocation) ?? new Map<StepKey, AbortController>();
+  CALLS.set(ctx.invocation, calls);
+  calls.set(key, controller);
+  const aborted = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener("abort", () => reject(controller.signal), { once: true });
+  });
   try {
-    value = await action.run(input, {
+    const running = action.run(input, {
       operationId: operation,
       caller: callerAs(ctx, as),
       invocation: ctx.invocation,
+      signal: controller.signal,
       emit: emitFor(ctx, action.name, operation),
       wait: waitFor(ctx, key, attempt),
       waitAnyOf: waitAnyFor(ctx, key, attempt),
       step: nested.step,
     });
+    // The call that was cut short may still end, and nobody waits for it.
+    running.catch(() => undefined);
+    value = await Promise.race([running, aborted]);
   } catch (error) {
+    if (controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      return settle<O>(ctx, key, { status: "cancelled", reason: typeof reason === "string" ? reason : "cancelled" }, attempt);
+    }
     // The invocation is waiting, not failing: the call is made again when the answer arrives.
     if (error instanceof SuspendSignal) throw error;
     // An error the caller catches is not a failed step: it belongs to the code that called the
@@ -880,6 +960,9 @@ async function callAction<I, O, In = I>(
       { status: "failed", error: messageOf(error), effectPossible: true },
       attempt,
     );
+  } finally {
+    if (calls.get(key) === controller) calls.delete(key);
+    if (calls.size === 0 && CALLS.get(ctx.invocation) === calls) CALLS.delete(ctx.invocation);
   }
   // The code swallowed the pause of a nested call and returned: what it returned rests on a call
   // that has no answer yet, so it is not recorded as this call's outcome.
@@ -1017,6 +1100,7 @@ function stepFor(
     if (outcome.status === "completed") return outcome.value;
     // The owner said skip: the call is not made and the code continues without it.
     if (outcome.status === "skipped") return undefined as O;
+    if (outcome.status === "cancelled") throw new StepCancelled(nested, outcome.reason);
     paused = true;
     pause(ctx, `step ${nested}: ${outcome.status}`, nested);
   };
@@ -1130,6 +1214,7 @@ async function awaitRecords(
   const recorded = ctx.deps.journal.get(outcomeId);
   if (recorded !== undefined) {
     const outcome = readOutcome<{ type: string; data: unknown; at: number }>(recorded.data);
+    if (outcome.status === "cancelled") throw new StepCancelled(key, outcome.reason);
     if (outcome.status !== "completed") pause(ctx, `step ${key}: ${outcome.status}`, key);
     const answered = entries.find((entry) => entry.type.name === outcome.value.type);
     const value = answered?.type.schema.safeParse(outcome.value.data);
@@ -1137,6 +1222,16 @@ async function awaitRecords(
       pause(ctx, `replay mismatch at step ${key}: the recorded answer does not fit the types waited for now`, key);
     }
     return { type: answered.type.name, data: value.data, at: outcome.value.at as Seq };
+  }
+
+  // A cancel holds the wait: it ends without an answer, and the code that made it catches the cancel.
+  const cancel = cancelOf(ctx.deps.journal, ctx.invocation, key);
+  if (cancel !== undefined) {
+    commitAll(ctx, [
+      ...(intent === undefined ? [intentRecord(ctx, key, WAIT_ACTION, waited, operation, 0)] : []),
+      outcomeRecord(ctx, key, cancelledOutcome(cancel), 0),
+    ]);
+    throw new StepCancelled(key, cancel.reason);
   }
 
   if (intent === undefined) {

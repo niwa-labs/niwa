@@ -95,6 +95,7 @@ export const CORE_TYPES = {
   stepDecision: recordTypeName(CORE.stepDecision),
   stepIntent: recordTypeName(CORE.stepIntent),
   stepOutcome: recordTypeName(CORE.stepOutcome),
+  stepCancelled: recordTypeName(CORE.stepCancelled),
   stateChanged: recordTypeName(CORE.stateChanged),
   stateRead: recordTypeName(CORE.stateRead),
   accessIssued: recordTypeName(CORE.accessIssued),

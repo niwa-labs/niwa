@@ -197,6 +197,8 @@ export function submitAnswerAction(journal: () => JournalReader | undefined): Ac
             return { refused: outcome.reason, final: true };
           case "unknown":
             return { refused: "the answer could not be given: its outcome is unknown", final: true };
+          case "cancelled":
+            return { refused: `the answer was not given: ${outcome.reason}`, final: true };
         }
       };
       const given = await give(input.value);
