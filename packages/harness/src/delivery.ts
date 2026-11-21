@@ -8,10 +8,9 @@
  * Any other failure of a send is read as possibly sent: an input is never sent twice on a guess.
  */
 
-import { NotSent } from "@niwa-labs/core";
+import { NotSent, effectPossibleAfter } from "@niwa-labs/core";
 import { z } from "zod";
 
-import { Unsupported } from "./capabilities.ts";
 import { DeliveryReceiptSchema } from "./control.ts";
 import type { DeliveryReceipt } from "./control.ts";
 import type { Harness } from "./instance.ts";
@@ -69,8 +68,8 @@ export async function outcomeOf(sending: Promise<DeliveryReceipt>): Promise<Inpu
     return { status: "accepted", receipt: await sending };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    // A refusal by name is made before anything is sent.
-    if (error instanceof InputNotSent || error instanceof Unsupported) return { status: "unsent", reason };
+    // An error that says it had no effect (any `NotSent`, as a refusal by name) sent nothing.
+    if (!effectPossibleAfter(error)) return { status: "unsent", reason };
     return { status: "possibly-sent", reason };
   }
 }
