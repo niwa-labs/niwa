@@ -29,13 +29,13 @@ export const PI_KIND = "pi";
  *
  * The reading side lists and reads the sessions pi writes; it does not follow a session while it
  * grows. The control side starts, resumes, sends, interrupts and stops a session, in pi's RPC
- * mode. It cannot ask: pi asks its questions through its own extension protocol, so a question
- * cannot be put to a pi session from here. Its `ask` returns no structured value either. What pi
- * asks in the middle of a run (the dialogs of its extensions) is routed as reverse requests.
+ * mode. pi's RPC mode takes no MCP server, but an extension of pi registers one for a session, so a
+ * session is given niwa's actions as pi tools. That is also how it answers a question: pi has no
+ * structured output of its own, so it is asked by a request and answers through niwa's `submit-answer`
+ * action, which is why `ask` is declared and `structuredOutput` is not. What pi asks in the middle of
+ * a run (the dialogs of its extensions) is routed as reverse requests.
  *
- * A session can be held to an allow-list of pi's own tools, but not to niwa's tools alone: pi's RPC
- * mode takes no MCP server, and the tools niwa would bring through an extension of pi are not wired
- * in, so such a session would have no tool at all. The role asking for it falls back to another kind.
+ * A session can be held to niwa's tools alone, or to an allow-list of pi's own tools besides them.
  */
 export const piSides: SideCapabilities = {
   reading: { list: true, read: true, watch: false },
@@ -44,16 +44,17 @@ export const piSides: SideCapabilities = {
     resume: true,
     send: true,
     interrupt: true,
-    ask: false,
+    ask: true,
     structuredOutput: false,
     launch: PI_LAUNCH,
-    tools: { niwaOnly: false, allow: true },
+    tools: { niwaOnly: true, allow: true },
   },
 };
 
 /**
- * What the kind declares it can serve, proved against a live pi. pi asks its questions through
- * its own extension protocol, so it cannot be asked from here.
+ * What the kind declares it can serve, proved against a live pi: a session that sees niwa's actions
+ * calls them, answers a question through `submit-answer`, and with niwa's tools alone uses none of
+ * pi's own. An allow-list of pi's own tools is admitted from pi's documented flags.
  */
 export const PI_CAPABILITIES: KindCapabilities = {
   reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
@@ -62,10 +63,10 @@ export const PI_CAPABILITIES: KindCapabilities = {
     resume: VERIFIED,
     send: VERIFIED,
     interrupt: VERIFIED,
-    ask: UNSUPPORTED,
+    ask: VERIFIED,
     structuredOutput: UNSUPPORTED,
     launch: { model: VERIFIED, effort: PI_LAUNCH.effort, modes: PI_LAUNCH.modes },
-    tools: { niwaOnly: UNSUPPORTED, allow: ADMITTED },
+    tools: { niwaOnly: VERIFIED, allow: ADMITTED },
   },
   // The insert is a file in pi's extensions directory. A pi opened by hand that loads it and reports to the
   // host is proved live (`manualOpen`); a compaction needs a model run and is admitted from pi's documented

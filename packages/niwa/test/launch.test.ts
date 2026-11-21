@@ -252,19 +252,20 @@ async function fake(name: string, source: string): Promise<string> {
 
 const empty = promptFromText("");
 
-test("pi's launch carries the tool allowlist exactly, and nothing allowed switches every tool off; niwa's tools alone are refused", async () => {
+test("pi's launch carries the tool allowlist exactly, and nothing allowed switches every tool off; niwa's tools alone with no server of niwa's too", async () => {
   expect(piToolFlags(harnessId("pi-fake"), "start", ["read", "grep"])).toEqual(["--tools", "read,grep", "--no-mcp"]);
   expect(piToolFlags(harnessId("pi-fake"), "start", [])).toEqual(["--no-tools"]);
 
   const pi = new PiControl({ mode: "full", harness: "pi-fake", binary: await fake("pi", FAKE_PI) });
   controls.push(pi);
   await pi.start({ prompt: empty, cwd: dir, tools: { allow: ["read", "grep"] } });
-  await expect(pi.start({ prompt: empty, cwd: dir, tools: "niwa-only" })).rejects.toBeInstanceOf(Unsupported);
+  await pi.start({ prompt: empty, cwd: dir, tools: "niwa-only" });
   await pi.start({ prompt: empty, cwd: dir, tools: { allow: [] } });
   await pi.start({ prompt: empty, cwd: dir, tools: "all" });
   await pi.start({ prompt: empty, cwd: dir });
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
     ["--mode", "rpc", "--tools", "read,grep", "--no-mcp"],
+    ["--mode", "rpc", "--no-tools"],
     ["--mode", "rpc", "--no-tools"],
     ["--mode", "rpc"],
     ["--mode", "rpc"],

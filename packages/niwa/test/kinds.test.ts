@@ -230,10 +230,11 @@ test("the pi control side declares what pi's RPC mode really supports", () => {
   expect(control.resume).toBe(true);
   expect(control.send).toBe(true);
   expect(control.interrupt).toBe(true);
-  // pi asks its questions through its own extension protocol, so a question cannot be put to a
-  // pi session from the control side. Its events carry pi's messages, not a structured result.
-  expect(control.ask).toBe(false);
+  // pi has no structured output: a question is put to a pi session as a request that it answers
+  // through niwa's `submit-answer` action, which pi sees as a tool of niwa's server.
+  expect(control.ask).toBe(true);
   expect(control.structuredOutput).toBe(false);
+  expect(control.tools?.niwaOnly).toBe(true);
 });
 
 test("the claude-code insert installs the plugin into the plugins directory of its home", async () => {

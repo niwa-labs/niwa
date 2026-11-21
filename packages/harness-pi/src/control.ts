@@ -30,8 +30,9 @@
  * - **resume**: a session is opened again by starting pi with `--session <file>`, the file pi
  *   itself named. `--resume` and `--continue` are not used: they open a picker or a guess, and
  *   the picker is a person, which a control side has not got.
- * - **ask**: pi asks its questions through its own extension protocol, not through this dialect,
- *   so a question cannot be put to a pi session from here.
+ * - **ask**: pi asks its questions through its own extension protocol, not through this dialect, so
+ *   this side's own `ask` is refused. A session is asked the other way: it is given niwa's
+ *   `submit-answer` action (see below) and answers the question put to it by calling that.
  * - **reverse requests**: pi has no permission requests of its own; an extension that gates a tool
  *   asks through the same dialogs as any other question. A session given a `reverse` handler
  *   routes every dialog (`select`, `confirm`, `input`, `editor`) to it as a question.
@@ -233,7 +234,7 @@ export const PI_CONTROL_CAPABILITIES = {
   resume: true,
   send: true,
   interrupt: true,
-  ask: false,
+  ask: true,
   structuredOutput: false,
 } as const;
 
@@ -678,7 +679,7 @@ export class PiControl implements PiSessionControl {
       this.#harness,
       "control",
       "ask",
-      "pi asks its questions through its own extension protocol, not through the RPC mode",
+      "pi has no structured output: niwa asks a pi session through a request, which the session answers with niwa's `submit-answer` action",
     );
   }
 
