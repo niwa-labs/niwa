@@ -127,6 +127,8 @@ function install(
     action: (a: Action<any, any>) => {
       found[a.name] = async (input) => a.output.parse(await a.run(a.input.parse(input), undefined as never));
     },
+    // The cockpit module is offered by its path; this stub lists none.
+    offer: () => {},
     // The plugin handles the questions of the sessions it serves; this stub serves none.
     on: () => {},
     // The disposal of the control sides is a service; this stub runs none.
