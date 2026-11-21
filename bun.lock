@@ -357,6 +357,10 @@
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/messages": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
+        "zod": "^4.6.7",
+      },
+      "devDependencies": {
+        "@niwa-labs/testing": "workspace:*",
       },
     },
     "packages/telegram": {

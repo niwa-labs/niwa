@@ -40,6 +40,7 @@ export { ZCODE_FAKE } from "./harness-zcode.ts";
 export * from "./messages.ts";
 export * from "./requests.ts";
 export * from "./sessions.ts";
+export * from "./tasks.ts";
 export * from "./web.ts";
 
 const READY_TIMEOUT_MS = 10_000; // How long `ready()` waits for the host to accept a connection.
