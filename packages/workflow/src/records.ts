@@ -53,8 +53,16 @@ const RunOrigin = {
   parent: z.object({ run: z.string(), step: z.string() }).optional(),
   /** The most branches each group of the run runs at once, set from outside; the script's own limit holds when it is lower. */
   concurrency: z.number().int().positive().optional(),
-  /** The limits of the run: how many runs deep its tree may go, the run that started it being one. A child run takes them. */
-  limits: z.object({ depth: z.number().int().positive().optional() }).optional(),
+  /**
+   * The limits of the run: how many runs deep its tree may go, the run that started it being one, and how long the whole
+   * script may take, in milliseconds. A child run takes them.
+   */
+  limits: z.object({ depth: z.number().int().positive().optional(), deadline: z.number().int().positive().optional() }).optional(),
+  /**
+   * The moment the run's deadline comes, in milliseconds since the epoch: its start and `limits.deadline`, never later than
+   * the deadline of the run that started it. Absent when nothing bounds it.
+   */
+  deadline: z.number().int().optional(),
   /** The rules `allow` narrowed the run to, and their version: the sha256 of the rules as given. */
   allow: z.object({ rules: z.array(z.string()), version: z.string() }).optional(),
 };
@@ -168,7 +176,19 @@ export const RunPaused = record(
 );
 
 /** A request to stop entering script operations at a workflow boundary. */
-export const RunPauseRequested = record("workflow.run.pause-requested", z.object({ run: RunId }));
+export const RunPauseRequested = record(
+  "workflow.run.pause-requested",
+  z.object({
+    run: RunId,
+    /** `deadline`: the run reached the deadline it names, and only `workflow.extend` or a cancel answers it. Absent for a pause someone asked for. */
+    kind: z.literal("deadline").optional(),
+    /** The deadline that was reached. */
+    deadline: z.number().int().optional(),
+  }),
+);
+
+/** The deadline of a run was moved later: the moment it comes now. */
+export const RunDeadlineExtended = record("workflow.run.deadline-extended", z.object({ run: RunId, deadline: z.number().int() }));
 
 /**
  * A hold of a run: from now on a new call of an action that writes or cannot be undone is refused,
@@ -445,6 +465,7 @@ export const WORKFLOW_TYPES = [
   RunLog,
   RunPaused,
   RunPauseRequested,
+  RunDeadlineExtended,
   RunHoldRequested,
   RunContinued,
   RunFinished,

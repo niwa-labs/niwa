@@ -12,7 +12,7 @@ import type { RequestId } from "@niwa-labs/requests/records";
 import { z } from "zod";
 
 import { WorkflowPhase } from "./language.ts";
-import { PhaseEntered, PhaseLeft, RunContinued, RunFinished, RunHoldRequested, RunOutcome, RunPaused, RunPauseRequested, RunRequested, RunStarted } from "./records.ts";
+import { PhaseEntered, PhaseLeft, RunContinued, RunDeadlineExtended, RunFinished, RunHoldRequested, RunOutcome, RunPaused, RunPauseRequested, RunRequested, RunStarted } from "./records.ts";
 import { waitingFor } from "./waiting.ts";
 
 /** What a run is: it goes on, it waits for a decision, or it ended. */
@@ -54,14 +54,18 @@ export type RunHold = z.infer<typeof RunHold>;
 export const RunStatus = z.object({
   run: z.string(),
   state: RunState,
-  manualPause: z.object({ id: z.string(), state: z.enum(["requested", "paused"]) }).optional(),
+  /** A pause that holds the run at its next boundary: one asked for, or (`kind: "deadline"`) the run's deadline that came. */
+  manualPause: z.object({ id: z.string(), state: z.enum(["requested", "paused"]), kind: z.literal("deadline").optional() }).optional(),
   /** The hold of the run, while one stands. */
   hold: RunHold.optional(),
   /** How the run ended, for a run that finished. */
   outcome: RunOutcome.optional(),
   /** Why the run paused. */
   reason: z.string().optional(),
-  /** What may be answered to the pause: `niwa.invocation.resolve` with the invocation and one of these. */
+  /**
+   * What may be answered to the pause: `niwa.invocation.resolve` with the invocation and one of these; at a deadline,
+   * `extend` (`workflow.extend`) or `cancel` (`workflow.cancel`).
+   */
   choices: z.array(z.string()).optional(),
   /** The invocation that is paused, the one to resolve. */
   invocation: z.string().optional(),
@@ -230,6 +234,26 @@ export function activeManualPause(journal: JournalReader, run: string): StoredRe
     ? pause : undefined;
 }
 
+/** A run paused at its deadline: only more time or a cancel answers it. */
+function atDeadline(run: string, reached: number, manualPause: NonNullable<RunStatus["manualPause"]>, requests: string[]): RunStatus {
+  const reason = `the run reached its deadline at ${new Date(reached).toISOString()}`;
+  return { run, state: "paused", reason, choices: ["extend", "cancel"], manualPause, requests };
+}
+
+/** The deadline a pause says the run reached, when it is the pause of a deadline. */
+export function deadlineReached(pause: StoredRecord): number | undefined {
+  const data = RunPauseRequested.schema.parse(pause.data);
+  return data.kind === "deadline" ? data.deadline : undefined;
+}
+
+/** The moment the deadline of a run comes now: the latest extension, else the one it started with. Absent when it has none. */
+export function deadlineOf(journal: JournalReader, run: string): number | undefined {
+  const requested = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1);
+  if (requested === undefined) return undefined;
+  const extended = journal.find({ type: RunDeadlineExtended.name, field: "run", equals: run, after: requested.seq }).at(-1);
+  return extended !== undefined ? RunDeadlineExtended.schema.parse(extended.data).deadline : RunRequested.schema.parse(requested.data).deadline;
+}
+
 /** Is `branch` inside `outer`: a branch made (at any depth) by a group `outer` started? `""` is the script itself. */
 const inside = (branch: string, outer: string): boolean => branch !== outer && (outer === "" || branch.startsWith(`${outer}.`));
 
@@ -313,7 +337,10 @@ function stateOf(journal: JournalReader, run: string): RunStatus {
   const state = last === undefined ? undefined : InvocationState.safeParse(last.data);
   if (state?.success !== true || invocation === undefined) {
     const manual = activeManualPause(journal, run);
-    return { run, state: "running", requests, ...(manual === undefined ? {} : { manualPause: { id: String(manual.id), state: "requested" } }) };
+    if (manual === undefined) return { run, state: "running", requests };
+    const reached = deadlineReached(manual);
+    const manualPause = { id: String(manual.id), state: "requested" as const, ...(reached === undefined ? {} : { kind: "deadline" as const }) };
+    return reached === undefined ? { run, state: "running", requests, manualPause } : atDeadline(run, reached, manualPause, requests);
   }
   const paused = journal.find({ type: RunPaused.name, field: "run", equals: run, after }).at(-1);
   if (state.data.state === "done") {
@@ -324,16 +351,23 @@ function stateOf(journal: JournalReader, run: string): RunStatus {
     return { run, state: "finished", outcome: { status: "cancelled" }, requests };
   }
   const manual = activeManualPause(journal, run);
+  const reached = manual === undefined ? undefined : deadlineReached(manual);
   const manualPause =
     manual === undefined ? undefined : {
       id: String(manual.id),
       state: state.data.state === "waiting" || state.data.state === "paused" ? "paused" as const : "requested" as const,
+      ...(reached === undefined ? {} : { kind: "deadline" as const }),
     };
   if (state.data.state === "waiting" && manualPause !== undefined) {
+    if (reached !== undefined) return atDeadline(run, reached, manualPause, requests);
     return { run, state: "paused", reason: "manually paused", manualPause, requests };
   }
   const control = manualPause === undefined ? {} : { manualPause };
-  if (state.data.state !== "paused") return { run, state: "running", requests, ...control };
+  if (state.data.state !== "paused") {
+    // The deadline came: the run is paused from that moment, though a call it had begun may still end.
+    if (reached !== undefined && manualPause !== undefined) return atDeadline(run, reached, manualPause, requests);
+    return { run, state: "running", requests, ...control };
+  }
   // The run says why it paused in its own words when the pause is the one it wrote for this pause (the core only
   // knows that the handler threw: `handler error: …`): written after the state before this one, or, for a retry that
   // failed the same way and wrote no new pause (its key is the reason), the very reason the core gives. A pause of

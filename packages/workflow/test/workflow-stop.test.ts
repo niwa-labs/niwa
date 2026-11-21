@@ -37,7 +37,8 @@ async function setup() {
   homes.push(home);
   const aborted: string[] = [];
   const calls: string[] = [];
-  const niwa = createNiwa({ home: home.path, clock: testClock(1_700_000_000_000) });
+  const clock = testClock(1_700_000_000_000);
+  const niwa = createNiwa({ home: home.path, clock });
   niwa.use(requests());
   niwa.use(timers([]));
   niwa.use(stub(home.path));
@@ -87,6 +88,7 @@ async function setup() {
   const call = <T>(name: string, input: unknown): Promise<T> => niwa.call(name as ActionName, input as never) as Promise<T>;
   return {
     niwa,
+    clock,
     aborted,
     calls,
     records: (): Promise<StoredRecord[]> => niwa.records.read(),
@@ -236,6 +238,27 @@ test("cancelling a run cancels its child runs, pausing it pauses them, and the l
     .map((row) => row.data as { outcome: { status: string; error?: string } })
     .find((row) => row.outcome.error?.includes("deep") === true);
   expect(refusal?.outcome.error).toContain("would be 2 deep in its tree, and its limits allow 1");
+}, 30_000);
+
+test("a child run's deadline comes no later than its parent's", async () => {
+  const t = await setup();
+  const child = await t.register(`export default workflow({ description: "a child that hangs", input: z.object({}), output: z.json() }, async () => {
+    await niwa.tree.hang({ name: "child-work" });
+    return "child done";
+  });`);
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    await sleep("10s");
+    return await niwa.flow["${child}"]({});
+  });`, { limits: { deadline: 60_000 } });
+  // The child starts ten seconds into its parent: its own minute would end after the parent's.
+  await eventually(async () => ofType(await t.records(), "timer.sleep.requested").length === 1, 10_000, "the sleep should be armed");
+  await t.clock.advance(10_000);
+  await eventually(() => t.calls.includes("child-work"), 10_000, "the child should start");
+  const requested = ofType(await t.records(), "workflow.run.requested").map((row) => row.data as { run: string; deadline?: number; parent?: { run: string } });
+  const parent = requested.find((one) => one.run === run);
+  const childRun = requested.find((one) => one.parent?.run === run);
+  expect(parent?.deadline).toBe(1_700_000_000_000 + 60_000);
+  expect(childRun?.deadline).toBe(parent?.deadline);
 }, 30_000);
 
 test("a branch runs a registered workflow that takes no input as its child", async () => {

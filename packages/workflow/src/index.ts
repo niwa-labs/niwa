@@ -40,7 +40,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE } from "@niwa-labs/core";
 import { BUILTIN_WORKFLOW } from "@niwa-labs/plugin";
-import type { Subscriber } from "@niwa-labs/plugin";
+import type { ServiceContext, Subscriber } from "@niwa-labs/plugin";
 import type { Action, ActionContext, ArtifactStore, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StoredRecord } from "@niwa-labs/core";
 import { scriptOn } from "@niwa-labs/script";
 import { requireBox } from "@niwa-labs/sandbox";
@@ -54,6 +54,7 @@ import {
   workflowStop,
   workflowCheck,
   workflowContinue,
+  workflowExtend,
   workflowPause,
   workflowBuiltinPromote,
   workflowGet,
@@ -97,6 +98,7 @@ import {
   RunOutcome,
   RunPaused,
   RunPauseRequested,
+  RunDeadlineExtended,
   RunHoldRequested,
   RunContinued,
   PhaseEntered,
@@ -126,7 +128,7 @@ import type { CurrentCall, RecordedCall, RevisionReport } from "./revise.ts";
 import { runScript, stopRun } from "./runner.ts";
 import { StatsFold, workflowStats } from "./stats.ts";
 import type { ScriptBox } from "./runner.ts";
-import { activeHold, activeManualPause, holdOver, manualPausesOf, openRequestsOfInvocations, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
+import { activeHold, activeManualPause, deadlineOf, deadlineReached, holdOver, manualPausesOf, openRequestsOfInvocations, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
 import type { RunState as RunStateName, RunStatus } from "./status.ts";
 import { installationIdsOf, installationsOf, profileOf, profileRulesOf, standing } from "./subscriptions.ts";
 import type { Installation } from "./subscriptions.ts";
@@ -184,7 +186,7 @@ interface RunOrigin {
   directory?: string;
   parent?: { run: string; step: string };
   concurrency?: number;
-  limits?: { depth?: number };
+  limits?: { depth?: number; deadline?: number };
   allow?: { rules: string[]; version: string };
 }
 
@@ -251,8 +253,10 @@ export function workflow(opts: WorkflowOptions = {}) {
   }
 
   return plugin("workflow", (api) => {
-    /** The clock of the host, once it serves: what the deadline of a group is measured by. */
-    let hostClock: { schedule(at: number, fn: () => void): () => void } | undefined;
+    /** The clock of the host, once it serves: what the deadline of a group, and of a run, is measured by. */
+    let hostClock: ServiceContext | undefined;
+    /** The moment now, by the clock of the host once it serves. */
+    const clockNow = (): number => hostClock?.now() ?? Date.now();
     const scheduleAt = (at: number, fn: () => void): (() => void) => {
       if (hostClock !== undefined) return hostClock.schedule(at, fn);
       const timer = setTimeout(fn, Math.max(0, at - Date.now()));
@@ -542,6 +546,11 @@ export function workflow(opts: WorkflowOptions = {}) {
       const file = input.file;
       // A child run takes the limits of its parent, and is not started deeper than they allow.
       const limits = input.limits ?? (input.parent === undefined ? undefined : factsOf(journal(), input.parent.run)?.limits);
+      // The deadline of the whole run, from now; a child run's comes no later than its parent's.
+      const deadline = earliest(
+        limits?.deadline === undefined ? undefined : clockNow() + limits.deadline,
+        input.parent === undefined ? undefined : deadlineOf(journal(), input.parent.run),
+      );
       if (input.parent !== undefined && limits?.depth !== undefined) {
         // The run that started the tree is one deep; each child is one deeper than its parent.
         const depth = depthOf(journal(), input.parent.run) + 2;
@@ -588,8 +597,10 @@ export function workflow(opts: WorkflowOptions = {}) {
         ...(input.parent === undefined ? {} : { parent: input.parent }),
         ...(concurrency === undefined ? {} : { concurrency }),
         ...(limits === undefined ? {} : { limits }),
+        ...(deadline === undefined ? {} : { deadline }),
         ...(input.allow === undefined ? {} : { allow: input.allow }),
       });
+      watchDeadline(run);
       return run;
     }
 
@@ -738,6 +749,52 @@ export function workflow(opts: WorkflowOptions = {}) {
       },
     }));
 
+    /** The deadlines that are coming, by run: what stops each from coming. */
+    const deadlineTimers = new Map<string, () => void>();
+
+    /**
+     * Wait for the deadline of a run: when it comes and the run has not ended, the run is paused at its next boundary
+     * with a pause of the kind `deadline`, which only an extension or a cancel answers. A deadline moved later meanwhile
+     * is waited for instead.
+     */
+    const watchDeadline = (run: string): void => {
+      deadlineTimers.get(run)?.();
+      deadlineTimers.delete(run);
+      const at = deadlineOf(journal(), run);
+      const clock = hostClock;
+      if (at === undefined || clock === undefined) return;
+      const stop = clock.schedule(at, () =>
+        changeControl(run, async () => {
+          deadlineTimers.delete(run);
+          if (statusOf(journal(), run).state === "finished" || deadlineOf(journal(), run) !== at) return;
+          await clock.emit(RunPauseRequested, { run: RunId.parse(run), kind: "deadline", deadline: at });
+        }),
+      );
+      deadlineTimers.set(run, stop);
+    };
+
+    api.action(action(workflowExtend, {
+      // Each extension moves the deadline again: one that was cut off is not made twice.
+      recovery: "do-not-repeat",
+      effect: "record",
+      world: "niwa",
+      run: async (input, ctx) => {
+        const run = runOf(input.run, ctx.caller);
+        mayAct(ctx.caller, ownerOfRun(journal(), run), `extend the run "${run}"`);
+        await changeControl(run, async () => {
+          if (statusOf(journal(), run).state === "finished") throw new RunRefusal("finished", `the run "${run}" has finished`);
+          const current = deadlineOf(journal(), run);
+          if (current === undefined) throw new RunRefusal("no-deadline", `the run "${run}" has no deadline to extend`);
+          await ctx.emit(RunDeadlineExtended, { run, deadline: Math.max(current, clockNow()) + input.by });
+          // The pause of the deadline that came is answered: the run goes on.
+          const pause = activeManualPause(journal(), run);
+          if (pause !== undefined && deadlineReached(pause) !== undefined) await ctx.emit(RunContinued, { run, pause: String(pause.id) });
+        });
+        watchDeadline(run);
+        return statusOf(journal(), run);
+      },
+    }));
+
     /** Pause a run and the runs it started that are going, down the tree. */
     const pauseTree = async (run: RunId, ctx: ActionContext): Promise<void> => {
       await changeControl(run, async () => {
@@ -775,6 +832,9 @@ export function workflow(opts: WorkflowOptions = {}) {
             return false;
           }
           if (pause?.id !== input.pause) return false;
+          if (deadlineReached(pause) !== undefined) {
+            throw new RunRefusal("deadline", `the run "${run}" reached its deadline: give it more time with workflow.extend, or cancel it`);
+          }
           await ctx.emit(RunContinued, { run, pause: input.pause });
           return true;
         });
@@ -1511,13 +1571,20 @@ export function workflow(opts: WorkflowOptions = {}) {
     // niwa with a changed script, a plugin that offers a new one or no longer offers one.
     api.service((ctx) => {
       hostClock = ctx;
+      // The deadlines of the runs that are going are waited for again: one that passed while the host was away comes now.
+      for (const run of new Set(journal().find({ type: RunRequested.name }).map((row) => RunRequested.schema.parse(row.data).run))) {
+        if (statusOf(journal(), run).state !== "finished") watchDeadline(run);
+      }
       void (async () => {
         const wanted = wantedBuiltins();
         if (!builtinsSettled(journal(), wanted)) await ctx.emit(BuiltinsWanted, { items: wanted });
       })().catch((error: unknown) => {
         console.error(`niwa: the built-in workflows could not be installed: ${error instanceof Error ? error.message : String(error)}`);
       });
-      return () => {};
+      return () => {
+        for (const stop of deadlineTimers.values()) stop();
+        deadlineTimers.clear();
+      };
     });
 
     /**
@@ -2099,6 +2166,11 @@ function isOwnerOrStarter(caller: Caller, started: Principal | undefined): boole
   const who = caller.principal;
   if (who?.kind === "owner") return true;
   return who !== undefined && who.kind === started?.kind && who.id === started.id;
+}
+
+/** The earlier of two moments, either of which may be absent. */
+function earliest(a: number | undefined, b: number | undefined): number | undefined {
+  return a === undefined ? b : b === undefined ? a : Math.min(a, b);
 }
 
 /** The sessions the invocations of a run started, that have not ended. */

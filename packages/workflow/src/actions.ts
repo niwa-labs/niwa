@@ -51,8 +51,12 @@ export const StartInput = z.object({
   directory: z.string().regex(ABSOLUTE_PATH, "a directory is an absolute path").optional(),
   /** The most branches each scope of the run runs at once; a scope's own lower limit holds. Default: no limit from outside. */
   concurrency: z.number().int().positive().optional(),
-  /** The limits of the run: `depth`, how many runs deep its tree may go, the run itself being one. Its child runs take them. */
-  limits: z.object({ depth: z.number().int().positive().optional() }).optional(),
+  /**
+   * The limits of the run: `depth`, how many runs deep its tree may go, the run itself being one; `deadline`, how long the
+   * whole script may take, in milliseconds. A run that reaches its deadline pauses until it is extended or cancelled. Its
+   * child runs take them, and never end later than it.
+   */
+  limits: z.object({ depth: z.number().int().positive().optional(), deadline: z.number().int().positive().optional() }).optional(),
   /**
    * Rules that narrow the run below what `uses` and the caller give it, never wider: a call of the run is decided on its
    * final input against them. A rule the run would not have refuses the start.
@@ -215,6 +219,13 @@ export const workflowStop = actionRef("workflow.stop", {
     "Stop a branch, a scope or a step of a run by its key prefix: its steps end as cancelled, its sessions are interrupted and its child runs cancelled, and the rest of the run goes on. A shielded scope under it is spared unless force is set. Without at it stops the whole run with its child runs. For whoever started the run, and the owner.",
   input: StopInput,
   output: RunOutput,
+});
+
+export const workflowExtend = actionRef("workflow.extend", {
+  description:
+    "Move the deadline of a run later by `by` milliseconds, from the deadline or from now when it has passed. A run paused at its deadline goes on. For whoever started the run, and the owner.",
+  input: RunInput.extend({ by: z.number().int().positive() }),
+  output: RunStatus,
 });
 
 export const workflowCancel = actionRef("workflow.cancel", {
