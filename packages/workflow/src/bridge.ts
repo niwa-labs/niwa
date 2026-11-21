@@ -12,7 +12,7 @@ import { CORE_TYPES, CatchableError, DeniedError, NOW_ACTION, RANDOM_ACTION, WAI
 import type { Action, ActionTarget, AuthorizeHow, JournalReader, Principal, RecordType, Step, Verb } from "@niwa-labs/core";
 import { owner } from "@niwa-labs/core";
 import { AskAnswered, answeredBy, QuestionName, RequestCancelled, RequestExpired, requestAsk } from "@niwa-labs/requests/records";
-import { SleepRequested, TimerSlept, sleepKey } from "@niwa-labs/timer/records";
+import { TimerSlept, sleepKey, timerSleepRequest } from "@niwa-labs/timer/records";
 import { z } from "zod";
 
 import { valueOf } from "./ask.ts";
@@ -291,7 +291,7 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
   const arm = async (key: string, ms: number): Promise<string> => {
     const place = placeOf(key);
     const at = endOf(await clock(`${key}~now`), ms);
-    await step.emit(SleepRequested, { at, key: place }, { key: `${key}~arm` });
+    await step(timerSleepRequest, { at, key: place }, { key: `${key}~arm` });
     return place;
   };
 
@@ -307,7 +307,7 @@ export function bridge(deps: BridgeDeps): (request: CallRequest) => Promise<unkn
       () => ({ refused: false as const }),
       (error: unknown) => ({ refused: true as const, error }),
     );
-    await step.emit(SleepRequested, { at, key: place }, { key: `${key}~arm` });
+    await step(timerSleepRequest, { at, key: place }, { key: `${key}~arm` });
     const outcome = await settled;
     if (outcome.refused) throw outcome.error;
     return null;

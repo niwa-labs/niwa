@@ -73,7 +73,7 @@ import { TIMER_OFFER, plugin, trigger } from "@niwa-labs/plugin";
 import type { MissedRule, Plugin, ServiceContext, StateHandle, TimerDef, TimerOffer, Trigger } from "@niwa-labs/plugin";
 import { z } from "zod";
 
-import { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerId } from "./records.ts";
+import { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerId, timerSleepRequest } from "./records.ts";
 import type {
   SleepKey,
   SleepRequestedData,
@@ -81,7 +81,7 @@ import type {
   TimerSleptData,
 } from "./records.ts";
 
-export { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerId } from "./records.ts";
+export { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerId, timerSleepRequest } from "./records.ts";
 export type {
   SleepKey,
   SleepRequestedData,
@@ -286,7 +286,7 @@ export async function sleep(step: Step, ms: number, key?: string): Promise<void>
     (value) => ({ refused: false as const, value }),
     (error: unknown) => ({ refused: true as const, error }),
   );
-  await step.emit(SleepRequested, { at, key: place }, { key: `timer.sleep-emit-${number}` });
+  await step(timerSleepRequest, { at, key: place }, { key: `timer.sleep-emit-${number}` });
   const outcome = await settled;
   if (outcome.refused) throw outcome.error;
 }
@@ -579,7 +579,8 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
               // The run that asked is the data of the record the chain began with; a handler that is no run is named by its invocation.
               const asked = (api.journal?.()?.get(row.root)?.data as { run?: unknown } | undefined)?.run;
               const who = typeof asked === "string" ? shortRun(asked) : row.actor.kind === "handler" ? shortInvocation(String(row.actor.invocation)) : row.actor.kind;
-              const label = String(row.id).split("/emit/").at(-1)?.replace(/~arm$/, "").replace(/^label:/, "") ?? "";
+              // The request is written by the sleep's step: its id is the step's operation, `<invocation>/<key>/emit/1`.
+              const label = String(row.id).replace(/\/emit\/\d+$/, "").split("/").at(-1)?.replace(/~arm$/, "").replace(/^label:/, "") ?? "";
               return `${clockOf(at)}  ${who}  ${label}`;
             }),
             timers: scheduleOfHost().map(entityOf),
@@ -595,6 +596,17 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
           const entry = scheduleOfHost().find((one) => one.id === name);
           if (entry === undefined) throw new UnknownId(name, "timer");
           return entityOf(entry);
+        },
+      }),
+    );
+    // A sleep is asked for by this action, as a step of the handler that sleeps: the request is a
+    // record of the timers, written once.
+    api.action(
+      action(timerSleepRequest, {
+        recovery: "repeat",
+        run: async (input, ctx) => {
+          await ctx.emit(SleepRequested, input);
+          return {};
         },
       }),
     );

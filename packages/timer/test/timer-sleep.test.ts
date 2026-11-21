@@ -12,7 +12,7 @@ import type { Plugin } from "@niwa-labs/plugin";
 import { createNiwa, eventually, tempHome, testClock } from "@niwa-labs/testing";
 import { z } from "zod";
 
-import { SleepRequested, sleep, timers } from "../src/index.ts";
+import { sleep, timers } from "../src/index.ts";
 
 type Host = ReturnType<typeof createNiwa>;
 
@@ -39,7 +39,7 @@ function sleeper(version?: string): Plugin {
     "sleeper",
     (api) => {
       api.declare(Start, Woke);
-      api.on(Start, { emits: [SleepRequested] }, async (_data, step) => {
+      api.on(Start, async (_data, step) => {
         await sleep(step, SLEEP_MS);
         const at = await step.now();
         await step.emit(Woke, { at });
@@ -61,7 +61,7 @@ const SLEEPER_VERSION = "sleeper-1";
 function immediate(): Plugin {
   return plugin("sleeper", (api) => {
     api.declare(Start, Woke);
-    api.on(Start, { emits: [SleepRequested] }, async (_data, step) => {
+    api.on(Start, async (_data, step) => {
       await sleep(step, 0);
       const at = await step.now();
       await step.emit(Woke, { at });
@@ -253,7 +253,7 @@ test("a sleep of no time at all is over at once, and the handler goes on", async
 function twice(): Plugin {
   return plugin("sleeper", (api) => {
     api.declare(Start, Woke);
-    api.on(Start, { emits: [SleepRequested] }, async (_data, step) => {
+    api.on(Start, async (_data, step) => {
       await sleep(step, SLEEP_MS);
       await step.emit(Woke, { at: await step.now() });
       await sleep(step, SLEEP_MS, "second");

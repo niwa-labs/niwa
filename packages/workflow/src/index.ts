@@ -40,7 +40,6 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE } from "@niwa-labs/core";
 import { BUILTIN_WORKFLOW } from "@niwa-labs/plugin";
-import { SleepRequested } from "@niwa-labs/timer/records";
 import type { Subscriber } from "@niwa-labs/plugin";
 import type { Action, ActionContext, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StoredRecord } from "@niwa-labs/core";
 import { scriptOn } from "@niwa-labs/script";
@@ -1379,7 +1378,7 @@ export function workflow(opts: WorkflowOptions = {}) {
     // another workflow requests a run from inside its own: the chain of calls goes as deep as CALL_DEPTH.
     api.on(
       RunRequested,
-      { concurrency: Number.POSITIVE_INFINITY, emits: [SleepRequested], reentrant: { depth: CALL_DEPTH } },
+      { concurrency: Number.POSITIVE_INFINITY, reentrant: { depth: CALL_DEPTH } },
       async (data, step) => {
       const { run, file } = data;
       // The run acts as its own principal: its grant is what the script is held to.

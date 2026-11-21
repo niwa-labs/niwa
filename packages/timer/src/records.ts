@@ -7,7 +7,7 @@
  * schedule, and the write time is when the host got to it.
  */
 
-import { record } from "@niwa-labs/core";
+import { actionRef, record } from "@niwa-labs/core";
 import { z } from "zod";
 
 /** The name of a timer: its author gives it, and it becomes part of the seed of its firings. */
@@ -91,6 +91,17 @@ export const SleepRequested = record(
 
 /** The data of a sleep request: when the sleep ends and the key of the sleeping place. */
 export type SleepRequestedData = z.infer<typeof SleepRequested.schema>;
+
+/**
+ * Ask the timers for the wake of a sleeping place at a moment: the command whose fact is a
+ * `timer.sleep.requested` record. A sleep is asked for by calling it as a step, so the request is
+ * the timers' own record and a replay does not ask again.
+ */
+export const timerSleepRequest = actionRef("timer.sleep.request", {
+  description: "Ask for the wake of a sleeping place at a moment, in milliseconds since the epoch.",
+  input: SleepRequested.schema,
+  output: z.object({}),
+});
 
 /**
  * A sleep ended.

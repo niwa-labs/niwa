@@ -302,8 +302,6 @@ interface HandlerEntry {
   /** The record types another plugin has to declare for this handler to work. */
   readonly requires: readonly AnyType[];
   readonly subscribing: Subscribing;
-  /** The types of other plugins it writes. */
-  readonly emits: readonly AnyType[];
   /** Set when the handler subscribes to a trigger: the plugin named as the one that writes its records. */
   readonly trigger?: { readonly provider: string | undefined };
 }
@@ -319,8 +317,6 @@ interface Served {
   readonly version: PluginVersion;
   readonly handler: Handler<any>;
   readonly subscribing: Subscribing;
-  /** The types of other plugins it writes, by name. */
-  readonly emits: ReadonlySet<string>;
   /** The position after which it admits nothing: the end of a subscriber that ended. */
   readonly until?: Seq;
 }
@@ -871,7 +867,6 @@ class Niwa implements Host {
           type,
           handler,
           requires: options.requires ?? [],
-          emits: options.emits ?? [],
           subscribing,
           ...(isTrigger(source) ? { trigger: { provider: source.provider } } : {}),
         });
@@ -1315,7 +1310,6 @@ class Niwa implements Host {
           version: installed.version,
           handler: entry.handler,
           subscribing: entry.subscribing,
-          emits: new Set(entry.emits.map((type) => type.name)),
         });
       }
     }
@@ -1631,8 +1625,7 @@ class Niwa implements Host {
     const owner = this.typeOwners.get(declared?.name ?? type);
     // A plugin writes its own types: over the wire as its principal, and from a handler of its own.
     const writer = caller.kind === "handler" ? String(caller.handler).split("/")[0] : principal?.kind === "plugin" ? String(principal.id) : undefined;
-    const listed = caller.kind === "handler" && this.handlers.get(caller.handler)?.emits.has(declared?.name ?? type) === true;
-    const own = listed || (writer !== undefined && writer === String(owner));
+    const own = writer !== undefined && writer === String(owner);
     const closed = `"${type}" is closed: only the "${owner}" plugin writes it`;
     let answer: Permit;
     if (standing.kind === "closed" || standing.kind === "off") {
@@ -1958,7 +1951,6 @@ class Niwa implements Host {
             version: installed.version,
             handler: one.handler,
             subscribing: { ...subscribing, from: seq(one.from) },
-            emits: new Set(),
             ...(one.until === undefined ? {} : { until: seq(one.until) }),
           });
           this.dynamic.add(id);
