@@ -3,7 +3,7 @@
 // again in their places before it goes on.
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { tempHome } from "@niwa-labs/testing";
@@ -89,6 +89,67 @@ test("a create made again keeps the files its first attempt copied in, as they a
   await run(actions, journal, "git.worktree.create", { repo, ...NOTE }, "create-4");
 
   expect(readFileSync(join(path, ".env"), "utf8")).toBe("TOKEN=2\n");
+});
+
+test("a checkout with a replaced destination directory does not write outside the worktree", async () => {
+  const { journal, actions, repo } = await setup();
+  await expect(run(actions, journal, "git.worktree.create", { repo, ...NOTE }, "create-linked-copy", 2)).rejects.toBeInstanceOf(CutOff);
+  const [reserved] = journal.of("git.worktree.reserved");
+  const { path } = reserved?.data as Worktree;
+  const outside = join(repo, "outside");
+  mkdirSync(outside);
+  rmSync(join(path, "node_modules"), { recursive: true });
+  symlinkSync(outside, join(path, "node_modules"), "dir");
+
+  await run(actions, journal, "git.worktree.create", { repo, ...NOTE }, "create-linked-copy");
+
+  expect(existsSync(join(outside, "pkg"))).toBe(false);
+});
+
+test("a worktree created before reservations can still be named and its create replayed", async () => {
+  const { journal, actions, repo } = await setup();
+  const operation = "old-create";
+  const made = await run<Worktree>(actions, journal, "git.worktree.create", { repo, ...NOTE }, operation);
+  const [birth, created] = journal.records;
+  if (birth === undefined || created === undefined) throw new Error("the create must write both records");
+  journal.records.splice(0, 2, { ...created, id: birth.id, seq: birth.seq });
+
+  await expect(run(actions, journal, "git.worktree.get", { id: made.id }, "get")).resolves.toMatchObject({ id: made.id });
+  await expect(run(actions, journal, "git.worktree.create", { repo, ...NOTE }, operation)).resolves.toEqual(made);
+  expect(journal.records).toHaveLength(1);
+  await expect(run(actions, journal, "git.worktree.remove", { id: made.id }, "remove")).resolves.toEqual({ id: made.id, removed: true });
+});
+
+test("removal can find the repository when a recorded linked source has gone", async () => {
+  const { journal, actions, repo } = await setup();
+  const source = join(repo, "linked");
+  gitIn(repo, "worktree", "add", "-q", "-b", "source", source);
+  const made = await run<Worktree>(actions, journal, "git.worktree.create", { repo: source, ...NOTE }, "old-source");
+  const [birth, created] = journal.records;
+  if (birth === undefined || created === undefined) throw new Error("the create must write both records");
+  journal.records.splice(0, 2, { ...created, id: birth.id, seq: birth.seq, data: { ...made, repo: source } });
+  gitIn(repo, "worktree", "remove", source);
+  commitIn(made.path, "child.txt");
+
+  await expect(run(actions, journal, "git.worktree.get", { id: made.id }, "get")).resolves.toMatchObject({ aheadOfBase: 1 });
+  await expect(run(actions, journal, "git.worktree.remove", { id: made.id }, "remove")).rejects.toMatchObject({ code: "ahead" });
+
+  gitIn(repo, "merge", "--ff-only", made.branch);
+  gitIn(repo, "branch", "-f", "source", made.branch);
+  await expect(run(actions, journal, "git.worktree.remove", { id: made.id }, "remove")).resolves.toEqual({ id: made.id, removed: true });
+  expect(gitIn(repo, "branch", "--list", made.branch)).toBe("");
+});
+
+test("a create does not take a pre-existing branch at the intended base", async () => {
+  const { journal, actions, repo } = await setup();
+  await expect(run(actions, journal, "git.worktree.create", { repo, ...NOTE }, "create-collision", 2)).rejects.toBeInstanceOf(CutOff);
+  const [reserved] = journal.of("git.worktree.reserved");
+  const { path } = reserved?.data as Worktree;
+  gitIn(repo, "worktree", "remove", "--force", path);
+
+  await expect(run(actions, journal, "git.worktree.create", { repo, ...NOTE }, "create-collision")).rejects.toMatchObject({ code: "occupied" });
+  expect(journal.of("git.worktree.created")).toEqual([]);
+  expect(existsSync(path)).toBe(false);
 });
 
 test("a look cut off after the first worktree it recorded, made again, records the second in its place and answers both", async () => {

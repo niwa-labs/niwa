@@ -41,7 +41,13 @@ export type Worktree = z.infer<typeof Worktree>;
  * and made again takes the checkout it made from the same repository, base commit, branch and directory, not from
  * what the base is by then. The id of the worktree is issued from this record.
  */
-export const WorktreeReserved = record("git.worktree.reserved", Worktree);
+export const WorktreeReserved = record(
+  "git.worktree.reserved",
+  Worktree.extend({
+    /** The checkout asked for, when it differs from the repository that owns it. */
+    source: z.string().min(1).optional(),
+  }),
+);
 
 /** A worktree was made. */
 export const WorktreeCreated = record("git.worktree.created", Worktree);

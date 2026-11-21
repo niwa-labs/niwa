@@ -6,7 +6,7 @@
  */
 
 import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /** What a git command answered. */
 interface GitResult {
@@ -198,14 +198,16 @@ function paths(listing: string): string[] {
   return listing.split("\0").filter((path) => path !== "");
 }
 
-/** Whether a path is there, a link included. */
-function present(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
-    return false;
+/** Prepare the in-tree directory for a copy, without traversing any links. */
+function prepareCopyDirectory(root: string, parts: readonly string[]): boolean {
+  let dir = root;
+  for (const part of parts) {
+    dir = join(dir, part);
+    const entry = lstatSync(dir, { throwIfNoEntry: false });
+    if (entry === undefined) mkdirSync(dir);
+    else if (!entry.isDirectory()) return false;
   }
+  return true;
 }
 
 /**
@@ -235,12 +237,10 @@ export async function copyIncluded(repo: string, into: string): Promise<number> 
     const parts = path.split("/");
     // The path, or a directory on the way to it, is a tracked file of the new checkout.
     if (parts.some((_, at) => tracked.has(parts.slice(0, at + 1).join("/")))) continue;
-    const target = join(into, path);
-    if (present(target)) continue;
-    mkdirSync(dirname(target), { recursive: true });
-    const landing = realpathSync(dirname(target));
-    if (landing !== inside && !landing.startsWith(`${inside}${sep}`)) continue;
-    copyFileSync(join(repo, path), target, constants.COPYFILE_FICLONE);
+    const target = join(inside, path);
+    if (!prepareCopyDirectory(inside, parts.slice(0, -1))) continue;
+    if (lstatSync(target, { throwIfNoEntry: false }) !== undefined) continue;
+    copyFileSync(join(repo, path), target, constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL);
     copied += 1;
   }
   return copied;

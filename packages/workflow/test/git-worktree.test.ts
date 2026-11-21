@@ -319,6 +319,7 @@ test("the built-in cleanup removes the old clean worktrees and keeps the dirty a
   gitIn(ahead.path, "add", "work.txt");
   gitIn(ahead.path, "commit", "-q", "-m", "work");
 
+  await eventually(async () => (await ofType(host, "git.worktree.removed")).length > 0, 20_000, "cleanup should record its removal");
   await eventually(async () => (await ofType(host, "workflow.run.finished")).length >= 2, 20_000, "two cleanups should run");
   expect(existsSync(clean.path)).toBe(false);
   expect(existsSync(dirty.path)).toBe(true);
