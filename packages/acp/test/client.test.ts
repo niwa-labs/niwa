@@ -248,3 +248,36 @@ test("a notification, a reply and a refusal say what became of the line", () => 
   }).acp;
   expect(throwing.notify("session/cancel", {})).toBe("unknown");
 });
+
+test("a closed client reads nothing more: not a late line, not the rest of the chunk that closed it, not a half line", () => {
+  const closing: { acp?: AcpClient } = {};
+  const seen: string[] = [];
+  const first = client({
+    onNotification: (notification) => {
+      seen.push(notification.method);
+      closing.acp?.close("the agent exited");
+    },
+    onRequest: (request) => seen.push(`request ${String(request.id)}`),
+  });
+  closing.acp = first.acp;
+  first.acp.feed(`${frameOf(60)}\n{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{}}\n`);
+  expect(seen).toEqual(["m"]);
+  first.acp.feed('{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{}}\n');
+  first.acp.receive('{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{}}');
+  expect(seen).toEqual(["m"]);
+
+  const half = client();
+  half.acp.feed('{"jsonrpc":"2.0","method":"m",');
+  half.acp.close("the agent exited");
+  half.acp.feed('"params":{}}\n');
+  expect(half.notifications).toEqual([]);
+});
+
+test("a closed client writes nothing more: not a notification, not a reply, not a refusal", () => {
+  const { acp, written } = client();
+  acp.close("the agent exited");
+  expect(acp.notify("session/cancel", {})).toBe("unsent");
+  expect(acp.reply(1, {})).toBe("unsent");
+  expect(acp.refuse(1, -32601, "no")).toBe("unsent");
+  expect(written).toEqual([]);
+});

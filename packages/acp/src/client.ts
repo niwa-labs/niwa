@@ -137,7 +137,7 @@ export class AcpClient {
   feed(chunk: string): void {
     const limit = this.#options.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
     let start = 0;
-    while (!this.#overflowed) {
+    while (!this.#overflowed && this.#closed === undefined) {
       const newline = chunk.indexOf("\n", start);
       const piece = newline === -1 ? chunk.slice(start) : chunk.slice(start, newline);
       const bytes = this.#fragmentBytes + Buffer.byteLength(piece, "utf8");
@@ -166,7 +166,7 @@ export class AcpClient {
    * the dialect. A frame that is not JSON-RPC 2.0 is not one of ours.
    */
   receive(line: string): void {
-    if (line.length === 0) return;
+    if (line.length === 0 || this.#closed !== undefined) return;
     let frame: RpcFrame;
     try {
       frame = JSON.parse(line) as RpcFrame;
@@ -305,6 +305,7 @@ export class AcpClient {
 
   /** A line to the transport: one that throws left it unknown what became of the line. */
   #write(line: string): Written {
+    if (this.#closed !== undefined) return "unsent";
     try {
       return this.#options.write(line);
     } catch {
@@ -312,9 +313,14 @@ export class AcpClient {
     }
   }
 
-  /** The connection is gone: every call in flight fails with `reason`, and a later one is never written. */
+  /**
+   * The connection is gone, in both directions: every call in flight fails with `reason`, and
+   * nothing is written or read any more, the half line and the rest of the current chunk included.
+   */
   close(reason: string): void {
     if (this.#closed === undefined) this.#closed = reason;
+    this.#fragment = "";
+    this.#fragmentBytes = 0;
     const pending = [...this.#pending.values()];
     this.#pending.clear();
     for (const settle of pending) settle({ ok: false, error: reason, dispatch: "uncertain" });
