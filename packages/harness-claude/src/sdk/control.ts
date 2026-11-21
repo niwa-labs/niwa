@@ -24,6 +24,7 @@ import { z } from "zod";
 import type { Answer, Question } from "@niwa-labs/core";
 import { timestamp } from "@niwa-labs/core";
 import {
+  InputNotSent,
   modeOf,
   requireLaunch,
   Unavailable,
@@ -424,7 +425,11 @@ export class ClaudeSdkControl implements SessionControl {
 
   /** Send into a session and say what became of the message. */
   async send(id: SessionId, message: string, options?: SendOptions): Promise<DeliveryReceipt> {
-    const session = this.#require(id, "send");
+    // The message goes into the SDK's input stream in this process: a send fails only before it is pushed.
+    const session = this.#sessions.get(id.native);
+    if (session === undefined) {
+      throw new InputNotSent(this.#harness, "send", `the session ${id.native} is not held by this control side`);
+    }
     if (options?.into === "turn" && session.running) {
       throw new Unsupported(this.#harness, "control", "send", "the SDK cannot deliver into a running turn");
     }
@@ -751,7 +756,7 @@ export class ClaudeSdkControl implements SessionControl {
   /** Writes a user message and says what became of it; "delivered" is never claimed. */
   #submit(session: LiveSession, text: string): DeliveryReceipt {
     if (session.ended || session.input.closed) {
-      throw this.#unavailable("send", "the session is not running");
+      throw new InputNotSent(this.#harness, "send", "the session is not running");
     }
     session.input.push(userMessage(text));
     const at = Date.now();

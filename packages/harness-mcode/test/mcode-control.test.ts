@@ -456,7 +456,7 @@ test("a steer that gets no reply is not sent again and is reported as unknown", 
   control = await fakeControl({ steer: true, files: ["steer-hang"], callTimeoutMs: 1_000 });
   const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
   await control.send(id, "one", { into: "turn" });
-  await expect(control.send(id, "two", { into: "turn" })).rejects.toMatchObject({ code: "Unavailable" });
+  await expect(control.send(id, "two", { into: "turn" })).rejects.toMatchObject({ code: "InputPossiblySent" });
   // Nothing was queued: after the turn the next send is the second turn, and runs at once.
   await Bun.sleep(1_100);
   expect(await control.send(id, "three")).toMatchObject({ status: "started", turn: 2 });

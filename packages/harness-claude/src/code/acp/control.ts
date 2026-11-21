@@ -53,6 +53,7 @@ import type {
   ClaudeOptions,
 } from "@niwa-labs/harness";
 import {
+  InputNotSent,
   DEFAULT_TURN_TIMEOUT_MS,
   unknownVariantSigns,
   Unavailable,
@@ -1337,9 +1338,15 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     },
 
     async send(id: SessionId, message: string, sendOptions?: SendOptions): Promise<DeliveryReceipt> {
-      const session = requireSession(id, "send");
+      // Nothing is written before the receipt but the prompt itself, which ACP answers only when
+      // the turn ends: a send fails only before the message went, and a queued message waits in
+      // this side (it is dropped, and said so in the signs of life, if the process ends first).
+      const session = sessions.get(id.native);
+      if (session === undefined) {
+        throw new InputNotSent(harnessId, "send", `the session ${id.native} is not held by this control side`);
+      }
       if (session.ended || session.stopping) {
-        throw unavailable("send", session.failure ?? "the session is not running");
+        throw new InputNotSent(harnessId, "send", session.failure ?? "the session is not running");
       }
       if (sendOptions?.into === "turn" && session.busy) {
         throw new Unsupported(harnessId, "control", "send", "ACP cannot deliver into a running turn");

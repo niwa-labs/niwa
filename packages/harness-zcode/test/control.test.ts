@@ -390,7 +390,8 @@ test("a session whose process dies ends its stream and is unknown from then on",
   await watching;
   expect(events.some((event) => event.kind === "activity" && event.detail?.includes("exited (3)"))).toBe(true);
   expect(await c.state(session)).toBe("unknown");
-  await expect(c.send(session, "again")).rejects.toMatchObject({ code: "Unavailable" });
+  // The process is gone: the message is never written, so sending it again is safe.
+  await expect(c.send(session, "again")).rejects.toMatchObject({ code: "InputNotSent" });
 });
 
 test("a stray end of a turn when none runs is not a turn", async () => {

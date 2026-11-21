@@ -24,6 +24,7 @@ import {
   modelName,
   promptFromText,
   type LifeEvent,
+  InputNotSent,
   Unavailable,
   harnessId,
   NativeSessionIdSchema,
@@ -150,6 +151,8 @@ test("the SDK side refuses what it cannot do", async () => {
     native: NativeSessionIdSchema.parse("not-held"),
   };
   await expect(control.send(missing, "hi")).rejects.toThrow("not held by this control side");
+  // Nothing went: sending it again is safe.
+  await expect(control.send(missing, "hi")).rejects.toBeInstanceOf(InputNotSent);
   expect(await control.state(missing)).toBe("unknown");
   await control.dispose();
 });

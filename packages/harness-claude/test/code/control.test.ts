@@ -12,7 +12,7 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { modelName, promptFromText, type LifeEvent, type SessionControl, type StartOptions } from "@niwa-labs/harness";
+import { InputNotSent, modelName, promptFromText, type LifeEvent, type SessionControl, type StartOptions } from "@niwa-labs/harness";
 import { onSpawn } from "@niwa-labs/sandbox";
 import type { SessionId } from "@niwa-labs/harness";
 import {
@@ -950,3 +950,11 @@ test.skipIf(!runReal || Bun.which("claude") === null)(
   },
   240_000,
 );
+
+test("a message to a session that is not held, or whose process went, was not sent", async () => {
+  control = claudeCodeControl({ harness: "fake", command: [await fakeAgent({ turnMs: 0 })] });
+  const id = await startIdle(control, { prompt: promptFromText("one") });
+  await expect(control.send({ ...id, native: "elsewhere" as never }, "two")).rejects.toBeInstanceOf(InputNotSent);
+  await control.dispose();
+  await expect(control.send(id, "two")).rejects.toBeInstanceOf(InputNotSent);
+});

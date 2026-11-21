@@ -24,6 +24,8 @@ import type { Answer, Question } from "@niwa-labs/core";
 import {
   DEFAULT_TURN_TIMEOUT_MS,
   HarnessIdSchema,
+  InputNotSent,
+  inputFailure,
   Unavailable,
   Unsupported,
   modeOf,
@@ -36,6 +38,7 @@ import type {
   AskAnswer,
   AskOptions,
   DeliveryReceipt,
+  Dispatch,
   HarnessId,
   LaunchCapabilities,
   LifeEvent,
@@ -146,6 +149,8 @@ interface Outcome {
   readonly ok: boolean;
   readonly result?: unknown;
   readonly error?: string;
+  /** How far a call that failed got: never written, refused by the CLI, or written and never answered. */
+  readonly dispatch?: Dispatch;
 }
 
 /** The model a send names, and the reasoning level it thinks with. */
@@ -310,7 +315,7 @@ class LiveSession {
     const reason = this.failure ?? "the session process closed";
     const pending = [...this.pending.values()];
     this.pending.clear();
-    for (const settle of pending) settle({ ok: false, error: reason });
+    for (const settle of pending) settle({ ok: false, error: reason, dispatch: "uncertain" });
     this.settleTurn(undefined);
     for (const watcher of [...this.watchers]) watcher(undefined);
   }
@@ -350,7 +355,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     session.nextId += 1;
     return new Promise<Outcome>((resolve) => {
       const timer = setTimeout(() => {
-        if (session.pending.delete(id)) resolve({ ok: false, error: `the call ${method} timed out` });
+        if (session.pending.delete(id)) resolve({ ok: false, error: `the call ${method} timed out`, dispatch: "uncertain" });
       }, callTimeoutMs);
       session.pending.set(id, (outcome) => {
         clearTimeout(timer);
@@ -361,7 +366,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       } catch (error) {
         clearTimeout(timer);
         session.pending.delete(id);
-        resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
+        resolve({ ok: false, error: error instanceof Error ? error.message : String(error), dispatch: "unsent" });
       }
     });
   }
@@ -391,7 +396,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       settle(
         frame.error === undefined
           ? { ok: true, result: frame.result }
-          : { ok: false, error: frame.error.message ?? "the call failed" },
+          : { ok: false, error: frame.error.message ?? "the call failed", dispatch: "refused" },
       );
     } else if (frame.id !== undefined && frame.id !== null) {
       answerServerRequest(session, frame.id, frame.method, frame.params);
@@ -771,7 +776,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
    * request is written, so a turn that ends in the same read as its answer is not missed.
    */
   async function startTurn(session: LiveSession, text: string): Promise<{ turn: number; wait: TurnWait }> {
-    if (session.busy) throw unavailable("send", "a turn is already running");
+    if (session.busy) throw new InputNotSent(harnessId, "send", "a turn is already running");
     session.turn += 1;
     session.busy = true;
     session.began = false;
@@ -783,7 +788,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     if (!sent.ok) {
       wait.cancel();
       session.busy = false;
-      throw unavailable("send", sent.error ?? "the CLI refused the message");
+      throw inputFailure(harnessId, "send", sent.dispatch ?? "uncertain", sent.error ?? "the CLI refused the message");
     }
     if (!session.began && session.turn === turn) {
       session.began = true;
@@ -1032,14 +1037,17 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     },
 
     async send(id: SessionId, message: string, sendOptions?: SendOptions): Promise<DeliveryReceipt> {
-      const session = requireSession(id, "send");
+      const session = sessions.get(id.native);
+      if (session === undefined) {
+        throw new InputNotSent(harnessId, "send", `the session ${id.native} is not held by this control side`);
+      }
       // A send during a running turn is steered into it by ZCode itself: only a caller that asks for it gets that.
       if (session.busy && sendOptions?.into === "turn") {
         const at = Date.now();
         const params: Record<string, unknown> = { sessionId: id.native, content: message };
         if (session.selection !== undefined) params["modelSelection"] = session.selection;
         const steered = await call(session, "session/send", params);
-        if (!steered.ok) throw unavailable("send", steered.error ?? "the CLI refused the message");
+        if (!steered.ok) throw inputFailure(harnessId, "send", steered.dispatch ?? "uncertain", steered.error ?? "the CLI refused the message");
         return { status: "delivered", turn: session.turn, at };
       }
       return deliver(session, message);

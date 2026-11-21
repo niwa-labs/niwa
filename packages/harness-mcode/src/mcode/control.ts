@@ -26,6 +26,8 @@ import { z } from "zod";
 import { assertNever, timestamp } from "@niwa-labs/core";
 import type { Answer, Question } from "@niwa-labs/core";
 import {
+  InputNotSent,
+  InputPossiblySent,
   describeToolsMode,
   modeOf,
   requireLaunch,
@@ -1407,7 +1409,10 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     },
 
     async send(id: SessionId, message: string, sendOptions?: SendOptions): Promise<DeliveryReceipt> {
-      const session = sessionOf(id, "send");
+      const session = sessions.get(id.native);
+      if (session === undefined || session.ended || session.stopping) {
+        throw new InputNotSent(harnessId, "send", `there is no running session "${id.native}"`);
+      }
       const at = Date.now();
       if (sendOptions?.into === "turn" && session.running && session.steerable) {
         // Into the running turn: mcode joins the text to the turn between its tool calls and
@@ -1418,10 +1423,11 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
           await request(session, "mcode/session/steer", { sessionId: session.nativeId, text: message }, "the steer");
           return { status: "delivered", turn, at };
         } catch (error) {
-          if (session.ended || session.stopping) throw refusal("send", error);
-          // No reply at all: mcode may have taken the message, so it is not sent again.
+          // The process went with the steer on its way, or no reply came at all: mcode may have
+          // taken the message, so it is not sent again.
+          if (session.ended || session.stopping) throw new InputPossiblySent(harnessId, "send", refusal("send", error).message);
           if (error instanceof RequestTimeout) {
-            throw unavailable("send", `${error.message}; whether the message reached the turn is unknown`);
+            throw new InputPossiblySent(harnessId, "send", `${error.message}; whether the message reached the turn is unknown`);
           }
         }
       }

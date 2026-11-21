@@ -34,8 +34,11 @@ import type {
   SessionId,
   ReverseHandler,
   ToolsMode,
+  Dispatch,
 } from "@niwa-labs/harness";
 import {
+  InputNotSent,
+  inputFailure,
   DEFAULT_TURN_TIMEOUT_MS,
   describeToolsMode,
   modelName,
@@ -119,6 +122,8 @@ interface RpcOutcome {
   readonly ok: boolean;
   readonly result?: unknown;
   readonly error?: string;
+  /** How far a call that failed got: never written, refused by Codex, or written and never answered. */
+  readonly dispatch?: Dispatch;
 }
 
 /** A watcher gets events, then `undefined` once when the child is gone. */
@@ -296,7 +301,7 @@ class LiveSession {
     const reason = this.failure ?? "the session process closed";
     const pending = [...this.pending.values()];
     this.pending.clear();
-    for (const settle of pending) settle({ ok: false, error: reason });
+    for (const settle of pending) settle({ ok: false, error: reason, dispatch: "uncertain" });
     this.settleTurn(undefined);
     for (const watcher of [...this.watchers]) watcher(undefined);
   }
@@ -341,7 +346,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     session.nextId += 1;
     return new Promise<RpcOutcome>((resolve) => {
       const timer = setTimeout(() => {
-        if (session.pending.delete(id)) resolve({ ok: false, error: `the call ${method} timed out` });
+        if (session.pending.delete(id)) resolve({ ok: false, error: `the call ${method} timed out`, dispatch: "uncertain" });
       }, callTimeoutMs);
       session.pending.set(id, (outcome) => {
         clearTimeout(timer);
@@ -352,7 +357,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       } catch (error) {
         clearTimeout(timer);
         session.pending.delete(id);
-        resolve({ ok: false, error: error instanceof Error ? error.message : String(error) });
+        resolve({ ok: false, error: error instanceof Error ? error.message : String(error), dispatch: "unsent" });
       }
     });
   }
@@ -368,7 +373,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         settleCall(session, frame.id, { ok: true, result: frame.result });
         return;
       case "failure":
-        settleCall(session, frame.id, { ok: false, error: frame.error.message });
+        settleCall(session, frame.id, { ok: false, error: frame.error.message, dispatch: "refused" });
         return;
       case "notification":
         apply(session, incomingOf(frame.notification), at);
@@ -698,7 +703,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     text: string,
     outputSchema?: Record<string, unknown>,
   ): Promise<{ turn: number; wait: TurnWait }> {
-    if (session.busy) throw unavailable("send", "a turn is already running");
+    if (session.busy) throw new InputNotSent(harnessId, "send", "a turn is already running");
     session.turn += 1;
     session.busy = true;
     session.text = "";
@@ -712,7 +717,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     if (!started.ok) {
       wait.cancel();
       session.busy = false;
-      throw unavailable("send", started.error ?? "the CLI refused the turn");
+      throw inputFailure(harnessId, "send", started.dispatch ?? "uncertain", started.error ?? "the CLI refused the turn");
     }
     // The end may already have been processed, and a newer turn may already have taken over:
     // only a turn that is still the running one gets its id.
@@ -927,7 +932,10 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     },
 
     async send(id: SessionId, message: string, sendOptions?: SendOptions): Promise<DeliveryReceipt> {
-      const session = requireSession(id, "send");
+      const session = sessions.get(id.native);
+      if (session === undefined) {
+        throw new InputNotSent(harnessId, "send", `the session ${id.native} is not held by this control side`);
+      }
       const at = Date.now();
       const input = [{ type: "text", text: message }];
 
@@ -935,14 +943,14 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         // Only a caller that asks for it gets its message into the running turn.
         if (sendOptions?.into === "turn") {
           if (session.activeTurnId === undefined) {
-            throw unavailable("send", "the running turn has not been named by Codex yet");
+            throw new InputNotSent(harnessId, "send", "the running turn has not been named by Codex yet");
           }
           const steered = await call(session, "turn/steer", {
             threadId: id.native,
             expectedTurnId: session.activeTurnId,
             input,
           });
-          if (!steered.ok) throw unavailable("send", steered.error ?? "the CLI refused the message");
+          if (!steered.ok) throw inputFailure(harnessId, "send", steered.dispatch ?? "uncertain", steered.error ?? "the CLI refused the message");
           return { status: "delivered", turn: session.turn, at };
         }
       }

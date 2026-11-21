@@ -5,7 +5,7 @@ import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Unavailable, Unsupported, modelName, promptFromText, type LifeEvent } from "@niwa-labs/harness";
+import { InputNotSent, InputPossiblySent, Unavailable, Unsupported, modelName, promptFromText, type LifeEvent } from "@niwa-labs/harness";
 import { PiControl } from "../src/control.ts";
 import { tempDir } from "@niwa-labs/testing";
 
@@ -29,6 +29,8 @@ process.stdin.on("data", (chunk) => {
     else if (frame.type === "prompt" && process.env.FAKE_HOLD) {
       send({ type: "response", id: frame.id, command: "prompt", success: true });
       if (frame.streamingBehavior === undefined) send({ type: "agent_start" });
+    } else if (frame.type === "prompt" && process.env.FAKE_SILENT) {
+      // Taken and never answered.
     } else if (frame.type === "prompt" && process.env.FAKE_OK) {
       send({ type: "response", id: frame.id, command: "prompt", success: true });
       send({ type: "agent_start" });
@@ -51,6 +53,7 @@ afterEach(async () => {
   delete process.env.FAKE_DIR;
   delete process.env.FAKE_OK;
   delete process.env.FAKE_HOLD;
+  delete process.env.FAKE_SILENT;
   delete process.env.FAKE_SESSION;
   delete process.env.FAKE_MODEL_ID;
   delete process.env.FAKE_MODEL_PROVIDER;
@@ -251,6 +254,25 @@ test("a model is pi's --model and an effort is its --thinking, of that session; 
     expect(failure).toBeInstanceOf(Unsupported);
     expect(String(failure)).toContain('effort "extreme" is not one of off, minimal, low, medium, high, xhigh, max');
     expect(await readFile(join(dir, "args"), "utf8").catch(() => "none")).toBe("none");
+  } finally {
+    await pi.dispose();
+  }
+});
+
+test("a message pi refuses was not sent; one it never answers may have been, and neither is sent again", async () => {
+  const pi = new PiControl({ mode: "full", harness: "pi-fake", binary: join(dir, "pi"), callTimeoutMs: 200 });
+  try {
+    const { session } = await pi.start({ prompt: promptFromText("") });
+    await expect(pi.send(session, "go")).rejects.toBeInstanceOf(InputNotSent);
+    await expect(pi.send({ ...session, native: "elsewhere" as never }, "go")).rejects.toBeInstanceOf(InputNotSent);
+    process.env.FAKE_SILENT = "1";
+    const silent = new PiControl({ mode: "full", harness: "pi-fake", binary: join(dir, "pi"), callTimeoutMs: 200 });
+    try {
+      const quiet = await silent.start({ prompt: promptFromText("") });
+      await expect(silent.send(quiet.session, "go")).rejects.toBeInstanceOf(InputPossiblySent);
+    } finally {
+      await silent.dispose();
+    }
   } finally {
     await pi.dispose();
   }

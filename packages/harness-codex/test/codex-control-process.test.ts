@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { z } from "zod";
 
-import { modelName, promptFromText, type LifeEvent, Unavailable, Unsupported } from "@niwa-labs/harness";
+import { InputNotSent, InputPossiblySent, modelName, promptFromText, type LifeEvent, Unavailable, Unsupported } from "@niwa-labs/harness";
 import type { SessionId } from "@niwa-labs/harness";
 import { codexControl } from "../src/control.ts";
 import type { CodexControlOptions } from "../src/control.ts";
@@ -82,6 +82,10 @@ process.stdin.on("data", (chunk) => {
     else if (frame.method === "thread/resume") send({ id: frame.id, result: { thread: { id: frame.params.threadId }, model: process.env.FAKE_MODEL } });
     else if (frame.method === "turn/start") {
       if (mode === "die") process.exit(1);
+      if (mode === "refuse-turn") {
+        send({ id: frame.id, error: { code: -32600, message: "the turn was refused" } });
+        continue;
+      }
       turns += 1;
       const turnId = "t" + turns;
       send({ id: frame.id, result: { turn: { id: turnId } } });
@@ -278,12 +282,23 @@ test("the answer of a turn is still read when its message carries a field the sn
   expect(signs.find((sign) => sign.kind === "unknown-variant")).toMatchObject({ variant: "item/completed" });
 });
 
-test("a child that dies fails the pending call and leaves no orphan", async () => {
+test("a child that dies with the first prompt unanswered fails it as possibly sent and leaves no orphan", async () => {
   process.env.FAKE_MODE = "die";
   const codex = control();
   const failure = await codex.start({ prompt: promptFromText("go") }).catch((error: unknown) => error);
-  expect(failure).toBeInstanceOf(Unavailable);
+  // turn/start was written and never answered: Codex may have begun the turn.
+  expect(failure).toBeInstanceOf(InputPossiblySent);
+  expect(String(failure)).toContain("exited");
   expect(await grandchildGone()).toBe(true);
+  await codex.dispose();
+});
+
+test("a message Codex refuses, or one to a session it does not hold, was not sent", async () => {
+  process.env.FAKE_MODE = "refuse-turn";
+  const codex = control();
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+  await expect(codex.send(id, "go")).rejects.toBeInstanceOf(InputNotSent);
+  await expect(codex.send({ ...id, native: "elsewhere" as never }, "go")).rejects.toBeInstanceOf(InputNotSent);
   await codex.dispose();
 });
 

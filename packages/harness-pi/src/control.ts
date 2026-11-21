@@ -43,6 +43,8 @@ import { assertNever, OptionIdSchema, pickedOptions } from "@niwa-labs/core";
 import type { Answer, Question, QuestionOption } from "@niwa-labs/core";
 import {
   DEFAULT_TURN_TIMEOUT_MS,
+  InputNotSent,
+  InputPossiblySent,
   modeOf,
   modelName,
   requireLaunch,
@@ -279,6 +281,9 @@ class LiveSession {
   }
 }
 
+/** pi answered a command with a failure: it did not take it. */
+class PiRefusal extends Unavailable {}
+
 /**
  * The pi control side.
  *
@@ -399,8 +404,21 @@ export class PiControl implements PiSessionControl {
     await this.#firstTurn(session, options?.prompt === undefined ? "" : promptText(options.prompt));
   }
 
+  /**
+   * A message pi refused, or one that never left, was not sent; one written whose answer never came
+   * may have started a run, and is not sent again.
+   */
   async send(id: SessionId, message: string, options?: SendOptions): Promise<DeliveryReceipt> {
-    return this.#submit(this.#require(id, "send"), message, options);
+    const session = this.#sessions.get(id.native);
+    if (session === undefined || session.ended) {
+      throw new InputNotSent(this.#harness, "send", `the session "${id.native}" is not held, or its pi process is gone`);
+    }
+    try {
+      return await this.#submit(session, message, options);
+    } catch (error) {
+      if (error instanceof PiRefusal) throw new InputNotSent(this.#harness, "send", error.message);
+      throw new InputPossiblySent(this.#harness, "send", error instanceof Error ? error.message : String(error));
+    }
   }
 
   /** Delivers a message and says what became of it; nothing waits for the run to end. */
@@ -874,7 +892,7 @@ export class PiControl implements PiSessionControl {
       throw new Unavailable(this.#harness, "control", command, detail);
     }
     if (!response.success) {
-      throw new Unavailable(this.#harness, "control", command, response.error);
+      throw new PiRefusal(this.#harness, "control", command, response.error);
     }
     if (response.command !== command) {
       throw new Unavailable(
