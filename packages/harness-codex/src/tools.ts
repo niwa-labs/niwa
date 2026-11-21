@@ -31,23 +31,25 @@ function isMcp(name: string): boolean {
   return name.includes("__");
 }
 
-/** The files an `apply_patch` touches, in the order its patch names them. */
+/** The files an `apply_patch` touches, in the order its patch names them; a file it moves is named by where it goes. */
 export function patchedFiles(patch: string): string[] {
   const files: string[] = [];
-  for (const match of patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) {
+  for (const match of patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)) {
     const path = match[1]?.trim();
     if (path !== undefined && path.length > 0 && !files.includes(path)) files.push(path);
   }
   return files;
 }
 
-/** A call of a Codex tool, in the common model's words. A patch is about the first file it names. */
+/** A call of a Codex tool, in the common model's words. A patch is about the first file it names, and lists all of them when it names several. */
 export function codexToolShape(name: string, input: unknown): ToolShape {
   const shape = shapeOf(CODEX_TOOLS, name, input, isMcp);
   if (name !== "apply_patch") return shape;
   const patch = typeof input === "string" ? input : typeof input === "object" && input !== null ? Object.getOwnPropertyDescriptor(input, "input")?.value : undefined;
-  const first = typeof patch === "string" ? patchedFiles(patch)[0] : undefined;
-  return first === undefined ? shape : { ...shape, target: first };
+  const files = typeof patch === "string" ? patchedFiles(patch) : [];
+  const first = files[0];
+  if (first === undefined) return shape;
+  return files.length > 1 ? { ...shape, target: first, paths: files } : { ...shape, target: first };
 }
 
 /** The arguments of Codex's `update_plan`: the whole plan, each step with its state. */

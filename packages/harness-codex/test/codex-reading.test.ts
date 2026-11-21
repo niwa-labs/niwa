@@ -300,7 +300,11 @@ test("a rewritten file is detected: the read restarts and raw refuses the old lo
   const old = second?.locator as Locator;
 
   writeFileSync(path, meta(NATIVE) + message(1, "user", "ONE") + message(2, "user", "TWO"));
-  expect(await all(reading().read(ID, old))).toHaveLength(2);
+  const again = await all(reading().read(ID, old));
+  expect(again).toHaveLength(2);
+  // The read began again, and the first record says so; the ones after it do not.
+  expect(again.map((r) => r.reanchored)).toEqual([true, undefined]);
+  expect((await all(reading().read(ID, again[0]?.locator))).some((r) => r.reanchored === true)).toBe(false);
   await expect(reading().raw(ID, old)).rejects.toThrow("does not belong");
 });
 
@@ -470,4 +474,40 @@ test("a line that is not valid UTF-8 does not move the locators of the lines aft
   const resumed = await all(reading().read(ID, full[1]?.locator));
   expect(resumed).toEqual(full.slice(2));
   expect(await reading().raw(ID, full[2]?.locator as Locator)).toMatchObject({ type: "response_item" });
+});
+
+test("a patch that names several files lists every one of them, a move by where the file goes", async () => {
+  const patch = "*** Begin Patch\n*** Update File: src/a.ts\n*** Move to: src/c.ts\n@@\n-x\n+y\n*** Add File: src/b.ts\n+z\n*** Delete File: src/d.ts\n*** End Patch";
+  const single = "*** Begin Patch\n*** Update File: src/only.ts\n@@\n-x\n+y\n*** End Patch";
+  rollout(
+    NATIVE,
+    meta(NATIVE) +
+      record(1, "response_item", { type: "custom_tool_call", call_id: "c1", name: "apply_patch", input: patch }) +
+      record(2, "response_item", { type: "custom_tool_call", call_id: "c2", name: "apply_patch", input: single }),
+  );
+  const [many, one] = (await all(reading().read(ID))).flatMap((r) => (r.kind === "tool-call" ? [r] : []));
+  expect(many).toMatchObject({ target: "src/a.ts", paths: ["src/a.ts", "src/c.ts", "src/b.ts", "src/d.ts"] });
+  expect(one?.target).toBe("src/only.ts");
+  expect(one?.paths).toBeUndefined();
+});
+
+test("a message marks what Codex inserted, and a result and a message keep their pictures as marks", async () => {
+  const environment = "<environment_context>\n  <cwd>/work/x</cwd>\n</environment_context>";
+  const png = "data:image/png;base64,AAAA";
+  rollout(
+    NATIVE,
+    meta(NATIVE) +
+      record(1, "response_item", { type: "message", role: "user", content: [{ type: "input_text", text: environment }, { type: "input_text", text: "Fix <user-card>x</user-card>" }, { type: "input_image", image_url: png }] }) +
+      record(2, "response_item", { type: "function_call", call_id: "c1", name: "view_image", arguments: JSON.stringify({ path: "/a.png" }) }) +
+      record(3, "response_item", { type: "function_call_output", call_id: "c1", output: [{ type: "input_text", text: "shown" }, { type: "input_image", image_url: png }] }),
+  );
+  const [user, , result] = await all(reading().read(ID));
+  expect(user).toMatchObject({
+    kind: "user",
+    text: `${environment}\nFix <user-card>x</user-card>`,
+    inserted: [{ from: 0, to: environment.length + 1, origin: "harness" }],
+    images: [{ at: environment.length + 1 + "Fix <user-card>x</user-card>".length, mime: "image/png" }],
+  });
+  expect(result).toMatchObject({ kind: "tool-result", output: "shown", images: [{ at: 5, mime: "image/png" }] });
+  expect(JSON.stringify([user, result])).not.toContain("AAAA");
 });

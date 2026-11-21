@@ -57,6 +57,8 @@ export interface ToolShape {
   readonly category: ToolCategory;
   /** The path, command, pattern, address or task the call is about, when its input names one. */
   readonly target?: string;
+  /** Every path an edit names, when it names several (`target` is the first); absent when it names at most one. */
+  readonly paths?: string[];
 }
 
 /**

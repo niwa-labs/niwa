@@ -22,6 +22,7 @@ import { z } from "zod";
 
 import { timestamp } from "@niwa-labs/core";
 import type { Timestamp } from "@niwa-labs/core";
+import type { ImageMark } from "@niwa-labs/harness";
 
 /** The wrapper Codex writes around every payload. */
 export const NativeRecordSchema = z.object({
@@ -68,6 +69,46 @@ export function textsOf(content: unknown): string {
   return parts.join("\n");
 }
 
+/** What a part of Codex's content says of itself when it is an image: its media type when its address is a data URL. */
+function imageOf(part: Record<string, unknown>): { mime?: string } | undefined {
+  if (part["type"] !== "input_image" && part["type"] !== "output_image" && part["type"] !== "image") return undefined;
+  const source = part["image_url"];
+  const url = typeof source === "string" ? source : typeof source === "object" && source !== null ? (source as Record<string, unknown>)["url"] : undefined;
+  const mime = typeof url === "string" ? /^data:([^;,]+)[;,]/.exec(url)?.[1] : undefined;
+  return mime === undefined ? {} : { mime };
+}
+
+/**
+ * The parts of a message or a result joined into text, one line each, with the images taken out and
+ * marked where they stood in that text. `render` says what a part that is not an image is as text.
+ */
+function joinParts(content: readonly unknown[], render: (part: Record<string, unknown>) => string | undefined): { text: string; images: ImageMark[] } {
+  let text = "";
+  let any = false;
+  const images: ImageMark[] = [];
+  for (const part of content) {
+    if (typeof part !== "object" || part === null) continue;
+    const record = part as Record<string, unknown>;
+    const image = imageOf(record);
+    if (image !== undefined) {
+      images.push({ at: text.length, ...image });
+      continue;
+    }
+    const piece = render(record);
+    if (piece === undefined) continue;
+    text = any ? `${text}\n${piece}` : piece;
+    any = true;
+  }
+  return { text, images };
+}
+
+/** What a person or the model said in a message of Codex: its text parts, and the images that stood among them. */
+export function messageOf(content: unknown): { text: string; images: ImageMark[] } {
+  if (typeof content === "string") return { text: content, images: [] };
+  if (!Array.isArray(content)) return { text: "", images: [] };
+  return joinParts(content, (part) => (typeof part["text"] === "string" && part["text"].length > 0 ? part["text"] : undefined));
+}
+
 /**
  * The arguments of a tool call, as Codex gave them.
  *
@@ -83,17 +124,14 @@ export function argumentsOf(raw: unknown): unknown {
   }
 }
 
-/** The output of a tool result, as Codex gave it: a string or a list of parts. */
-export function outputOf(raw: unknown): unknown {
-  if (typeof raw === "string") return raw;
-  if (!Array.isArray(raw)) return raw;
-  const parts: string[] = [];
-  for (const part of raw) {
-    if (typeof part !== "object" || part === null) continue;
-    const text = (part as Record<string, unknown>)["text"];
-    parts.push(typeof text === "string" ? text : JSON.stringify(part));
-  }
-  return parts.join("\n");
+/**
+ * The output of a tool result, as Codex gave it: a string or a list of parts joined into text. The
+ * images of the parts are not in the text: they are marks where they stood.
+ */
+export function outputOf(raw: unknown): { output: unknown; images: ImageMark[] } {
+  if (!Array.isArray(raw)) return { output: raw, images: [] };
+  const { text, images } = joinParts(raw, (part) => (typeof part["text"] === "string" ? part["text"] : JSON.stringify(part)));
+  return { output: text, images };
 }
 
 /**

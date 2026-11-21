@@ -41,6 +41,7 @@ import type { Timestamp } from "@niwa-labs/core";
 import type {
   HarnessId,
   Coverage,
+  InsertionOrigin,
   Locator,
   NativeSessionId,
   SessionFilter,
@@ -56,6 +57,7 @@ import {
   NativeSessionIdSchema,
   TitleCache,
   failedCoverage,
+  insertedRanges,
   titleFromText,
   unavailableCoverage,
 } from "@niwa-labs/harness";
@@ -64,6 +66,7 @@ import {
   argumentsOf,
   compactionSummary,
   instantOf,
+  messageOf,
   outputOf,
   outcomeOf,
   parseNativeRecord,
@@ -73,6 +76,13 @@ import {
 import type { NativeRecord } from "./format.ts";
 import { baseOfArtifact, isCompressedName, nativeIdOfFileName } from "./paths.ts";
 import { codexChecklist, codexToolShape } from "./tools.ts";
+
+/** The tags Codex wraps its own insertions in, and who puts each there. */
+const INSERTION_TAGS: Readonly<Record<string, InsertionOrigin>> = {
+  environment_context: "harness",
+  user_instructions: "harness",
+  turn_aborted: "harness",
+};
 
 export interface CodexReadingOptions {
   /** The id of the installation this side serves. */
@@ -400,8 +410,9 @@ export class CodexReading implements SessionReading {
     const rollout = await this.#find(id);
     if (rollout === null) return;
     const resume = await this.#resumeOf(rollout, from);
-    const aligned = yield* this.#deliver(rollout, resume);
-    if (!aligned) yield* this.#deliver(rollout, undefined);
+    // A locator the file no longer holds starts the read over, and the first record says so.
+    const aligned = yield* this.#deliver(rollout, resume, from !== undefined && resume === undefined);
+    if (!aligned) yield* this.#deliver(rollout, undefined, true);
   }
 
   /**
@@ -412,10 +423,13 @@ export class CodexReading implements SessionReading {
   async *#deliver(
     rollout: Rollout,
     resume: Position | undefined,
+    restarted: boolean,
   ): AsyncGenerator<SessionRecord, boolean> {
+    let first = restarted;
     for await (const entry of this.#walk(rollout, resume)) {
       if (entry === STALE) return false;
-      yield { ...entry.record, locator: makeLocator(entry.line, entry.index + 1) } as SessionRecord;
+      yield { ...entry.record, ...(first ? { reanchored: true } : {}), locator: makeLocator(entry.line, entry.index + 1) } as SessionRecord;
+      first = false;
     }
     return true;
   }
@@ -778,8 +792,10 @@ export class CodexReading implements SessionReading {
     const kind = payload["type"];
     if (kind === "message") {
       const role = payload["role"];
-      const text = textsOf(payload["content"]);
-      if (role === "user") return [{ kind: "user", text, ...base }];
+      const { text, images } = messageOf(payload["content"]);
+      if (role === "user") {
+        return [{ kind: "user", text, inserted: insertedRanges(text, INSERTION_TAGS), ...(images.length > 0 ? { images } : {}), ...base }];
+      }
       if (role === "assistant") {
         return [
           {
@@ -817,7 +833,7 @@ export class CodexReading implements SessionReading {
     if (kind === "function_call_output" || kind === "custom_tool_call_output") {
       const callId = payload["call_id"];
       if (typeof callId !== "string" || callId.length === 0) return [unknownRecord(raw, base)];
-      const output = outputOf(payload["output"]);
+      const { output, images } = outputOf(payload["output"]);
       const outcome = outcomeOf(output, payload["status"]);
       const name = state.toolNames.get(callId);
       return [
@@ -827,6 +843,7 @@ export class CodexReading implements SessionReading {
           ...(name === undefined ? {} : { name }),
           output: optionalJsonOf(output),
           ...(outcome === undefined ? {} : { ok: outcome.ok }),
+          ...(images.length > 0 ? { images } : {}),
           ...base,
         },
       ];
@@ -898,7 +915,8 @@ export class CodexReading implements SessionReading {
     const role = payload["role"];
     const text = payload["text"];
     if (typeof text !== "string" || text.length === 0) return [];
-    if (role === "user") return [{ kind: "user", text, ...base }];
+    // What a voice transcript holds is what was said: nothing in it is inserted.
+    if (role === "user") return [{ kind: "user", text, inserted: [], ...base }];
     if (role === "assistant") {
       return [
         {
