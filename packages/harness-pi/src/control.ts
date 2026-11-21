@@ -429,6 +429,15 @@ export class PiControl implements PiSessionControl {
     const session = await this.#spawn(cwd, undefined, "start", options.model, options.effort, toolFlags, options);
     await this.#publish(session, "start");
     const id = makeSessionId(this.#harness, session.nativeId);
+    // The caller knows the session before its prompt goes: a start cut off while its first turn is
+    // on the way still finds it. A session whose name could not be kept is given no work.
+    try {
+      await options.named?.(id);
+    } catch (error) {
+      this.#unpublish(session);
+      await this.#stopSession(session);
+      throw error;
+    }
     // The prompt is the first turn, delivered like a send: the start waits for pi to take it,
     // never for the run to end.
     const text = promptText(options.prompt);

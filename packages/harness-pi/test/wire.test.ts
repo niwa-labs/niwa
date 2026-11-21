@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { Unavailable, promptFromText } from "@niwa-labs/harness";
+import { Unavailable, harnessId, promptFromText, sessionId } from "@niwa-labs/harness";
 import type { LifeEvent } from "@niwa-labs/harness";
 import { PiControl } from "../src/control.ts";
 import { PiCommandSchema, PiUiResponseSchema } from "../src/protocol/index.ts";
@@ -419,4 +419,46 @@ test("a run that says nothing of how it stopped ends its turn as unknown", async
 test("a retry pi gave up leaves the turn failed, and a retry that went through leaves it as the last run said", async () => {
   expect(await outcomeOfRun([{ ...reply("error"), willRetry: true }, { type: "agent_settled", aborted: true }], null)).toEqual(["failed"]);
   expect(await outcomeOfRun([{ ...reply("error"), willRetry: true }, { type: "agent_start" }], reply("stop"))).toEqual(["completed"]);
+});
+
+const promptsSent = async (): Promise<number> =>
+  (await readFile(join(dir, "frames.log"), "utf8").catch(() => ""))
+    .split("\n")
+    .filter((line) => line !== "" && JSON.parse(line).type === "prompt").length;
+
+test("a start tells the caller the session before its first prompt goes out", async () => {
+  const side = pi();
+  try {
+    const named: string[] = [];
+    let prompted: number | undefined;
+    const { session } = await side.start({
+      prompt: promptFromText("go"),
+      named: async (id) => {
+        named.push(id.native);
+        prompted = await promptsSent();
+      },
+    });
+    expect(named).toEqual([session.native]);
+    expect(prompted).toBe(0);
+  } finally {
+    await side.dispose();
+  }
+});
+
+test("a start whose session could not be written down gives it no work and holds no session", async () => {
+  const side = pi();
+  try {
+    await expect(
+      side.start({
+        prompt: promptFromText("go"),
+        named: async () => {
+          throw new Error("the journal is full");
+        },
+      }),
+    ).rejects.toThrow("the journal is full");
+    expect(await promptsSent()).toBe(0);
+    expect(await side.state(sessionId(harnessId("pi-wire"), "s1"))).toBe("unknown");
+  } finally {
+    await side.dispose();
+  }
 });
