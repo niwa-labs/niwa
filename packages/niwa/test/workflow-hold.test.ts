@@ -15,6 +15,7 @@ import { action } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
 import { createNiwa } from "@niwa-labs/host";
 import type { Host } from "@niwa-labs/host";
+import { PENDING_EXTERNAL } from "@niwa-labs/plugin";
 import { connectAsOwner, eventually, plugin, tempHome } from "@niwa-labs/testing";
 import { workflow, workflowContinue, workflowPause, workflowStart, workflowWait } from "@niwa-labs/workflow";
 
@@ -150,3 +151,71 @@ test("a hold of the tree holds a run the held run starts", async () => {
   expect(written).toEqual([]);
 }, 60_000);
 
+
+/** A plugin that began operations outside niwa that are still pending, and offers them to a hold. */
+function armed(items: Array<{ id: string; cancel?: boolean }>, calls: string[]) {
+  return plugin("armed", (api) => {
+    api.action(action("armed.pending", {
+      description: "Lists the merges armed and not yet made.",
+      input: z.object({}),
+      output: z.object({ items: z.array(z.looseObject({ id: z.string() })) }),
+      recovery: "repeat",
+      effect: "read",
+      world: "niwa",
+      run: () => ({ items: items.map((one) => ({ id: one.id, ...(one.cancel === false ? {} : { cancel: { action: "armed.cancel", input: { id: one.id } } }) })) }),
+    }));
+    api.action(action("armed.cancel", {
+      description: "Calls an armed merge off.",
+      input: z.object({ id: z.string() }),
+      output: z.object({ cancelled: z.boolean() }),
+      recovery: "repeat",
+      effect: "write",
+      world: "external",
+      run: ({ id }) => {
+        calls.push(id);
+        return { cancelled: true };
+      },
+    }));
+    api.offer(PENDING_EXTERNAL, { label: "armed merges", list: "armed.pending" });
+  });
+}
+
+test("a hold lists what plugins began outside niwa and have not ended, with the action that calls each off", async () => {
+  const home = await tempHome();
+  homes.push(home);
+  const host = createNiwa({ home: home.path });
+  host.use(slow, armed([{ id: "!12" }, { id: "!13", cancel: false }], []), workflow());
+  await host.serve();
+  hosts.push(host);
+  const owner = await connectAsOwner(home.path);
+  clients.push(owner);
+  const file = join(home.path, "pending.js");
+  await writeFile(file, 'export default workflow({ uses: ["slow.*"], output: z.json() }, async () => { await niwa.slow.read({ gated: true }); return {}; });');
+  readGate = gate();
+  const { run } = await owner.call(workflowStart, { file });
+  await eventually(async () => readGate.entered, 20_000, "the read should be in flight");
+
+  const held = await owner.call(workflowPause, { run, effects: "deny" });
+  expect(held.hold?.pending).toEqual([
+    {
+      plugin: "armed",
+      label: "armed merges",
+      items: [{ id: "!12", cancel: { action: "armed.cancel", input: { id: "!12" } } }, { id: "!13" }],
+    },
+  ]);
+  // The listing is read again with each look: the status does not keep what a plugin says now.
+  expect((await owner.call(workflowPause, { run, effects: "deny" })).hold?.pending?.[0]?.items).toHaveLength(2);
+  readGate.open();
+  await owner.call(workflowWait, { run, timeoutMs: 20_000 });
+});
+
+test("a run with no hold shows no pending operations, and a hold on a host where nobody offers any shows none", async () => {
+  const { home, owner } = await served();
+  const file = join(home, "plain.js");
+  await writeFile(file, 'export default workflow({ uses: ["slow.*"], output: z.json() }, async () => { await niwa.slow.read({ gated: true }); return {}; });');
+  const { run } = await owner.call(workflowStart, { file });
+  await eventually(async () => readGate.entered, 20_000, "the read should be in flight");
+  expect((await owner.call(workflowPause, { run, effects: "deny" })).hold?.pending).toBeUndefined();
+  readGate.open();
+  await owner.call(workflowWait, { run, timeoutMs: 20_000 });
+});

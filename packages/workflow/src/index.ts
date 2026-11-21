@@ -39,7 +39,7 @@ import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE } from "@niwa-labs/core";
-import { BUILTIN_WORKFLOW } from "@niwa-labs/plugin";
+import { BUILTIN_WORKFLOW, PENDING_EXTERNAL, PendingExternalAnswerSchema } from "@niwa-labs/plugin";
 import type { ServiceContext, Subscriber } from "@niwa-labs/plugin";
 import type { Action, ActionContext, ArtifactStore, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StoredRecord } from "@niwa-labs/core";
 import { scriptOn } from "@niwa-labs/script";
@@ -72,7 +72,7 @@ import {
   workflowUninstall,
   workflowWait,
 } from "./actions.ts";
-import { holds } from "@niwa-labs/core";
+import { actionName, holds } from "@niwa-labs/core";
 import { catalogueFor } from "./catalogue.ts";
 import { neutralValue } from "./ask.ts";
 import { isUse, scriptChecker, scriptReads, scriptUses, useName, withDeclaration } from "./check.ts";
@@ -129,7 +129,7 @@ import { runScript, stopRun } from "./runner.ts";
 import { StatsFold, workflowStats } from "./stats.ts";
 import type { ScriptBox } from "./runner.ts";
 import { activeHold, activeManualPause, deadlineOf, deadlineReached, holdOver, manualPausesOf, openRequestsOfInvocations, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
-import type { RunState as RunStateName, RunStatus } from "./status.ts";
+import type { PendingOperations, RunState as RunStateName, RunStatus } from "./status.ts";
 import { installationIdsOf, installationsOf, profileOf, profileRulesOf, standing } from "./subscriptions.ts";
 import type { Installation } from "./subscriptions.ts";
 
@@ -392,6 +392,29 @@ export function workflow(opts: WorkflowOptions = {}) {
       }
     };
 
+    /**
+     * The status of a run, with what plugins began outside niwa and have not ended when the run is held: the hold stops
+     * the run's own writes, and these go on until someone calls them off. Each plugin's listing is read now, as a step
+     * of the call; a plugin that cannot be asked is said so, its operations are not taken for none.
+     */
+    const showing = async (status: RunStatus, ctx: ActionContext): Promise<RunStatus> => {
+      if (status.hold === undefined) return status;
+      const offered = api.offers(PENDING_EXTERNAL);
+      if (offered.length === 0) return status;
+      const pending: PendingOperations[] = [];
+      for (const { plugin: by, value } of offered) {
+        const listed = await ctx.step.outcome(actionName(value.list), {});
+        const answer = listed.status === "completed" ? PendingExternalAnswerSchema.safeParse(listed.value) : undefined;
+        if (answer?.success === true) {
+          if (answer.data.items.length > 0) pending.push({ plugin: String(by), label: value.label, items: answer.data.items });
+          continue;
+        }
+        const why = listed.status === "completed" ? "it did not answer `{ items }`" : listed.status === "failed" ? listed.error : listed.status === "denied" ? listed.reason : listed.status;
+        pending.push({ plugin: String(by), label: value.label, items: [], unavailable: `${value.list}: ${why}` });
+      }
+      return pending.length === 0 ? status : { ...status, hold: { ...status.hold, pending } };
+    };
+
     const runIndex = new IdIndex("run", () => runsIssuedOf(journal()));
     const workflowIndex = new IdIndex("workflow", () => workflowIdsOf(journal()));
     const installationIndex = new IdIndex("subscription", () => installationIdsOf(journal()));
@@ -614,7 +637,7 @@ export function workflow(opts: WorkflowOptions = {}) {
           const run = runOf(input.run, ctx.caller);
           if (!runExists(journal(), run)) throw new RunRefusal("unknown-run", `unknown run "${run}"`);
           mayAct(ctx.caller, ownerOfRun(journal(), run), `wait for the run "${run}"`);
-          return settle(run, input.timeoutMs);
+          return showing(await settle(run, input.timeoutMs), ctx);
         },
       }),
     );
@@ -736,16 +759,17 @@ export function workflow(opts: WorkflowOptions = {}) {
         const run = runOf(input.run, ctx.caller);
         mayAct(ctx.caller, ownerOfRun(journal(), run), `pause the run "${run}"`);
         if (input.effects === "deny") {
-          return changeControl(run, async () => {
+          const held = await changeControl(run, async () => {
             const status = statusOf(journal(), run);
             if (status.state !== "finished" && activeHold(journal(), run) === undefined) {
               await ctx.emit(RunHoldRequested, { run, tree: input.tree === true, effects: "deny" });
             }
             return statusOf(journal(), run);
           });
+          return showing(held, ctx);
         }
         await pauseTree(run, ctx);
-        return statusOf(journal(), run);
+        return showing(statusOf(journal(), run), ctx);
       },
     }));
 
@@ -804,7 +828,7 @@ export function workflow(opts: WorkflowOptions = {}) {
           return { from: current, to: Math.max(current, clockNow()) + input.by };
         });
         await extendTree(run, extended.from, extended.to, ctx);
-        return statusOf(journal(), run);
+        return showing(statusOf(journal(), run), ctx);
       },
     }));
 
@@ -852,7 +876,7 @@ export function workflow(opts: WorkflowOptions = {}) {
           return true;
         });
         if (released) await continueChildren(run, ctx);
-        return statusOf(journal(), run);
+        return showing(statusOf(journal(), run), ctx);
       },
     }));
 

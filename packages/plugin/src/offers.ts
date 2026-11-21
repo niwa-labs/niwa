@@ -14,6 +14,8 @@
  * off by the option of the plugin that offers it.
  */
 
+import { z } from "zod";
+
 import type { RecordType } from "@niwa-labs/core";
 import { offerKey } from "./plugin.ts";
 import type { OfferKey } from "./plugin-types.ts";
@@ -142,3 +144,37 @@ export interface AgentOffer {
 
 /** Where a plugin defines an agent it needs (`api.offer(AGENT, { name, harness, prompt })`): the agents module reads it. */
 export const AGENT: OfferKey<AgentOffer> = offerKey("agent", "agents");
+
+/**
+ * Operations a plugin began outside niwa that have not ended (a merge armed on a forge, a message
+ * scheduled elsewhere), as a plugin offers them to whoever reports what a hold of a run leaves
+ * behind: a hold stops the run's own writes, but what was begun elsewhere goes on, and the person
+ * holding the run should be told.
+ *
+ * `list` names an action of the offering plugin that reads and takes no input; it answers
+ * `{ items }`, each item what the plugin says of one operation, and may carry the action that calls
+ * it off (`cancel`, with its input), which the person is shown and the report never runs.
+ */
+export interface PendingExternal {
+  /** What the operations are, for a person reading the hold: "armed merges". */
+  readonly label: string;
+  /** The name of the action that lists them. */
+  readonly list: string;
+}
+
+/** The action that calls one pending operation off, as the plugin that lists it says it. */
+export const PendingCancelSchema = z.object({ action: z.string().min(1), input: z.record(z.string(), z.unknown()) });
+
+/** One pending operation: what the plugin says of it, and how to call it off when it can be. */
+export const PendingExternalItemSchema = z.looseObject({ cancel: PendingCancelSchema.optional() });
+export type PendingExternalItem = z.output<typeof PendingExternalItemSchema>;
+
+/** What the listing action of a `PendingExternal` answers. */
+export const PendingExternalAnswerSchema = z.object({ items: z.array(PendingExternalItemSchema) });
+
+/**
+ * Where a plugin offers the operations it has pending (`api.offer(PENDING_EXTERNAL, { label, list })`).
+ * The host reads the point, so no plugin has to be installed for the offer to be served: where nobody
+ * reports holds, the offer is not read.
+ */
+export const PENDING_EXTERNAL: OfferKey<PendingExternal> = offerKey("pending.external", "host");

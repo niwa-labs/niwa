@@ -9,6 +9,7 @@ import type { JournalReader, RecordTypeName, StoredRecord } from "@niwa-labs/cor
 import { RequestAnswered, RequestCancelledRecord, RequestCreated, RequestExpiredRecord, fold } from "@niwa-labs/requests/records";
 import type { Address } from "@niwa-labs/core";
 import type { RequestId } from "@niwa-labs/requests/records";
+import { PendingExternalItemSchema } from "@niwa-labs/plugin";
 import { z } from "zod";
 
 import { WorkflowPhase } from "./language.ts";
@@ -38,6 +39,17 @@ export const InFlight = z.object({
 });
 export type InFlight = z.infer<typeof InFlight>;
 
+/** What one plugin has begun outside niwa and not ended while a run is held, as the plugin lists it. */
+export const PendingOperations = z.object({
+  plugin: z.string(),
+  /** What the operations are: "armed merges". */
+  label: z.string(),
+  items: z.array(PendingExternalItemSchema),
+  /** Why the plugin could not be asked, when it could not: its operations are then unknown, not none. */
+  unavailable: z.string().optional(),
+});
+export type PendingOperations = z.infer<typeof PendingOperations>;
+
 /**
  * A hold of a run: `holding` while operations that write are still going, listed in `inFlight`,
  * and `held` once every one of them has ended. New writes are refused in both.
@@ -48,6 +60,11 @@ export const RunHold = z.object({
   /** The hold covers the runs this run started, at any depth. */
   tree: z.boolean(),
   inFlight: z.array(InFlight),
+  /**
+   * What plugins began outside niwa that is still pending, by plugin (`PENDING_EXTERNAL`): the hold
+   * stops the run's writes, not these. Absent when no plugin offers any.
+   */
+  pending: z.array(PendingOperations).optional(),
 });
 export type RunHold = z.infer<typeof RunHold>;
 
