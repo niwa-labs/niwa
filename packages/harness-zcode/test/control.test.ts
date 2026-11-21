@@ -347,6 +347,30 @@ test("a ZCode without v4/command refuses a steer by name and sends nothing", asy
   expect((await requestsOf("session/send")).map((params) => params["content"])).toEqual(["slow"]);
 });
 
+test("a message the server refuses releases the session, and what queued behind it gets its turn", async () => {
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText(""), cwd: dir });
+  // The ask holds the session while the server weighs its message; another message waits behind it.
+  const refused = c.ask(session, { schema: z.string(), prompt: promptFromText("refuse") }).catch((error: unknown) => error);
+  expect(await c.send(session, "after")).toMatchObject({ status: "queued" });
+  expect(await refused).toMatchObject({ code: "InputNotSent" });
+  while (!(await requestsOf("session/send")).some((params) => params["content"] === "after")) await Bun.sleep(10);
+  expect(await c.state(session)).toBe("running");
+});
+
+test("a message whose answer never came keeps the session busy, so a later turn is not taken for it", async () => {
+  const c = control({ callTimeoutMs: 200 });
+  const { session } = await c.start({ prompt: promptFromText(""), cwd: dir });
+  const ended = turnsEnded(c, session, 2);
+  await expect(c.send(session, "mute slow")).rejects.toMatchObject({ code: "InputPossiblySent" });
+  // The turn may be running: it is not over, and the next message waits for it.
+  expect(await c.state(session)).toBe("running");
+  expect(await c.send(session, "next")).toMatchObject({ status: "queued", turn: 2 });
+  const events = await ended;
+  expect(events.filter((event) => event.kind === "turn-ended").map((event) => (event as { turn: number }).turn)).toEqual([1, 2]);
+  expect((await requestsOf("session/send")).map((params) => params["content"])).toEqual(["mute slow", "next"]);
+});
+
 test("a resume of a held session with a prompt waits behind the running turn", async () => {
   const c = control();
   const { session } = await c.start({ prompt: promptFromText("slow"), cwd: dir });

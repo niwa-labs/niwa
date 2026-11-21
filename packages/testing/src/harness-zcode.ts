@@ -7,7 +7,7 @@
  * "old-subscribe", "no-subscribe", "resume-fail", "no-v4", "bad-capabilities" and "no-message-id" change what it
  * accepts. A `session/send` while a turn runs is refused, as the real server refuses it; the running turn is steered
  * through `v4/command` (a text that begins with "reject" is rejected). The content "refuse" is refused after a pause, "mute" is never answered (its turn runs),
- * "bad ack" is answered with something that is no acceptance, and "empty" ends with no answer anywhere. Each turn is
+ * "bad ack" is answered with something that is no acceptance, "bare ack" with neither a result nor an error, and "empty" ends with no answer anywhere. Each turn is
  * written to the transcript, `session/messages`, as the user message that began it and the answer it gave.
  *
  * It speaks the wire as the real server does, in the shapes of the snapshot niwa types it with: every event
@@ -124,7 +124,7 @@ function turn(content) {
   setTimeout(() => {
     settle("turn.completed", { response, resultType: "success" });
     if (content === "stray") setTimeout(() => event("turn.completed", { response, resultType: "success" }), 30);
-  }, content === "slow" ? 600 : 200);
+  }, content === "slow" || content === "mute slow" ? 600 : 200);
 }
 
 const message = (role, text, messageId, parent) => ({
@@ -150,6 +150,7 @@ function handle({ id, method, params }) {
       if (active !== undefined) return out({ id, error: { code: -32010, message: "A prompt is already running for this session" } });
       if (params.content.startsWith("refuse")) return void setTimeout(() => out({ id, error: { code: -32010, message: "the server refuses this message" } }), 100);
       if (params.content.startsWith("bad ack")) out({ id, result: { ok: true } });
+      else if (params.content.startsWith("bare ack")) out({ id });
       else if (!params.content.startsWith("mute")) ok({ accepted: true, sessionId: params.sessionId, stateRevision: 1 });
       return void turn(params.content);
     case "v4/command": {

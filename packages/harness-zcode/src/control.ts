@@ -809,9 +809,25 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     if (session.selection !== undefined) params["modelSelection"] = session.selection;
     const sent = await call(session, "session/send", params);
     if (!sent.ok) {
+      const dispatch = sent.dispatch ?? "uncertain";
+      const failure = inputFailure(harnessId, "send", dispatch, sent.error ?? "the CLI refused the message");
+      if (dispatch === "uncertain") {
+        // The message may be a turn that is running: the session stays busy, so a later turn is not
+        // taken for it and what is queued waits. Its end releases the session; if none comes, the
+        // timeout of the turn does, which is all this side can tell.
+        void wait.done.then((end) => {
+          if (end !== undefined || session.ended || session.turn !== turn || !session.busy) return;
+          session.busy = false;
+          session.emit({ kind: "activity", at: Date.now(), detail: `turn ${turn} never reported its end: the session is taken for idle` });
+          drainQueue(session);
+        });
+        throw failure;
+      }
+      // The message was never taken: its turn never was, and what waited behind it goes on.
       wait.cancel();
-      session.busy = false;
-      throw inputFailure(harnessId, "send", sent.dispatch ?? "uncertain", sent.error ?? "the CLI refused the message");
+      if (session.turn === turn) session.busy = false;
+      drainQueue(session);
+      throw failure;
     }
     if (!session.began && session.turn === turn) {
       session.began = true;
@@ -872,9 +888,8 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       })
       .catch((error: unknown) => {
         next.ask?.reject(error);
+        // The messages behind it are released by the start that failed, when its message was never taken.
         session.emit({ kind: "activity", at: Date.now(), detail: `a queued message could not be started: ${String(error)}` });
-        // The messages behind it still wait for a turn of their own.
-        drainQueue(session);
       });
   }
 
