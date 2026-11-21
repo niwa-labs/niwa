@@ -47,18 +47,22 @@ export function checkFailed(what: string, summary: string): Judged {
   return { verdict: "FAIL", findings: [{ title: `${what} did not pass`, evidence: summary, severity: "blocks" }], method: `check (${what})` };
 }
 
+/** What a review and fix is given, apart from its check. */
+type ReviewFixOptions = { wt: Worktree; base: string; author: Seat; reviewers: readonly Seat[]; focus?: readonly string[]; max?: number };
+
 /**
  * Review the changes of a worktree against `base` and have `author` fix what blocks, for at most
  * `max` reviews (three by default). The first review is of the worktree as it is. With `test`, the
  * check runs before each review and a failing check is sent back to the author unreviewed. So is a
  * worktree that holds changes outside the commit (the commit is read from the worktree, not taken
  * from the author's word), which includes files a check leaves behind: a check has to leave the
- * worktree as it found it, or have its output ignored by git.
+ * worktree as it found it, or have its output ignored by git. The answer carries the artifact of
+ * the check when `test` is given, and only the commit when it is not.
  */
-export async function reviewFix(
-  key: string,
-  opts: { wt: Worktree; base: string; author: Seat; reviewers: readonly Seat[]; focus?: readonly string[]; max?: number; test?: Check },
-): Promise<Attempt<{ sha: string; check?: ArtifactRef }>> {
+export function reviewFix(key: string, opts: ReviewFixOptions & { test: Check }): Promise<Attempt<{ sha: string; check: ArtifactRef }>>;
+export function reviewFix(key: string, opts: ReviewFixOptions & { test?: undefined }): Promise<Attempt<{ sha: string }>>;
+export function reviewFix(key: string, opts: ReviewFixOptions & { test?: Check }): Promise<Attempt<{ sha: string; check?: ArtifactRef }>>;
+export async function reviewFix(key: string, opts: ReviewFixOptions & { test?: Check }): Promise<Attempt<{ sha: string; check?: ArtifactRef }>> {
   checkKey(key, "the key of a review");
   if (opts.reviewers.length === 0) throw new TypeError(`reviewFix "${key}": give at least one reviewer`);
   const blocked = new Map<number, Judged>();

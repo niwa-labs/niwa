@@ -68,10 +68,10 @@ export async function headOf(key: string, wt: Worktree): Promise<string> {
  * commit, and kept otherwise: the commits are the result. When `fn` throws, the worktree is kept as
  * it is, for whoever looks into why.
  */
-export async function inWorktree<T>(key: string, opts: { repo?: string; base?: string; description?: string }, fn: (wt: Worktree) => Promise<T>): Promise<T> {
+export async function inWorktree<T>(key: string, opts: { repo: string; base?: string; description?: string }, fn: (wt: Worktree) => Promise<T>): Promise<T> {
   checkKey(key, "the key of a worktree");
   return script().scope(key, undefined, async () => {
-    const wt = await makeWorktree({ repo: opts.repo ?? "", ...(opts.base === undefined ? {} : { base: opts.base }), description: opts.description ?? `work in ${key}` });
+    const wt = await makeWorktree({ repo: opts.repo, ...(opts.base === undefined ? {} : { base: opts.base }), description: opts.description ?? `work in ${key}` });
     const result = await fn(wt);
     await removeWorktree(wt);
     return result;
@@ -84,7 +84,7 @@ export async function inWorktree<T>(key: string, opts: { repo?: string; base?: s
  */
 export async function forkSelect<T>(
   key: string,
-  opts: { seats: readonly Seat[]; repo?: string; base?: string; build: (seat: Seat, wt: Worktree) => Promise<T>; pick: (candidates: Record<string, T>) => Promise<string> },
+  opts: { seats: readonly Seat[]; repo: string; base?: string; build: (seat: Seat, wt: Worktree) => Promise<T>; pick: (candidates: Record<string, T>) => Promise<string> },
 ): Promise<{ winner: { id: string; value: T; worktree: Worktree }; rejected: string[] }> {
   checkKey(key, "the key of a fork");
   const keys = seatKeys(opts.seats, "the key of a seat");
@@ -96,7 +96,7 @@ export async function forkSelect<T>(
       opts.seats.map((seat, index) => ({ seat, id: keys[index] as string })),
       { key: (one) => one.id },
       async (one) => {
-        const wt = await makeWorktree({ repo: opts.repo ?? "", ...(opts.base === undefined ? {} : { base: opts.base }), description: `fork ${one.id}` });
+        const wt = await makeWorktree({ repo: opts.repo, ...(opts.base === undefined ? {} : { base: opts.base }), description: `fork ${one.id}` });
         made.set(one.id, wt);
         return opts.build(one.seat, wt);
       },
