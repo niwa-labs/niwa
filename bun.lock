@@ -347,6 +347,11 @@
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
+        "@niwa-labs/sandbox": "workspace:*",
+        "zod": "^4.6.7",
+      },
+      "devDependencies": {
+        "@niwa-labs/testing": "workspace:*",
       },
     },
     "packages/requests": {

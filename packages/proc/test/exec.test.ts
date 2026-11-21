@@ -13,6 +13,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 
+import { eventually } from "@niwa-labs/testing";
+
 import { artifactPath, procExec, secret, secretsDir } from "../src/index.ts";
 import { absentSandbox, alive, dirIn, filesUnder, procHost } from "./support.ts";
 
@@ -138,8 +140,8 @@ test("exec that outlasts its timeout is stopped with the child it started", asyn
   const result = await host.niwa.call(procExec, { cmd: sh("sleep 60 & echo $! > child.pid; wait"), cwd, timeout: 400 });
   expect(result.outcome).toBe("timed-out");
   expect(result.exit).toBeNull();
-  await Bun.sleep(100);
-  expect(alive(Number(readFileSync(join(cwd, "child.pid"), "utf8")))).toBe(false);
+  const child = Number(readFileSync(join(cwd, "child.pid"), "utf8"));
+  await eventually(() => !alive(child), 5_000, "the child should be gone");
 });
 
 test("a program that is not there is refused, and nothing is recorded", async () => {

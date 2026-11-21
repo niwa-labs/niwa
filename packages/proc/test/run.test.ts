@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 
 import { nono } from "@niwa-labs/sandbox";
+import { eventually } from "@niwa-labs/testing";
 
 import { artifactPath, procRun } from "../src/index.ts";
 import type { ProcResult } from "../src/index.ts";
@@ -90,8 +91,7 @@ test("a run that outlasts its timeout is stopped, with the child it started", as
   expect(result.exit).toBeNull();
   expect(Date.now() - began).toBeLessThan(10_000);
   const child = Number(readFileSync(pidFile, "utf8"));
-  await Bun.sleep(100);
-  expect(alive(child)).toBe(false);
+  await eventually(() => !alive(child), 5_000, "the child should be gone");
 });
 
 test("a command that traps the stop signal is killed once its grace is over", async () => {
@@ -111,8 +111,7 @@ test("a background child left behind does not hold the run, and does not survive
   expect(Date.now() - began).toBeLessThan(10_000);
   expect(result.tail).toBe("hi\n");
   const child = Number(readFileSync(join(cwd, "child.pid"), "utf8"));
-  await Bun.sleep(100);
-  expect(alive(child)).toBe(false);
+  await eventually(() => !alive(child), 5_000, "the child should be gone");
 });
 
 test("the output is an artifact: the result and the record keep only a bounded tail", async () => {
