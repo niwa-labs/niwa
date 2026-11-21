@@ -57,11 +57,30 @@ export function useGuardedAction({ onConfirm, timing: timingOverride, disabled }
   const [now, setNow] = useState(() => Date.now());
 
   const onConfirmRef = useRef(onConfirm);
+  // The handler of the render that confirmed: what fires is what the owner confirmed, even when the
+  // control is given another target while the undo window is open.
+  const confirmedRef = useRef<(() => void) | null>(null);
   const stateRef = useRef(state);
   useEffect(() => {
     onConfirmRef.current = onConfirm;
     stateRef.current = state;
+    if (state.phase === "pending") confirmedRef.current ??= onConfirm;
+    else if (state.phase !== "fired") confirmedRef.current = null;
   });
+
+  // Unavailable controls cannot start or complete a gesture; one that becomes unavailable halfway
+  // through drops its unconfirmed gesture. A confirmed action stays undoable and is still fired.
+  const isDisabled = disabled === true && state.phase !== "pending";
+  const gestureOpen = state.phase === "armed" || state.phase === "holding";
+  useEffect(() => {
+    if (isDisabled && gestureOpen) dispatch({ type: "cancel" });
+  }, [isDisabled, gestureOpen]);
+
+  const fire = () => {
+    const handler = confirmedRef.current ?? onConfirmRef.current;
+    confirmedRef.current = null;
+    handler();
+  };
 
   // Wake up at the next deadline, and refresh the countdown while one is shown.
   const deadline = nextDeadline(state, timing);
@@ -84,24 +103,31 @@ export function useGuardedAction({ onConfirm, timing: timingOverride, disabled }
     if (state.phase !== "fired") return;
     stateRef.current = IDLE;
     dispatch({ type: "reset" });
-    onConfirmRef.current();
+    fire();
   }, [state]);
 
   // A confirmed action whose control goes away is still the owner's decision: fire it.
   useEffect(
     () => () => {
-      if (!firesOnUnmount(stateRef.current)) return;
+      if (!firesOnUnmount(stateRef.current)) {
+        // Hidden with a gesture unfinished: its timers stop with the effects, and it must not be
+        // completed by a later wake-up when the control is shown again.
+        if (stateRef.current.phase === "armed" || stateRef.current.phase === "holding") {
+          stateRef.current = IDLE;
+          dispatch({ type: "cancel" });
+        }
+        return;
+      }
       // Hidden and shown again with its state kept, the control must not fire a second time.
       stateRef.current = IDLE;
       // Back to idle from either: a pending control, or one whose firing had not run yet.
       dispatch({ type: "cancel" });
       dispatch({ type: "reset" });
-      onConfirmRef.current();
+      fire();
     },
     [],
   );
 
-  const isDisabled = disabled === true && state.phase !== "pending";
   return {
     state,
     now,
@@ -110,15 +136,17 @@ export function useGuardedAction({ onConfirm, timing: timingOverride, disabled }
     buttonProps: {
       disabled: isDisabled,
       onPointerDown: (event) => {
-        if (event.button === 0) dispatch({ type: "holdStart", now: Date.now() });
+        if (!isDisabled && event.button === 0) dispatch({ type: "holdStart", now: Date.now() });
       },
-      onPointerUp: () => dispatch({ type: "holdEnd", now: Date.now() }),
+      onPointerUp: () => {
+        if (!isDisabled) dispatch({ type: "holdEnd", now: Date.now() });
+      },
       onPointerLeave: () => dispatch({ type: "holdCancel", now: Date.now() }),
       onPointerCancel: () => dispatch({ type: "holdCancel", now: Date.now() }),
       // Pointer presses are handled above; a click with no pointer behind it is a keyboard or an
       // assistive technology activating the button.
       onClick: (event) => {
-        if (event.detail === 0) dispatch({ type: "press", now: Date.now() });
+        if (!isDisabled && event.detail === 0) dispatch({ type: "press", now: Date.now() });
       },
       onKeyDown: (event) => {
         if (event.key === "Escape") dispatch({ type: "cancel" });
@@ -144,11 +172,13 @@ export type GuardButtonProps = {
 /** The icon button of a guarded action, with a ring that fills while the press is held. */
 export function GuardButton({ guard, icon, label, tone = "default", className }: GuardButtonProps) {
   const { state, timing } = guard;
+  const { disabled, ...handlers } = guard.buttonProps;
   const active = state.phase !== "idle";
   return (
     <Tooltip>
       <TooltipTrigger
-        type="button"
+        // The trigger's own `disabled` only mutes the hint; the button itself must be switched off.
+        render={<button type="button" disabled={disabled} />}
         aria-label={label}
         aria-pressed={active}
         data-slot="guard-button"
@@ -159,7 +189,7 @@ export function GuardButton({ guard, icon, label, tone = "default", className }:
           active && (tone === "destructive" ? "bg-destructive/10 text-destructive" : "bg-muted text-foreground"),
           className,
         )}
-        {...guard.buttonProps}
+        {...handlers}
       >
         {icon}
         <svg aria-hidden="true" viewBox="0 0 24 24" className="pointer-events-none absolute inset-0 size-full! -rotate-90">
