@@ -49,7 +49,7 @@ const Choice = question("test.choice", {
 });
 
 /** Wakes the one who asks a question. */
-const Start = record("test.start", z.object({ to: Address }), { open: true });
+const Start = record("test.start", z.object({ to: Address, detail: z.string().optional() }), { open: true });
 
 /** The answer of the owner, as the one who asked sees it. */
 const Continued = record("test.continued", z.object({ answer: z.string() }));
@@ -63,8 +63,10 @@ const Continued = record("test.continued", z.object({ answer: z.string() }));
 function asker(): ReturnType<typeof plugin> {
   return plugin("test-asker", (api) => {
     api.declare(Start, Continued);
-    api.on(Start, async (data, step) => {
-      const { answer } = answeredBy(await step(requestAsk, { to: data.to, ...Choice }));
+    // Each question is asked on its own: one that waits does not hold up the next.
+    api.on(Start, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
+      const asked = data.detail === undefined ? Choice : { ...Choice, input: { ...Choice.input, detail: data.detail } };
+      const { answer } = answeredBy(await step(requestAsk, { to: data.to, ...asked }));
       await step.emit(Continued, { answer: JSON.stringify(answer) });
     });
   });
@@ -82,12 +84,15 @@ function fakeTelegram(): {
   }>;
   /** The offsets the polls asked from. */
   offsets: number[];
+  /** Refuse this many of the next sends, as Telegram does when it will not take a message. */
+  refuse(count: number): void;
   push(update: unknown): void;
   stop(): void;
 } {
   const sent: ReturnType<typeof fakeTelegram>["sent"] = [];
   const offsets: number[] = [];
   let pending: Array<{ update_id: number }> = [];
+  let refusing = 0;
 
   const server = Bun.serve({
     port: 0,
@@ -105,6 +110,11 @@ function fakeTelegram(): {
       }
 
       if (method === "sendMessage") {
+        // What Telegram does with a message it will not take, or one that is too long.
+        if (refusing > 0 || String(body["text"]).length > 4096) {
+          refusing = Math.max(0, refusing - 1);
+          return Response.json({ ok: false, error_code: 400, description: "Bad Request: message is too long" }, { status: 400 });
+        }
         sent.push(body as (typeof sent)[number]);
         return Response.json({
           ok: true,
@@ -120,6 +130,9 @@ function fakeTelegram(): {
     base: server.url.toString().replace(/\/$/, ""),
     sent,
     offsets,
+    refuse(count: number) {
+      refusing = count;
+    },
     push(update: unknown) {
       pending.push(update as { update_id: number });
     },
@@ -559,6 +572,111 @@ test("telegram: a request to the owner is a message, and a press answers it", as
     }
 
     await client.close();
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: a request that cannot be posted does not hold up the requests after it", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    const surface = telegram(options(fake.base));
+    host.use(requests({ bind: surface.bind() }));
+    host.use(asker());
+    host.use(surface);
+    await host.serve();
+    fake.refuse(1);
+
+    const client = await connectAsOwner(home.path);
+    await client.emit(Start, { to: { kind: "owner" } });
+    await Bun.sleep(300);
+    await client.emit(Start, { to: { kind: "owner" } });
+    await eventually(() => fake.sent.length === 1, 5_000, "the second request should be posted");
+    await client.close();
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: a question longer than a message is cut to fit and still posted with its buttons", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    const surface = telegram(options(fake.base));
+    host.use(requests({ bind: surface.bind() }));
+    host.use(asker());
+    host.use(surface);
+    await host.serve();
+
+    const client = await connectAsOwner(home.path);
+    await client.emit(Start, { to: { kind: "owner" }, detail: "x\u{1F600}".repeat(3_000) });
+    await eventually(() => fake.sent.length === 1, 5_000, "the request should be posted");
+    expect(fake.sent[0]?.text.length).toBeLessThanOrEqual(4096);
+    expect(fake.sent[0]?.text.isWellFormed()).toBe(true);
+    expect(fake.sent[0]?.reply_markup?.inline_keyboard.flat().map((button) => button.text)).toEqual(["Yes, ship it", "No, hold it"]);
+    await client.close();
+  } finally {
+    await host.close();
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: a request that was open before the surface was installed is posted when it is", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+
+  try {
+    const before = createNiwa({ home: home.path });
+    before.use(requests());
+    before.use(asker());
+    await before.serve();
+    const client = await connectAsOwner(home.path);
+    await client.emit(Start, { to: { kind: "owner" } });
+    await eventually(
+      async () => (await recordsOf(home.path, 100)).some((record) => record.type === RequestCreated.name),
+      5_000,
+      "the request should be open",
+    );
+    await client.close();
+    await before.close();
+
+    const after = createNiwa({ home: home.path });
+    const surface = telegram(options(fake.base));
+    after.use(requests({ bind: surface.bind() }));
+    after.use(asker());
+    after.use(surface);
+    await after.serve();
+    await eventually(() => fake.sent.length === 1, 5_000, "the open request should be posted");
+    await Bun.sleep(300);
+    expect(fake.sent).toHaveLength(1);
+    await after.close();
+  } finally {
+    fake.stop();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("telegram: telegram.send is plain text, the buttons belong to requests", async () => {
+  const home = await tempHome();
+  const fake = fakeTelegram();
+  const host = createNiwa({ home: home.path });
+
+  try {
+    host.use(telegram(options(fake.base)));
+    await host.serve();
+    await host.call("telegram.send", { text: "pick one", choices: ["a", "b"] });
+    expect(fake.sent).toHaveLength(1);
+    expect(fake.sent[0]?.reply_markup).toBeUndefined();
   } finally {
     await host.close();
     fake.stop();

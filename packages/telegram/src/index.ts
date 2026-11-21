@@ -20,7 +20,7 @@
  * record of that message says which request it is.
  */
 
-import { OptionIdSchema, action, client, optionsOf, owner, questionLines, record } from "@niwa-labs/core";
+import { NotSent, OptionIdSchema, action, client, optionsOf, owner, questionLines, record } from "@niwa-labs/core";
 import type { Action, ActionContext, Answer, Caller, JournalReader, RecordType, SpeaksFor } from "@niwa-labs/core";
 import { bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi, ServiceContext } from "@niwa-labs/plugin";
@@ -59,6 +59,7 @@ export const TELEGRAM_IGNORED = "telegram.ignored";
 export const TELEGRAM_REQUEST = "telegram.request";
 export const TELEGRAM_ANSWER = "telegram.answer";
 export const TELEGRAM_TO_AGENT = "telegram.to-agent";
+export const TELEGRAM_POST_REQUEST = "telegram.post-request";
 
 /** The options of what the owner is asked when his message did not reach the agent. */
 const RETRY = OptionIdSchema.parse("retry");
@@ -403,18 +404,14 @@ export class TelegramService {
   }
 }
 
-/** The choices under a message: one button each. */
-const Choices = z.array(z.string());
-
 /** The input of the action that sends a message. */
-const SendInput = z.object({
-  text: z.string(),
-  /** The choices the owner may take; without them the message is plain. */
-  choices: Choices.optional(),
-});
+const SendInput = z.object({ text: z.string() });
 
 /**
  * The action that sends a message to the owner's chat.
+ *
+ * The message is plain text: the buttons of a message answer a request, and a request is posted by
+ * `telegram.post-request`, which also writes down which request the message shows.
  *
  * A send is not idempotent and Telegram takes no key: a call that was cut off may have been
  * delivered, so it is not repeated.
@@ -431,8 +428,7 @@ export function telegramSend(opts: {
     effect: "write",
     world: "external",
     run: async (input) => {
-      const keyboard = input.choices === undefined ? undefined : keyboardFor(input.choices);
-      const sent = await opts.bot.sendMessage(opts.owner, input.text, keyboard);
+      const sent = await opts.bot.sendMessage(opts.owner, input.text);
       return { messageId: sent.message_id, chat: opts.owner };
     },
   });
@@ -477,9 +473,45 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     },
   });
 
+  /** The journal, when the host gives the plugin one: the requests are read from it. */
+  let journal: (() => JournalReader | undefined) | undefined;
+
+  /** Post a request addressed to the owner: what it asks, as the message and the buttons that answer it. */
+  const postRequest = action(TELEGRAM_POST_REQUEST, {
+    description: "Show an open request addressed to the owner in the owner's Telegram chat.",
+    input: z.object({ request: RequestId }),
+    output: z.object({ messageId: messageSchema, chat: chatSchema }),
+    recovery: "do-not-repeat",
+    effect: "write",
+    world: "external",
+    run: async (input, ctx) => {
+      const reader = journal?.();
+      const created = reader === undefined ? undefined : createdOf(reader, input.request);
+      if (created === undefined) throw new NotSent(`there is no request "${input.request}"`);
+      if (created.to.kind !== "owner") throw new NotSent(`the request "${input.request}" is not addressed to the owner`);
+      if (reader !== undefined && endedIn(reader, input.request)) throw new NotSent(`the request "${input.request}" is ended`);
+      const options = optionsOf(created.input);
+      const sent = await service.client.sendMessage(
+        opts.owner,
+        fit(textOf(created)),
+        options.length === 0 ? undefined : keyboardFor(options.map((option) => option.label)),
+      );
+      await ctx.emit(Posted, {
+        request: created.id,
+        chat: opts.owner,
+        message: sent.message_id,
+        question: created.question,
+        choices: options.map((option) => option.id),
+      });
+      return { messageId: sent.message_id, chat: opts.owner };
+    },
+  });
+
   const built = plugin(PLUGIN_NAME, (api: PluginApi) => {
+    journal = () => api.journal?.();
     api.declare(Received, Ignored, Posted, Answered);
     api.action(send);
+    api.action(postRequest);
     // Without a hook nothing is delivered, so no action says that something was.
     if (toAgent !== undefined) api.action(deliver);
 
@@ -505,23 +537,21 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     api.service((ctx) => service.start(ctx, api.journal?.()));
 
     // A request addressed to the owner is shown to him: a message with the choices as buttons.
-    api.on(RequestCreated, { id: "request" }, async (data: Created, step) => {
+    // Each request is posted on its own: a post that fails is reported and leaves the requests
+    // after it alone. A new subscription reads from the start, so a request that was open before
+    // this surface was installed is posted too; one that is ended or already shown is passed over.
+    api.on(RequestCreated, { id: "request", from: "start" }, async (data: Created, step) => {
       if (data.to.kind !== "owner") return;
-      // The request may be ended already: a resolver of the owner may have answered it before it
-      // reached him, and a request that is not open is not shown.
-      if (ended(api, data.id)) return;
-      const options = optionsOf(data.input);
-      const sent = await step(send, {
-        text: textOf(data),
-        ...(options.length === 0 ? {} : { choices: options.map((option) => option.label) }),
-      });
-      await step.emit(Posted, {
-        request: data.id,
-        chat: opts.owner,
-        message: sent.messageId,
-        question: data.question,
-        choices: options.map((option) => option.id),
-      });
+      if (ended(api, data.id) || postedTo(api, data.id, opts.owner)) return;
+      const outcome = await step.outcome(postRequest, { request: data.id });
+      if (outcome.status === "completed") return;
+      const reason =
+        outcome.status === "denied" || outcome.status === "cancelled"
+          ? outcome.reason
+          : outcome.status === "failed"
+            ? outcome.error
+            : "the outcome is not known";
+      console.error(`niwa: telegram: the request "${data.id}" was not posted: ${reason}`);
     });
 
     // A press of a button is the owner's answer: the request is answered, and the one who asked
@@ -554,8 +584,43 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
 /** Whether the request is already ended: an ended request is not one the owner may answer. */
 function ended(api: PluginApi, request: string): boolean {
   const journal = api.journal?.();
-  if (journal === undefined) return false;
+  return journal !== undefined && endedIn(journal, request);
+}
+
+function endedIn(journal: JournalReader, request: string): boolean {
   return END_TYPES.some((type) => journal.find({ type, field: "id", equals: request }).length > 0);
+}
+
+/** The request as it was created, when the journal holds it. */
+function createdOf(journal: JournalReader, request: string): Created | undefined {
+  const found = journal.find({ type: RequestCreated.name, field: "id", equals: request }).at(0);
+  if (found === undefined) return undefined;
+  const parsed = RequestCreated.schema.safeParse(found.data);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** Whether the request is already shown in the chat: one message of it is enough. */
+function postedTo(api: PluginApi, request: string, chat: ChatId): boolean {
+  const journal = api.journal?.();
+  if (journal === undefined) return false;
+  return journal.find({ type: Posted.name, field: "request", equals: request }).some((stored) => {
+    const parsed = Posted.schema.safeParse(stored.data);
+    return parsed.success && parsed.data.chat === chat;
+  });
+}
+
+/** The most a message of Telegram holds, in the units Telegram counts: UTF-16 code units. */
+const MESSAGE_LIMIT = 4096;
+
+/** The text, cut to fit one message, with a note where it was cut. */
+export function fit(text: string): string {
+  if (text.length <= MESSAGE_LIMIT) return text;
+  const note = "\n[cut]";
+  let end = MESSAGE_LIMIT - note.length;
+  // Never between the two halves of a character outside the basic plane.
+  const last = text.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${text.slice(0, end)}${note}`;
 }
 
 /** The message about a request: the name of the question and what was asked. */
