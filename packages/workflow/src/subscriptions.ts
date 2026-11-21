@@ -10,8 +10,7 @@ import { CORE_TYPES, RuleSpecSchema, grant } from "@niwa-labs/core";
 import type { EntityDescription, Grant, IssuedId, JournalReader, Principal, StoredRecord } from "@niwa-labs/core";
 import { z } from "zod";
 
-import { holds } from "@niwa-labs/core";
-import { RunRequested, SubscriptionInstalled, SubscriptionUninstalled } from "./records.ts";
+import { SubscriptionInstalled, SubscriptionUninstalled } from "./records.ts";
 import type { Builtin, ContractHash, InstallationId, JsonSchemaValue, Subscription, WorkflowId, WorkflowVersion } from "./records.ts";
 
 /** One installation, with the places in the journal where it began and where it ended. */
@@ -85,11 +84,6 @@ export function standingAt(installations: readonly Installation[], at: number): 
 /** The installations that stand now. */
 export const standing = (journal: JournalReader): Installation[] => standingAt(installationsOf(journal), journal.last() + 1);
 
-/** The subscriptions of an installation that a record of this type and data starts it by. */
-export function startedBy(installation: Installation, type: string, data: unknown): boolean {
-  return installation.on.some((one) => one.type === type && holds(data, one.filter));
-}
-
 /** The installation ids that were issued, each with the record it was born in. */
 export const installationIdsOf = (journal: JournalReader): IssuedId[] =>
   installationsOf(journal).map((one) => ({ id: one.id, seed: one.record }));
@@ -101,24 +95,4 @@ export function profileRulesOf(journal: JournalReader, id: InstallationId): Gran
   const last = journal.find({ type: CORE_TYPES.accessProfile, field: "name", equals: profileOf(id) }).at(-1);
   if (last === undefined) return undefined;
   return grant(ProfileData.parse(last.data).rules);
-}
-
-/**
- * The installations whose runs this record grew from: the installations of the starts of runs on its chain of causes.
- *
- * An installation does not start on a record of a script that its own run caused, however long the way:
- * a script that emits what it starts on, or two that start on each other, would otherwise go on for ever.
- */
-export function causedByRunsOf(journal: JournalReader, record: StoredRecord): Set<InstallationId> {
-  const installations = new Set<InstallationId>();
-  for (let cause = record.cause; cause !== null; ) {
-    const row = journal.get(cause);
-    if (row === undefined) break;
-    if (row.type === RunRequested.name) {
-      const installation = RunRequested.schema.parse(row.data).installation;
-      if (installation !== undefined) installations.add(installation);
-    }
-    cause = row.cause;
-  }
-  return installations;
 }

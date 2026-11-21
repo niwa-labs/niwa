@@ -34,14 +34,15 @@ import { readFileSync } from "node:fs";
 
 import { z } from "zod";
 
-import { AccessGranted, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, callerOf, grant, jsonOf, narrow, principalOf, record, recordId, rule, ruleText, specsOf, toJsonSchema } from "@niwa-labs/core";
+import { AccessGranted, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, callerOf, grant, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, toJsonSchema } from "@niwa-labs/core";
 import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE } from "@niwa-labs/core";
 import { BUILTIN_WORKFLOW } from "@niwa-labs/plugin";
 import { SleepRequested } from "@niwa-labs/timer/records";
-import type { Action, ActionContext, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, StoredRecord } from "@niwa-labs/core";
+import type { Subscriber } from "@niwa-labs/plugin";
+import type { Action, ActionContext, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StoredRecord } from "@niwa-labs/core";
 import { scriptOn } from "@niwa-labs/script";
 import { requireBox } from "@niwa-labs/sandbox";
 import type { BoxSandboxName } from "@niwa-labs/sandbox";
@@ -121,7 +122,7 @@ import { StatsFold, workflowStats } from "./stats.ts";
 import type { ScriptBox } from "./runner.ts";
 import { activeManualPause, manualPausesOf, openRequestsOfInvocations, runEntry, runExists, runIds, runLine, statusOf } from "./status.ts";
 import type { RunState as RunStateName, RunStatus } from "./status.ts";
-import { causedByRunsOf, installationIdsOf, installationsOf, profileOf, profileRulesOf, standing, standingAt, startedBy } from "./subscriptions.ts";
+import { installationIdsOf, installationsOf, profileOf, profileRulesOf, standing } from "./subscriptions.ts";
 import type { Installation } from "./subscriptions.ts";
 
 /** What the module is given. */
@@ -212,12 +213,6 @@ const DEFAULT_WAIT_MS = 60_000;
 /** How deep runs may call other workflows: a run whose request has more runs above it does not start. */
 const CALL_DEPTH = 16;
 
-/**
- * How many starts of runs a record that starts runs may have on its chain of causes: a run that writes
- * what another installation starts on, and so on. An installation never starts on what its own runs
- * caused; this bounds the chains between installations.
- */
-const RUN_CHAIN_DEPTH = 32;
 
 /** The plugin of the module. */
 export function workflow(opts: WorkflowOptions = {}) {
@@ -817,21 +812,6 @@ export function workflow(opts: WorkflowOptions = {}) {
       api.setProfile(profileOf(id), specs, by);
     };
 
-    /** Is there an installation, ended ones included, that a record of this type and data would start? */
-    const subscribed = (type: string, data: unknown): boolean => {
-      const reader = api.journal?.();
-      return reader === undefined || installationsOf(reader).some((one) => startedBy(one, type, data));
-    };
-
-    /** Is there an installation, ended ones included, that starts on a record of a script with this data? */
-    const subscribedToScripts = (data: unknown): boolean => {
-      const reader = api.journal?.();
-      return (
-        reader === undefined ||
-        installationsOf(reader).some((one) => one.on.some((on) => on.type.startsWith(SCRIPT_TYPES) && holds(data, on.filter)))
-      );
-    };
-
     /**
      * The birth of the run a record starts under an installation: its grant, as a step of the handler.
      *
@@ -873,16 +853,16 @@ export function workflow(opts: WorkflowOptions = {}) {
       },
     });
 
-    // A record a script may start on: one run for each installation it matches, started once. The
-    // handler of a record is one invocation, admitted once and replayed from its steps after a
-    // restart, and the run id is a function of the installation and the record.
-    const startRuns: Handler<unknown> = async (_data, step, stored) => {
-      // The installations as they stood when the record was written: one made after it starts nothing.
-      // A record of a script has no filter of its own to end a loop: an installation does not start on one its own run caused.
-      const own = stored.type.startsWith(SCRIPT_TYPES) ? causedByRunsOf(journal(), stored) : new Set<InstallationId>();
-      for (const installation of standingAt(installationsOf(journal()), stored.seq).filter((one) => startedBy(one, stored.type, stored.data) && !own.has(one.id))) {
+    /**
+     * The start of a run of one installation on one record, started once. The handler of a record is
+     * one invocation, admitted once and replayed from its steps after a restart, and the run id is a
+     * function of the installation and the record.
+     */
+    const startRun =
+      (installation: Installation): Handler<unknown> =>
+      async (_data, step, stored) => {
         const { run } = await step(birth, { installation: installation.seq }, { key: `birth:${installation.seq}` });
-        if (run === undefined) continue;
+        if (run === undefined) return;
         await step.emit(
           RunRequested,
           {
@@ -898,34 +878,35 @@ export function workflow(opts: WorkflowOptions = {}) {
           },
           { key: `run:${installation.seq}` },
         );
-      }
-    };
-    for (const type of triggers.values()) {
-      // The records of scripts have the one handler below: two would start two runs for one record.
-      if (type.name.startsWith(SCRIPT_TYPES)) continue;
-      api.on(
-        {
-          ...type,
-          // Records no installation could start are never admitted.
-          filter: (data) => subscribed(type.name, data),
-          handlerId: `workflow.on:${type.name}`,
-        },
-        // One handler starts the runs of every installation on the type, and a run of one installation may
-        // write what another starts on: each installation keeps its own runs from starting it again.
-        { reentrant: { depth: RUN_CHAIN_DEPTH } },
-        startRuns,
+      };
+
+    /**
+     * Every installation is a subscription of its own: its `on` is what wakes it, the record that
+     * installed it is where it starts, and the record that ended it is where it ends. Being its own
+     * subscription, it is never woken by what its own runs caused, however long the way — a script
+     * that emits what it starts on, or two that start on each other, would otherwise go on for ever.
+     * The installations are read again only when one is made or ended.
+     */
+    let read: { journal: JournalReader; upTo: Seq; subscribers: Subscriber[] } | undefined;
+    api.subscribers(() => {
+      const reader = api.journal?.();
+      if (reader === undefined) return [];
+      if (read?.journal !== reader) read = { journal: reader, upTo: seq(0), subscribers: [] };
+      const fresh = reader.query({ types: [SubscriptionInstalled.name, SubscriptionUninstalled.name], from: read.upTo });
+      const last = fresh.at(-1);
+      if (last === undefined) return read.subscribers;
+      read.upTo = last.seq;
+      read.subscribers = installationsOf(reader).map(
+        (installation): Subscriber => ({
+          id: `workflow.on:${installation.id}`,
+          queries: installation.on.map((one) => ({ types: [one.type], ...(one.filter === undefined ? {} : { filter: one.filter }) })),
+          from: installation.seq,
+          ...(installation.removed === undefined ? {} : { until: installation.removed }),
+          handler: startRun(installation),
+        }),
       );
-    }
-    // What a script emits is started on by its name, whether or not the composition declared the type.
-    api.on(
-      {
-        ...ScriptRecord,
-        filter: subscribedToScripts,
-        handlerId: `workflow.on:${ScriptRecord.name}`,
-      },
-      { reentrant: { depth: RUN_CHAIN_DEPTH } },
-      startRuns,
-    );
+      return read.subscribers;
+    });
 
     /**
      * Install a registered workflow at its latest version, or a script file: the script is checked, its `on` read, and

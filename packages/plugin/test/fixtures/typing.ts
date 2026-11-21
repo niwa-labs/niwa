@@ -3,7 +3,7 @@
 import type { RecordType } from "@niwa-labs/core";
 
 import { plugin } from "../../src/index.ts";
-import type { PluginApi, TimerDef, TimerOffer } from "../../src/index.ts";
+import type { PluginApi, TimerDef, TimerOffer, Trigger } from "../../src/index.ts";
 
 plugin("typing-sync", (api) => {
   api.declare();
@@ -25,7 +25,7 @@ export const none: TimerDef = { id: "a" }; // error
 export const two: TimerDef = { id: "a", every: 1000, daily: "04:00" }; // error
 export const three: TimerDef = { id: "a", every: 1000, at: 1, daily: "04:00" }; // error
 
-type Firing = RecordType<{ timer: string; due: number; at: number }>;
+type Firing = Trigger<{ timer: string; due: number; at: number }>;
 declare const trigger: Firing & { readonly timer: string; readonly def: TimerDef };
 declare const unscheduled: Firing & { readonly timer: string };
 export const plain: TimerOffer = { id: "a", every: 1000 };

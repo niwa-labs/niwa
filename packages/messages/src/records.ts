@@ -11,6 +11,8 @@ import { z } from "zod";
 
 import { EntityDescription, IdIndex, record, recordId, seq } from "@niwa-labs/core";
 import type { ActionContext, IssuedId, JournalReader, RecordId, RecordType } from "@niwa-labs/core";
+import { trigger } from "@niwa-labs/plugin";
+import type { Trigger } from "@niwa-labs/plugin";
 import { DeliveryReceiptSchema } from "@niwa-labs/sessions/records";
 
 import { Message } from "./envelope.ts";
@@ -55,15 +57,10 @@ export const MessageDelivered = record(
  * it is woken by exactly those messages and by no others, so a message to another address
  * costs nothing.
  */
-export const MessageToSession: RecordType<MessageType> = {
-  ...MessageSent,
-  filter: (data: unknown): boolean => {
-    if (typeof data !== "object" || data === null) return false;
-    const to = (data as { to?: { kind?: unknown } }).to;
-    return typeof to === "object" && to !== null && to.kind === "session";
-  },
-  handlerId: "message.sent:session",
-};
+export const MessageToSession: Trigger<MessageType> = trigger(MessageSent, {
+  name: "message.sent:session",
+  filter: { "to.kind": "session" },
+});
 
 /*
  * The helpers below are pure over the records above: the ids of messages, and of the modules that

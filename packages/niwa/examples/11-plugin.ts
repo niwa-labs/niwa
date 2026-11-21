@@ -24,11 +24,10 @@ export default plugin("night-digest", (api) => {
     done.update((list) => [...list, task.task]);
   });
 
-  // `timer.daily("21:00")` is a trigger, not a record type. It is the type
-  // "timer.fired" narrowed to one timer's firings. Do not pass it to `api.declare`:
-  // the host refuses a trigger. The `timers` plugin declares "timer.fired" and
-  // runs the schedule, so the host installs `timers([timer.daily("21:00")])`
-  // (see 01-my-harness.ts). Here the plugin only handles the trigger with `api.on`.
+  // `timer.daily("21:00")` is a trigger, not a record type: the type "timer.fired"
+  // with the filter { timer: "daily:21:00" }. Do not pass it to `api.declare`: the
+  // host refuses a trigger. The trigger carries its schedule, so subscribing to it
+  // offers the timer, and the `timers` plugin (see 01-my-harness.ts) schedules it.
   api.on(timer.daily("21:00"), async (_, step) => {
     // Take the batch and clear the list in one operation.
     // A task finishing right now lands in tomorrow's batch, not in a hole.

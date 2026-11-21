@@ -195,11 +195,9 @@ test("uninstall ends it: nothing starts any more and the profile is empty", asyn
   expect(await profileRules(owner, gone.profile)).toEqual([]);
   await owner.call(stubFinish, { id: "a" });
   await expect(owner.call(workflowUninstall, { id: gone.id })).rejects.toThrow("no subscription");
-  // The record was handled and started nothing: wait for the handler to have seen it.
-  await eventually(
-    async () => ofType(await recordsOf(host), "niwa.invocation.admitted").filter((row) => String((row.data as { handler: string }).handler).includes("workflow.on:")).length === 2,
-    20_000,
-  );
+  // The installation's subscription ended with it: the record is not even admitted.
+  await Bun.sleep(300);
+  expect(ofType(await recordsOf(host), "niwa.invocation.admitted").filter((row) => String((row.data as { handler: string }).handler).includes("workflow.on:"))).toHaveLength(1);
   expect(await requested(host)).toBe(1);
 }, 30_000);
 

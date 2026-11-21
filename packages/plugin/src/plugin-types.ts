@@ -1,6 +1,7 @@
 // The contracts of a plugin: what a plugin is given and what it hands over.
 import type { z } from "zod";
 import type { SEAL_VERSION } from "./plugin.ts";
+import type { Subscribable } from "./trigger.ts";
 
 import type {
   Action,
@@ -24,6 +25,7 @@ import type {
   Token,
   Verb,
   Narrowed,
+  DataFilter,
   PathFilter,
   RuleSpec,
 } from "@niwa-labs/core";
@@ -75,6 +77,27 @@ export interface HandlerOptions<T = unknown> {
    * listed here, or one a grant lets it write; any other write is refused.
    */
   emits?: readonly RecordType<any>[];
+}
+
+/**
+ * A subscription a plugin reads from the journal: its own records are data, not code registered at
+ * setup. Its id, with the plugin's name, is its identity: its position and its own chain of causes.
+ */
+export interface Subscriber {
+  /** Its name inside the plugin; it has no "/". */
+  readonly id: string;
+  /**
+   * The records it is woken by: a record that answers any of the queries, each of types as names or
+   * families and equality on paths of their data.
+   */
+  readonly queries: ReadonlyArray<{ readonly types: readonly string[]; readonly filter?: DataFilter }>;
+  /** The position it starts after when it is new: where it was made. */
+  readonly from: number;
+  /** The position after which it admits nothing: where it ended. */
+  readonly until?: number;
+  /** How many of its records run at once. Default 1. */
+  readonly concurrency?: number;
+  readonly handler: Handler<unknown>;
 }
 
 /**
@@ -211,8 +234,18 @@ export interface PluginApi {
    * a frame; the complete message is committed as a record when it is complete.
    */
   live(channel: string, frame: LiveFrame): void;
-  on<T>(type: RecordType<T>, handler: Handler<T>): void;
-  on<T>(type: RecordType<T>, opts: HandlerOptions<NoInfer<T>>, handler: Handler<T>): void;
+  /**
+   * Handle the records of a type, or of a trigger over one (`timer.daily("21:00")`): one invocation
+   * for each record, admitted once. See `HandlerOptions` for where it starts, what it lets through
+   * and how many run at once.
+   */
+  on<T>(source: Subscribable<T>, handler: Handler<T>): void;
+  on<T>(source: Subscribable<T>, opts: HandlerOptions<NoInfer<T>>, handler: Handler<T>): void;
+  /**
+   * Subscriptions that grow from the journal, as `catalog` is for actions: read at every look for new
+   * work, each served like a handler of this plugin under its own id. An installed workflow is one.
+   */
+  subscribers(read: () => readonly Subscriber[]): void;
   /**
    * Declare a value of this plugin's state.
    *

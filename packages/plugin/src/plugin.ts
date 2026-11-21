@@ -13,6 +13,7 @@
 
 import { actionName, CannotRemoveHandler } from "@niwa-labs/core";
 import type { HandlerOptions, OfferKey, Plugin, PluginApi } from "./plugin-types.ts";
+import type { Subscribable } from "./trigger.ts";
 import type { Handler, PluginName, PluginVersion, RecordType } from "@niwa-labs/core";
 
 /** The name of the action that installs a plugin from a file. */
@@ -174,14 +175,14 @@ export function withoutHandler(source: Plugin, handler: string): Plugin {
       let kept = 0;
       const sources: string[] = [];
       const on = (
-        type: RecordType<any>,
-        optsOrHandler: HandlerOptions | Handler<any>,
+        type: Subscribable<any>,
+        optsOrHandler: HandlerOptions<any> | Handler<any>,
         maybeHandler?: Handler<any>,
       ): void => {
-        const [options, run] =
+        const [options, run]: [HandlerOptions<any>, Handler<any> | undefined] =
           typeof optsOrHandler === "function" ? [{}, optsOrHandler] : [optsOrHandler, maybeHandler];
         if (run === undefined) throw new TypeError(`a handler of "${type.name}" is missing`);
-        const name = options.id ?? type.handlerId ?? type.name;
+        const name = options.id ?? type.name;
         sources.push(handlerSource(name, run));
         if (name === handler) {
           removed = true;

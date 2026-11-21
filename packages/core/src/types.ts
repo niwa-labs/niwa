@@ -105,20 +105,6 @@ export interface RecordType<T> {
   name: RecordTypeName;
   version: number;
   schema: z.ZodType<T>;
-  /**
-   * Narrows the records of this type to the ones the predicate accepts.
-   *
-   * A trigger is a record type with a filter: the same type, seen through one predicate. A
-   * handler of a filtered type is woken by the records that pass the filter, and by no others.
-   */
-  filter?: (data: unknown) => boolean;
-  /**
-   * The name a handler of this type gets when it does not name itself.
-   *
-   * Default: the name of the type. A filtered type names itself after what it narrows, because
-   * two handlers of one type with different filters are two different handlers.
-   */
-  handlerId?: string;
   /** The plugin that produces the records of this type, so a missing one can be named. */
   provider?: string;
   /**

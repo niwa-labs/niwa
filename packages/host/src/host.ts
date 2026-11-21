@@ -54,6 +54,7 @@ import {
   targetName,
   holds,
   overlaps,
+  selectsType,
 } from "@niwa-labs/core";
 import type {
   Clock,
@@ -153,7 +154,8 @@ import { COCKPIT_MODULE, handlerSource, pluginVersion, pluginName, sealVersion }
 import { catalogOf } from "./cockpit-catalog.ts";
 import { StateStore } from "./state.ts";
 import type { HostMessage } from "@niwa-labs/client";
-import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle, SubscriptionStart } from "@niwa-labs/plugin";
+import { isTrigger } from "@niwa-labs/plugin";
+import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionStart } from "@niwa-labs/plugin";
 import type { Host, HostOptions } from "./host-types.ts";
 
 /** The reader of an offer point that the host itself reads. */
@@ -253,7 +255,8 @@ const IntentData = z.object({
 interface Subscribing {
   /** Equality on paths of the data: records that do not hold it advance the position and wake nothing. */
   readonly filter: Readonly<Record<string, unknown>> | undefined;
-  readonly from: SubscriptionStart;
+  /** Where a new subscription starts: now, the start, or the position a subscriber from the journal gives. */
+  readonly from: SubscriptionStart | Seq;
   /** How many of its invocations may be unfinished at once. */
   readonly concurrency: number;
   /** How many of its own invocations may stand on the chain of a record that wakes it; 0 when none may. */
@@ -292,7 +295,35 @@ interface HandlerEntry {
   readonly subscribing: Subscribing;
   /** The types of other plugins it writes. */
   readonly emits: readonly AnyType[];
+  /** Set when the handler subscribes to a trigger: the plugin named as the one that writes its records. */
+  readonly trigger?: { readonly provider: string | undefined };
 }
+
+/** A subscription the host serves: a handler a plugin registered, or a subscriber it reads from the journal. */
+interface Served {
+  /** The record types it reads, as names or families: every type of its selectors. */
+  readonly types: readonly RecordTypeName[];
+  /** What wakes it: a record of one selector's types whose data holds that selector's filter. */
+  readonly selectors: readonly Selector[];
+  /** The version of the schema a record must have to be read through the handler's type; any when absent. */
+  readonly schema: number | undefined;
+  readonly version: PluginVersion;
+  readonly handler: Handler<any>;
+  readonly subscribing: Subscribing;
+  /** The types of other plugins it writes, by name. */
+  readonly emits: ReadonlySet<string>;
+  /** The position after which it admits nothing: the end of a subscriber that ended. */
+  readonly until?: Seq;
+}
+
+/** One part of what wakes a subscription: types, and equality on the paths of their data. */
+interface Selector {
+  readonly types: readonly RecordTypeName[];
+  readonly filter: Readonly<Record<string, unknown>> | undefined;
+}
+
+/** The type a subscriber's handler reads its records through: any data, as it was written. */
+const ANY_DATA = z.unknown();
 
 /** What one installed version of a plugin declared while its setup function ran. */
 interface Installed {
@@ -310,6 +341,8 @@ interface Installed {
   readonly profiles: Set<string>;
   /** The actions the plugin reads from the journal as it grows, besides the ones it declared. */
   readonly catalogs: Array<() => readonly AnyAction[]>;
+  /** The subscriptions the plugin reads from the journal as it grows, besides the handlers it registered. */
+  readonly subscribers: Array<() => readonly Subscriber[]>;
   /** How the plugin puts the question of an `ask` rule to the owner, when it does. */
   asker?: Asker;
   /** The counts the plugin shows in the status of the host. */
@@ -579,10 +612,7 @@ class Niwa implements Host {
   private readonly actions = new Map<ActionName, AnyAction>();
   /** The intercepts of the current plugins, by the name of the action they are on. */
   private readonly intercepts = new Map<ActionName, Intercepts>();
-  private readonly handlers = new Map<
-    HandlerId,
-    { type: AnyType; version: PluginVersion; handler: Handler<any>; subscribing: Subscribing; emits: ReadonlySet<string> }
-  >();
+  private readonly handlers = new Map<HandlerId, Served>();
   /** Everything that watches the journal: the host's own subscriptions and the clients'. */
   private readonly feeds = new Set<Feed>();
   private readonly connections = new Set<Connection>();
@@ -604,6 +634,8 @@ class Niwa implements Host {
   private readonly kept = new Map<HandlerId, Seq>();
   /** The unfinished invocations of each subscription: admitted and not done, the waiting and the paused too. */
   private readonly active = new Map<HandlerId, Set<InvocationId>>();
+  /** The subscribers read from the journal at the last look: they are read again at the next. */
+  private readonly dynamic = new Set<HandlerId>();
   /** The subscription of each unfinished invocation, to free its place when it is done. */
   private readonly activeOf = new Map<InvocationId, HandlerId>();
   /** The state of the plugins: values by key, projected from the journal. */
@@ -743,21 +775,12 @@ class Niwa implements Host {
       services: [],
       profiles: new Set(),
       catalogs: [],
+      subscribers: [],
       offers: [],
       readInSetup: new Set(),
     };
     let inSetup = true;
-    const returned: unknown = plugin.setup({
-      declare: (...types: AnyType[]) => {
-        // A trigger is a view of a type, not a type: declaring one would replace the type it narrows.
-        for (const type of types) {
-          if (type.filter !== undefined) {
-            throw new TypeError(`"${type.name}" is a trigger: declare the type it narrows, not the trigger`);
-          }
-        }
-        installed.types.push(...types);
-      },
-      offer: <T>(key: OfferKey<T>, value: T) => {
+    const offer = <T>(key: OfferKey<T>, value: T): void => {
         // A plugin that read the point when it was installed would never see this offer: it is refused, not lost. A
         // new version of a plugin installed before the reader keeps its place, and its offers are read as it is.
         for (const [name, other] of this.plugins) {
@@ -767,7 +790,18 @@ class Niwa implements Host {
           }
         }
         installed.offers.push({ key, value });
+    };
+    const returned: unknown = plugin.setup({
+      declare: (...types: AnyType[]) => {
+        // A trigger is a view of a type, not a type: declaring one would replace the type it narrows.
+        for (const type of types as ReadonlyArray<Subscribable<any>>) {
+          if (isTrigger(type)) {
+            throw new TypeError(`"${type.name}" is a trigger: declare the type it narrows, "${type.type.name}", not the trigger`);
+          }
+        }
+        installed.types.push(...types);
       },
+      offer: <T>(key: OfferKey<T>, value: T) => offer(key, value),
       offers: <T>(key: OfferKey<T>): Offered<T>[] => {
         if (inSetup) installed.readInSetup.add(key.name);
         return this.offersAt(key, inSetup ? installed : undefined);
@@ -780,6 +814,9 @@ class Niwa implements Host {
       },
       catalog: (read: () => readonly AnyAction[]) => {
         installed.catalogs.push(read);
+      },
+      subscribers: (read: () => readonly Subscriber[]) => {
+        installed.subscribers.push(read);
       },
       adjust: (target: ActionRef<any, any>, fn: AdjustFn<any>) => {
         const set = installed.intercepts.get(target.name) ?? newIntercepts();
@@ -795,18 +832,19 @@ class Niwa implements Host {
         this.liveBus.send(channelName(channel), frameFor(channel, frame));
       },
       on: (
-        type: AnyType,
+        source: Subscribable<any>,
         optsOrHandler: HandlerOptions<any> | Handler<any>,
         maybeHandler?: Handler<any>,
       ) => {
+        const type = isTrigger(source) ? source.type : source;
         const [options, handler]: [HandlerOptions<any>, Handler<any> | undefined] =
           typeof optsOrHandler === "function"
             ? [{}, optsOrHandler]
             : [optsOrHandler, maybeHandler];
         if (handler === undefined) throw new TypeError(`a handler of "${type.name}" is missing`);
-        // A filtered type is a trigger: it names its handlers after what it watches, so two
-        // triggers of the same type are two different handlers.
-        const name = options.id ?? type.handlerId ?? type.name;
+        // A trigger names its handlers after what it watches, so two triggers of the same type are two
+        // different handlers.
+        const name = options.id ?? source.name;
         if (name.includes("/")) {
           throw new TypeError(
             `plugin "${plugin.name}" names a handler "${name}": a handler id is the name of the plugin, a "/" and the handler's own name, so the name has none`,
@@ -818,8 +856,19 @@ class Niwa implements Host {
             `plugin "${plugin.name}" declares two handlers with the id "${name}": a handler id must name one handler`,
           );
         }
-        const subscribing = subscribingOf(`plugin "${plugin.name}", handler "${name}"`, options);
-        installed.handlers.push({ name, type, handler, requires: options.requires ?? [], emits: options.emits ?? [], subscribing });
+        const filter = isTrigger(source) ? { ...source.filter, ...options.filter } : options.filter;
+        const subscribing = subscribingOf(`plugin "${plugin.name}", handler "${name}"`, { ...options, filter });
+        // What a trigger needs offered for its records to be written at all, the subscribing plugin offers.
+        if (isTrigger(source) && source.offer !== undefined) offer(source.offer.key, source.offer.value);
+        installed.handlers.push({
+          name,
+          type,
+          handler,
+          requires: options.requires ?? [],
+          emits: options.emits ?? [],
+          subscribing,
+          ...(isTrigger(source) ? { trigger: { provider: source.provider } } : {}),
+        });
         sources.push(handlerSource(name, handler));
       },
       // The reader is a function: the journal opens when the host starts serving, which is
@@ -1232,7 +1281,9 @@ class Niwa implements Host {
       }
       for (const entry of installed.handlers) {
         this.handlers.set(handlerIdOf(`${name}/${entry.name}`), {
-          type: entry.type,
+          types: [entry.type.name],
+          selectors: [{ types: [entry.type.name], filter: entry.subscribing.filter }],
+          schema: entry.type.version,
           version: installed.version,
           handler: entry.handler,
           subscribing: entry.subscribing,
@@ -1550,8 +1601,7 @@ class Niwa implements Host {
     const principal = caller.kind === "client" ? caller.principal : undefined;
     const declared = this.declaredType(type);
     const owner = this.typeOwners.get(declared?.name ?? type);
-    // A plugin writes its own types: over the wire as its principal, and from a handler of its own. A
-    // handler writes the types of others it lists as its own writes.
+    // A plugin writes its own types: over the wire as its principal, and from a handler of its own.
     const writer = caller.kind === "handler" ? String(caller.handler).split("/")[0] : principal?.kind === "plugin" ? String(principal.id) : undefined;
     const listed = caller.kind === "handler" && this.handlers.get(caller.handler)?.emits.has(declared?.name ?? type) === true;
     const own = listed || (writer !== undefined && writer === String(owner));
@@ -1649,8 +1699,8 @@ class Niwa implements Host {
     for (const entry of this.plugins.values()) for (const type of entry.types) declared.add(type.name);
     for (const [name, entry] of this.plugins) {
       for (const handler of entry.handlers) {
-        if (handler.type.filter === undefined || declared.has(handler.type.name) || CORE_TYPE_NAMES.has(handler.type.name)) continue;
-        throw new MissingProvider(name, handler.name, handler.type.name, handler.type.provider);
+        if (handler.trigger === undefined || declared.has(handler.type.name) || CORE_TYPE_NAMES.has(handler.type.name)) continue;
+        throw new MissingProvider(name, handler.name, handler.type.name, handler.trigger.provider ?? handler.type.provider);
       }
       // What a handler needs from another plugin is checked for every handler, filtered or not.
       for (const handler of entry.handlers) {
@@ -1730,11 +1780,14 @@ class Niwa implements Host {
    * of them is done.
    */
   private pump(journal: Journal): void {
+    this.readSubscribers(journal);
     for (const [id, entry] of this.handlers) {
       const subscribing = entry.subscribing;
-      let after = this.positions.get(id) ?? this.loadPosition(journal, id, entry.type.name, subscribing.from);
+      let after = this.positions.get(id) ?? this.loadPosition(journal, id, entry.types, subscribing.from);
+      if (entry.until !== undefined && after >= entry.until) continue;
       let passed: { seq: Seq; reason: PassReason } | undefined;
-      for (const record of journal.query({ types: [entry.type.name], from: after })) {
+      for (const record of journal.query({ types: entry.types, from: after })) {
+        if (entry.until !== undefined && record.seq > entry.until) break;
         // The positions of subscriptions are their own bookkeeping: no subscription is woken by one, and
         // passing over one writes nothing, or two subscriptions of the family would answer each other.
         if (record.type === CORE_TYPES.subscriptionPosition) {
@@ -1761,29 +1814,17 @@ class Niwa implements Host {
     }
   }
 
-  /** Does the filter of a trigger accept the record? A filter that throws accepts nothing. */
-  private accepts(filter: (data: unknown) => boolean, handler: HandlerId, record: StoredRecord): boolean {
-    try {
-      return filter(record.data);
-    } catch (error) {
-      this.fail(`the filter of "${handler}" on ${record.id}`, error);
-      return false;
-    }
-  }
-
   /** Why a subscription does not admit a record of its type, or nothing when it admits it. */
   private passOver(
     journal: Journal,
     id: HandlerId,
-    entry: { type: AnyType; subscribing: Subscribing },
+    entry: Served,
     record: StoredRecord,
   ): PassReason | undefined {
     // A record of another version of the type is not this handler's business: it is passed over and
     // stays readable, because the journal is the history of what happened.
-    if (record.schema !== entry.type.version) return "schema";
-    // A filtered type is a trigger: it watches the records of the type that pass its filter, and no others.
-    if (entry.type.filter !== undefined && !this.accepts(entry.type.filter, id, record)) return "filtered";
-    if (!holds(record.data, entry.subscribing.filter)) return "filtered";
+    if (entry.schema !== undefined && record.schema !== entry.schema) return "schema";
+    if (!entry.selectors.some((one) => selectsType(one, record.type) && holds(record.data, one.filter))) return "filtered";
     const chain = this.ownChain(journal, id, record);
     if (chain.length > entry.subscribing.depth) {
       if (entry.subscribing.depth === 0) return "self";
@@ -1848,9 +1889,59 @@ class Niwa implements Host {
 
   /** Read the positions of the subscriptions, and place the new ones where they start. */
   private placeSubscriptions(journal: Journal): void {
+    this.readSubscribers(journal);
     for (const [id, entry] of this.handlers) {
-      if (!this.positions.has(id)) this.loadPosition(journal, id, entry.type.name, entry.subscribing.from);
+      if (!this.positions.has(id)) this.loadPosition(journal, id, entry.types, entry.subscribing.from);
     }
+  }
+
+  /**
+   * The subscriptions the plugins read from the journal, served as handlers are: each under the name
+   * of its plugin, pinned on the plugin's version so an invocation it admitted runs after a restart.
+   * One that is no longer read admits nothing more; what it admitted finishes.
+   */
+  private readSubscribers(journal: Journal): void {
+    for (const id of this.dynamic) this.handlers.delete(id);
+    this.dynamic.clear();
+    for (const [name, installed] of this.plugins) {
+      for (const read of installed.subscribers) {
+        let found: readonly Subscriber[];
+        try {
+          found = read();
+        } catch (error) {
+          this.fail(`reading the subscribers of "${name}"`, error);
+          continue;
+        }
+        for (const one of found) {
+          if (one.id.includes("/")) {
+            this.fail(`reading the subscribers of "${name}"`, new TypeError(`a subscriber's id has no "/": "${one.id}"`));
+            continue;
+          }
+          const id = handlerIdOf(`${name}/${one.id}`);
+          if (this.handlers.has(id)) continue;
+          const subscribing = subscribingOf(`plugin "${name}", subscriber "${one.id}"`, {
+            ...(one.concurrency === undefined ? {} : { concurrency: one.concurrency }),
+          });
+          const selectors = one.queries.map((query) => ({ types: query.types.map((type) => recordTypeName(type)), filter: query.filter }));
+          this.handlers.set(id, {
+            types: [...new Set(selectors.flatMap((query) => query.types))],
+            selectors,
+            schema: undefined,
+            version: installed.version,
+            handler: one.handler,
+            subscribing: { ...subscribing, from: seq(one.from) },
+            emits: new Set(),
+            ...(one.until === undefined ? {} : { until: seq(one.until) }),
+          });
+          this.dynamic.add(id);
+          this.pinned.set(pinKey(id, installed.version), {
+            handler: one.handler,
+            type: { kind: "record", name: recordTypeName(one.id), version: 1, schema: ANY_DATA },
+          });
+        }
+      }
+    }
+    void journal;
   }
 
   /**
@@ -1896,7 +1987,7 @@ class Niwa implements Host {
    * last admission. A subscription with neither is new: it starts at the beginning of the journal,
    * or where the journal is now, written down once so a restart does not move it.
    */
-  private loadPosition(journal: Journal, id: HandlerId, type: RecordTypeName, from: SubscriptionStart): Seq {
+  private loadPosition(journal: Journal, id: HandlerId, types: readonly RecordTypeName[], from: SubscriptionStart | Seq): Seq {
     let position = seq(0);
     let known = false;
     const last = PositionData.safeParse(
@@ -1910,10 +2001,11 @@ class Niwa implements Host {
     for (const row of rows) {
       const data = AdmittedWithPosition.safeParse(row.data);
       if (!data.success) continue;
-      if (!(type.endsWith(".*") ? data.data.recordType.startsWith(type.slice(0, -1)) : data.data.recordType === type)) continue;
+      if (!selectsType({ types }, data.data.recordType)) continue;
       known = true;
       if (data.data.recordSeq > position) position = seq(data.data.recordSeq);
     }
+    if (!known && typeof from === "number") position = from;
     this.positions.set(id, position);
     this.keep(id, position);
     if (!known && from === "now" && journal.last() > 0) {

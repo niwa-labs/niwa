@@ -373,7 +373,7 @@ test("a broken workflow keeps its installation, starts no run from it, and runs 
   await host.emit(Ping, { id: "while-broken" });
   await eventually(async () => {
     const rows = await host.records.read(seq(0));
-    const admitted = rows.filter((row) => row.type === "niwa.invocation.admitted" && String((row.data as { handler: string }).handler).includes("workflow.on:ping.sent"));
+    const admitted = rows.filter((row) => row.type === "niwa.invocation.admitted" && String((row.data as { handler: string }).handler).endsWith(`workflow.on:${installed.id}`));
     const done = new Set(rows.filter((row) => row.type === "niwa.invocation.state" && (row.data as { state: string }).state === "done").map((row) => (row.data as { invocation: string }).invocation));
     return admitted.length === 1 && admitted.every((row) => done.has((row.data as { invocation: string }).invocation));
   }, 20_000);

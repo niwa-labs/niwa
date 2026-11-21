@@ -7,7 +7,7 @@
 import { expect, test } from "bun:test";
 
 import { createNiwa } from "@niwa-labs/host";
-import { plugin } from "@niwa-labs/plugin";
+import { plugin, trigger } from "@niwa-labs/plugin";
 import { record } from "@niwa-labs/core";
 import { tempHome } from "@niwa-labs/testing";
 import { z } from "zod";
@@ -92,10 +92,10 @@ test("a trigger is not declared, and a filtered handler is woken only by the rec
   const home = await tempHome();
   const niwa = createNiwa({ home: home.path });
   const woken: string[] = [];
-  const onlyAnna = { ...Ping, filter: (data: unknown) => (data as { who: string }).who === "anna", handlerId: "svc.ping:anna" };
+  const onlyAnna = trigger(Ping, { name: "svc.ping:anna", filter: { who: "anna" } });
   try {
     expect(() =>
-      niwa.use(plugin("bad", (api) => api.declare(onlyAnna))),
+      niwa.use(plugin("bad", (api) => api.declare(onlyAnna as unknown as typeof Ping))),
     ).toThrow("is a trigger");
     let emit: ((who: string) => Promise<unknown>) | undefined;
     niwa.use(
@@ -129,7 +129,7 @@ test("a trigger is not declared, and a filtered handler is woken only by the rec
 
 const ownerPlugin = (type: typeof Ping) =>
   plugin("watcher", (api) => {
-    api.on({ ...type, filter: () => true, handlerId: "svc.ping:all" }, () => {});
+    api.on(trigger(type, { name: "svc.ping:all", filter: {} }), () => {});
   });
 
 test("serve refuses a trigger whose type nobody declares, and the timer trigger names the timers plugin", async () => {
@@ -149,7 +149,8 @@ test("serve refuses a trigger whose type nobody declares, and the timer trigger 
   const bare = createNiwa({ home: home2.path });
   try {
     bare.use(plugin("sink", (api) => api.on(daily, () => {})));
-    await expect(bare.serve()).rejects.toThrow(/"timers" plugin is not installed/);
+    // The trigger offers its timer to the timers plugin, so the refusal names it as the reader of the offer.
+    await expect(bare.serve()).rejects.toThrow(/"timers" plugin reads, but it is not installed/);
     expect(String(timers([daily]).name)).toBe(daily.provider ?? "");
   } finally {
     await bare.close();
@@ -163,7 +164,7 @@ test("a trigger of a type the core writes is not refused, and a plugin installed
   try {
     niwa.use(
       plugin("core-watcher", (api) => {
-        api.on({ ...record("niwa.invocation.state", z.object({})), filter: () => true, handlerId: "core:state" }, () => {});
+        api.on(trigger(record("niwa.invocation.state", z.object({})), { name: "core:state", filter: {} }), () => {});
       }),
     );
     await niwa.serve();

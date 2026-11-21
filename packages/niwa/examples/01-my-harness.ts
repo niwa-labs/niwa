@@ -24,7 +24,7 @@ import { requests } from "@niwa-labs/requests";
 import { sessions } from "@niwa-labs/sessions";
 import { tasks } from "@niwa-labs/tasks";
 import { chatId, telegram } from "@niwa-labs/telegram";
-import { timer, timers } from "@niwa-labs/timer";
+import { timers } from "@niwa-labs/timer";
 import { workflow } from "@niwa-labs/workflow";
 import nightDigest from "./11-plugin.ts";
 
@@ -60,8 +60,9 @@ niwa.use(
   // Worktrees agents work in (`agent(prompt, { worktree: true })`). The old ones are removed by a
   // workflow the module ships, every day at four on a timer it offers: `git({ cleanup: false })` turns it off.
   git(),
-  // The night digest's timer. The modules offer the timers they need themselves (git's cleanup).
-  timers([timer.daily("21:00")]),
+  // The timers. A module offers the timers it needs itself (git's cleanup), and a handler of a timer's
+  // trigger offers that timer by subscribing (the night digest's): the list is for the owner's own.
+  timers([]),
 );
 
 // A surface people reach niwa through. The token and the chat are the owner's.

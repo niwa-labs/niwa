@@ -18,6 +18,8 @@ import { actionName, jsonOf } from "@niwa-labs/core";
 import type { ActionName, Address, RecordType, Step } from "@niwa-labs/core";
 import { z } from "zod";
 
+import { trigger } from "@niwa-labs/plugin";
+import type { Trigger } from "@niwa-labs/plugin";
 import { MessageSent, render } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
 
@@ -45,28 +47,22 @@ const RESULT_SCHEMA: Record<string, unknown> = {
 const Answer = z.object({ result: z.string() });
 
 /**
- * The trigger: the assignments that are for an executor.
+ * The trigger: the assignments that are for an agent.
  *
- * It is the type "message.sent" narrowed to the messages an executor is to do: an assignment
- * for an agent whose id names a harness, and a task to answer for. A handler of it is woken by
- * exactly those messages and by no others, so an assignment to anybody else costs nothing.
+ * It is the type "message.sent" narrowed to the assignments sent to an agent. Whether the agent is
+ * an executor — its id names a harness — and whether there is a task to answer for is more than
+ * equality says: the handler checks it, and passes over the assignments for anybody else.
  */
-export const ExecutorAssignment: RecordType<Message> = {
-  ...MessageSent,
-  filter: (data: unknown): boolean => {
-    if (typeof data !== "object" || data === null) return false;
-    const message = data as {
-      to?: { kind?: unknown; id?: unknown };
-      body?: { type?: unknown };
-      task?: unknown;
-    };
-    if (message.to?.kind !== "agent") return false;
-    if (typeof message.to.id !== "string" || !message.to.id.startsWith(EXECUTOR_PREFIX)) return false;
-    if (message.body?.type !== "assignment") return false;
-    return typeof message.task === "string" && message.task.length > 0;
-  },
-  handlerId: "message.sent:executor",
-};
+export const ExecutorAssignment: Trigger<Message> = trigger(MessageSent, {
+  name: "message.sent:executor",
+  filter: { "to.kind": "agent", "body.type": "assignment" },
+});
+
+/** Is the assignment one for an executor: an agent whose id names a harness, with a task to answer for? */
+export function forExecutor(message: Message): boolean {
+  if (message.to.kind !== "agent" || !message.to.id.startsWith(EXECUTOR_PREFIX)) return false;
+  return typeof message.task === "string" && message.task.length > 0;
+}
 
 /**
  * The handler of the executor: it does the work of one task.
@@ -82,6 +78,7 @@ export function executorHandler(
   facts: () => readonly unknown[],
 ): (message: Message, step: Step) => Promise<void> {
   return async (message, step) => {
+    if (!forExecutor(message)) return;
     if (message.task === undefined) {
       throw new TaskRefusal("no-task", "the assignment names no task");
     }

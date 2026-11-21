@@ -89,7 +89,7 @@ export type TimerDef = TimerBase &
  * A timer as a plugin offers it: the plain definition, or the trigger that carries one (`timer.daily("04:00", { id })`).
  * The data of a firing is what the trigger is a record type of.
  */
-export type TimerOffer = TimerDef | (RecordType<{ timer: string; due: number; at: number }> & { readonly timer: string; readonly def: TimerDef });
+export type TimerOffer = TimerDef | { readonly kind: "trigger"; readonly timer: string; readonly def: TimerDef };
 
 /**
  * Where a plugin offers a timer it needs (`api.offer(TIMER_OFFER, { id, daily: "04:00" })`): the timers

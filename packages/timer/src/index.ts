@@ -6,9 +6,11 @@
  * it starts its own chain, and the root of that chain is the firing itself.
  *
  * **A trigger is a filter over the firing type.** `timer.fired("daily-digest")` is not a new
- * record type: it is "timer.fired" narrowed to the firings of one timer. A handler of a
- * trigger is woken by exactly those firings and by no others, so two plugins can watch two
- * timers of the same host without seeing each other's.
+ * record type: it is "timer.fired" narrowed to the firings of one timer (`{ timer: "daily-digest" }`).
+ * A handler of a trigger is woken by exactly those firings and by no others, so two plugins can
+ * watch two timers of the same host without seeing each other's. A trigger made with a schedule
+ * (`timer.daily("21:00")`) carries it: the plugin whose handler subscribes to it offers the timer, so
+ * subscribing is all it takes for the timer to be scheduled.
  *
  * **A firing is written once.** The id of a firing is `fire-<hash>` in the common id format, the
  * hash of the timer and the moment it was due, never of the moment it was written. The same due
@@ -67,8 +69,8 @@ import type {
   StoredRecord,
   Timestamp,
 } from "@niwa-labs/core";
-import { TIMER_OFFER, plugin } from "@niwa-labs/plugin";
-import type { MissedRule, Plugin, ServiceContext, StateHandle, TimerDef, TimerOffer } from "@niwa-labs/plugin";
+import { TIMER_OFFER, plugin, trigger } from "@niwa-labs/plugin";
+import type { MissedRule, Plugin, ServiceContext, StateHandle, TimerDef, TimerOffer, Trigger } from "@niwa-labs/plugin";
 import { z } from "zod";
 
 import { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerId } from "./records.ts";
@@ -94,19 +96,22 @@ export type { MissedRule, TimerDef };
 export const DEFAULT_MISSED: MissedRule = "once";
 
 /**
- * A trigger: the firings of one timer, seen as a type.
+ * A trigger: the firings of one timer.
  *
- * It is the type "timer.fired" with a filter on it. A handler registered for it is woken by the
- * firings of that timer and by no others.
+ * It is the type "timer.fired" with the filter `{ timer }`. A handler registered for it is woken by
+ * the firings of that timer and by no others, and the timers plugin is named as the one that writes them.
  */
-export interface TimerTrigger extends RecordType<TimerFiredData> {
+export interface TimerTrigger extends Trigger<TimerFiredData> {
   /** The id of the timer this trigger watches. */
   readonly timer: TimerId;
   /** The schedule of the timer, when the trigger declares one. */
   readonly def?: TimerDef;
 }
 
-/** A trigger that carries the schedule of its timer: what `every`, `at` and `daily` make. */
+/**
+ * A trigger that carries the schedule of its timer: what `every`, `at` and `daily` make. A plugin
+ * that subscribes to it offers the timer (`TIMER_OFFER`), so the timers plugin schedules it.
+ */
 export interface ScheduledTimerTrigger extends TimerTrigger {
   readonly def: TimerDef;
 }
@@ -166,21 +171,17 @@ function describedBy(options: TimerOptions): { readonly description?: string } {
   return options.description === undefined ? {} : { description: options.description };
 }
 
-/** A trigger over one timer, with the schedule it declares. */
+/** A trigger over one timer, with the schedule it declares and the offer of it. */
 function triggerOf(id: TimerId, def: TimerDef): ScheduledTimerTrigger;
 function triggerOf(id: TimerId, def: undefined): TimerTrigger;
 function triggerOf(id: TimerId, def: TimerDef | undefined): TimerTrigger {
-  return {
-    ...TimerFired,
-    filter: (data: unknown): boolean => {
-      if (typeof data !== "object" || data === null) return false;
-      return (data as { timer?: unknown }).timer === id;
-    },
-    handlerId: `timer.fired:${id}`,
+  const base = trigger(TimerFired, {
+    name: `timer.fired:${id}`,
+    filter: { timer: id },
     provider: "timers",
-    timer: id,
-    ...(def === undefined ? {} : { def }),
-  };
+    ...(def === undefined ? {} : { offer: { key: TIMER_OFFER, value: def } }),
+  });
+  return { ...base, timer: id, ...(def === undefined ? {} : { def }) };
 }
 
 /** The id of a firing: `fire-<hash>`. */
