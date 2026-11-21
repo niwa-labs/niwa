@@ -695,7 +695,8 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     }
     session.busy = false;
     if (end.error !== undefined) session.emit({ kind: "activity", at, detail: end.error });
-    session.emit({ kind: "turn-ended", turn: session.turn, at });
+    // A turn that was cut or broke did not complete.
+    session.emit({ kind: "turn-ended", turn: session.turn, at, outcome: end.outcome === "completed" ? "completed" : "failed" });
     session.settleTurn({ ...end, messageId: session.turnMessage });
     // A message that waited for this turn becomes a turn of its own.
     drainQueue(session);

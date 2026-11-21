@@ -550,6 +550,22 @@ test("a turn that ends with an error result is a failed turn that says which res
   expect(details).toContain("the turn ended with error_max_turns");
 });
 
+const outcomeOf = (events: readonly LifeEvent[]): unknown => events.find((event) => event.kind === "turn-ended")?.outcome;
+
+test("a turn ends as completed when it was answered, and as failed when it ran out or broke", async () => {
+  expect(outcomeOf(await signsOf(control(), "hello"))).toBe("completed");
+  await writeFile(join(dir, "script.json"), JSON.stringify([{ event: { type: "turn.completed", payload: { resultType: "error_max_turns" } } }]));
+  expect(outcomeOf(await signsOf(control(), "script"))).toBe("failed");
+});
+
+test("a turn that was cut ends as failed", async () => {
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText("hang"), cwd: dir });
+  const ended = turnsEnded(c, session);
+  await c.interrupt(session);
+  expect(outcomeOf(await ended)).toBe("failed");
+});
+
 test("a process whose readiness answer is no capabilities report is refused, and left no process behind", async () => {
   await writeFile(join(dir, "bad-capabilities"), "");
   await expect(control().start({ prompt: hello, cwd: dir })).rejects.toThrow("no capabilities report");
