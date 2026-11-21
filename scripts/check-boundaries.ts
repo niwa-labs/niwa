@@ -182,15 +182,19 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
   "@niwa-labs/watch": extraPlugin(),
   "@niwa-labs/evidence": extraPlugin(),
   "@niwa-labs/plan": extraPlugin(),
+  // Memory answers delegate's request for context, whose types live in delegate's records; delegate
+  // never imports memory.
   "@niwa-labs/memory": extraPlugin({
     "@niwa-labs/requests": RECORDS,
     "@niwa-labs/agent": RECORDS,
+    "@niwa-labs/delegate": RECORDS,
     ...SCRIPT_TYPES,
   }),
   "@niwa-labs/commitments": extraPlugin({
     "@niwa-labs/agent": RECORDS,
     "@niwa-labs/requests": RECORDS,
     "@niwa-labs/tasks": RECORDS,
+    "@niwa-labs/timer": RECORDS,
     ...SCRIPT_TYPES,
   }),
   "@niwa-labs/delegate": extraPlugin({
@@ -200,19 +204,29 @@ const OTHER_REPOS_GRAPH: Record<string, PackageSpec> = {
   }),
 
   // Compositions assemble their modules, so they import factories directly.
-  "@niwa-labs/rin": leaf(
-    "composition",
-    {
-      "@niwa-labs/agent": "*",
-      "@niwa-labs/memory": "*",
-      "@niwa-labs/commitments": "*",
-      "@niwa-labs/delegate": "*",
-      "@niwa-labs/history": "*",
-      ...SCRIPT_TYPES,
-      ...ON_HOST,
-    },
-    "rin",
-  ),
+  // Rin also reads the records of the base plugins her attention follows, arms her timer, and offers
+  // her own page to the cockpit.
+  "@niwa-labs/rin": {
+    ...leaf(
+      "composition",
+      {
+        "@niwa-labs/agent": "*",
+        "@niwa-labs/memory": "*",
+        "@niwa-labs/commitments": "*",
+        "@niwa-labs/delegate": "*",
+        "@niwa-labs/history": "*",
+        "@niwa-labs/messages": RECORDS,
+        "@niwa-labs/requests": "*",
+        "@niwa-labs/workflow": RECORDS,
+        "@niwa-labs/timer": "*",
+        ...SCRIPT_TYPES,
+        ...ON_HOST,
+        ...COCKPIT_LIBS,
+      },
+      "rin",
+    ),
+    optionalEntries: [COCKPIT_ENTRY],
+  },
   "@niwa-labs/pstack": leaf(
     "composition",
     {
