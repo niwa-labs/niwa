@@ -47,6 +47,7 @@ import {
   TitleCache,
   failedCoverage,
   sessionId,
+  takeImages,
   titleFromText,
   unavailableCoverage,
 } from "@niwa-labs/harness";
@@ -56,6 +57,7 @@ import { piToolShape } from "./tools.ts";
 import type {
   Coverage,
   HarnessId,
+  ImageMark,
   Locator,
   SessionFilter,
   SessionId,
@@ -122,7 +124,7 @@ export const PI_RAW_SCHEMA = z.json();
  * is read: one line of pi's file can carry several records.
  */
 type Draft =
-  | { readonly kind: "user"; readonly text: string; readonly at?: number }
+  | { readonly kind: "user"; readonly text: string; readonly images?: readonly ImageMark[]; readonly at?: number }
   | {
       readonly kind: "assistant";
       readonly text: string;
@@ -142,6 +144,7 @@ type Draft =
       readonly name?: string;
       readonly output?: unknown;
       readonly ok?: boolean;
+      readonly images?: readonly ImageMark[];
       readonly at?: number;
     }
   | { readonly kind: "thinking"; readonly text: string; readonly redacted: boolean; readonly at?: number }
@@ -161,11 +164,24 @@ function atOf(iso: string | undefined): number | undefined {
 
 /** The text of a content: a string as it is, blocks by their text. */
 function textOf(content: string | readonly InputBlock[]): string {
-  if (typeof content === "string") return content;
-  return content
-    .map((block) => (block.type === "text" ? block.text : ""))
-    .filter((part) => part.length > 0)
-    .join("\n");
+  return wordsOf(content).text;
+}
+
+/** The words of a message and the images that stood among them, each at the offset in the words where it came. */
+function wordsOf(content: string | readonly InputBlock[]): { text: string; images: ImageMark[] } {
+  if (typeof content === "string") return { text: content, images: [] };
+  let text = "";
+  let any = false;
+  const images: ImageMark[] = [];
+  for (const block of content) {
+    if (block.type === "image") {
+      images.push({ at: text.length, ...(block.mimeType.length > 0 ? { mime: block.mimeType } : {}) });
+    } else if (block.type === "text" && block.text.length > 0) {
+      text = any ? `${text}\n${block.text}` : block.text;
+      any = true;
+    }
+  }
+  return { text, images };
 }
 
 /** The time of an entry, however the entry carries it. */
@@ -502,10 +518,10 @@ function draftsOfMessage(message: KnownMessage, entry: unknown, at: number | und
 
   switch (message.role) {
     case "user": {
-      const text = textOf(message.content);
-      // A message without words, an image alone, holds nothing to say as text: it is kept whole.
-      if (text.length === 0) return [{ kind: "unknown", raw: entry, at: when }];
-      return [{ kind: "user", text, at: when }];
+      const { text, images } = wordsOf(message.content);
+      // A message with neither words nor an image holds nothing to say: it is kept whole.
+      if (text.length === 0 && images.length === 0) return [{ kind: "unknown", raw: entry, at: when }];
+      return [{ kind: "user", text, ...(images.length > 0 ? { images } : {}), at: when }];
     }
     case "assistant": {
       const drafts: Draft[] = [];
@@ -520,14 +536,20 @@ function draftsOfMessage(message: KnownMessage, entry: unknown, at: number | und
         // Without the id of the call there is nothing to pair the answer with.
         return [{ kind: "unknown", raw: entry, at: when }];
       }
+      // The answer as pi stored it: a text may be one block among others. The pictures in it are
+      // marks, not their encoded payload; the file holds them whole, and `raw` gives them.
+      const { rest, images } =
+        typeof message.content === "string"
+          ? { rest: message.content, images: [] }
+          : takeImages(message.content, (block) => (block.type === "image" ? { mime: block.mimeType } : undefined));
       return [
         {
           kind: "tool-result",
           callId: message.toolCallId,
           name: message.toolName,
-          // The answer as pi stored it, whole: a text may be one block among others.
-          output: message.content,
+          output: images.length > 0 && Array.isArray(rest) && rest.length === 0 ? undefined : rest,
           ok: message.isError !== true,
+          ...(images.length > 0 ? { images } : {}),
           at: when,
         },
       ];
@@ -592,7 +614,7 @@ function recordsOfLine(drafts: Draft[], incomplete: boolean): Unlocated[] {
   return drafts.map((draft) => {
     switch (draft.kind) {
       case "user":
-        return { kind: "user", text: draft.text, ...atField(draft.at), ...base };
+        return { kind: "user", text: draft.text, ...(draft.images === undefined ? {} : { images: [...draft.images] }), ...atField(draft.at), ...base };
       case "assistant":
         return {
           kind: "assistant",
@@ -618,6 +640,7 @@ function recordsOfLine(drafts: Draft[], incomplete: boolean): Unlocated[] {
           ...(draft.name === undefined ? {} : { name: draft.name }),
           ...(draft.output === undefined ? {} : { output: jsonOf(draft.output) }),
           ...(draft.ok === undefined ? {} : { ok: draft.ok }),
+          ...(draft.images === undefined ? {} : { images: [...draft.images] }),
           ...atField(draft.at),
           ...base,
         };

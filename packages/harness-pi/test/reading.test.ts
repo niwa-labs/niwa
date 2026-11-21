@@ -556,3 +556,40 @@ test("a session spawned between two lines sits between their records", async () 
   expect((await all(reading().read(idOf("parent-mid"), records[0]!.locator))).map((record) => record.kind)).toEqual(["nested", "assistant"]);
   expect((await all(reading().read(idOf("parent-mid"), records[1]!.locator))).map((record) => record.kind)).toEqual(["assistant"]);
 });
+
+const message = (id: string, body: object): string =>
+  `${JSON.stringify({ type: "message", id, parentId: null, timestamp: "2026-10-27T09:15:03.000Z", message: body })}\n`;
+
+test("a message of an image alone is a user record with a mark, and a mixed one marks where the picture stood", async () => {
+  const image = { type: "image", data: "AAAA", mimeType: "image/png" };
+  writeFileSync(
+    sessionFile("pictures"),
+    header("pictures") +
+      message("u1", { role: "user", content: [image] }) +
+      message("u2", { role: "user", content: [{ type: "text", text: "look" }, image, { type: "text", text: "closely" }] }),
+  );
+  const records = await all(reading().read(idOf("pictures")));
+  expect(records).toMatchObject([
+    { kind: "user", text: "", images: [{ at: 0, mime: "image/png" }] },
+    { kind: "user", text: "look\nclosely", images: [{ at: 4, mime: "image/png" }] },
+  ]);
+  expect(JSON.stringify(records)).not.toContain("AAAA");
+  // A message with nothing in it is still kept whole.
+  writeFileSync(sessionFile("blank"), header("blank") + message("u1", { role: "user", content: [] }));
+  expect((await all(reading().read(idOf("blank"))))[0]?.kind).toBe("unknown");
+});
+
+test("a picture in the result of a tool is a mark among its blocks, not an encoded payload in its output", async () => {
+  const image = { type: "image", data: "BBBB", mimeType: "image/jpeg" };
+  writeFileSync(
+    sessionFile("shot"),
+    header("shot") +
+      message("r1", { role: "toolResult", toolCallId: "c1", toolName: "read", content: [{ type: "text", text: "a" }, image, { type: "text", text: "b" }], isError: false }) +
+      message("r2", { role: "toolResult", toolCallId: "c2", toolName: "read", content: [image], isError: false }),
+  );
+  const [first, second] = await all(reading().read(idOf("shot")));
+  expect(first).toMatchObject({ kind: "tool-result", output: [{ type: "text", text: "a" }, { type: "text", text: "b" }], images: [{ at: 1, mime: "image/jpeg" }] });
+  expect(second).toMatchObject({ kind: "tool-result", images: [{ at: 0, mime: "image/jpeg" }] });
+  expect(second && "output" in second ? second.output : undefined).toBeUndefined();
+  expect(JSON.stringify([first, second])).not.toContain("BBBB");
+});
