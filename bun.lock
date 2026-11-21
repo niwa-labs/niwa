@@ -164,6 +164,10 @@
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
         "@niwa-labs/sandbox": "workspace:*",
+        "zod": "^4.6.7",
+      },
+      "devDependencies": {
+        "@niwa-labs/testing": "workspace:*",
       },
     },
     "packages/harness-zcode": {
