@@ -14,7 +14,8 @@ import { z } from "zod";
 import { HarnessIdSchema, InputNotSent, InputPossiblySent, modelName, promptFromText, sessionId, type LifeEvent, Unavailable, Unsupported } from "@niwa-labs/harness";
 import type { SessionId } from "@niwa-labs/harness";
 import { codexControl } from "../src/control.ts";
-import type { CodexControlOptions } from "../src/control.ts";
+import type { CodexControlOptions, CodexSessionControl } from "../src/control.ts";
+import { codex, codexKind } from "../src/index.ts";
 import { eventually, tempDir } from "@niwa-labs/testing";
 
 const THREAD = "11111111-2222-3333-4444-555555555555";
@@ -424,6 +425,34 @@ test("a start whose first turn Codex refused leaves no session behind", async ()
   expect(await codex.start({ prompt: promptFromText("go") }).catch((error: unknown) => error)).toBeInstanceOf(InputNotSent);
   expect(await grandchildGone()).toBe(true);
   await codex.dispose();
+});
+
+test("the home of a kind is the home of the processes it starts and resumes", async () => {
+  const kind = codexKind({ harness: HarnessIdSchema.parse("codex-fake"), home: join(dir, "other-home"), control: { binary: join(dir, "codex") } });
+  const codex = kind.control as CodexSessionControl;
+  controls.push(codex);
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+  await codex.stop(id);
+  await codex.resume(id, {});
+  expect((await spawns()).map((spawned) => spawned.home)).toEqual([join(dir, "other-home"), join(dir, "other-home")]);
+  await codex.dispose();
+});
+
+test("a kind without a home takes the one Codex itself would use, for reading and for its processes", async () => {
+  const named = join(dir, "env-home");
+  const before = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = named;
+  try {
+    const kind = codex({ harness: HarnessIdSchema.parse("codex-fake"), control: { binary: join(dir, "codex") } });
+    const live = kind.control as CodexSessionControl;
+    controls.push(live);
+    await live.start({ prompt: promptFromText("") });
+    expect((await spawns()).map((spawned) => spawned.home)).toEqual([named]);
+    await live.dispose();
+  } finally {
+    if (before === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = before;
+  }
 });
 
 test("a first turn that fails is a failed turn of a session that was started, not a failed start", async () => {

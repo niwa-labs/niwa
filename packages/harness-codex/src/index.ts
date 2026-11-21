@@ -64,7 +64,7 @@ export interface CodexKindOptions extends CodexReadingOptions {
    * How the control side is set up: the model it uses, the working mode its sessions run in and
    * the binary it drives. Its own defaults are used when it is absent.
    */
-  readonly control?: Omit<CodexControlOptions, "harness">;
+  readonly control?: Omit<CodexControlOptions, "harness" | "home">;
 }
 
 /** What the caller names of the kind: every part has a default. */
@@ -75,19 +75,25 @@ export function codexKind(options: CodexKindOptions) {
   return defineHarnessKind({
     name: "codex",
     reading: new CodexReading(options),
-    control: codexControl({ harness: options.harness, ...(options.control ?? {}) }),
+    // The home is resolved once: the control side starts its processes in the home the reading side lists.
+    control: codexControl({ ...(options.control ?? {}), harness: options.harness, home: options.home }),
     capabilities: CODEX_CAPABILITIES,
     detect: CODEX_DETECTION,
     options: KIND_OPTIONS.codex,
   });
 }
 
-/** The kind for the installation at `home` (default `~/.codex`). */
+function defaultHome(): string {
+  const named = process.env["CODEX_HOME"];
+  return named !== undefined && named !== "" ? named : join(homedir(), ".codex");
+}
+
+/** The kind for the installation at `home` (default `$CODEX_HOME`, else `~/.codex`: where Codex itself looks). */
 export function codex(options: CodexOptions = {}) {
   return codexKind({
     ...options,
     harness: options.harness ?? harnessId("codex"),
-    home: options.home ?? join(homedir(), ".codex"),
+    home: options.home ?? defaultHome(),
   });
 }
 

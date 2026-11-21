@@ -91,6 +91,13 @@ export interface CodexControlOptions {
   readonly harness: string;
   /** The `codex` binary, resolved through PATH when it is a bare name. */
   readonly binary?: string;
+  /**
+   * The home of the installation its sessions belong to: every process is started with it as
+   * `CODEX_HOME`, and a box lets it write there. A kind sets it from the home it reads, so a
+   * session started here is one that is listed and read there. Without it the process keeps the
+   * environment it inherits, and a box lets it write in `~/.codex`.
+   */
+  readonly home?: string;
   /** The model sessions talk to, when the caller does not choose one per start. */
   readonly model?: string;
   /** The effort sessions think with, when the caller does not choose one per start. */
@@ -594,13 +601,14 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       detached: true,
       env: {
         ...plan.env,
+        ...(options.home === undefined ? {} : { CODEX_HOME: options.home }),
         DISABLE_AUTOUPDATER: "1",
         DISABLE_TELEMETRY: "1",
         DISABLE_ERROR_REPORTING: "1",
         DO_NOT_TRACK: "1",
       },
       box: plan.box,
-      needs: CODEX_NEEDS,
+      needs: needs(options.home),
     });
     spawning.add(creating);
     let child: AgentProcess;
@@ -1138,10 +1146,12 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
 }
 
 /** What Codex needs inside a box: its own directory and the endpoints of its model and its sign-in. */
-const CODEX_NEEDS: HarnessNeeds = {
-  write: [homePath(".codex")],
-  net: ["api.openai.com", "chatgpt.com"],
-};
+function needs(home: string | undefined): HarnessNeeds {
+  return {
+    write: [home ?? homePath(".codex")],
+    net: ["api.openai.com", "chatgpt.com"],
+  };
+}
 
 /**
  * The built-in tools Codex can switch off, by the name an allow-list gives them, and the `-c` that
