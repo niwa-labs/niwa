@@ -100,6 +100,8 @@ import { SessionCatalog } from "./catalog.ts";
 import type { SessionEntry } from "./catalog.ts";
 import { SessionRefSchema, sessionOf, sessionRef } from "./identity.ts";
 import type { NiwaSessionId, SessionRef } from "./identity.ts";
+import { HarnessCaps } from "./caps.ts";
+import type { Slot } from "./caps.ts";
 import { PromptInputSchema, promptFrom } from "./prompt.ts";
 import {
   SESSION_TYPES,
@@ -231,6 +233,12 @@ export interface SessionsOptions {
    * it is not available such a session does not start.
    */
   readonly sandbox?: BoxSandboxName;
+  /**
+   * The ceiling of a harness, by its id: how many of its sessions may run a turn at once on this host.
+   * A start or a send over it waits until a turn ends; a sleeping session holds no slot. Absent, a
+   * harness has none.
+   */
+  readonly caps?: Readonly<Record<string, number>>;
 }
 
 /**
@@ -403,6 +411,13 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     api.declare(...SESSION_TYPES, ...REVERSE_TYPES);
     const reverse = installReverse(api);
     const sessionIds = new IdIndex("session", () => sessionIdsOf(api.journal?.()));
+    const caps = new HarnessCaps(options.caps ?? {}, {
+      journal: () => api.journal?.(),
+      untilCommit: (ms) => api.untilCommit(ms),
+      followed: () => followed,
+      harnessOf: (ref) => sessionOf(ref).harness,
+      since: bootedAt,
+    });
 
     /**
      * The pointer of the session a caller named: the id niwa gave it or any text that names one, or
@@ -1169,8 +1184,13 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       const mark = randomUUID();
       const token = tokenFor(mark, rules, ctx.caller);
       const servers = serversOf(visible.actions, mark, token);
+      // A harness at its ceiling takes the start once one of its turns ends.
+      const slot = await caps.admit(instance.id);
       // Written before the harness is asked: from here on a retry never asks it again.
-      await ctx.emit(SessionStartReserved, { operation, digest, ...(cwd === undefined ? {} : { cwd }) });
+      await ctx.emit(SessionStartReserved, { operation, digest, ...(cwd === undefined ? {} : { cwd }) }).catch((error: unknown) => {
+        slot.release();
+        throw error;
+      });
       const asking = recording(mark, launch, ctx, () =>
         control.start({
           prompt: input.prompt,
@@ -1191,12 +1211,14 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         }),
       );
       const { session: id, first, mode } = await asking.catch(async (error: unknown) => {
+        slot.release();
         // Nothing reached the harness: the reservation is let go, and a retry asks again.
         if (!effectPossibleAfter(error)) {
           await ctx.emit(SessionStartUnsent, { operation, reason: error instanceof Error ? error.message : String(error) });
         }
         throw error;
       });
+      slot.reached(sessionRef(id), first);
       // The harness named the session: only now is there a session at all. Its first turn
       // may be running already; the side keeps the signs of that turn for the first stream
       // of life, and that stream is the one followed here, so none of them is lost.
@@ -1294,10 +1316,22 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         world: "local",
         run: async (input, ctx) => {
           const { ref, id, control } = controlOf(input.session, "send");
-          const sending = () => control.send(id, input.message, input.into === undefined ? undefined : { into: input.into });
+          // The slot of the harness is taken before anything is written of the send, so a send that waits
+          // for one is not taken for possibly sent if the host stops while it waits.
+          const sending = async (slot: Slot): Promise<DeliveryReceipt> => {
+            try {
+              const receipt = await control.send(id, input.message, input.into === undefined ? undefined : { into: input.into });
+              slot.reached(ref, receipt);
+              return receipt;
+            } catch (error) {
+              slot.release();
+              throw error;
+            }
+          };
           // The turn is named as the records name it, not as the harness counts it in this process.
           const named = (receipt: DeliveryReceipt) => (receipt.turn === undefined ? receipt : { ...receipt, turn: numbered(ref, receipt.turn) });
-          if (input.operation === undefined) return { receipt: named(await sending()) };
+          // A harness at its ceiling takes the message once one of its turns ends.
+          if (input.operation === undefined) return { receipt: named(await sending(await caps.admit(id.harness))) };
 
           const operation = input.operation;
           const digest = createHash("sha256").update(JSON.stringify([input.message, input.into ?? null])).digest("hex");
@@ -1312,8 +1346,12 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
               throw new InputPossiblySent(id.harness, "send", before.outcome?.reason ?? "the send was cut off before its outcome was known");
             }
           }
-          await ctx.emit(SessionInputSending, { session: ref, operation, digest });
-          const outcome = await outcomeOf(sending().then(named));
+          const slot = await caps.admit(id.harness);
+          await ctx.emit(SessionInputSending, { session: ref, operation, digest }).catch((error: unknown) => {
+            slot.release();
+            throw error;
+          });
+          const outcome = await outcomeOf(sending(slot).then(named));
           await ctx.emit(SessionInputSettled, { session: ref, operation, outcome });
           switch (outcome.status) {
             case "accepted":
