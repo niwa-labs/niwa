@@ -388,7 +388,11 @@ export interface SessionControl {
 
   resume(id: SessionId, options?: ResumeOptions): Promise<void>;
 
-  /** Sends into a session and says what happened to the message. */
+  /**
+   * Sends into a session and says what happened to the message. A send that fails says how far the
+   * message got (delivery.ts): `InputNotSent` when the harness never had it, `InputPossiblySent`
+   * when it may have; any other failure is taken for possibly sent, and is never sent again.
+   */
   send(id: SessionId, message: string, options?: SendOptions): Promise<DeliveryReceipt>;
 
   /** Interrupts a running turn. Only on explicit request, and only where the harness can. */

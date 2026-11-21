@@ -23,7 +23,7 @@
  * The signs of life the control side reports are written as `session.*` records.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
@@ -58,8 +58,11 @@ import {
   DeliveryReceiptSchema,
   HarnessInstanceRegistry,
   HarnessKindRegistry,
+  InputNotSent,
+  InputPossiblySent,
   admitInstance,
   blocksOf,
+  outcomeOf,
   requireAbility,
   requireLaunch,
   requireOwnBlocks,
@@ -70,7 +73,9 @@ import { gitWorktreeCreate } from "@niwa-labs/git/records";
 import { readTranscript, searchSession } from "@niwa-labs/history";
 import type { Worktree, WorktreeOption } from "@niwa-labs/git/records";
 import type {
+  DeliveryReceipt,
   Harness,
+  InputOutcome,
   KindOptions,
   McpServerSpec,
   ModelName,
@@ -103,6 +108,8 @@ import {
   SessionAdvisor,
   SessionBelongs,
   SessionBoxManifest,
+  SessionInputSending,
+  SessionInputSettled,
   SessionEnded,
   SessionMarked,
   SessionModel,
@@ -855,6 +862,31 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         })
         .at(-1);
 
+    /**
+     * The last send of a session under an operation id, from the journal: the digest of its message,
+     * and its outcome once it was settled. A send that has no outcome was cut off while it went.
+     */
+    const inputOf = (ref: SessionRef, operation: string): { digest: string; outcome?: InputOutcome } | undefined => {
+      const journal = api.journal?.();
+      if (journal === undefined) return undefined;
+      const sent = journal
+        .find({ type: SessionInputSending.name, field: "operation", equals: operation })
+        .flatMap((stored) => {
+          const parsed = SessionInputSending.schema.safeParse(stored.data);
+          return parsed.success && parsed.data.session === ref ? [{ seq: stored.seq, digest: parsed.data.digest }] : [];
+        })
+        .at(-1);
+      if (sent === undefined) return undefined;
+      const settled = journal
+        .find({ type: SessionInputSettled.name, field: "operation", equals: operation })
+        .flatMap((stored) => {
+          const parsed = SessionInputSettled.schema.safeParse(stored.data);
+          return parsed.success && parsed.data.session === ref && stored.seq > sent.seq ? [parsed.data.outcome] : [];
+        })
+        .at(-1);
+      return settled === undefined ? { digest: sent.digest } : { digest: sent.digest, outcome: settled };
+    };
+
     /** The number of the last turn the journal holds for a session. */
     const lastTurnOf = (ref: SessionRef): number =>
       Math.max(
@@ -1088,15 +1120,37 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         // The message is delivered into the session: a send that was cut off may have
         // been delivered, so it is not made again.
         recovery: "do-not-repeat",
-        run: async (input) => {
+        run: async (input, ctx) => {
           const { ref, id, control } = controlOf(input.session, "send");
-          const receipt = await control.send(
-            id,
-            input.message,
-            input.into === undefined ? undefined : { into: input.into },
-          );
+          const sending = () => control.send(id, input.message, input.into === undefined ? undefined : { into: input.into });
           // The turn is named as the records name it, not as the harness counts it in this process.
-          return { receipt: receipt.turn === undefined ? receipt : { ...receipt, turn: numbered(ref, receipt.turn) } };
+          const named = (receipt: DeliveryReceipt) => (receipt.turn === undefined ? receipt : { ...receipt, turn: numbered(ref, receipt.turn) });
+          if (input.operation === undefined) return { receipt: named(await sending()) };
+
+          const operation = input.operation;
+          const digest = createHash("sha256").update(JSON.stringify([input.message, input.into ?? null])).digest("hex");
+          const before = inputOf(ref, operation);
+          if (before !== undefined) {
+            if (before.digest !== digest) {
+              throw new SessionRefusal("operation-conflict", `operation "${operation}" was a send of another message into this session`);
+            }
+            // What became of it is answered from the records; only a message that never went is sent again.
+            if (before.outcome?.status === "accepted") return { receipt: before.outcome.receipt };
+            if (before.outcome?.status !== "unsent") {
+              throw new InputPossiblySent(id.harness, "send", before.outcome?.reason ?? "the send was cut off before its outcome was known");
+            }
+          }
+          await ctx.emit(SessionInputSending, { session: ref, operation, digest });
+          const outcome = await outcomeOf(sending().then(named));
+          await ctx.emit(SessionInputSettled, { session: ref, operation, outcome });
+          switch (outcome.status) {
+            case "accepted":
+              return { receipt: outcome.receipt };
+            case "unsent":
+              throw new InputNotSent(id.harness, "send", outcome.reason);
+            case "possibly-sent":
+              throw new InputPossiblySent(id.harness, "send", outcome.reason);
+          }
         },
       }),
     );

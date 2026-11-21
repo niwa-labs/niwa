@@ -385,3 +385,5 @@ export type { InsertReportTarget } from "./insert-report.ts";
 
 export { SHARED_AGENTS_SKILLS } from "./skills.ts";
 export type { KindSkills, SkillRoots } from "./skills.ts";
+export { InputNotSent, InputOutcomeSchema, InputPossiblySent, inputFailure, outcomeOf } from "./delivery.ts";
+export type { Dispatch, InputOutcome } from "./delivery.ts";

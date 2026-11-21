@@ -308,11 +308,14 @@ export const sessionResume = actionRef("session.resume", {
 });
 
 export const sessionSend = actionRef("session.send", {
-  description: "Sends a message into a session and says what happened to it: delivered into the running turn, queued after the current turn, or started a new turn.",
+  description:
+    "Sends a message into a session and says what happened to it: delivered into the running turn, queued after the current turn, or started a new turn. A send that fails says whether the message was not sent (sending it again is safe) or may have been (it is never sent again by itself). Give `operation` to make a retry safe: the same id with the same message answers what became of it, and sends it only if it was not sent.",
   input: z.object({
     session: SessionRefInput,
     message: z.string(),
     into: z.literal("turn").optional(),
+    /** The caller's own id of this send: a retry with it never sends the message twice. */
+    operation: z.string().min(1).max(200).optional(),
   }),
   output: z.object({ receipt: DeliveryReceiptSchema }),
 });

@@ -14,6 +14,7 @@ import { actionName, record, stableJson, Address } from "@niwa-labs/core";
 import type { ActionName } from "@niwa-labs/core";
 import {
   DeliveryReceiptSchema,
+  InputOutcomeSchema,
   ModelNameSchema,
   OptionBlocks,
   PermissionMarkSchema,
@@ -300,6 +301,31 @@ export const SessionBoxManifest = record(
   }),
 );
 
+/**
+ * An input given an operation id by its caller is about to be sent into a session: written before
+ * the send, so a host that stops in the middle of it knows the input may have gone.
+ */
+export const SessionInputSending = record(
+  "session.input.sending",
+  z.object({
+    session: SessionRefSchema,
+    /** The id the caller gave the operation: a retry with it is answered from these records. */
+    operation: z.string().min(1),
+    /** The SHA-256 of the input, so a retry with another body under the same id is told apart. */
+    digest: z.string().min(1),
+  }),
+);
+
+/** What became of an input that was given an operation id: accepted, never sent, or possibly sent. */
+export const SessionInputSettled = record(
+  "session.input.settled",
+  z.object({
+    session: SessionRefSchema,
+    operation: z.string().min(1),
+    outcome: InputOutcomeSchema,
+  }),
+);
+
 /** The record types this module declares, in the order they are declared. */
 export const SESSION_TYPES = [
   SessionStarted,
@@ -314,4 +340,6 @@ export const SESSION_TYPES = [
   SessionBelongs,
   SessionMarked,
   SessionBoxManifest,
+  SessionInputSending,
+  SessionInputSettled,
 ] as const;
