@@ -153,6 +153,29 @@ function governing(of: Grant, requested: Rule): Rule | undefined {
   return best;
 }
 
+/** The mask that both masks cover: the narrower of two that overlap, nothing when they are apart. */
+function meet(a: Mask, b: Mask): Mask | undefined {
+  if (covers(a, b)) return b;
+  return covers(b, a) ? a : undefined;
+}
+
+/**
+ * The calls a requested rule and a parent rule have in common, as a rule: the narrower name and
+ * the narrower target. Nothing when they share no call. A rule without a target covers every
+ * target, so the target of the other one stands.
+ */
+function common(requested: Rule, parent: Rule): Rule | undefined {
+  if (parent.verb !== requested.verb) return undefined;
+  const name = meet(requested.name, parent.name);
+  if (name === undefined) return undefined;
+  if (requested.target === undefined || parent.target === undefined) {
+    const target = requested.target ?? parent.target;
+    return target === undefined ? { verb: requested.verb, name, ask: false } : { verb: requested.verb, name, target, ask: false };
+  }
+  const target = meet(requested.target, parent.target);
+  return target === undefined ? undefined : { verb: requested.verb, name, target, ask: false };
+}
+
 /** A rule of the parent that lies inside the scope of a requested rule: it must stay as the parent has it. */
 function inside(requested: Rule, parent: Rule): boolean {
   if (parent.verb !== requested.verb || !covers(requested.name, parent.name)) return false;
@@ -167,9 +190,16 @@ export type Narrowed = { readonly rules: Grant } | { readonly refused: readonly 
  * `child rights = parent rights ∩ requested`, computed once.
  *
  * Asking for more than the parent has is refused, with the masks that were refused: nothing is
- * narrowed silently. `ask` is inherited from the parent rule that governs the request, and the
- * parent's own rules that lie inside a requested mask stay as they are, so a wide request
- * cannot lift an `ask` that is set on a part of it.
+ * narrowed silently. A call the parent asks about is asked about in the child too. For each
+ * requested rule that comes from three places:
+ *
+ * - the request itself, asking when the parent rule that governs it asks;
+ * - the parent's rules that lie inside the request, which stay as the parent has them;
+ * - the part that a parent rule that asks shares with the request, when the two overlap without
+ *   one holding the other (the name is wider in one and the target in the other): the request
+ *   would otherwise let that part through without a question.
+ *
+ * A request that asks makes every call it covers ask, whatever the rules inside it say.
  */
 export function narrow(parent: Grant, requested: readonly RuleSpec[]): Narrowed {
   const refused: string[] = [];
@@ -182,7 +212,14 @@ export function narrow(parent: Grant, requested: readonly RuleSpec[]): Narrowed 
       continue;
     }
     rules.push({ ...asked, ask: asked.ask || over.ask });
-    for (const own of parent.rules) if (inside(asked, own)) rules.push(own);
+    for (const own of parent.rules) {
+      if (inside(asked, own)) {
+        rules.push({ ...own, ask: own.ask || asked.ask });
+      } else if (own.ask && !holds(own, asked)) {
+        const shared = common(asked, own);
+        if (shared !== undefined) rules.push({ ...shared, ask: true });
+      }
+    }
   }
   if (refused.length > 0) return { refused };
   return { rules: grant(rules.map(specOf)) };

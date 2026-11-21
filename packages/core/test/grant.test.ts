@@ -3,6 +3,7 @@
 import { expect, test } from "bun:test";
 
 import { grant, match, narrow, narrowed, rule, ruleText, specsOf } from "../src/index.ts";
+import type { Grant, RuleSpec } from "../src/index.ts";
 
 test("a rule is verb:name[@target], with call as the default verb and an optional ask", () => {
   expect(rule("task.create")).toMatchObject({ verb: "call", name: "task.create", ask: false });
@@ -93,4 +94,95 @@ test("rules are stored as text and read back the same", () => {
   // The same line twice is one rule, and the one that asks stands.
   expect(grant(["task.x", { do: "task.x", ask: true }]).rules).toHaveLength(1);
   expect(grant(["task.x", { do: "task.x", ask: true }]).rules[0]?.ask).toBe(true);
+});
+
+/** How closed a call is under a grant: 0 passes, 1 asks, 2 is refused. */
+function closedness(of: Grant, name: string, target?: string): number {
+  const found = match(of, "call", name, target);
+  if (found === undefined) return 2;
+  return found.ask ? 1 : 0;
+}
+
+const NAMES = ["*", "a.*", "a.b", "a.c", "b.d"];
+const TARGETS = [undefined, "*", "x/*", "x/y"];
+const SPECS: RuleSpec[] = NAMES.flatMap((name) =>
+  TARGETS.flatMap((target) => {
+    const text = target === undefined ? name : `${name}@${target}`;
+    return [text, { do: text, ask: true as const }];
+  }),
+);
+const CALL_NAMES = ["a.b", "a.c", "a.d", "b.d", "c.x"];
+const CALL_TARGETS = [undefined, "x/y", "x/z", "w"];
+
+/** Every call the rules above can tell apart: whether a grant answers it does not depend on anything else. */
+function* calls(): Generator<[string, string | undefined]> {
+  for (const name of CALL_NAMES) for (const target of CALL_TARGETS) yield [name, target];
+}
+
+/** A violation of what a narrowed grant owes its parent, or nothing. */
+function violation(parent: Grant, requested: RuleSpec, child: Grant): string | undefined {
+  const asked = rule(requested);
+  for (const [name, target] of calls()) {
+    const at = `${name}${target === undefined ? "" : `@${target}`}`;
+    const now = closedness(child, name, target);
+    if (now < closedness(parent, name, target)) return `${at} is less closed than under the parent`;
+    const inRequest = match({ rules: [{ ...asked, ask: false }] }, "call", name, target) !== undefined;
+    if (now < 2 && !inRequest) return `${at} is outside the request`;
+    if (inRequest && asked.ask && now < 1 && closedness(parent, name, target) < 2) return `${at} does not ask though the request does`;
+  }
+  return undefined;
+}
+
+test("narrowing never leaves a call less closed than the parent has it, over every pair of parent rules", () => {
+  const failures: string[] = [];
+  for (const first of SPECS) {
+    for (const second of SPECS) {
+      const parent = grant([first, second]);
+      for (const requested of SPECS) {
+        const got = narrow(parent, [requested]);
+        if ("refused" in got) continue;
+        const bad = violation(parent, requested, got.rules);
+        if (bad !== undefined) failures.push(`${JSON.stringify([first, second])} narrowed by ${JSON.stringify(requested)}: ${bad}`);
+      }
+    }
+  }
+  expect(failures.slice(0, 5)).toEqual([]);
+});
+
+test("narrowing never leaves a call less closed than the parent has it, over parents of four rules", () => {
+  // A fixed generator: the same rules on every run.
+  let state = 20260101;
+  const next = (below: number): number => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state % below;
+  };
+  const pick = (): RuleSpec => SPECS[next(SPECS.length)]!;
+  const failures: string[] = [];
+  for (let round = 0; round < 3000; round++) {
+    const parent = grant([pick(), pick(), pick(), pick()]);
+    const wanted = [pick(), pick()];
+    const got = narrow(parent, wanted);
+    if ("refused" in got) continue;
+    for (const requested of wanted) {
+      const bad = violation(parent, requested, got.rules);
+      // Two requests share one child: a call in both is judged by the child as a whole, so only
+      // what the parent owes is held against it.
+      if (bad?.endsWith("under the parent") === true) failures.push(`${JSON.stringify(specsOf(parent))} narrowed by ${JSON.stringify(wanted)}: ${bad}`);
+    }
+  }
+  expect(failures.slice(0, 5)).toEqual([]);
+});
+
+test("a parent rule that asks on a target is still asked when the request narrows the name only", () => {
+  const parent = grant(["*", { do: "a.*@secret/*", ask: true }]);
+  const got = narrow(parent, ["a.b@*"]);
+  if (!("rules" in got)) throw new Error("expected rules");
+  expect(match(got.rules, "call", "a.b", "secret/x")?.ask).toBe(true);
+  expect(match(got.rules, "call", "a.b", "open/x")?.ask).toBe(false);
+});
+
+test("a grant that now asks on part of what a rule of the old one let through is narrowed", () => {
+  const before = grant(["a.b@*"]);
+  expect(narrowed(before, grant(["*", { do: "a.*@secret/*", ask: true }]))).toBe(true);
+  expect(narrowed(before, grant(["*", { do: "a.*@secret/*" }]))).toBe(false);
 });
