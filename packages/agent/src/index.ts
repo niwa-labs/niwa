@@ -229,14 +229,6 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       return last?.type === "session.marked" && last.at >= servedAt;
     };
 
-    /** What the sessions module last wrote became of an input under an operation: accepted, unsent or possibly sent. */
-    const settledOf = (session: string, operation: string): string | undefined =>
-      recordsOf(journal(), ["session.input.settled"])
-        .map((stored) => stored.data as { session?: unknown; operation?: unknown; outcome?: { status?: unknown } })
-        .filter((data) => data.session === session && data.operation === operation)
-        .map((data) => (typeof data.outcome?.status === "string" ? data.outcome.status : undefined))
-        .at(-1);
-
     /** Is the main session in a turn now? Its last turn began and has not ended. */
     const inTurn = (session: string): boolean => {
       const turns = recordsOf(journal(), [SessionTurnStarted.name, SessionTurnEnded.name]).filter((stored) => (stored.data as { session?: unknown }).session === session);
@@ -321,8 +313,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
             await step.emit(AgentTurnDelivered, { agent: turn.agent, turn: turn.turn, session: main.session, receipt: sent.value.receipt }, { key: "delivered" });
             return true;
           }
-          // What became of the input is the sessions module's record of it: a step that failed says only that it failed.
-          if (sent.status === "failed" && (!sent.effectPossible || settledOf(main.session, turn.turn) === "unsent")) return false;
+          // A send that failed saying nothing went is tried again; any other failure may have delivered the turn.
+          if (sent.status === "failed" && !sent.effectPossible) return false;
           await failed("possibly-sent", sent.status === "failed" ? sent.error : sent.status);
           return true;
         };

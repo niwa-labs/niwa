@@ -8,6 +8,7 @@
  * Any other failure of a send is read as possibly sent: an input is never sent twice on a guess.
  */
 
+import { NotSent } from "@niwa-labs/core";
 import { z } from "zod";
 
 import { Unsupported } from "./capabilities.ts";
@@ -22,11 +23,9 @@ import type { Harness } from "./instance.ts";
 export type Dispatch = "unsent" | "refused" | "uncertain";
 
 /** The input did not reach the harness, or the harness refused it: sending it again is safe. */
-export class InputNotSent extends Error {
+export class InputNotSent extends NotSent {
   override name = "InputNotSent";
-  readonly code = "InputNotSent";
-  /** Nothing was done: a call under the same operation id may be made again. */
-  readonly effectPossible = false;
+  override readonly code = "InputNotSent";
 
   constructor(
     readonly harness: Harness["id"],
