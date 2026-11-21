@@ -13,6 +13,7 @@ import { counter, gate } from "./index.ts";
 export { describe } from "@niwa-labs/host";
 export { CLEANUP_TIMER, WorktreeRefusal, git } from "@niwa-labs/git";
 export { messages } from "@niwa-labs/messages";
+export { TaskDone, tasks } from "@niwa-labs/tasks";
 export { timer, timerList, timers } from "@niwa-labs/timer";
 export { workflow } from "@niwa-labs/workflow";
 
