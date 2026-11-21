@@ -48,10 +48,10 @@ import {
 } from "./actions.ts";
 import type { WorktreeEntity, WorktreeState } from "./actions.ts";
 import { aheadOf, branchOf, commitOf, commonDirOf, copyIncluded, currentBase, gitOut, gitRun, headOf, isDirty, repoOf, topOf, verifiedRemote } from "./git.ts";
-import { verifyCheckout } from "./registration.ts";
+import { registeredWorktree, verifyCheckout } from "./registration.ts";
 export { registeredWorktree } from "./registration.ts";
-import { CheckoutVerified, HeadMoved, RemoteUpdated, WorktreeCreated, WorktreeRemote, WorktreeRemoved, WorktreeReserved } from "./record-types.ts";
-import type { Worktree, WorktreeId } from "./record-types.ts";
+import { CheckoutVerified, HeadMoved, RemoteUpdated, WorktreeCreated, WorktreeRemote, WorktreeRemovalClaimed, WorktreeRemoved, WorktreeReserved } from "./record-types.ts";
+import type { RemovalMatch, Worktree, WorktreeId } from "./record-types.ts";
 
 const DAY_MS = 86_400_000;
 
@@ -430,7 +430,7 @@ export function git(options: GitOptions = {}): Plugin {
     const place: Place = { journal, store: () => join(api.home(), "worktrees"), bootedAt };
     const entries = () => fold(journal());
 
-    api.declare(CheckoutVerified, WorktreeReserved, WorktreeCreated, WorktreeRemoved, HeadMoved, RemoteUpdated);
+    api.declare(CheckoutVerified, WorktreeReserved, WorktreeCreated, WorktreeRemovalClaimed, WorktreeRemoved, HeadMoved, RemoteUpdated);
 
     api.action(
       action(gitWorktreeCreate, {
@@ -632,6 +632,44 @@ export function git(options: GitOptions = {}): Plugin {
       await emit({ id: idSchema("worktree").parse(worktree.id), forced: refusal !== undefined });
     };
 
+    /** Remove the expected checkout without deleting the branch or any reachable commits. */
+    const removeMatchingCheckout = async (worktree: Worktree, onlyIf: RemovalMatch, ctx: ActionContext): Promise<void> => {
+      const { id, repo, branch, path } = worktree;
+      if (repo !== onlyIf.repo || branch !== onlyIf.branch || path !== onlyIf.path) {
+        throw new WorktreeRefusal("changed", `the worktree "${id}" no longer matches the saved checkout`);
+      }
+      const prior = journal()?.get(birthOf(ctx));
+      const resumed = prior?.type === WorktreeRemovalClaimed.name;
+      const checkouts = await registeredWorktrees(repo);
+      const registration = checkouts.find((checkout) => checkout.path === path);
+      if (!resumed || registration !== undefined || existsSync(path)) {
+        if (registration?.ref !== `refs/heads/${branch}` || registeredWorktree(api, path)?.id !== id) {
+          throw new WorktreeRefusal("changed", `the registered checkout "${id}" is missing, replaced, or on another branch`);
+        }
+      }
+      await ctx.emit(WorktreeRemovalClaimed, { id, onlyIf });
+      if (registration !== undefined || existsSync(path)) {
+        const remote = await verifiedRemote(repo, worktree.base);
+        if (remote?.host !== onlyIf.project.host || remote.path !== onlyIf.project.path) {
+          throw new WorktreeRefusal("changed", `the worktree "${id}" no longer points to the saved forge project`);
+        }
+        // Git checks its lock and ordinary changes itself. Include ignored files here as Git's removal
+        // test does not protect them and this checkout may contain local-only files.
+        const status = await gitRun(path, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"]);
+        if (status.code !== 0) throw new WorktreeRefusal("unverifiable", `cannot read worktree "${id}": ${status.stderr.trim()}`);
+        if (status.stdout !== "") throw new WorktreeRefusal("dirty", `the worktree "${id}" has local files or changes`);
+        if ((await branchOf(path)) !== branch || (await headOf(path)) !== onlyIf.head || registeredWorktree(api, path)?.id !== id) {
+          throw new WorktreeRefusal("changed", `the worktree "${id}" moved after its pull request was registered`);
+        }
+        const sessions = liveSessionsIn(journal(), path, place.bootedAt);
+        if (sessions.length > 0) throw new WorktreeRefusal("live-session", `the worktree "${id}" has a live session in it (${sessions.join(", ")})`);
+        const removed = await gitRun(repo, ["worktree", "remove", "--", path]);
+        if (removed.code !== 0) throw new WorktreeRefusal("changed", `git keeps ${path}: ${removed.stderr.trim()}`);
+      }
+      if (existsSync(path)) throw new WorktreeRefusal("changed", `the worktree "${id}" is still present`);
+      await ctx.emit(WorktreeRemoved, { id, forced: false, branchKept: true });
+    };
+
     api.action(
       action(gitWorktreeRemove, {
         // Removing what is removed already is a no-op, so it may be made again.
@@ -643,6 +681,15 @@ export function git(options: GitOptions = {}): Plugin {
           const id = ids.resolve(input.id);
           return worktreeTurn(id ?? input.id, async () => {
             const entry = id === undefined ? undefined : entries().get(id);
+            if (input.onlyIf !== undefined) {
+              if (entry === undefined || input.id !== entry.worktree.id) return { id: input.id, removed: false };
+              if (entry.removed) {
+                const outcome = journal()?.get(recordId(`${ctx.operationId}/emit/2`));
+                return { id: entry.worktree.id, removed: outcome?.type === WorktreeRemoved.name };
+              }
+              await removeMatchingCheckout(entry.worktree, input.onlyIf, ctx);
+              return { id: entry.worktree.id, removed: true };
+            }
             if (entry !== undefined && !entry.removed) {
               await removeEntry(entry, force, (data) => ctx.emit(WorktreeRemoved, data));
               return { id: entry.worktree.id, removed: true };
@@ -700,6 +747,7 @@ export {
   WorktreeCreated,
   WorktreeId,
   WorktreeRemote,
+  WorktreeRemovalClaimed,
   WorktreeRemoved,
   WorktreeReserved,
 } from "./record-types.ts";

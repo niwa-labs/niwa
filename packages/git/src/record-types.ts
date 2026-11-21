@@ -60,13 +60,27 @@ export const CheckoutVerified = record("git.worktree.verified", WorktreeCoordina
   directories: z.array(z.string()).length(3),
 }));
 
-/** A worktree was removed: its directory and its branch are gone. */
+/** The exact registered checkout and project expected by an automated cleanup. */
+export const RemovalMatch = Worktree.pick({ repo: true, path: true, branch: true }).extend({
+  head: CommitId,
+  project: z.strictObject({ host: z.string().min(1), path: z.string().min(1) }),
+}).strict();
+export type RemovalMatch = z.infer<typeof RemovalMatch>;
+
+/** A removal was authorized against a particular checkout before invoking Git. */
+export const WorktreeRemovalClaimed = record(
+  "git.worktree.removal.claimed",
+  z.object({ id: WorktreeId, onlyIf: RemovalMatch }),
+);
+
+/** A managed checkout was removed. Ordinary removal deletes the branch as well. */
 export const WorktreeRemoved = record(
   "git.worktree.removed",
   z.object({
     id: WorktreeId,
     /** Whether it was removed past a refusal (dirty, ahead of its base, a live session in it). */
     forced: z.boolean(),
+    branchKept: z.literal(true).optional(),
   }),
 );
 
@@ -124,4 +138,4 @@ export const RemoteUpdated = record(
 );
 
 /** Every record type of the git module. */
-export const GIT_TYPES = [WorktreeReserved, CheckoutVerified, WorktreeCreated, WorktreeRemoved, HeadMoved, RemoteUpdated] as const;
+export const GIT_TYPES = [WorktreeReserved, CheckoutVerified, WorktreeCreated, WorktreeRemovalClaimed, WorktreeRemoved, HeadMoved, RemoteUpdated] as const;

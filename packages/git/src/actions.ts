@@ -10,7 +10,7 @@ import { z } from "zod";
 
 import { EntityDescription, SessionRefSchema, actionRef, getRef, listRef } from "@niwa-labs/core";
 
-import { CommitId, Worktree, WorktreeId, WorktreeRemote } from "./record-types.ts";
+import { CommitId, RemovalMatch, Worktree, WorktreeId, WorktreeRemote } from "./record-types.ts";
 
 /** What a worktree is made from for `session.start`, `session()` and `ask()`: `true`, or the parts to choose. */
 export const WorktreeOption = z.union([
@@ -100,8 +100,10 @@ export const gitWorktreeRemove = actionRef("git.worktree.remove", {
     "Remove a git worktree: its directory and its branch. It is refused when the worktree is dirty, has commits its base does not have " +
     "(on its branch or on the head of its checkout), a live niwa session runs in it, or it cannot be read, unless `force`; " +
     "git's own refusals (a locked worktree) stand without it. An orphan directory (no record, or one that took the place of a removed worktree) " +
-    "is removed only with `force`. A worktree that is gone already is a no-op.",
-  input: z.strictObject({ id: z.string().min(1), force: z.boolean().optional() }),
+    "is removed only with `force`. A worktree that is gone already is a no-op. With `onlyIf`, remove only the clean registered " +
+    "checkout matching the local repository, branch, head and forge project. This mode retains the branch and uses no force.",
+  input: z.strictObject({ id: z.string().min(1), force: z.boolean().optional(), onlyIf: RemovalMatch.optional() })
+    .refine((input) => input.force !== true || input.onlyIf === undefined, { message: "onlyIf cannot be combined with force" }),
   output: z.object({ id: z.string().min(1), removed: z.boolean() }),
 });
 
