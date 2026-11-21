@@ -51,4 +51,12 @@ describe("rendering", () => {
       'aria-label="Waiting for the owner"',
     );
   });
+
+  test("the copy button stays in the tab order and is only faded until hover or focus", () => {
+    const html = renderToString(<IdChip id="run-1f3a9c" />);
+    const button = /<button[^>]*>/.exec(html)![0];
+    expect(button).toContain("opacity-0");
+    expect(button).toContain("focus-visible:opacity-100");
+    expect(button).not.toMatch(/class="[^"]*\bhidden\b/);
+  });
 });
