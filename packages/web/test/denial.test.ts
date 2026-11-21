@@ -52,5 +52,6 @@ test("with the switch off every route answers a plain client's call with 403, no
   expect((await post(web, "/answer", { request: "req-1", answer: { ids: ["yes"] } })).status).toBe(403);
   expect((await post(web, "/resolve", { invocation: "inv-1", choice: "retry" })).status).toBe(403);
   expect((await webFetch(`${web.url}/feed`)).status).toBe(403);
+  expect((await webFetch(`${web.url}/events`)).status).toBe(403);
   expect((await webFetch(`${web.url}/api/history?after=0`)).status).toBe(403);
 });

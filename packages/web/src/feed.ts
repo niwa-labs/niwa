@@ -44,17 +44,6 @@ export interface FeedEntry {
   readonly at: number;
 }
 
-/** Whether a record can change the feed. */
-function isFeedRecord(record: StoredRecord): boolean {
-  return (
-    record.type === CORE_TYPES.invocationState ||
-    record.type === CORE_TYPES.invocationResolved ||
-    record.type === REQUEST_CREATED ||
-    record.type === SESSION_STARTED ||
-    REQUEST_CLOSING.includes(record.type)
-  );
-}
-
 /** A field of record data, when it is a string. */
 function field(data: unknown, name: string): string | undefined {
   const value = (data as Record<string, unknown> | null)?.[name];
@@ -137,24 +126,57 @@ function choicesOf(value: unknown): FeedChoice[] {
   );
 }
 
+/** The record types that can change the feed: the journal is read for these and no others. */
+const FEED_TYPES = [
+  CORE_TYPES.invocationState,
+  CORE_TYPES.invocationResolved,
+  REQUEST_CREATED,
+  SESSION_STARTED,
+  ...REQUEST_CLOSING,
+];
+
+/** How many records one read of the snapshot takes, so no answer grows with the journal. */
+const SNAPSHOT_PAGE = 500;
+
+/** The records that can change the feed as they are committed now, and the position of the last of them. */
+async function snapshotOf(api: NiwaApi): Promise<{ records: StoredRecord[]; position: ReturnType<typeof seq> }> {
+  const records: StoredRecord[] = [];
+  let position = seq(0);
+  for (;;) {
+    const page = await api.records.read({ types: FEED_TYPES, from: position, limit: SNAPSHOT_PAGE });
+    records.push(...page);
+    position = page.at(-1)?.seq ?? position;
+    if (page.length < SNAPSHOT_PAGE) return { records, position };
+  }
+}
+
+/** A followed feed: the list as it stood when the follow began. `stop` closes the subscription. */
+export interface FollowedFeed {
+  readonly entries: FeedEntry[];
+  stop(): void;
+}
+
 /**
- * Follow the feed: the whole list is sent once the journal settles, and again after every change.
+ * Follow the feed: the list as it is now, read whole, and then the whole list again after every change.
  *
- * `onEnd` is called when the journal can no longer be read. `stop` closes the subscription.
+ * The subscription goes on from the position of what was read, so no record is missed and none counted twice. A burst of
+ * records is sent as one list, at most once in `SETTLE_MS`, so a steady stream cannot hold the list back. `onEnd` is called
+ * when the journal can no longer be read. A journal that cannot be read to begin with is the rejection of this call.
  */
-export function followFeed(
+export async function followFeed(
   api: NiwaApi,
   onFeed: (entries: FeedEntry[]) => void,
   onEnd: (error?: unknown) => void,
-): { stop(): void } {
-  const iterator = api.records.since()[Symbol.asyncIterator]();
-  const relevant: StoredRecord[] = [];
+): Promise<FollowedFeed> {
+  const { records: relevant, position } = await snapshotOf(api);
+  const iterator = api.records.since({ types: FEED_TYPES, from: position })[Symbol.asyncIterator]();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
 
   const schedule = (): void => {
-    clearTimeout(timer);
+    if (timer !== undefined) return;
     timer = setTimeout(() => {
+      timer = undefined;
       if (!stopped) onFeed(feedOf(relevant));
     }, SETTLE_MS);
   };
@@ -165,20 +187,18 @@ export function followFeed(
     void iterator.return?.().catch(() => undefined);
   };
 
-  schedule();
   void (async () => {
     for (;;) {
       const next = await iterator.next();
       if (next.done === true) return;
-      if (isFeedRecord(next.value)) {
-        relevant.push(next.value);
-        schedule();
-      }
+      relevant.push(next.value);
+      schedule();
     }
   })().then(
     () => {
+      const wasStopped = stopped;
       stop();
-      onEnd();
+      if (!wasStopped) onEnd();
     },
     (error: unknown) => {
       const wasStopped = stopped;
@@ -186,19 +206,10 @@ export function followFeed(
       if (!wasStopped) onEnd(error);
     },
   );
-  return { stop };
+  return { entries: feedOf(relevant), stop };
 }
 
-/** The feed as it is now: the first list of a followed feed. */
-export function readFeed(api: NiwaApi): Promise<FeedEntry[]> {
-  return new Promise((resolve, reject) => {
-    const follower = followFeed(
-      api,
-      (entries) => {
-        follower.stop();
-        resolve(entries);
-      },
-      (error) => reject(error ?? new Error("the journal ended before the feed was read")),
-    );
-  });
+/** The feed as it is now. */
+export async function readFeed(api: NiwaApi): Promise<FeedEntry[]> {
+  return feedOf((await snapshotOf(api)).records);
 }

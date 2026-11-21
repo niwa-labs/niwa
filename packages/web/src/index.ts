@@ -374,22 +374,27 @@ async function trace(api: NiwaApi, pages: WebPages, encoded: string, page: boole
 }
 
 /**
- * The feed over SSE: the whole list is sent whenever it changes, and the page keeps no state of
- * its own. The subscription ends with the stream, whoever ends it.
+ * The feed over SSE: the whole list is sent as it stands, and again whenever it changes; the page keeps no state of
+ * its own. The list is read before the stream opens, so a journal the connection may not read is refused as any request
+ * is. The subscription ends with the stream, whoever ends it.
  */
-function events(api: NiwaApi, streams: Set<() => void>): Response {
+async function events(api: NiwaApi, streams: Set<() => void>): Promise<Response> {
   const encoder = new TextEncoder();
   let end = (_close = true): void => undefined;
+  let ended = false;
+  let send = (_entries: unknown): void => undefined;
+  const follower = await followFeed(
+    api,
+    (entries) => {
+      send(entries);
+    },
+    () => end(),
+  );
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      let ended = false;
-      const follower = followFeed(
-        api,
-        (entries) => {
-          if (!ended) controller.enqueue(encoder.encode(`data: ${JSON.stringify(entries)}\n\n`));
-        },
-        () => end(),
-      );
+      send = (entries) => {
+        if (!ended) controller.enqueue(encoder.encode(`data: ${JSON.stringify(entries)}\n\n`));
+      };
       end = (close = true) => {
         if (ended) return;
         ended = true;
@@ -398,6 +403,7 @@ function events(api: NiwaApi, streams: Set<() => void>): Response {
         if (close) controller.close();
       };
       streams.add(end);
+      send(follower.entries);
     },
     cancel() {
       end(false);
