@@ -23,6 +23,7 @@ import {
   NestedSpawnedEventSchema,
   OpenedByHandEventSchema,
   PermissionAskedEventSchema,
+  SessionEndedEventSchema,
   SessionIdSchema,
 } from "@niwa-labs/harness";
 import type { InsertEvent, PermissionAnswer, PermissionAskedEvent } from "@niwa-labs/harness";
@@ -54,7 +55,10 @@ export const PermissionAsked = record(
   PermissionAskedEventSchema.omit({ kind: true }),
 );
 
-const INSERT_RECORDS = [NestedSpawned, Compacted, OpenedByHand, PermissionAsked] as const;
+/** The harness ended a session. */
+export const SessionEndedByHarness = record("insert.session-ended", SessionEndedEventSchema.omit({ kind: true }));
+
+const INSERT_RECORDS = [NestedSpawned, Compacted, OpenedByHand, PermissionAsked, SessionEndedByHarness] as const;
 
 /** What the action answers: the record that was written. */
 export const InsertReportOutputSchema = z.object({
@@ -134,7 +138,7 @@ export function insertPlugin(options: InsertPluginOptions = {}): Plugin {
     api.action(
       action(INSERT_REPORT_ACTION, {
         description:
-          "Report what a harness did inside itself: a nested session was spawned, the context was compacted, the owner opened a session by hand, or a tool asks for permission.",
+          "Report what a harness did inside itself: a nested session was spawned, the context was compacted, the owner opened a session by hand, a tool asks for permission, or a session ended.",
         input: InsertEventSchema,
         output: InsertReportOutputSchema,
         // The record is written under the id of the operation, so a report that was cut off
@@ -246,6 +250,8 @@ function write(ctx: ActionContext, event: InsertEvent) {
       return ctx.emit(OpenedByHand, withoutKind(event));
     case "permission-asked":
       return ctx.emit(PermissionAsked, withoutKind(event));
+    case "session-ended":
+      return ctx.emit(SessionEndedByHarness, withoutKind(event));
   }
 }
 

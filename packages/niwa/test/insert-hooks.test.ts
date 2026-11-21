@@ -163,6 +163,15 @@ test("insert: a nested session is linked to its parent, and a session opened by 
       detail: "rm -rf build",
     });
 
+    // The harness ended the session: its own end, with the reason it gave.
+    const end = await run(hookScript, { session_id: "hand-opened-abc", hook_event_name: "SessionEnd", reason: "prompt_input_exit" }, home.path);
+    expect(end.code).toBe(0);
+    await waitFor(() => seen.some((record) => record.type === "insert.session-ended"), "the end is recorded");
+    expect(seen.find((record) => record.type === "insert.session-ended")?.data).toEqual({
+      session: { harness: "claude-code", native: "hand-opened-abc" },
+      reason: "prompt_input_exit",
+    });
+
     // A resumed session is continued, not opened by hand; a payload without a session id is no
     // report. Neither writes anything.
     const quiet = seen.length;

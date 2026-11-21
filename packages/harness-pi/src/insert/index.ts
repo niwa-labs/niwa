@@ -5,6 +5,7 @@ export type {
   InsertReporter,
   PiInsertOptions,
   PiSessionCompact,
+  PiSessionShutdown,
   PiSessionInfo,
   PiSessionStart,
   PiUiPromptStart,

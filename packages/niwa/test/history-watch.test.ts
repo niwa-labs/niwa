@@ -10,7 +10,7 @@ import { LocatorSchema, harnessId, harnessKind, machineId, sessionId } from "@ni
 import type { AskAnswer, DeliveryReceipt, Harness, LifeEvent, SessionControl, SessionReading, SessionRecord, SessionState, StartedSession } from "@niwa-labs/harness";
 import { history } from "@niwa-labs/history";
 import type { Plugin } from "@niwa-labs/plugin";
-import { sessions } from "@niwa-labs/sessions";
+import { insertPlugin, sessions } from "@niwa-labs/sessions";
 import { tempHome } from "@niwa-labs/testing";
 
 const ID = sessionId(harnessId("h"), "s1");
@@ -196,4 +196,11 @@ test("a watch given the process of its harness guesses the session ended once th
   process.kill();
   await process.exited;
   expect(ended(await until(host.read, "history.session.ended"))).toEqual([{ session: ID, certainty: "guessed", why: "process-gone" }]);
+});
+
+test("the end the harness reports through its insert ends the watch of the session exactly", async () => {
+  const host = await hosted((reading) => [insertPlugin(), history({ harnesses: [{ instance, reading }], timing: { pollMs: 10, pauseMs: 60_000, endMs: 120_000 } })], [checklist(1, 0, 1)]);
+  await host.call("history.watch", { session: ID });
+  await host.call("insert.report", { kind: "session-ended", session: ID, reason: "quit" });
+  expect(ended(await until(host.read, "history.session.ended"))).toEqual([{ session: ID, certainty: "exact", why: "end-hook" }]);
 });

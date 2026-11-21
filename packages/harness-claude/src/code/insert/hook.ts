@@ -18,6 +18,7 @@
  * - `SubagentStart` — a subagent was spawned inside a session: the child is linked to its parent.
  * - `PreCompact` — the harness is about to compact the context.
  * - `PermissionRequest` — a tool asks for permission.
+ * - `SessionEnd` — the session ended: the owner left it or cleared it.
  *
  * The script always exits 0, within `DEADLINE_MS`: a hook never blocks or crashes the harness.
  * What it could not report goes to stderr.
@@ -49,6 +50,8 @@ export interface HookInput {
   readonly tool_use_id?: string;
   /** What triggered a compaction: "manual" or "auto". */
   readonly trigger?: string;
+  /** Why a session ended: "clear", "logout", "prompt_input_exit", "other". */
+  readonly reason?: string;
 }
 
 /** What the script reports to niwa. */
@@ -75,6 +78,11 @@ export type Report =
       readonly requestId: string;
       readonly tool: string;
       readonly detail?: string;
+    }
+  | {
+      readonly kind: "session-ended";
+      readonly session: { readonly harness: string; readonly native: string };
+      readonly reason?: string;
     };
 
 /**
@@ -132,6 +140,13 @@ export function reportOf(input: HookInput, env: NodeJS.ProcessEnv): Report | nul
         requestId: input.tool_use_id ?? `${sessionId}:${tool}`,
         tool,
         ...(detail === undefined ? {} : { detail }),
+      };
+    }
+    case "SessionEnd": {
+      return {
+        kind: "session-ended",
+        session: sessionOf(env, sessionId),
+        ...(input.reason === undefined ? {} : { reason: input.reason }),
       };
     }
     default:

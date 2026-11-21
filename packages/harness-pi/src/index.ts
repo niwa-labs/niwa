@@ -66,7 +66,7 @@ export const PI_CAPABILITIES: KindCapabilities = {
     launch: { model: VERIFIED, effort: PI_LAUNCH.effort, modes: PI_LAUNCH.modes },
     tools: { niwaOnly: UNSUPPORTED, allow: ADMITTED },
   },
-  insert: { nested: UNSUPPORTED, compaction: VERIFIED, manualOpen: VERIFIED, permission: VERIFIED },
+  insert: { nested: UNSUPPORTED, compaction: VERIFIED, manualOpen: VERIFIED, permission: VERIFIED, end: ADMITTED },
 };
 
 /** What the kind needs: the installation that is read, and how its sides are set up. */
@@ -141,6 +141,7 @@ export type {
   PiExtensionContext,
   PiInsertOptions,
   PiSessionCompact,
+  PiSessionShutdown,
   PiSessionInfo,
   PiSessionStart,
   PiUiPromptStart,

@@ -90,6 +90,7 @@ export function hooksJson(bun = "bun", home?: string, cli?: string, harness?: st
         SubagentStart: [{ hooks: [handler] }],
         PreCompact: [{ hooks: [handler] }],
         PermissionRequest: [{ hooks: [handler] }],
+        SessionEnd: [{ hooks: [handler] }],
       },
     },
     null,

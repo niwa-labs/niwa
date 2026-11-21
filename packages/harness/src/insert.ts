@@ -79,12 +79,25 @@ export const PermissionAskedEventSchema = z.object({
 
 export type PermissionAskedEvent = z.output<typeof PermissionAskedEventSchema>;
 
+/** The harness ended a session: the owner left it, cleared it or moved to another. */
+export const SessionEndedEventSchema = z.object({
+  kind: z.literal("session-ended"),
+  /** The session that ended. */
+  session: SessionIdSchema,
+  /** Why it ended, in the harness's own words, when it says. */
+  reason: z.string().optional(),
+  at: z.number().int().nonnegative().optional(),
+});
+
+export type SessionEndedEvent = z.output<typeof SessionEndedEventSchema>;
+
 /** What cannot be seen from outside. */
 export const InsertEventSchema = z.discriminatedUnion("kind", [
   NestedSpawnedEventSchema,
   CompactedEventSchema,
   OpenedByHandEventSchema,
   PermissionAskedEventSchema,
+  SessionEndedEventSchema,
 ]);
 
 export type InsertEvent = z.output<typeof InsertEventSchema>;

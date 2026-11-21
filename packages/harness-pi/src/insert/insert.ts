@@ -60,6 +60,11 @@ export interface PiSessionCompact {
   readonly compactionEntry: { readonly summary: string };
 }
 
+/** Pi's "session_shutdown": pi leaves the session, to quit or for another one; a reload stays in it. */
+export interface PiSessionShutdown {
+  readonly reason: "quit" | "reload" | "new" | "resume" | "fork";
+}
+
 /** Pi's "ui_prompt_start": a blocking question pi asks the person. */
 export interface PiUiPromptStart {
   readonly kind: "select" | "confirm" | "input" | "editor" | "custom";
@@ -132,6 +137,12 @@ export class PiInsert implements HarnessInsert {
       summary: event.compactionEntry.summary,
       at: Date.now(),
     });
+  }
+
+  /** Pi left the session: it quit, or went on in another one. A reload goes on in the same session. */
+  async onSessionShutdown(event: PiSessionShutdown, session: PiSessionInfo): Promise<void> {
+    if (event.reason === "reload") return;
+    await this.emit({ kind: "session-ended", session: piSession(session.id), reason: event.reason, at: Date.now() });
   }
 
   /** Pi has no id for a prompt, so the insert numbers them within the session. */

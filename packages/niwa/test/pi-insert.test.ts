@@ -109,6 +109,15 @@ test("a session niwa started is not reported as opened by hand", async () => {
   expect(reported).toEqual([]);
 });
 
+test("pi leaving a session is its end, and a reload is not", async () => {
+  const reported: unknown[] = [];
+  const insert = new PiInsert({ report: async (event) => void reported.push(event) });
+  await insert.onSessionShutdown({ reason: "reload" }, session);
+  expect(reported).toEqual([]);
+  for (const reason of ["quit", "new", "resume", "fork"] as const) await insert.onSessionShutdown({ reason }, session);
+  expect(reported).toEqual(["quit", "new", "resume", "fork"].map((reason) => ({ kind: "session-ended", session: piSession(session.id), reason, at: expect.any(Number) })));
+});
+
 test("the readers of the insert get the events from the moment they listen", async () => {
   const insert = new PiInsert({ report: async () => {} });
   await insert.onSessionCompact({ compactionEntry: { summary: "missed" } }, session);

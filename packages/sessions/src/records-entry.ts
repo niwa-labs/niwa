@@ -84,5 +84,6 @@ export {
   OpenedByHand,
   PERMISSION_QUESTION,
   PermissionAsked,
+  SessionEndedByHarness,
 } from "./insert-plugin.ts";
 export type { InsertReportOutput } from "./insert-plugin.ts";

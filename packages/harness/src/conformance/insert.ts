@@ -27,6 +27,7 @@ const EVENT_ABILITY = {
   compacted: "compaction",
   "opened-by-hand": "manualOpen",
   "permission-asked": "permission",
+  "session-ended": "end",
 } as const satisfies Record<InsertEvent["kind"], keyof InsertCapabilities>;
 
 /** Events read at most; a side that never ends its stream must not hang the suite. */

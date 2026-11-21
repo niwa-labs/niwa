@@ -91,7 +91,7 @@ test("an installation that claims more than its kind is refused, each excess nam
       launch: { model: true, effort: ["low", "max"], modes: ["ask", "full"] },
       tools: { niwaOnly: true, allow: true },
     },
-    insert: { nested: false, compaction: true, manualOpen: false, permission: false },
+    insert: { nested: false, compaction: true, manualOpen: false, permission: false, end: false },
   });
   let refused: unknown;
   try {

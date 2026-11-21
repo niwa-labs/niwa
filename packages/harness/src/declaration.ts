@@ -64,7 +64,7 @@ export const ControlDeclarationSchema = z
   .strict();
 
 export const InsertDeclarationSchema = z
-  .object({ nested: SupportSchema, compaction: SupportSchema, manualOpen: SupportSchema, permission: SupportSchema })
+  .object({ nested: SupportSchema, compaction: SupportSchema, manualOpen: SupportSchema, permission: SupportSchema, end: SupportSchema })
   .strict();
 
 /** Every ability of every side. A side the kind has no code for declares all of its abilities unsupported. */
@@ -95,6 +95,7 @@ export const NO_INSERT: KindCapabilities["insert"] = {
   compaction: UNSUPPORTED,
   manualOpen: UNSUPPORTED,
   permission: UNSUPPORTED,
+  end: UNSUPPORTED,
 };
 
 /** A reading side that declares nothing: for a kind without one. */
@@ -137,6 +138,7 @@ export function sidesOf(declared: KindCapabilities): SideCapabilities {
             compaction: on(insert.compaction),
             manualOpen: on(insert.manualOpen),
             permission: on(insert.permission),
+            end: on(insert.end),
           },
         }
       : {}),

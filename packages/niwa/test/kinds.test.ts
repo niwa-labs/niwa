@@ -138,6 +138,7 @@ function installation(
               compaction: true,
               manualOpen: true,
               permission: false,
+              end: false,
             },
           }
         : {}),
@@ -157,6 +158,7 @@ function insertInstallation(kind: HarnessKind, home = "/tmp/niwa-kinds-pi"): Har
     compaction: true,
     manualOpen: true,
     permission: false,
+    end: false,
   };
   return {
     id: HARNESS,

@@ -267,6 +267,7 @@ test("the insert conformance suite passes against a toy side", async () => {
       requestId: "req-1",
       tool: "write",
     },
+    { kind: "session-ended", session: { harness: "toy" as never, native: "toy-2" as never }, reason: "quit" },
   ];
   const answers: PermissionAnswer[] = [];
   const insert: HarnessInsert = {
@@ -279,7 +280,7 @@ test("the insert conformance suite passes against a toy side", async () => {
   };
   const instance: Harness = {
     ...toyInstance,
-    sides: { insert: { nested: true, compaction: true, manualOpen: true, permission: true } },
+    sides: { insert: { nested: true, compaction: true, manualOpen: true, permission: true, end: true } },
   };
   const report = await insertConformance("toy", { instance, insert })();
   const failed = report.results.filter((result) => !result.passed);
@@ -392,7 +393,7 @@ test("the insert suite fails a side that declares an event it never reports", as
   };
   const instance: Harness = {
     ...toyInstance,
-    sides: { insert: { nested: false, compaction: true, manualOpen: true, permission: false } },
+    sides: { insert: { nested: false, compaction: true, manualOpen: true, permission: false, end: false } },
   };
   const report = await insertConformance("toy", { instance, insert })();
   expect(failures(report).map((f) => f.split(" is reported")[0])).toEqual(["events: compacted"]);

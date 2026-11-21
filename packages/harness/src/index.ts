@@ -337,6 +337,7 @@ export {
   OpenedByHandEventSchema,
   PermissionAnswerSchema,
   PermissionAskedEventSchema,
+  SessionEndedEventSchema,
   eventSession,
 } from "./insert.ts";
 export type {
@@ -349,6 +350,7 @@ export type {
   OpenedByHandEvent,
   PermissionAnswer,
   PermissionAskedEvent,
+  SessionEndedEvent,
 } from "./insert.ts";
 
 export { SCENARIOS } from "./conformance/fixtures.ts";

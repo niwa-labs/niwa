@@ -69,7 +69,7 @@ export const CLAUDE_CODE_CAPABILITIES: KindCapabilities = {
     launch: { model: VERIFIED, effort: CLAUDE_CODE_LAUNCH.effort, modes: CLAUDE_CODE_LAUNCH.modes },
     tools: { niwaOnly: ADMITTED, allow: ADMITTED },
   },
-  insert: { nested: ADMITTED, compaction: ADMITTED, manualOpen: ADMITTED, permission: ADMITTED },
+  insert: { nested: ADMITTED, compaction: ADMITTED, manualOpen: ADMITTED, permission: ADMITTED, end: ADMITTED },
 };
 
 /** What the kind needs: the installation, and how its control side is set up. */

@@ -14,6 +14,7 @@ import type { InsertReporter } from "./insert.ts";
 import type {
   PiSessionCompact,
   PiSessionInfo,
+  PiSessionShutdown,
   PiSessionStart,
   PiUiPromptStart,
 } from "./insert.ts";
@@ -58,6 +59,9 @@ export default function niwaPiExtension(pi: PiExtensionApi): void {
   );
   pi.on<PiSessionCompact>("session_compact", (event, ctx) =>
     safely(() => insert.onSessionCompact(event, sessionOf(ctx))),
+  );
+  pi.on<PiSessionShutdown>("session_shutdown", (event, ctx) =>
+    safely(() => insert.onSessionShutdown(event, sessionOf(ctx))),
   );
   pi.on<PiUiPromptStart>("ui_prompt_start", (event, ctx) =>
     safely(() => insert.onUiPromptStart(event, sessionOf(ctx))),

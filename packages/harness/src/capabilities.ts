@@ -88,6 +88,8 @@ export const InsertCapabilitiesSchema = z.object({
   manualOpen: z.boolean(),
   /** Reports that a tool asks for permission. */
   permission: z.boolean(),
+  /** Reports that the harness ended a session. */
+  end: z.boolean(),
 });
 export type InsertCapabilities = z.output<typeof InsertCapabilitiesSchema>;
 
