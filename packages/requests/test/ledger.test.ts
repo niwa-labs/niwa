@@ -10,7 +10,7 @@ import { REQUEST_TYPES, RequestCancelledRecord, RequestCreated, RequestId } from
 import { RequestLedger } from "../src/state.ts";
 
 /** A journal that holds the records it is given: all the ledger asks of it is `since`. */
-function journalOf(rows: ReadonlyArray<{ type: string; data: unknown }>): JournalReader {
+function journalOf(rows: ReadonlyArray<{ type: string; data: unknown; actor?: StoredRecord["actor"] }>): JournalReader {
   const stored = rows.map(
     (row, index): StoredRecord => ({
       id: recordId(`r${String(index + 1)}`),
@@ -19,7 +19,7 @@ function journalOf(rows: ReadonlyArray<{ type: string; data: unknown }>): Journa
       type: row.type as StoredRecord["type"],
       schema: 1,
       data: row.data,
-      actor: { kind: "host" },
+      actor: row.actor ?? { kind: "host" },
       cause: null,
       root: recordId(`r${String(index + 1)}`),
       at: 0 as StoredRecord["at"],
@@ -48,4 +48,17 @@ test("the full id of a request the caller may not see is not turned into another
   const ledger = new RequestLedger(REQUEST_TYPES.map((type) => type.name), () => journal);
   // Only the longer one is the caller's: the exact id still names the first, which it may not act on.
   expect(ledger.named({ id: "req-123456" }, (request) => request.id === "req-1234567")).toBe(RequestId.parse("req-123456"));
+});
+
+
+test("rebuilding a request ignores an unissued end and keeps the provider's end", () => {
+  const birth = created("req-123456");
+  const end = { type: RequestCancelledRecord.name, data: { id: birth.data.id } };
+  const writer: StoredRecord["actor"] = { kind: "client", id: "reader" as never };
+  const journal = journalOf([birth, { ...end, actor: writer }]);
+  const ledger = new RequestLedger(REQUEST_TYPES.map((type) => type.name), () => journal);
+  expect(ledger.requests().get(RequestId.parse(birth.data.id))?.status).toBe("open");
+  const restored = journalOf([birth, { ...end, actor: writer }, { ...end, actor: { ...writer, issuedBy: "requests" } }]);
+  const finalized = new RequestLedger(REQUEST_TYPES.map((type) => type.name), () => restored);
+  expect(finalized.requests().get(RequestId.parse(birth.data.id))?.status).toBe("cancelled");
 });

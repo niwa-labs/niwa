@@ -4,8 +4,9 @@
 
 import { expect, test } from "bun:test";
 
-import { chatId, telegram } from "@niwa-labs/telegram";
+import { Pressed, Received, Posted, chatId, telegram } from "@niwa-labs/telegram";
 import type { Bot, ChatId, MessageId, Update, UpdateId, UserId } from "@niwa-labs/telegram";
+import type { RecordType } from "@niwa-labs/core";
 import { connectAsOwner, createNiwa, eventually, loginWeb, tempHome, webFetch } from "@niwa-labs/testing";
 
 import { connect, token } from "@niwa-labs/client";
@@ -127,8 +128,15 @@ test("Telegram and Cockpit replies follow their own turns across concurrent call
     const first = turns.find((row) => row.text === "Telegram first")!;
     const second = turns.find((row) => row.text === "Telegram second")!;
     const secret = token(control.starts[0]!.env![TOKEN_ENV]!);
-    const outsider = await connect({ home: home.path, id: "another-session", token: host.issueToken(principalOf("session", "other"), { grant: grant(["agent.reply"]) }) });
+    const protectedTypes: readonly RecordType<unknown>[] = [Received, Pressed, Posted, AgentTurnReplied];
+    const outsider = await connect({ home: home.path, id: "another-session", token: host.issueToken(principalOf("session", "other"), { grant: grant(["agent.reply", ...protectedTypes.map((type) => `emit:${type.name}`)]) }) });
     try {
+      // Admission applies before payload parsing or a guard fold, even for an explicit emit rule.
+      for (const type of protectedTypes) {
+        await expect(outsider.emit(type, {})).rejects.toThrow(/closed/);
+      }
+      expect(await host.records.read({ types: [AgentTurnReplied.name] })).toHaveLength(0);
+      expect(fake.sent).toEqual([]);
       await expect(outsider.call(agentReply, { turn: first.turn, text: "Wrong conversation" })).rejects.toThrow();
     } finally {
       await outsider.close();
@@ -162,7 +170,15 @@ test("Telegram and Cockpit replies follow their own turns across concurrent call
     const restarted = await connect({ home: home.path, id: "same-session", token: secret });
     try {
       expect(await restarted.call(agentReply, { turn: first.turn, text: "First answer" })).toEqual({ turn: first.turn });
-      expect((await host.records.read()).filter((row) => row.type === AgentTurnReplied.name)).toHaveLength(3);
+      const receipts = await host.records.read({ types: [AgentTurnReplied.name] });
+      expect(receipts).toHaveLength(3);
+      const receipt = receipts[0]!;
+      expect(receipt.actor).toMatchObject({ kind: "client", issuedBy: "agents" });
+      const reply = AgentTurnReplied.schema.parse(receipt.data);
+      const guard = AgentTurnReplied.guard!;
+      const unissued = { ...receipt, actor: { ...receipt.actor, issuedBy: undefined } };
+      expect(guard.fold(guard.initial(), reply, unissued)).toBe(false);
+      expect(guard.fold(guard.initial(), reply, receipt)).toBe(true);
       expect(fake.sent).toHaveLength(2);
       fake.refusals.add("rejected");
       fake.push(messageUpdate(22, OWNER, "Another question"));

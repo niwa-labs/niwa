@@ -1080,8 +1080,9 @@ test("telegram: without speaksFor the surface is a plain client, and its press i
 }, 30_000);
 
 test("telegram: the binding is the owner with speaksFor and a plain client without it", () => {
-  const handler: Caller = { kind: "handler", handler: "telegram/answer" as HandlerId, invocation: "inv" as InvocationId };
+  const handler: Caller = { kind: "handler", handler: "telegram/press" as HandlerId, invocation: "inv" as InvocationId };
   expect(telegram(options("http://localhost")).bind()(handler)).toEqual({ kind: "owner" });
+  expect(telegram(options("http://localhost")).bind()({ ...handler, handler: "telegram/reply" as HandlerId })).toBeUndefined();
   expect(telegram(plainOptions("http://localhost")).bind()(handler)).toEqual({ kind: "client", id: "telegram" });
 });
 

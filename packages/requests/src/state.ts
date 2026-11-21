@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 
-import { CORE_TYPES, CatchableError, IdIndex, UnknownId, answerMismatch, seq, stableJson } from "@niwa-labs/core";
+import { CORE_TYPES, CatchableError, IdIndex, UnknownId, answerMismatch, providerWrote, seq, stableJson } from "@niwa-labs/core";
 import type { CallerBinding } from "@niwa-labs/plugin";
 import type { Answer, IssuedId, JournalReader, RecordId, RecordTypeName, Seq, StoredRecord, Address } from "@niwa-labs/core";
 
@@ -89,7 +89,7 @@ export function fold(facts: readonly Fact[], bind?: CallerBinding): Map<RequestI
 /** Whether the authenticated writer can speak for the owner. */
 export function operatorAnswered(fact: Fact, bind?: CallerBinding): boolean {
   const who = fact.actor;
-  if (who === undefined || who.kind === "host") return false;
+  if (who === undefined || !providerWrote({ actor: who }, "requests") || who.kind === "host") return false;
   if (who.kind === "client") return who.principal?.kind === "owner";
   // A handler is installed host code. Its binding certifies the owner on a running host;
   // offline readers have its host-stamped actor and the binding recorded by the action.
@@ -98,6 +98,7 @@ export function operatorAnswered(fact: Fact, bind?: CallerBinding): boolean {
 
 /** Apply a birth or the first accepted end of an open request. */
 function applyFact(states: Map<RequestId, RequestState>, fact: Fact, bind?: CallerBinding): Created | undefined {
+  if (!fact.actor || !providerWrote({ actor: fact.actor }, "requests")) return undefined;
   if (fact.type === RequestCreated.name) {
     const created = RequestCreated.schema.safeParse(fact.data);
     if (!created.success || states.has(created.data.id)) return undefined;

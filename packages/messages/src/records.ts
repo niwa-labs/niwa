@@ -24,14 +24,14 @@ import type { Message as MessageType } from "./envelope.ts";
  * The envelope is inside the record as it was sent, so the record of a sent message is the
  * message itself.
  */
-export const MessageSent = record("message.sent", Message);
+export const MessageSent = record("message.sent", Message, { providerOnly: "messages" });
 
 /**
  * A message was received.
  *
  * The same envelope, on the other side of the delivery.
  */
-export const MessageReceived = record("message.received", Message);
+export const MessageReceived = record("message.received", Message, { providerOnly: "messages" });
 
 /**
  * A message was delivered to a session.

@@ -289,6 +289,7 @@ export const SessionMarked = record(
     /** The mark the server was given. */
     mark: z.string().min(1),
   }),
+  { providerOnly: "sessions" },
 );
 
 /**

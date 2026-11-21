@@ -20,7 +20,7 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { RecordRefused, UnknownId, action, actionName, agent as agentAddress, addressText, isOwnerGrant, seq } from "@niwa-labs/core";
+import { RecordRefused, UnknownId, action, actionName, agent as agentAddress, addressText, isOwnerGrant, providerWrote, seq } from "@niwa-labs/core";
 import type { ActionContext, Address, Caller, JournalReader, RecordType, Step, StoredRecord } from "@niwa-labs/core";
 import { AGENT, BUILTIN_WORKFLOW, bindingOf, plugin, trigger } from "@niwa-labs/plugin";
 import type { AgentOffer, CallerBinding, MessagesOptions, Plugin, PluginApi } from "@niwa-labs/plugin";
@@ -166,8 +166,9 @@ function recordsOf(journal: JournalReader | undefined, names: readonly string[])
 }
 
 /** The data of the records of a type that parse, in the order they were written. */
-function dataOf<T>(journal: JournalReader | undefined, type: { name: string; schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } } }): T[] {
+function dataOf<T>(journal: JournalReader | undefined, type: { name: string; providerOnly?: string; schema: { safeParse(value: unknown): { success: true; data: T } | { success: false } } }): T[] {
   return recordsOf(journal, [type.name]).flatMap((stored) => {
+    if (type.providerOnly !== undefined && !providerWrote(stored, type.providerOnly)) return [];
     const parsed = type.schema.safeParse(stored.data);
     return parsed.success ? [parsed.data] : [];
   });
@@ -197,7 +198,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     const journal = () => api.journal?.();
 
     function latestFor<T>(type: RecordType<T>, field: string, value: string): T | undefined {
-      const row = journal()?.find({ type: type.name, field, equals: value }).at(-1);
+      const row = journal()?.find({ type: type.name, field, equals: value }).findLast((stored) =>
+        type.providerOnly === undefined || providerWrote(stored, type.providerOnly));
       return type.schema.safeParse(row?.data).data;
     }
 
@@ -299,7 +301,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
     // A message to an agent's address waits in its inbox as a turn, with its sender as the author. The
     // outcome and the updates of a task are facts about the task.
     for (const source of [SentToAgent, ReceivedForAgent]) {
-      api.on(source, { concurrency: Number.POSITIVE_INFINITY }, async (message, step) => {
+      api.on(source, { concurrency: Number.POSITIVE_INFINITY }, async (message, step, record) => {
+        if (!providerWrote(record, "messages")) return;
         if (message.to.kind !== "agent" || !defined().has(message.to.id)) return;
         const task = message.task !== undefined && ["update", "result", "failure"].includes(message.body.type) ? message.task : undefined;
         await step.emit(AgentTurnQueued, {
@@ -437,7 +440,8 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       id: `mailbox:${name}`,
       from: 0,
       queries: [{ types: [AgentTurnQueued.name], filter: { agent: name } }],
-      handler: async (data, step) => {
+      handler: async (data, step, record) => {
+        if (!providerWrote(record, "agents")) return;
         const turn = AgentTurnQueued.schema.parse(data);
         if (!waitingOf(name).some((queued) => queued.turn === turn.turn)) return;
         const delivered = deliver(turn, step);
@@ -628,7 +632,7 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
         await delivering.get(turn);
         const session = latestFor(SessionMarked, "mark", principal.id)?.session;
         const delivered = latestFor(AgentTurnDelivered, "turn", turn);
-        if (session === undefined || delivered?.session !== session) {
+        if (session === undefined || delivered?.session !== session || delivered.agent !== queued.agent) {
           throw new Error("The turn has no delivery receipt for this session");
         }
         const previous = () => latestFor(AgentTurnReplied, "turn", turn);

@@ -29,7 +29,7 @@ class Memory {
     since: (from: number, types?: string[]) => this.rows.filter((row) => row.seq > from && (types === undefined || types.includes(row.type))),
   } as unknown as JournalReader;
 
-  append<T>(type: RecordType<T>, data: T, id?: string, actor: Caller = { kind: "host" }): StoredRecord {
+  append<T>(type: RecordType<T>, data: T, id?: string, actor: StoredRecord["actor"] = { kind: "host" }): StoredRecord {
     const placed = id ?? `m${String(this.rows.length + 1)}`;
     const existing = this.rows.find((row) => row.id === placed);
     if (existing !== undefined) return existing;
@@ -83,7 +83,7 @@ function world(resolver?: Resolver): World {
       ({
         operationId: operation as OperationId,
         caller,
-        emit: async <T>(type: RecordType<T>, data: T) => memory.append(type, data, `${operation}/emit/1`, caller),
+        emit: async <T>(type: RecordType<T>, data: T) => memory.append(type, data, `${operation}/emit/1`, { ...caller, issuedBy: "requests" }),
       }) as unknown as ActionContext,
   };
 }

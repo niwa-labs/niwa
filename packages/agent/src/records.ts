@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import { Address, actionRef, record, stableJson } from "@niwa-labs/core";
+import { Address, actionRef, providerWrote, record, stableJson } from "@niwa-labs/core";
 import { ReplyRoute } from "@niwa-labs/messages/records";
 import { offerKey, trigger } from "@niwa-labs/plugin";
 import type { OfferKey, Trigger } from "@niwa-labs/plugin";
@@ -154,29 +154,32 @@ export const AgentTurnQueued = record(
     attachment: z.string().optional(),
     more: z.boolean().optional(),
   }),
+  { providerOnly: "agents" },
 );
 
 /** The main session and delivery path selected before this turn touches a harness. */
 export const AgentTurnRouted = record("agent.turn.routed", z.object({
   agent: AgentName, turn: TurnId, session: SessionRefText.optional(), held: z.boolean(),
-}));
+}), { providerOnly: "agents" });
 
 /** A turn reached the agent's main session. */
 export const AgentTurnDelivered = record(
   "agent.turn.delivered",
   z.object({ agent: AgentName, turn: TurnId, session: SessionRefText, receipt: DeliveryReceiptSchema }),
+  { providerOnly: "agents" },
 );
 
 /** The session accepted a routed turn and answered it. Each turn has one reply. */
 export const AgentTurnReplied = record("agent.turn.replied", z.object({
   agent: AgentName, turn: TurnId, text: z.string().min(1), replyTo: ReplyRoute,
 }), {
+  providerOnly: "agents",
   guard: {
     group: "agent.turn.reply",
     key: (reply) => reply.turn,
     initial: () => false,
     admit: (answered) => answered ? { code: "already-answered", reason: "The turn already has a reply" } : undefined,
-    fold: () => true,
+    fold: (answered, _reply, row) => answered || providerWrote(row, "agents"),
   },
 });
 
@@ -184,6 +187,7 @@ export const AgentTurnReplied = record("agent.turn.replied", z.object({
 export const AgentTurnFailed = record(
   "agent.turn.failed",
   z.object({ agent: AgentName, turn: TurnId, status: z.enum(["unsent", "possibly-sent"]), reason: z.string() }),
+  { providerOnly: "agents" },
 );
 
 /**

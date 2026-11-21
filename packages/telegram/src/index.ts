@@ -24,8 +24,8 @@
  * request in the record of the message, by bot, chat and message.
  */
 
-import { NotSent, OptionIdSchema, action, client, optionsOf, owner, questionLines, record } from "@niwa-labs/core";
-import type { Action, ActionContext, Answer, Caller, JournalReader, Outcome, RecordType, SpeaksFor } from "@niwa-labs/core";
+import { NotSent, OptionIdSchema, action, client, optionsOf, owner, providerWrote, questionLines, record } from "@niwa-labs/core";
+import type { Action, ActionContext, Answer, Caller, JournalReader, Outcome, RecordType, SpeaksFor, StoredRecord } from "@niwa-labs/core";
 import { AgentTurnFailed, AgentTurnQueued, AgentTurnReplied, agentTell } from "@niwa-labs/agent/records";
 import { bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, Plugin, PluginApi, ServiceContext } from "@niwa-labs/plugin";
@@ -166,12 +166,14 @@ export const Received = record(
     /** The message it replies to, when it is a reply. */
     reply: messageSchema.optional(),
   }),
+  { providerOnly: "telegram" },
 );
 
 /** A message from another chat: not the owner's, so only the fact of it is kept. */
 export const Ignored = record(
   TELEGRAM_IGNORED,
   z.object({ ...Source, update: updateSchema, chat: chatSchema, message: messageSchema }),
+  { providerOnly: "telegram" },
 );
 
 /** A request that was posted to the owner, with the buttons that answer it. */
@@ -193,6 +195,7 @@ export const Posted = record(
     /** The choices the buttons stand for, in the order of the buttons. */
     choices: z.array(z.string()),
   }),
+  { providerOnly: "telegram" },
 );
 
 /**
@@ -212,7 +215,13 @@ export const Pressed = record(
     /** What the button carried back. */
     data: z.string(),
   }),
+  { providerOnly: "telegram" },
 );
+
+/** The poller writes directly from its installed service after validating the Bot API update. */
+function fromPoller(record: StoredRecord): boolean {
+  return record.actor.kind === "host" && record.actor.issuedBy === undefined;
+}
 
 /** A day, in milliseconds: how long Telegram keeps an update nobody confirmed. */
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -378,7 +387,7 @@ export class TelegramService {
     if (journal !== undefined) {
       const mine = journal
         .since(0 as never, OFFSET_TYPES.map((type) => type.name))
-        .filter((stored) => (stored.data as { bot?: string }).bot === this.botId);
+        .filter((stored) => fromPoller(stored) && (stored.data as { bot?: string }).bot === this.botId);
       const newest = mine.at(-1);
       if (newest !== undefined && ctx.now() - newest.at <= this.offsetTtl) {
         const epoch = (newest.data as { epoch: number }).epoch;
@@ -654,15 +663,16 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     api.declare(Received, Ignored, Posted, Pressed, TelegramReplyDelivery);
     if (opts.agent !== undefined) {
       api.needs({ actions: [agentTell], types: [AgentTurnQueued, AgentTurnFailed, AgentTurnReplied] });
-      api.on(AgentTurnFailed, { id: "inbox-failure", from: "start" }, async (failed, step) => {
-        if (failed.agent !== opts.agent) return;
-        const row = api.journal?.()?.find({ type: AgentTurnQueued.name, field: "turn", equals: failed.turn }).at(0);
+      api.on(AgentTurnFailed, { id: "inbox-failure", from: "start" }, async (failed, step, record) => {
+        if (!providerWrote(record, "agents") || failed.agent !== opts.agent) return;
+        const row = api.journal?.()?.find({ type: AgentTurnQueued.name, field: "turn", equals: failed.turn }).find((row) => providerWrote(row, "agents"));
         const route = AgentTurnQueued.schema.safeParse(row?.data).data?.replyTo;
         if (route?.channel !== "telegram" || route.bot !== service.botId || route.chat !== opts.owner) return;
         const status = failed.status === "unsent" ? "The agent did not receive this message" : "Delivery to the agent is uncertain";
         await step.outcome(send, { text: fit(`${status}: ${failed.reason}`), replyTo: messageSchema.parse(route.message) });
       });
-      api.on(AgentTurnReplied, { id: "reply", from: "start", concurrency: Number.POSITIVE_INFINITY }, async (reply, step) => {
+      api.on(AgentTurnReplied, { id: "reply", from: "start", concurrency: Number.POSITIVE_INFINITY }, async (reply, step, record) => {
+        if (!providerWrote(record, "agents")) return;
         const route = reply.replyTo;
         if (reply.agent !== opts.agent || route.channel !== "telegram" || route.bot !== service.botId || route.chat !== opts.owner) return;
         const replyTo = messageSchema.parse(route.message);
@@ -689,8 +699,8 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     // messages after it. A delivery that failed, or was cut off by a restart, is never resent by
     // itself: the owner is asked, and only his "retry" delivers again.
     // A message the agent cannot take waits for the owner's word: the messages after it do not.
-    api.on(Received, { id: "agent", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
-      if (data.bot !== service.botId || data.chat !== opts.owner || data.text.trim() === "") return;
+    api.on(Received, { id: "agent", concurrency: Number.POSITIVE_INFINITY }, async (data, step, record) => {
+      if (!fromPoller(record) || data.bot !== service.botId || data.chat !== opts.owner || data.text.trim() === "") return;
       // A reply to the message that shows a request answers it: it is the owner's answer, not a
       // word to the agent.
       const shown =
@@ -731,8 +741,8 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     // Each request is posted on its own: a post that fails is reported and leaves the requests
     // after it alone. A new subscription reads from the start, so a request that was open before
     // this surface was installed is posted too; one that is ended or already shown is passed over.
-    api.on(RequestCreated, { id: "request", from: "start" }, async (data: Created, step) => {
-      if (data.to.kind !== "owner") return;
+    api.on(RequestCreated, { id: "request", from: "start" }, async (data: Created, step, record) => {
+      if (!providerWrote(record, "requests") || data.to.kind !== "owner") return;
       if (ended(api, data.id) || postedTo(api, data.id, service.botId, opts.owner)) return;
       const outcome = await step.outcome(postRequest, { request: data.id });
       if (outcome.status === "completed") return;
@@ -743,7 +753,8 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
     // goes on. The press says at once what became of it: a toast on the button, and a message
     // when the answer was not taken, so a refusal is never mistaken for an answer. A press on a
     // request that is not open any more is refused, and nothing waits for a decision.
-    api.on(Pressed, { id: "press", concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
+    api.on(Pressed, { id: "press", concurrency: Number.POSITIVE_INFINITY }, async (data, step, record) => {
+      if (!fromPoller(record) || data.bot !== service.botId || data.chat !== opts.owner) return;
       const told = async (toast: string, notice?: string): Promise<void> => {
         await step.outcome(acknowledge, { query: data.query, text: toast });
         if (notice !== undefined) await step.outcome(send, { text: fit(notice) });
@@ -762,10 +773,10 @@ export function telegram(opts: TelegramOptions, hooks: TelegramHooks = {}): Tele
       await told("Not accepted", `Your answer was not accepted: ${reason}`);
     });
   });
-  const handlerPrefix = `${PLUGIN_NAME}/`;
+  const ownerHandlers = new Set([`${PLUGIN_NAME}/agent`, `${PLUGIN_NAME}/press`]);
   const bind = (fallback: CallerBinding = bindingOf()): CallerBinding => {
     return (caller: Caller) => {
-      if (caller.kind === "handler" && caller.handler.startsWith(handlerPrefix)) {
+      if (caller.kind === "handler" && ownerHandlers.has(caller.handler)) {
         return opts.speaksFor === "owner" ? owner : client(PLUGIN_NAME);
       }
       return fallback(caller);
@@ -783,12 +794,12 @@ function ended(api: PluginApi, request: string): boolean {
 function endedIn(journal: JournalReader, request: string): boolean {
   const onlyOwner = createdOf(journal, request)?.answerPolicy === "owner-only";
   return END_TYPES.some((type) => journal.find({ type, field: "id", equals: request }).some((row) =>
-    !onlyOwner || type !== RequestAnswered.name || operatorAnswered(row)));
+    providerWrote(row, "requests") && (!onlyOwner || type !== RequestAnswered.name || operatorAnswered(row))));
 }
 
 /** The request as it was created, when the journal holds it. */
 function createdOf(journal: JournalReader, request: string): Created | undefined {
-  const found = journal.find({ type: RequestCreated.name, field: "id", equals: request }).at(0);
+  const found = journal.find({ type: RequestCreated.name, field: "id", equals: request }).find((row) => providerWrote(row, "requests"));
   if (found === undefined) return undefined;
   const parsed = RequestCreated.schema.safeParse(found.data);
   return parsed.success ? parsed.data : undefined;
@@ -800,7 +811,7 @@ function postedTo(api: PluginApi, request: string, bot: string, chat: ChatId): b
   if (journal === undefined) return false;
   return journal.find({ type: Posted.name, field: "request", equals: request }).some((stored) => {
     const parsed = Posted.schema.safeParse(stored.data);
-    return parsed.success && parsed.data.bot === bot && parsed.data.chat === chat;
+    return providerWrote(stored, "telegram") && parsed.success && parsed.data.bot === bot && parsed.data.chat === chat;
   });
 }
 
@@ -829,7 +840,7 @@ async function postedFor(
       ?.find({ type: Posted.name, field: "message", equals: at.message })
       .flatMap((stored) => {
         const parsed = Posted.schema.safeParse(stored.data);
-        return parsed.success && parsed.data.bot === at.bot && parsed.data.chat === at.chat ? [parsed.data] : [];
+        return providerWrote(stored, "telegram") && parsed.success && parsed.data.bot === at.bot && parsed.data.chat === at.chat ? [parsed.data] : [];
       })
       .at(-1);
     if (found !== undefined) return found;

@@ -28,7 +28,7 @@ const TWO_ID = idSchema("session").parse("s-d4e5f6");
 async function served(): Promise<Host> {
   const home = await tempHome();
   const host = createNiwa({ home: home.path });
-  host.use(plugin("fake-sessions", (api) => api.declare(...SESSION_TYPES)));
+  host.use(plugin("sessions", (api) => api.declare(...SESSION_TYPES)));
   await host.serve();
   hosts.push(host);
   await host.emit(SessionStarted, { session: ONE, id: ONE_ID });

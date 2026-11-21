@@ -250,13 +250,12 @@ test("the decision of an allowed ask records the scope that let it through", asy
   );
 });
 
-test("a subject that may write the answer record itself cannot confirm its own call as the owner", async () => {
+test("an emit grant on a provider-only answer leaves the question open for its owner", async () => {
   const s = await served([{ do: "probe.run", ask: true }, "emit:request.answered"]);
   const pending = call(s.subject, "probe.run", "a");
   await eventually(async () => (await s.open()).length === 1);
   const [asked] = await s.open();
-  // The record says the owner answered, but the one who wrote it is the subject's own client.
-  await s.subject.emit(RequestAnswered, { id: asked?.id as never, answer: pick("always"), by: ownerAddress });
+  await expect(s.subject.emit(RequestAnswered, { id: asked?.id as never, answer: pick("always"), by: ownerAddress })).rejects.toThrow(/closed/);
   expect(await s.open()).toHaveLength(1);
   expect(ran).toEqual([]);
   const rows = await s.host.records.read({ types: [CORE_TYPES.accessAnswered] });

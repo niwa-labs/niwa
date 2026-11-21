@@ -45,6 +45,7 @@ export const RequestCreated = record(
     /** When the request stops waiting. A request without one waits for ever. */
     deadline: Deadline.optional(),
   }),
+  { providerOnly: "requests" },
 );
 
 /** A request was answered, by the address the caller is bound to. */
@@ -66,6 +67,7 @@ export const RequestAnswered = record(
     /** What the answer came from: the id of a decision, or of a record. */
     source: z.string().min(1).optional(),
   }),
+  { providerOnly: "requests" },
 );
 
 /** A request was cancelled: nobody chose to be answered any more. */
@@ -76,6 +78,7 @@ export const RequestCancelledRecord = record(
     reason: z.string().optional(),
     by: Address.optional(),
   }),
+  { providerOnly: "requests" },
 );
 
 /** A request expired: the time ran out, nobody chose anything. */
@@ -85,6 +88,7 @@ export const RequestExpiredRecord = record(
     id: RequestId,
     reason: z.string().optional(),
   }),
+  { providerOnly: "requests" },
 );
 
 /**

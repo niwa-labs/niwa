@@ -16,7 +16,7 @@
 
 import { z } from "zod";
 
-import { action, isSuspend, recordId, stableJson, Address } from "@niwa-labs/core";
+import { action, isSuspend, providerWrote, recordId, stableJson, Address } from "@niwa-labs/core";
 import type { Action, Answer, Caller, OperationId, RecordId, RecordType, Timestamp } from "@niwa-labs/core";
 import { COCKPIT_MODULE, plugin, bindingOf } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
@@ -137,7 +137,6 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
       // Outside an invocation nothing waits, so there is nothing to hold it for.
       const waits = ctx.invocation !== undefined;
       if (waits && input.check !== undefined) holdAnswerCheck(id, input.check);
-      let ended;
       try {
         const created = await ctx.emit(RequestCreated, {
           id,
@@ -153,7 +152,7 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
         if (!waits) return { id, status: "open" as const };
         let after = created.seq;
         for (;;) {
-          ended = await ctx.waitAnyOf(
+          const ended = await ctx.waitAnyOf(
             [
               { type: RequestAnswered, filter: { id } },
               { type: RequestCancelledRecord, filter: { id } },
@@ -161,7 +160,6 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
             ] as const,
             { from: after },
           );
-          if (input.answerPolicy !== "owner-only") break;
           const state = ledger.requests().get(id);
           if (state?.status === "answered") {
             releaseAnswerCheck(id);
@@ -169,7 +167,7 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
           }
           if (state?.status === "cancelled") throw new RequestCancelled(id);
           if (state?.status === "expired") throw new RequestExpired(id);
-          // A raw answer written by someone other than the owner leaves this decision open.
+          // A historical row without provider provenance cannot end the wait.
           after = ended.at;
         }
       } catch (error) {
@@ -178,14 +176,6 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
         if (!isSuspend(error)) releaseAnswerCheck(id);
         throw error;
       }
-      releaseAnswerCheck(id);
-      if (ended.type === RequestCancelledRecord.name) throw new RequestCancelled(id);
-      if (ended.type === RequestExpiredRecord.name) throw new RequestExpired(id);
-      // Only the answer carries an answer: the two ends of a request carry none.
-      if (!("answer" in ended.data)) {
-        throw new RequestRefusal("bad-answer", `the request "${id}" ended without an answer`);
-      }
-      return { id, answer: ended.data.answer };
     },
   });
 }
@@ -223,7 +213,7 @@ export interface Expiry {
  */
 function writtenBefore<T extends { id: RequestId }>(ledger: RequestLedger, operation: OperationId, type: RecordType<T>): T | undefined {
   const stored = ledger.recordOf(createdRecordOf(operation));
-  if (stored?.type !== type.name) return undefined;
+  if (stored?.type !== type.name || !providerWrote(stored, "requests")) return undefined;
   const data = type.schema.safeParse(stored.data);
   return data.success ? data.data : undefined;
 }
@@ -577,18 +567,21 @@ export function requests(opts: RequestsOptions = {}): Plugin {
         asks.end(data.id, outcomeOf(state.answer), bind(written.actor));
       }
     });
-    api.on(RequestCancelledRecord, (data) => {
+    api.on(RequestCancelledRecord, (data, _step, record) => {
+      if (!providerWrote(record, "requests")) return;
       rearm?.();
       asks.end(data.id, "unanswered");
     });
-    api.on(RequestExpiredRecord, (data) => {
+    api.on(RequestExpiredRecord, (data, _step, record) => {
+      if (!providerWrote(record, "requests")) return;
       rearm?.();
       asks.end(data.id, "unanswered");
     });
 
     // A request reaches its resolvers as soon as it exists; a resolver that fails leaves it open.
     // A resolver may take its time over one request: the others do not wait for it.
-    api.on(RequestCreated, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
+    api.on(RequestCreated, { concurrency: Number.POSITIVE_INFINITY }, async (data, step, record) => {
+      if (!providerWrote(record, "requests")) return;
       rearm?.();
       if (data.answerPolicy === "owner-only" || resolvers.resolversFor(data.question).length === 0) return;
       await step(written.resolve, { id: data.id });
