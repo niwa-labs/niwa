@@ -65,7 +65,7 @@ import {
 import { LIVE_PROCESS_REFUSAL, SandboxUnavailable, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess } from "@niwa-labs/sandbox";
 import { AcpClient, answerText, acpVariant, readVariant } from "@niwa-labs/acp";
-import type { AgentNotification, AgentRequest, RpcOutcome, UnknownVariant } from "@niwa-labs/acp";
+import type { AgentNotification, AgentRequest, RpcOutcome, UnknownVariant, Written } from "@niwa-labs/acp";
 import { claudeEnv } from "../options.ts";
 import { CLAUDE_CODE_LAUNCH } from "../launch.ts";
 import {
@@ -516,12 +516,15 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   // -- the JSON-RPC client --------------------------------------------------
 
   /** Write one JSON-RPC line to the child; a session that is stopping or gone is not written to. */
-  function writeLine(session: LiveSession, line: string): void {
+  function writeLine(session: LiveSession, line: string): Written {
     const stdin = session.child.stdin;
-    if (stdin === null || stdin.destroyed || session.stopping || session.ended) {
-      throw new Unavailable(harnessId, "control", "send", "the session is not running");
+    if (stdin === null || stdin.destroyed || session.stopping || session.ended) return "unsent";
+    try {
+      stdin.write(`${line}\n`);
+      return "accepted";
+    } catch {
+      return "unknown";
     }
-    stdin.write(`${line}\n`);
   }
 
   /**
@@ -547,7 +550,9 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
 
   /** A notification: no id, no answer expected. */
   function notify(session: LiveSession, method: string, params: Record<string, unknown> = {}): void {
-    session.client.notify(method, params);
+    if (session.client.notify(method, params) === "unsent") {
+      throw new Unavailable(harnessId, "control", "send", "the session is not running");
+    }
   }
 
   /** A message the snapshot of the protocol does not know: recorded as it came, never a crash. */
@@ -599,13 +604,9 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     }
   }
 
-  /** Answer an agent's request, once; a session that is gone has nobody to answer. */
+  /** Answer an agent's request, once; a session that is gone has nobody to answer, and its end says why. */
   function reply(session: LiveSession, frame: AgentRequest, result: Record<string, unknown>): void {
-    try {
-      session.client.reply(frame.id, result);
-    } catch {
-      // The child is gone; its end says why.
-    }
+    session.client.reply(frame.id, result);
   }
 
   /** The `outcome` of a permission answer, in the agent's words: a chosen option, or a cancel. */

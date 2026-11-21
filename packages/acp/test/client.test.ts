@@ -10,7 +10,10 @@ function client(overrides: Partial<AcpClientOptions> = {}) {
   const unreadable: string[] = [];
   let overflowed = 0;
   const acp = new AcpClient({
-    write: (line) => written.push(JSON.parse(line) as Record<string, unknown>),
+    write: (line) => {
+      written.push(JSON.parse(line) as Record<string, unknown>);
+      return "accepted";
+    },
     onRequest: (request) => requests.push(request),
     onNotification: (notification) => notifications.push(notification),
     onUnreadable: (line) => unreadable.push(line),
@@ -44,12 +47,8 @@ test("a call fails by how far it got: refused, never written, unanswered in time
   acp.receive('{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"busy"}}');
   expect(await refused).toEqual({ ok: false, error: "busy", code: -32000, dispatch: "refused" });
 
-  const unwritable = client({
-    write: () => {
-      throw new Error("closed pipe");
-    },
-  }).acp;
-  expect(await unwritable.request("a", {})).toEqual({ ok: false, error: "closed pipe", dispatch: "unsent" });
+  const unwritable = client({ write: () => "unsent" }).acp;
+  expect(await unwritable.request("a", {})).toEqual({ ok: false, error: "the request was not written", dispatch: "unsent" });
 
   const slow = client({ callTimeoutMs: 10 });
   expect(await slow.acp.request("a", {})).toEqual({ ok: false, error: "the call a timed out", dispatch: "uncertain", timedOut: true });
@@ -198,4 +197,54 @@ test("the limit counts bytes, and the lines of a chunk after an overflowing one 
   acp.feed(`${frameOf(100)}\n`);
   expect(notifications).toHaveLength(1);
   expect(overflowed()).toBe(1);
+});
+
+test("a request the transport did not take fails as unsent at once, and leaves nothing waiting", async () => {
+  const { acp } = client({ write: () => "unsent" });
+  const calls: unknown[] = [];
+  acp.send("session/prompt", {}, (outcome) => calls.push(outcome), { timeoutMs: null });
+  expect(calls).toEqual([{ ok: false, error: "the request was not written", dispatch: "unsent" }]);
+  expect(acp.waiting).toBe(0);
+});
+
+test("a request the transport took, or may have taken, waits for its answer; the close fails it as uncertain", async () => {
+  for (const outcome of ["accepted", "unknown"] as const) {
+    const { acp } = client({ write: () => outcome });
+    const call = acp.request("a", {}, { timeoutMs: null });
+    expect(acp.waiting).toBe(1);
+    acp.close("the agent exited");
+    expect(await call).toEqual({ ok: false, error: "the agent exited", dispatch: "uncertain" });
+  }
+});
+
+test("a write that throws leaves it unknown whether the request left: the call fails as uncertain", async () => {
+  const { acp } = client({
+    write: () => {
+      throw new Error("closed pipe");
+    },
+  });
+  expect(await acp.request("a", {}, { timeoutMs: null })).toEqual({ ok: false, error: "closed pipe", dispatch: "uncertain" });
+  expect(acp.waiting).toBe(0);
+});
+
+test("a request that cannot be serialized never reaches the transport and fails as unsent", async () => {
+  const { acp, written } = client();
+  expect(await acp.request("a", { big: 1n }, { timeoutMs: null })).toMatchObject({ ok: false, dispatch: "unsent" });
+  expect(written).toEqual([]);
+  expect(acp.waiting).toBe(0);
+});
+
+test("a notification, a reply and a refusal say what became of the line", () => {
+  for (const outcome of ["accepted", "unsent", "unknown"] as const) {
+    const { acp } = client({ write: () => outcome });
+    expect(acp.notify("session/cancel", {})).toBe(outcome);
+    expect(acp.reply(1, {})).toBe(outcome);
+    expect(acp.refuse(1, -32601, "no")).toBe(outcome);
+  }
+  const throwing = client({
+    write: () => {
+      throw new Error("closed pipe");
+    },
+  }).acp;
+  expect(throwing.notify("session/cancel", {})).toBe("unknown");
 });

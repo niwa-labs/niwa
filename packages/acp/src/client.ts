@@ -7,7 +7,8 @@
  * client only frames, matches and settles.
  *
  * A call that fails says how far it got (`Dispatch`): never written, refused by the agent, or
- * written and never answered. Only the last may have done what it asked.
+ * written and never answered. Only the last may have done what it asked. The transport says what
+ * became of each line it was given (`Written`), and the client believes it.
  */
 
 import type { Dispatch } from "@niwa-labs/harness";
@@ -59,9 +60,16 @@ export interface CallOptions {
   readonly overdue?: () => void;
 }
 
+/**
+ * What became of a line given to the transport: taken (`accepted`), certainly not written
+ * (`unsent`: the process is gone, its stdin closed), or not known (`unknown`: the write may have
+ * partly happened). A write that throws is `unknown`.
+ */
+export type Written = "accepted" | "unsent" | "unknown";
+
 export interface AcpClientOptions {
-  /** Write one line to the agent; it throws when the agent cannot be written to. */
-  readonly write: (line: string) => void;
+  /** Write one line to the agent, and say what became of it. */
+  readonly write: (line: string) => Written;
   readonly onRequest: (request: AgentRequest) => void;
   readonly onNotification: (notification: AgentNotification) => void;
   /** A line that is not JSON: never a crash. */
@@ -215,6 +223,15 @@ export class AcpClient {
       settle({ ok: false, error: this.#closed, dispatch: "unsent" });
       return id;
     }
+    // The line is made before the call is registered: a request that cannot be serialized never
+    // reached the transport.
+    let line: string;
+    try {
+      line = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    } catch (error) {
+      settle({ ok: false, error: reasonOf(error), dispatch: "unsent" });
+      return id;
+    }
     const timeoutMs = options.timeoutMs === undefined ? this.#options.callTimeoutMs : options.timeoutMs;
     const timedOut: RpcOutcome = { ok: false, error: `the call ${method} timed out`, dispatch: "uncertain", timedOut: true };
     let late = false;
@@ -241,17 +258,25 @@ export class AcpClient {
       }, timeoutMs);
       timer.unref?.();
     }
-    this.#pending.set(id, (outcome) => {
+    const finish = (outcome: RpcOutcome): void => {
       clearTimeout(timer);
       clearTimeout(grace);
       settle(late ? timedOut : outcome);
-    });
+    };
+    this.#pending.set(id, finish);
+    let written: Written | Error;
     try {
-      this.#options.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+      written = this.#options.write(line);
     } catch (error) {
-      clearTimeout(timer);
+      written = error instanceof Error ? error : new Error(String(error));
+    }
+    if (written === "unsent") {
       this.#pending.delete(id);
-      settle({ ok: false, error: reasonOf(error), dispatch: "unsent" });
+      finish({ ok: false, error: "the request was not written", dispatch: "unsent" });
+    } else if (written instanceof Error) {
+      // It is not known whether the request left, and nothing says an answer will come.
+      this.#pending.delete(id);
+      finish({ ok: false, error: written.message, dispatch: "uncertain" });
     }
     return id;
   }
@@ -263,19 +288,28 @@ export class AcpClient {
     });
   }
 
-  /** A notification: no id, no answer. It throws when the agent cannot be written to. */
-  notify(method: string, params: unknown = {}): void {
-    this.#options.write(JSON.stringify({ jsonrpc: "2.0", method, params }));
+  /** A notification: no id, no answer. It says what became of the line. */
+  notify(method: string, params: unknown = {}): Written {
+    return this.#write(JSON.stringify({ jsonrpc: "2.0", method, params }));
   }
 
   /** The answer to a request of the agent. */
-  reply(id: RequestId, result: unknown): void {
-    this.#options.write(JSON.stringify({ jsonrpc: "2.0", id, result }));
+  reply(id: RequestId, result: unknown): Written {
+    return this.#write(JSON.stringify({ jsonrpc: "2.0", id, result }));
   }
 
   /** The refusal of a request of the agent, so it never waits on the client. */
-  refuse(id: RequestId, code: number, message: string): void {
-    this.#options.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
+  refuse(id: RequestId, code: number, message: string): Written {
+    return this.#write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
+  }
+
+  /** A line to the transport: one that throws left it unknown what became of the line. */
+  #write(line: string): Written {
+    try {
+      return this.#options.write(line);
+    } catch {
+      return "unknown";
+    }
   }
 
   /** The connection is gone: every call in flight fails with `reason`, and a later one is never written. */

@@ -595,11 +595,7 @@ class AcpSession {
 
   /** Send a notification; a child that is stopping or gone is not written to. */
   notify(method: string, params: Record<string, unknown>): void {
-    try {
-      this.client.notify(method, params);
-    } catch {
-      // The child is gone: the end handler releases everyone.
-    }
+    this.client.notify(method, params);
   }
 
   /**
@@ -990,11 +986,13 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       write: (line) => {
         // A session that is stopping or gone is not written to; a write to a dead child is
         // reported by the closing child.
-        if (session.ended || session.stopping) return;
+        const stdin = child.stdin;
+        if (session.ended || session.stopping || stdin === null || stdin.destroyed) return "unsent";
         try {
-          child.stdin?.write(`${line}\n`);
+          stdin.write(`${line}\n`);
+          return "accepted";
         } catch {
-          // The child is gone: the end handler releases everyone.
+          return "unknown";
         }
       },
       onRequest: (request) => answerRequest(session, request.id, request),
