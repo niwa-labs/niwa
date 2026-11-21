@@ -173,7 +173,7 @@ function digestOf(records: readonly SessionRecord[], files: FileIndexer, resultC
 
 /** The target of a call as a digest names it: a path through the file index, anything else as it is. */
 function namedTarget(category: ToolCategory, target: string, changed: boolean, files: FileIndexer): string {
-  const isPath = (category === "read" || category === "edit") && !/\s/.test(target);
+  const isPath = (category === "read" || category === "edit") && !/[\r\n]/.test(target);
   return isPath ? files.name(target, changed) : files.refer(target);
 }
 

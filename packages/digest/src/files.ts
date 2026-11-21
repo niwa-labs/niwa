@@ -18,7 +18,13 @@ export const IndexedFileSchema = z.object({
 });
 export type IndexedFile = z.output<typeof IndexedFileSchema>;
 
-export const FileIndexSchema = z.object({ files: z.array(IndexedFileSchema) });
+/** The index: each id and each path is in it once, so a reference names one path. */
+export const FileIndexSchema = z
+  .object({ files: z.array(IndexedFileSchema) })
+  .refine(
+    ({ files }) => new Set(files.map((file) => file.id)).size === files.length && new Set(files.map((file) => file.path)).size === files.length,
+    { message: "a file index holds each id and each path once" },
+  );
 export type FileIndex = z.output<typeof FileIndexSchema>;
 
 export const EMPTY_FILE_INDEX: FileIndex = { files: [] };
@@ -28,13 +34,20 @@ export function fileRef(id: number): string {
   return `[F${String(id)}]`;
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** The index as it grows over a reading: the paths it holds, and the references in a text. */
 export class FileIndexer {
   readonly #files: IndexedFile[];
   readonly #byPath = new Map<string, IndexedFile>();
+  /** The id the next path is given: after the highest one in use, so no two paths share a reference. */
+  #nextId: number;
 
   constructor(from: FileIndex = EMPTY_FILE_INDEX) {
     this.#files = from.files.map((file) => ({ ...file }));
+    this.#nextId = this.#files.reduce((highest, file) => Math.max(highest, file.id), 0) + 1;
     for (const file of this.#files) this.#byPath.set(file.path, file);
   }
 
@@ -48,19 +61,22 @@ export class FileIndexer {
       if (changed) known.changed = true;
       return fileRef(known.id);
     }
-    const file = { id: this.#files.length + 1, path, changed };
+    const file = { id: this.#nextId++, path, changed };
     this.#files.push(file);
     this.#byPath.set(path, file);
     return `${fileRef(file.id)} ${path}`;
   }
 
-  /** `text` with every path the index already holds replaced by its reference, the longest first. */
+  /**
+   * `text` with every mention of a path the index already holds replaced by its reference. A mention
+   * is the whole path: not part of a longer word or path. The text is read once, from its start, so
+   * a reference put in is never read again, and the longest path wins where two start together.
+   */
   refer(text: string): string {
-    let referred = text;
-    for (const file of [...this.#files].sort((a, b) => b.path.length - a.path.length)) {
-      if (referred.includes(file.path)) referred = referred.split(file.path).join(fileRef(file.id));
-    }
-    return referred;
+    if (this.#files.length === 0) return text;
+    const paths = [...this.#files].sort((a, b) => b.path.length - a.path.length).map((file) => escapeRegExp(file.path));
+    const mention = new RegExp(`(?<![\\w./~-])(?:${paths.join("|")})(?![\\w/-]|\\.\\w)`, "g");
+    return text.replace(mention, (path) => fileRef(this.#byPath.get(path)!.id));
   }
 
   /** The index as it stands. */

@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { LocatorSchema, harnessId, sessionId } from "@niwa-labs/harness";
 import type { SessionRecord } from "@niwa-labs/harness";
 
-import { DigestViewSchema, compress, cutMiddle, readWindow, sourceOf, withoutInsertions } from "../src/index.ts";
+import { DigestViewSchema, FileIndexSchema, FileIndexer, compress, cutMiddle, readWindow, sourceOf, withoutInsertions } from "../src/index.ts";
 import type { DigestEntry, DigestView } from "../src/index.ts";
 
 const at = (n: number) => LocatorSchema.parse(`L${String(n)}`);
@@ -176,4 +176,34 @@ test("a cut says how much it removed, and fits the size asked for", () => {
   }
   // The marker with its source does not fit in 20, the one that only counts does.
   expect(/cut \d+⟩/.test(cutMiddle(text, { keep: 20, source: "L12345" }))).toBe(true);
+});
+
+test("a path is replaced where the call names it whole, once, and not inside other words or references", () => {
+  const files = new FileIndexer();
+  files.name("a", false);
+  files.name("b", false);
+  expect(files.refer("cat data a b")).toBe("cat data [F1] [F2]");
+  expect(files.refer("cat a/b a.txt ab -a")).toBe("cat a/b a.txt ab -a");
+  const odd = new FileIndexer();
+  odd.name("/p/a", false);
+  odd.name("F1", false);
+  expect(odd.refer("/p/a F1 [F1]")).toBe("[F1] [F2] [[F2]]");
+  const index = new FileIndexer();
+  index.name("/repo/x.ts", false);
+  expect(index.refer('{"file_path":"/repo/x.ts","other":"/repo/x.tsx"}')).toBe('{"file_path":"[F1]","other":"/repo/x.tsx"}');
+});
+
+test("a path with spaces is a path of the index", () => {
+  const records = [call(1, "r", "read", "docs/Release Notes.md", {}), call(2, "e", "edit", "docs/Release Notes.md", {})];
+  const { view, files } = compress(records, "digest");
+  expect(entriesOf(view).map((entry) => (entry as { target: string }).target)).toEqual(["[F1] docs/Release Notes.md", "[F1]"]);
+  expect(files.files).toEqual([{ id: 1, path: "docs/Release Notes.md", changed: true }]);
+});
+
+test("a file index keeps its ids and paths unique, and goes on after the highest id it holds", () => {
+  expect(FileIndexSchema.safeParse({ files: [{ id: 1, path: "a", changed: false }, { id: 1, path: "b", changed: false }] }).success).toBe(false);
+  expect(FileIndexSchema.safeParse({ files: [{ id: 1, path: "a", changed: false }, { id: 2, path: "a", changed: false }] }).success).toBe(false);
+  const files = new FileIndexer({ files: [{ id: 2, path: "/a", changed: false }] });
+  expect(files.name("/b", false)).toBe("[F3] /b");
+  expect(files.index().files.map((file) => file.id)).toEqual([2, 3]);
 });
