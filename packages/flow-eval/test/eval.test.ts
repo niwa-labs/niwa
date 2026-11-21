@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 import { z } from "zod";
 
-import { createNiwa, plugin, requests, stubAction, tempHome, timers, workflow } from "@niwa-labs/testing";
+import { createNiwa, historyRead, plugin, requests, stubAction, tempHome, timers, workflow } from "@niwa-labs/testing";
 
 import { bestOf, itemPasses } from "../src/index.ts";
 
@@ -44,7 +44,8 @@ async function run(source: string, agents: Record<string, Reply>, transcript: un
       }),
     ] as const;
   });
-  const history = stubAction("history.read", { home, input: z.looseObject({ session: z.string() }), output: z.any(), recovery: "repeat", effect: "read", result: () => transcript });
+  // The stub takes what the real action takes: a script that names a session another way fails here as it would there.
+  const history = stubAction("history.read", { home, input: historyRead.input, output: z.any(), recovery: "repeat", effect: "read", result: () => transcript });
   const host = createNiwa({ home });
   host.use(
     requests(),
@@ -137,7 +138,7 @@ test("a transcript check finds what the session opened, in the order it met them
   const { result } = await run(
     `
     import { chainFromTranscript } from "@niwa-labs/flow-eval";
-    export default workflow({ output: z.json() }, async (): Promise<any> => chainFromTranscript("chain", "claude:s-1", { opened: ["src/a.ts", "src/b.ts", "docs/plan.md"] }));`,
+    export default workflow({ output: z.json() }, async (): Promise<any> => chainFromTranscript("chain", { harness: "claude", native: "s-1" }, { opened: ["src/a.ts", "src/b.ts", "docs/plan.md"] }));`,
     {},
     { records, coverage: { status: "complete" } },
   );
@@ -159,7 +160,7 @@ test("a transcript that could not be read is an error, not a session that opened
     import { chainFromTranscript } from "@niwa-labs/flow-eval";
     export default workflow({ output: z.json() }, async (): Promise<any> => {
       try {
-        return await chainFromTranscript("chain", "claude:s-1", { opened: ["src/a.ts"] });
+        return await chainFromTranscript("chain", { harness: "claude", native: "s-1" }, { opened: ["src/a.ts"] });
       } catch (error) {
         return (error as Error).message;
       }

@@ -163,13 +163,16 @@ export async function evalSuite<V, O>(
   return { table, perCase, recommend };
 }
 
+/** A session as `history.read` names it: the harness it runs in and the id that harness gave it. */
+export type SessionRef = { harness: string; native: string };
+
 /**
  * Whether a session opened what it was expected to: each expected text (a file, a skill, a tool) is
  * looked for in the records of its transcript, read whole with `history.read`. `opened` lists the
  * ones found in the order the session first met them, `missing` the others. A transcript that could
  * not be read throws: nothing read is not nothing opened.
  */
-export async function chainFromTranscript(key: string, session: string, expect: { opened: readonly string[] }): Promise<{ opened: string[]; missing: string[] }> {
+export async function chainFromTranscript(key: string, session: SessionRef, expect: { opened: readonly string[] }): Promise<{ opened: string[]; missing: string[] }> {
   checkKey(key, "the key of a transcript check");
   const g = script();
   const answer = (await g.scope(key, undefined, () => g.call("history.read", { session, mode: "full" }))) as {
@@ -177,7 +180,7 @@ export async function chainFromTranscript(key: string, session: string, expect: 
     coverage: { status: string; reason?: string };
   };
   if (answer.coverage.status === "failed" || answer.coverage.status === "unavailable") {
-    throw new Error(`the session ${session} could not be read (${answer.coverage.status}): ${answer.coverage.reason ?? "no reason given"}`);
+    throw new Error(`the session ${session.harness}:${session.native} could not be read (${answer.coverage.status}): ${answer.coverage.reason ?? "no reason given"}`);
   }
   const texts = answer.records.map((record) => JSON.stringify(record));
   const firstAt = new Map<string, number>();

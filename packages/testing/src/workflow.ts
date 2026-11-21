@@ -1,6 +1,7 @@
 // What the tests of the workflow package need besides the shared helpers: the stub plugin the
-// script bridge is checked against, the id a request born in a record of a given name has, and the
-// factories of the plugins a workflow reads, which a plugin may reach only through their records.
+// script bridge is checked against, the id a request born in a record of a given name has, the
+// factories of the plugins a workflow reads, which a plugin may reach only through their records,
+// and the reference of `history.read` that a stub of it is held to.
 
 import { action, issueId, record, recordId } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
@@ -12,6 +13,7 @@ import { counter, gate } from "./index.ts";
 
 export { describe } from "@niwa-labs/host";
 export { CLEANUP_TIMER, WorktreeRefusal, git } from "@niwa-labs/git";
+export { historyRead } from "@niwa-labs/history/records";
 export { messages } from "@niwa-labs/messages";
 export { TaskDone, tasks } from "@niwa-labs/tasks";
 export { timer, timerList, timers } from "@niwa-labs/timer";
