@@ -18,7 +18,8 @@ import { z } from "zod";
 
 import { action, isSuspend, recordId, stableJson, Address } from "@niwa-labs/core";
 import type { Action, Caller, OperationId, RecordId } from "@niwa-labs/core";
-import { plugin, bindingOf } from "@niwa-labs/plugin";
+import { COCKPIT_MODULE, plugin, bindingOf } from "@niwa-labs/plugin";
+import { fileURLToPath } from "node:url";
 import type { CallerBinding, Plugin } from "@niwa-labs/plugin";
 
 import { PendingAsks, outcomeOf, requestOf } from "./access-ask.ts";
@@ -332,6 +333,8 @@ export function requests(opts: RequestsOptions = {}): Plugin {
   const resolvers = opts.resolvers ?? new ResolverRegistry();
 
   return plugin("requests", (api) => {
+    // The page of this plugin in the cockpit: a client module, offered by the path of its source.
+    api.offer(COCKPIT_MODULE, { id: "requests", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     api.declare(...REQUEST_TYPES);
     const types = REQUEST_TYPES.map((type) => type.name);
     const ledger = new RequestLedger(types, () => api.journal?.());

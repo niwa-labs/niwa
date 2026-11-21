@@ -4,14 +4,39 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./records": "./src/records-entry.ts"
+    "./records": "./src/records-entry.ts",
+    "./cockpit": "./src/cockpit/index.tsx"
   },
   "dependencies": {
+    "@niwa-labs/cockpit-sdk": "workspace:*",
     "@niwa-labs/core": "workspace:*",
     "@niwa-labs/plugin": "workspace:*",
+    "@niwa-labs/ui-kit": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@niwa-labs/testing": "workspace:*"
+    "@happy-dom/global-registrator": "^21.0.4",
+    "@niwa-labs/testing": "workspace:*",
+    "@tanstack/react-query": "^5.108.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.108.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   }
 }
