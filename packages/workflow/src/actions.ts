@@ -48,6 +48,11 @@ export const StartInput = z.object({
   concurrency: z.number().int().positive().optional(),
   /** The limits of the run: `depth`, how many runs deep its tree may go, the run itself being one. Its child runs take them. */
   limits: z.object({ depth: z.number().int().positive().optional() }).optional(),
+  /**
+   * Rules that narrow the run below what `uses` and the caller give it, never wider: a call of the run is decided on its
+   * final input against them. A rule the run would not have refuses the start.
+   */
+  allow: z.array(z.string().min(1)).optional(),
   /** Answer when the run finishes or pauses, or when `timeoutMs` has passed, as `workflow.wait` does. Default: answer at once. */
   wait: z.boolean().optional(),
   /** With `wait`: how long to wait, in milliseconds. Default: a minute. */

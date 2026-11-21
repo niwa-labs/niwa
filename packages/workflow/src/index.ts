@@ -182,6 +182,7 @@ interface RunOrigin {
   parent?: { run: string; step: string };
   concurrency?: number;
   limits?: { depth?: number };
+  allow?: { rules: string[]; version: string };
 }
 
 /** A run as `workflow.run.started` records it. */
@@ -457,15 +458,21 @@ export function workflow(opts: WorkflowOptions = {}) {
      * A script with no `uses` asks for nothing, so its run holds only its own records; a caller
      * that nothing limits (the host, a plugin) has no grant to narrow, so its run has none either,
      * unless the script names what it uses. A mask the caller does not hold refuses the run. A target
-     * template of `uses` is filled from the arguments of the run first.
+     * template of `uses` is filled from the arguments of the run first, and `allow` narrows the result.
      */
-    const grantOfRun = async (asker: Caller, text: string | undefined, file: string, args: unknown): Promise<Grant | undefined> => {
+    const grantOfRun = async (asker: Caller, text: string | undefined, file: string, args: unknown, allow?: readonly string[]): Promise<Grant | undefined> => {
       const uses = text === undefined ? undefined : await scriptUses({ file, text });
       const masks = uses !== undefined && "masks" in uses ? filledUses(uses.masks.map((use) => use.mask), args) : undefined;
-      if (masks === undefined && api.rights(asker) === "unlimited") return undefined;
-      const narrowed = api.narrow(asker, masks ?? []);
+      if (masks === undefined && api.rights(asker) === "unlimited" && allow === undefined) return undefined;
+      const narrowed = masks === undefined && api.rights(asker) === "unlimited" ? { rules: grant(allow ?? []) } : api.narrow(asker, masks ?? []);
       if ("refused" in narrowed) throw new UsesRefused(narrowed.refused.map((text) => text.replace(/^call:/, "")));
-      return grant([...specsOf(narrowed.rules), `emit:${SCRIPT_TYPES}*`]);
+      if (allow === undefined) return grant([...specsOf(narrowed.rules), `emit:${SCRIPT_TYPES}*`]);
+      // `allow` only narrows: what it names must lie within the run's rights, which it then replaces.
+      const within = narrow(narrowed.rules, allow, { irreversible: (name) => api.effectOf(name) === "irreversible" });
+      if ("refused" in within) {
+        throw new RunRefusal("allow-wider", `allow only narrows the run: ${within.refused.map((text) => text.replace(/^call:/, "")).join(", ")} ${within.refused.length === 1 ? "is" : "are"} not the run's`);
+      }
+      return grant([...specsOf(within.rules), `emit:${SCRIPT_TYPES}*`]);
     };
 
     api.action(
@@ -488,6 +495,7 @@ export function workflow(opts: WorkflowOptions = {}) {
             ...(input.directory === undefined ? {} : { directory: input.directory }),
             ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
             ...(input.limits === undefined ? {} : { limits: input.limits }),
+            ...(input.allow === undefined ? {} : { allow: { rules: input.allow, version: createHash("sha256").update(JSON.stringify(input.allow)).digest("hex") } }),
           });
           if (input.wait !== true) return { run, finished: false };
           const status = await settle(run, input.timeoutMs);
@@ -537,7 +545,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       }
       // The run is a subject of its own: what it may do is what the caller may do, narrowed to
       // `uses` as its arguments fill it, and it keeps that grant until it ends.
-      const born = await grantOfRun(ctx.caller, script?.text, file, accepted);
+      const born = await grantOfRun(ctx.caller, script?.text, file, accepted, input.allow?.rules);
       if (born !== undefined) api.issueToken("run", run, { grant: born, parent: ctx.caller });
       await ctx.emit(RunRequested, {
         run,
@@ -553,6 +561,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         ...(input.parent === undefined ? {} : { parent: input.parent }),
         ...(concurrency === undefined ? {} : { concurrency }),
         ...(limits === undefined ? {} : { limits }),
+        ...(input.allow === undefined ? {} : { allow: input.allow }),
       });
       return run;
     }

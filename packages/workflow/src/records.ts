@@ -55,6 +55,8 @@ const RunOrigin = {
   concurrency: z.number().int().positive().optional(),
   /** The limits of the run: how many runs deep its tree may go, the run that started it being one. A child run takes them. */
   limits: z.object({ depth: z.number().int().positive().optional() }).optional(),
+  /** The rules `allow` narrowed the run to, and their version: the sha256 of the rules as given. */
+  allow: z.object({ rules: z.array(z.string()), version: z.string() }).optional(),
 };
 
 export { JsonSchemaValue };
