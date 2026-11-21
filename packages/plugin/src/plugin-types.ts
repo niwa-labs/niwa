@@ -191,6 +191,14 @@ export interface Offered<T> {
   readonly value: T;
 }
 
+/** What a plugin needs the host to serve: see `PluginApi.needs`. */
+export interface PluginNeeds {
+  /** Actions the plugin calls, by reference or by name. */
+  readonly actions?: ReadonlyArray<ActionRef<any, any, any> | string>;
+  /** Record types the plugin writes or waits for, by declaration or by name. */
+  readonly types?: ReadonlyArray<RecordType<any> | string>;
+}
+
 /** What a plugin's setup function receives. */
 export interface PluginApi {
   /** Declare record types this plugin writes or handles. */
@@ -262,6 +270,14 @@ export interface PluginApi {
    * `niwa.host.status` shows. Read when asked, from the journal or the state the plugin keeps.
    */
   summarize(read: () => Record<string, number>): void;
+  /**
+   * What this plugin needs the host to serve besides its own registrations: actions it calls and
+   * record types it writes or waits for, whoever declares them (`request.ask` of the requests
+   * plugin, `timer.fired` of the timers). The host refuses to serve when one is missing and says which
+   * plugin needs it. Actions are the ones plugins declare; an action a catalog reads from the journal
+   * cannot be needed. May be called more than once: the needs add up.
+   */
+  needs(needs: PluginNeeds): void;
   /**
    * The record type of this name, when this plugin or one installed before it declares it.
    *

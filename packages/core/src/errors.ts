@@ -141,6 +141,28 @@ export class MissingProvider extends Error {
 }
 
 /**
+ * A plugin needs an action or a record type (`api.needs`) that nothing installed serves. The host
+ * refuses to serve instead of letting the plugin fail when it first calls or waits for it.
+ */
+export class MissingNeed extends Error {
+  override name = "MissingNeed";
+  readonly code = "MissingNeed";
+  /** The plugin that needs it. */
+  readonly plugin: string;
+  /** What is needed: an action or a record type. */
+  readonly kind: "action" | "type";
+  /** The name of the action or the type. */
+  readonly needed: string;
+
+  constructor(plugin: string, kind: "action" | "type", needed: string) {
+    super(`plugin "${plugin}" needs the ${kind} "${needed}", but no installed plugin serves it`);
+    this.plugin = plugin;
+    this.kind = kind;
+    this.needed = needed;
+  }
+}
+
+/**
  * A plugin offers at a point (`api.offer`) whose reader is not installed: what it offers would be
  * lost. The host refuses to serve instead.
  */

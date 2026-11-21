@@ -24,6 +24,7 @@ import {
   CatchableError,
   effectPossibleAfter,
   LostOwnership,
+  MissingNeed,
   MissingProvider,
   MissingReader,
   UnknownAction,
@@ -174,7 +175,7 @@ import { artifactStore, secretStore } from "./stores.ts";
 import type { HostMessage, LiveSubscription } from "@niwa-labs/client";
 import { isTrigger } from "@niwa-labs/plugin";
 import type { Trigger } from "@niwa-labs/plugin";
-import type { OfferKey, Offered, HandlerOptions, Plugin, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionStart } from "@niwa-labs/plugin";
+import type { OfferKey, Offered, HandlerOptions, Plugin, PluginNeeds, Service, ServiceContext, StateHandle, Subscribable, Subscriber, SubscriptionStart } from "@niwa-labs/plugin";
 import type { Host, HostOptions } from "./host-types.ts";
 
 /** The reader of an offer point that the host itself reads. */
@@ -372,6 +373,8 @@ interface Installed {
   readonly offers: Array<{ readonly key: OfferKey<unknown>; readonly value: unknown }>;
   /** The points the plugin read in its setup: a plugin installed after it may not offer there. */
   readonly readInSetup: Set<string>;
+  /** What the plugin needs the host to serve, besides what it declares itself. */
+  readonly needs: { readonly actions: Set<string>; readonly types: Set<string> };
 }
 
 /** A handler of one version of one plugin, kept so work in flight can finish on it. */
@@ -833,6 +836,7 @@ class Niwa implements Host {
       subscribers: [],
       offers: [],
       readInSetup: new Set(),
+      needs: { actions: new Set(), types: new Set() },
     };
     let inSetup = true;
     const offer = <T>(key: OfferKey<T>, value: T): void => {
@@ -933,6 +937,10 @@ class Niwa implements Host {
       journal: () => this.journal,
       summarize: (read) => {
         installed.summary = read;
+      },
+      needs: (needs: PluginNeeds) => {
+        for (const action of needs.actions ?? []) installed.needs.actions.add(typeof action === "string" ? action : action.name);
+        for (const type of needs.types ?? []) installed.needs.types.add(typeof type === "string" ? type : type.name);
       },
       recordType: (name) => installed.types.find((type) => type.name === name) ?? this.declaredBefore(name),
       untilCommit: (ms) => this.untilCommit(ms),
@@ -1885,6 +1893,13 @@ class Niwa implements Host {
       for (const handler of entry.handlers) {
         if (handler.trigger === undefined || declared.has(handler.type.name) || CORE_TYPE_NAMES.has(handler.type.name)) continue;
         throw new MissingProvider(name, handler.name, handler.type.name, handler.trigger.provider ?? handler.type.provider);
+      }
+      // What the plugin as a whole needs: the actions its own registrations and the others' declare, the types any plugin declares.
+      for (const needed of entry.needs.actions) {
+        if (!this.actions.has(actionName(needed))) throw new MissingNeed(name, "action", needed);
+      }
+      for (const needed of entry.needs.types) {
+        if (!declared.has(needed) && !CORE_TYPE_NAMES.has(needed)) throw new MissingNeed(name, "type", needed);
       }
       // What a handler needs from another plugin is checked for every handler, filtered or not.
       for (const handler of entry.handlers) {
