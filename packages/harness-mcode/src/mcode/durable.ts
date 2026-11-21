@@ -64,17 +64,30 @@ export interface DurableTurn {
  */
 export const MAX_BATCH_BYTES = 256 * 1024 * 1024;
 
-/** The zstd decoder the runtime has: Bun's own, else node:zlib's; `null` when there is none. */
-function zstdInflate(frame: Uint8Array): Uint8Array {
-  const bun = (globalThis as { Bun?: { zstdDecompressSync?: (input: Uint8Array) => Uint8Array } }).Bun;
-  if (typeof bun?.zstdDecompressSync === "function") return bun.zstdDecompressSync(frame);
-  const node = (zlib as { zstdDecompressSync?: (input: Uint8Array) => Uint8Array }).zstdDecompressSync;
-  if (typeof node === "function") return node(frame);
-  throw new Error("mcode: this runtime has no zstd decoder, a batch of the durable history cannot be read");
+/**
+ * The frame of a batch, inflated by the decoder of `node:zlib` with the cap given to it: the output
+ * is bounded while it is produced. Bun's own `zstdDecompressSync` has no bound, so it is never used;
+ * a runtime that has no bounded zstd decoder cannot read the batch.
+ */
+function inflate(codec: number, frame: Uint8Array): Buffer {
+  const bounded = { maxOutputLength: MAX_BATCH_BYTES };
+  try {
+    if (codec === CODEC_GZIP) return zlib.gunzipSync(frame, bounded);
+    const zstd = (zlib as { zstdDecompressSync?: (input: Uint8Array, options: typeof bounded) => Buffer }).zstdDecompressSync;
+    if (typeof zstd !== "function") {
+      throw new Error("mcode: this runtime has no zstd decoder with a bound, a batch of the durable history cannot be read");
+    }
+    return zstd(frame, bounded);
+  } catch (error) {
+    if ((error as { code?: unknown }).code === "ERR_BUFFER_TOO_LARGE") {
+      throw new Error("mcode: a batch of the durable history is larger than it may be");
+    }
+    throw error;
+  }
 }
 
 /** The frame of a batch payload, decoded. */
-function decodeBatch(payload: Uint8Array): unknown[] {
+export function decodeBatch(payload: Uint8Array): unknown[] {
   const bytes = Buffer.from(payload.buffer, payload.byteOffset, payload.byteLength);
   if (bytes.length < HEADER_BYTES || bytes.subarray(0, 4).toString("latin1") !== MAGIC) {
     throw new Error("mcode: a batch of the durable history has no MZS2 header");
@@ -82,15 +95,11 @@ function decodeBatch(payload: Uint8Array): unknown[] {
   if (bytes.readBigUInt64BE(5) > BigInt(MAX_BATCH_BYTES)) {
     throw new Error("mcode: a batch of the durable history is larger than it may be");
   }
-  const frame = bytes.subarray(HEADER_BYTES);
   const codec = bytes[4];
-  let text: Buffer;
-  if (codec === CODEC_ZSTD) text = Buffer.from(zstdInflate(frame));
-  else if (codec === CODEC_GZIP) text = zlib.gunzipSync(frame, { maxOutputLength: MAX_BATCH_BYTES });
-  else throw new Error(`mcode: a batch of the durable history has an unknown codec ${String(codec)}`);
-  if (text.length > MAX_BATCH_BYTES) {
-    throw new Error("mcode: a batch of the durable history is larger than it may be");
+  if (codec !== CODEC_ZSTD && codec !== CODEC_GZIP) {
+    throw new Error(`mcode: a batch of the durable history has an unknown codec ${String(codec)}`);
   }
+  const text = inflate(codec, bytes.subarray(HEADER_BYTES));
   const parsed: unknown = JSON.parse(text.toString("utf8"));
   if (!Array.isArray(parsed)) throw new Error("mcode: a batch of the durable history is not an array");
   return parsed;

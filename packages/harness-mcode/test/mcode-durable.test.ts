@@ -396,7 +396,7 @@ test("unknown kinds, entries that are not objects and envelopes of no shape do n
   expect(result.map((r) => r.kind)).toEqual(["unknown", "unknown", "unknown", "unknown", "user"]);
 });
 
-test("a runtime whose Bun has no zstd decoder still reads the batches", async () => {
+test("a zstd batch is read with the bounded decoder of node:zlib, whether or not Bun has one of its own", async () => {
   sessionDir("mvs_p", "");
   putBatch([full("mvs_p", "seed", [envelope("m1", user("zstd"))])]);
   const bun = Bun as unknown as { zstdDecompressSync?: unknown };
@@ -576,4 +576,36 @@ test("a checkpoint taken from the ledger while the database was unreadable still
   // The database answers again: a locator of the ledger names no record in it, so the read starts over.
   expect(texts(await all("mvs_move", checkpoint))).toEqual(["one", "two"]);
   expect(await reading().coverage(id("mvs_move"), checkpoint)).toEqual({ status: "not-scanned" });
+});
+
+test("a zstd batch that inflates past the cap is refused while it is decoded, not after it was allocated", async () => {
+  const dirOfBatch = tempDirSync("mcode-bomb");
+  try {
+    // 300 MB of blanks in a few kilobytes, under a header that claims 10 bytes.
+    const frame = Buffer.from(Bun.zstdCompressSync(Buffer.alloc(300 * 1024 * 1024, 0x20)));
+    const header = Buffer.alloc(21);
+    header.write("MZS2", 0, "latin1");
+    header[4] = 1;
+    header.writeBigUInt64BE(10n, 5);
+    const batch = join(dirOfBatch, "batch.bin");
+    writeFileSync(batch, Buffer.concat([header, frame]));
+    const durable = new URL("../src/mcode/durable.ts", import.meta.url).pathname;
+    // A process of its own: the peak of its memory is what is measured.
+    const script = `
+      import { readFileSync } from "node:fs";
+      import { decodeBatch } from ${JSON.stringify(durable)};
+      const payload = readFileSync(process.argv[1]);
+      const before = process.resourceUsage().maxRSS;
+      let refused = "";
+      try { decodeBatch(payload); } catch (error) { refused = error.message; }
+      console.log(JSON.stringify({ refused, grewKb: process.resourceUsage().maxRSS - before }));
+    `;
+    const ran = Bun.spawnSync(["bun", "-e", script, batch]);
+    const out = JSON.parse(ran.stdout.toString()) as { refused: string; grewKb: number };
+    expect(out.refused).toContain("larger than it may be");
+    // The cap is 256 MB: what is allocated before the refusal stays within it, not the size the frame claims.
+    expect(out.grewKb).toBeLessThan(400 * 1024);
+  } finally {
+    rmSync(dirOfBatch, { recursive: true, force: true });
+  }
 });
