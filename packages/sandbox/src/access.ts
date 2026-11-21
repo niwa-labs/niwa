@@ -303,9 +303,13 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     ...[...known].filter(([name]) => !taken.has(name)).map(([name, profile]): [string, BoxProfile] => [`profile:${name}`, profile]),
     ...[...registry.installations].filter(([owner]) => owner !== input.owner).map(([owner, profile]): [string, BoxProfile] => [`harness:${owner}`, profile]),
   ];
+  // The toolchains take what every profile a box may ask for reads (its program, its configuration),
+  // never what it writes: a tool runs, its caches and its sign-in stay its own.
+  const withToolchains = request.items.some(({ item }) => item === "toolchains");
   for (const [from, profile] of others) {
     const of = profileOf(from, profile);
-    for (const path of [...of.read, ...of.write]) {
+    const read = withToolchains && from.startsWith("profile:") ? [] : of.read;
+    for (const path of [...read, ...of.write]) {
       if (of.programs.includes(path)) continue;
       if (takenPaths.some((mine) => covers(mine, path))) continue;
       closed.push({ path, from });
@@ -354,6 +358,10 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
       else paths.push({ path: cwd, mode: "write", from: "project" });
       if (fromCall) needs(defaultNames.has("project"), "box.use@project");
     } else if (item === "toolchains") {
+      for (const [name, profile] of known) {
+        const of = profileOf(`profile:${name}`, profile);
+        for (const path of of.read) if (!of.write.some((written) => covers(written, path))) paths.push({ path, mode: "read", from: "toolchains" });
+      }
       for (const place of toolchains(env, home, [...known.keys()])) {
         const inside = closedAt(place.path);
         const holds = closed.find((one) => covers(place.path, one.path));

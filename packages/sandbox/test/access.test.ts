@@ -274,3 +274,16 @@ test("a box whose working directory nobody chose is not given it to write, and s
   expect(allows(plan, at("work"), "write")).toBe(false);
   expect(plan.skipped).toEqual([{ place: at("work"), from: "project", why: "the session names no working directory" }]);
 });
+
+test("the toolchains read what every profile a box may ask for reads, and nothing it writes", () => {
+  const plan = host().plan({ cwd: at("work"), defaults: { allow: ["toolchains"] }, owner: "pi", network: false });
+  expect(plan.paths).toContainEqual({ path: at("tool.conf"), mode: "read", from: "toolchains" });
+  expect(closes(plan, at("tool.conf"))).toBe(false);
+  expect(closes(plan, at("tool-cache"))).toBe(true);
+  // npm writes its configuration, which may hold a token: it stays npm's.
+  expect(closes(plan, join(realpathSync(homedir()), ".npmrc"))).toBe(true);
+  // An installation's places are no tool's: the toolchains open none of them.
+  expect(closes(plan, at("codex"))).toBe(true);
+  const bare = host().plan({ cwd: at("work"), defaults: { allow: [] }, owner: "pi", network: false });
+  expect(closes(bare, at("tool.conf"))).toBe(true);
+});

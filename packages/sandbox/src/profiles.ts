@@ -3,8 +3,9 @@
  *
  * Each names the program and the places the tool keeps its configuration and its caches under the
  * user's home. A box that takes a profile gets those places; a box that does not take it finds them
- * closed. The catalog is small on purpose: a host or a plugin adds the tools it needs with
- * `sandbox({ profiles })`.
+ * closed, but for what the profile reads (its program, its configuration) when the box takes the
+ * toolchains: a tool runs there, and what it writes stays closed. The catalog is small on purpose:
+ * a host or a plugin adds the tools it needs with `sandbox({ profiles })`.
  */
 
 import type { BoxProfile } from "./profile.ts";
@@ -25,10 +26,14 @@ export const bun: BoxProfile = ({ home, env, bin }) => ({
   write: [env["BUN_INSTALL_CACHE_DIR"] ?? `${env["BUN_INSTALL"] ?? `${home}/.bun`}/install/cache`],
 });
 
-/** npm: the program, the runtime it runs on, the user's configuration and the cache. */
+/**
+ * npm: the program, the runtime it runs on, the cache, and the user's configuration, which npm
+ * writes (`npm login`, `npm config set`) and which may hold a registry's token: a box that does not
+ * take npm does not read it, toolchains or not.
+ */
 export const npm: BoxProfile = ({ home, env, bin }) => ({
-  read: [...bin("npm"), ...bin("node"), env["NPM_CONFIG_USERCONFIG"] ?? `${home}/.npmrc`],
-  write: [env["npm_config_cache"] ?? env["NPM_CONFIG_CACHE"] ?? `${home}/.npm`],
+  read: [...bin("npm"), ...bin("node")],
+  write: [env["npm_config_cache"] ?? env["NPM_CONFIG_CACHE"] ?? `${home}/.npm`, env["NPM_CONFIG_USERCONFIG"] ?? `${home}/.npmrc`],
 });
 
 /** cargo: the programs, the toolchains rustup installed, and the registry and git caches. */
