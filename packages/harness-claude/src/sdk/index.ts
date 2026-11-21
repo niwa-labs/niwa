@@ -92,6 +92,7 @@ export function claudeSdkKind(options: ClaudeSdkOptions = {}) {
     reading: new ClaudeCodeReading({ harness, home }),
     control: new ClaudeSdkControl({
       harness,
+      home,
       ...(options.model === undefined ? {} : { model: options.model }),
       ...(options.effort === undefined ? {} : { effort: options.effort }),
       ...(options.executable === undefined ? {} : { executable: options.executable }),

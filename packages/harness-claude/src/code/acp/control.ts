@@ -76,7 +76,7 @@ import {
   ClaudeAgentRequest,
   claudeToolName,
 } from "./protocol.ts";
-import { CLAUDE_NEEDS, claudeToolsOff } from "../needs.ts";
+import { claudeHomeEnv, claudeNeeds, claudeToolsOff } from "../needs.ts";
 
 /**
  * The adapter's mode for each working mode. The adapter takes no `auto`: it answers "Invalid Mode"
@@ -159,6 +159,12 @@ export interface ClaudeAcpControlOptions {
    * `--effort` flag.
    */
   readonly effort?: string;
+
+  /**
+   * The directory of the Claude Code installation the instance reads, when it is not the default:
+   * the process is bound to it (`CLAUDE_CONFIG_DIR`) and may write in it inside a box.
+   */
+  readonly home?: string;
 
   /**
    * The Claude Code program the adapter drives, as a path. The adapter takes it from the
@@ -910,6 +916,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     const childEnv: Record<string, string> = {
       ...CHILD_ENV,
       CLAUDE_CODE_EXECUTABLE: executable,
+      ...claudeHomeEnv(options.home),
       ...plan.env,
       // The adapter passes its environment to Claude Code. A session's own options stand over the instance's.
       ...claudeEnv({ ...options.claude, ...plan.claude }),
@@ -926,7 +933,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       unset: options.unsetEnv,
       env: childEnv,
       box: plan.box,
-      needs: CLAUDE_NEEDS,
+      needs: claudeNeeds(options.home),
     }).catch((error: unknown) => {
       if (error instanceof SandboxUnavailable) throw error;
       const cause = error instanceof Error ? error.message : String(error);

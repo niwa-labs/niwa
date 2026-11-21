@@ -84,6 +84,12 @@ export interface ClaudeCodeControlOptions {
   readonly claude?: ClaudeOptions;
 
   /**
+   * The directory of the Claude Code installation the instance reads. Its processes are bound to
+   * it, so the sessions they write are the ones the reading side finds. The kind gives it.
+   */
+  readonly home?: string;
+
+  /**
    * The ACP adapter that drives Claude Code.
    *
    * It is a command: the first element is the program and the rest are its arguments. It
@@ -197,6 +203,7 @@ export function claudeCodeControl(options: ClaudeCodeControlOptions): ClaudeCode
     // Claude Code refuses to start inside another Claude Code session, and niwa is run by one.
     unsetEnv: ["CLAUDECODE"],
     claude: options.claude,
+    home: options.home,
     callTimeoutMs: options.callTimeoutMs,
     turnTimeoutMs: options.turnTimeoutMs,
     stopGraceMs: options.stopGraceMs,

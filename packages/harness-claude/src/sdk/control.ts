@@ -60,7 +60,7 @@ import type {
 import { LIVE_PROCESS_REFUSAL, requireBox, spawnAgentNow } from "@niwa-labs/sandbox";
 
 import { localClaude } from "../code/control.ts";
-import { CLAUDE_NEEDS } from "../code/needs.ts";
+import { claudeHomeEnv, claudeNeeds } from "../code/needs.ts";
 import { claudeEnv } from "../code/options.ts";
 
 import { signsOf } from "./messages.ts";
@@ -154,6 +154,11 @@ export interface ClaudeSdkControlOptions {
   readonly executable?: string;
   /** The options of the Claude kind, when the caller does not give them per start. */
   readonly claude?: ClaudeOptions;
+  /**
+   * The directory of the Claude Code installation the instance reads. Its processes are bound to
+   * it, so the sessions they write are the ones the reading side finds.
+   */
+  readonly home?: string;
   /** The SDK's `query`. Default: the real one, over the executable; a test gives a fake that runs no process. */
   readonly query?: SdkQuery;
 }
@@ -421,6 +426,7 @@ export class ClaudeSdkControl implements SessionControl {
   readonly #startTimeoutMs: number;
   readonly #query: SdkQuery;
   readonly #claude: ClaudeOptions;
+  readonly #home: string | undefined;
   /** The sessions reachable by id. */
   readonly #sessions = new Map<string, LiveSession>();
   /** Every query this side started and has not seen end, so none can be forgotten. */
@@ -441,6 +447,7 @@ export class ClaudeSdkControl implements SessionControl {
     this.#effort = options.effort;
     this.#mode = options.mode;
     this.#claude = options.claude ?? {};
+    this.#home = options.home;
     this.#permissions = options.permissions ?? "allow";
     this.#turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
     this.#startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
@@ -689,7 +696,8 @@ export class ClaudeSdkControl implements SessionControl {
   /** The options of the SDK, built from what the caller asked for. */
   #sdkOptions(model: string | undefined, system: string, plan: ProcessPlan): SdkOptions {
     const claude = claudeEnv(plan.claude);
-    const env = Object.keys(claude).length === 0 ? plan.env : { ...plan.env, ...claude };
+    const home = claudeHomeEnv(this.#home);
+    const env = Object.keys(home).length === 0 && Object.keys(claude).length === 0 ? plan.env : { ...home, ...plan.env, ...claude };
     const restricted = plan.tools !== undefined && plan.tools !== "all";
     const servers = mcpServersOf(plan.servers);
     const options: SdkOptions = {
@@ -736,7 +744,7 @@ export class ClaudeSdkControl implements SessionControl {
       env: additions,
       unset: Object.keys(process.env).filter((name) => !(name in spawnOptions.env)),
       box: plan.box,
-      needs: CLAUDE_NEEDS,
+      needs: claudeNeeds(this.#home),
     });
     // The SDK reads no stderr; an undrained pipe would stall the process.
     child.stderr.resume();

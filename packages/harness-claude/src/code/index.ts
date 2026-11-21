@@ -78,7 +78,7 @@ export interface ClaudeCodeKindOptions extends ClaudeCodeReadingOptions {
    * How the control side is set up: the model it uses, what it does with a permission request,
    * and the adapter it drives. Its own defaults are used when it is absent.
    */
-  readonly control?: Omit<ClaudeCodeControlOptions, "harness">;
+  readonly control?: Omit<ClaudeCodeControlOptions, "harness" | "home">;
 }
 
 /** What the caller names of the kind: every part has a default. */
@@ -89,7 +89,7 @@ export function claudeCodeKind(options: ClaudeCodeKindOptions) {
   return defineHarnessKind({
     name: "claude-code",
     reading: new ClaudeCodeReading(options),
-    control: claudeCodeControl({ harness: options.harness, ...(options.control ?? {}) }),
+    control: claudeCodeControl({ harness: options.harness, ...(options.control ?? {}), home: options.home }),
     insert: {
       // The insert is put into the installation it belongs to: the plugin is written into the
       // plugins directory of that installation, and the hooks report to the host at the home
