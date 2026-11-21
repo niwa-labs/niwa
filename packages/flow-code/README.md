@@ -7,7 +7,8 @@ import { inWorktree, reviewFix } from "@niwa-labs/flow-code";
 ```
 
 Built on `@niwa-labs/flow` and on the git and proc modules' actions, called by name: worktrees with
-`git.worktree.create` and `git.worktree.remove`, checks with `runCheck` of `@niwa-labs/proc/flow`
+`git.worktree.create`, `git.worktree.get` (the head of a worktree is read by the git module, not by a
+command in the worktree) and `git.worktree.remove`, checks with `runCheck` of `@niwa-labs/proc/flow`
 (re-exported here). A run that uses them needs those actions in its grant.
 
 - `inWorktree` removes a worktree its block left clean and keeps one with commits; a block that

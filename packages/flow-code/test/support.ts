@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { procRun } from "@niwa-labs/proc/records";
-import { connect, createNiwa, eventually, git, ownerTokenOf, plugin, requests, stubAction, tempDir, tempHome, timers, workflow } from "@niwa-labs/testing";
+import { connect, createNiwa, eventually, gate, git, ownerTokenOf, plugin, requests, stubAction, tempDir, tempHome, timers, workflow } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
@@ -63,12 +63,18 @@ export interface CodeHost {
   start(source: string, args?: unknown): Promise<string>;
   /** Answer the owner's open question with an option id. */
   answer(id: string): Promise<void>;
+  /** Let the agent of a harness listed in `gated` go on: its calls wait until then. */
+  release(harness: string): void;
   close(): Promise<void>;
 }
 
 const PACKAGES = join(import.meta.dir, "..", "..");
 
-/** `proc.run` as a test needs it: the command runs in its cwd, with no box, on the input the real action takes. */
+/**
+ * `proc.run` as a test needs it: the command runs in its cwd, on the input the real action takes, and
+ * is stopped when its time is up. It is boxed to its cwd as far as git goes: a linked worktree keeps
+ * its git directory in the repository it belongs to, outside the box, so `git` cannot read it there.
+ */
 function fakeProc(home: string) {
   return plugin("fake-proc", (api) =>
     api.action(
@@ -78,12 +84,16 @@ function fakeProc(home: string) {
         input: procRun.input,
         output: z.any(),
         recovery: "repeat",
-        result: ({ cmd, cwd }) => {
-          const ran = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
+        result: ({ cmd, cwd, timeout }) => {
+          if (cmd[0] === "git") {
+            const tail = "fatal: not a git repository: the git directory of this worktree is outside the box\n";
+            return { outcome: "exited", exit: 128, durationMs: 1, tail, truncated: false, output: { digest: `sha256:${"0".repeat(64)}`, size: tail.length, type: "text/plain" }, box: { sandbox: "none", write: [cwd], net: [] } };
+          }
+          const ran = Bun.spawnSync(cmd, { cwd, stdout: "pipe", stderr: "pipe", timeout });
           const tail = (ran.stdout.toString() + ran.stderr.toString()).slice(-4096);
           return {
-            outcome: "exited",
-            exit: ran.exitCode,
+            outcome: ran.exitedDueToTimeout === true ? "timed-out" : "exited",
+            exit: ran.exitedDueToTimeout === true ? null : ran.exitCode,
             durationMs: 1,
             tail,
             truncated: false,
@@ -97,7 +107,7 @@ function fakeProc(home: string) {
 }
 
 /** A host with git, a proc.run, the workflow module and an agent per harness of `agents`. */
-export async function codeHost(agents: Record<string, Reply>, packages: readonly string[] = ["flow", "flow-code"]): Promise<CodeHost> {
+export async function codeHost(agents: Record<string, Reply>, packages: readonly string[] = ["flow", "flow-code"], gated: readonly string[] = []): Promise<CodeHost> {
   const temp = await tempHome();
   const home = realpathSync(temp.path);
   const repo = await makeRepo();
@@ -112,6 +122,7 @@ export async function codeHost(agents: Record<string, Reply>, packages: readonly
         input: z.looseObject({ prompt: z.string(), harness: z.string().optional(), cwd: z.string().optional() }),
         output: z.any(),
         recovery: "repeat",
+        ...(gated.includes(harness) ? { gate: `agent-${harness}` } : {}),
         result: (input) => {
           const call: AgentCall = { prompt: input.prompt, ...(input.harness === undefined ? {} : { harness: input.harness }), ...(input.cwd === undefined ? {} : { cwd: input.cwd }) };
           seen.push(call);
@@ -150,6 +161,7 @@ export async function codeHost(agents: Record<string, Reply>, packages: readonly
     calls,
     start,
     run: async (source, args) => (await host.call("workflow.wait" as never, { run: await start(source, args), timeoutMs: 30_000 } as never)) as never,
+    release: (harness) => gate(home, `agent-${harness}`).open(),
     answer: async (choice) => {
       let id: string | undefined;
       await eventually(async () => {
@@ -160,6 +172,7 @@ export async function codeHost(agents: Record<string, Reply>, packages: readonly
       await owner.call("request.answer" as never, { id, answer: { ids: [choice] } } as never);
     },
     close: async () => {
+      for (const harness of gated) gate(home, `agent-${harness}`).open();
       await owner.close?.();
       await host.close().catch(() => {});
       await temp.cleanup();

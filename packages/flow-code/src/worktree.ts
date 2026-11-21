@@ -6,7 +6,6 @@
 
 import { checkKey, map, script, seatKeys } from "@niwa-labs/flow";
 import type { Seat, SeatOptions } from "@niwa-labs/flow";
-import { runCheck } from "@niwa-labs/proc/flow";
 
 /** A worktree as the git module made it: a checkout of `repo` on its own branch, in a directory niwa keeps. */
 export type Worktree = { id: string; description: string; repo: string; path: string; branch: string; base: string; baseSha: string };
@@ -46,12 +45,15 @@ export function seatIn(seat: Seat, cwd: string): SeatOptions {
   return { ...(typeof seat === "string" ? { harness: seat } : seat), cwd };
 }
 
-/** The commit a worktree's branch is at: read with `git rev-parse HEAD` as a check in it, under `key`. */
+/**
+ * The commit a worktree's branch is at, as the git module reports it (`git.worktree.get`) under
+ * `key`. The module reads it outside any box: a command run in the worktree is boxed to that
+ * directory, and a linked worktree keeps its git directory in the repository it belongs to.
+ */
 export async function headOf(key: string, wt: Worktree): Promise<string> {
-  const head = await runCheck(key, { cmd: ["git", "rev-parse", "HEAD"], cwd: wt.path, timeout: "1m" });
-  const sha = head.summary.split("\n").at(-1) ?? "";
-  if (!head.ok || !/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`the head of the worktree ${wt.id} could not be read: ${head.summary}`);
-  return sha;
+  const got = (await script().scope(key, undefined, () => script().call("git.worktree.get", { id: wt.id }))) as { head?: string };
+  if (got.head === undefined) throw new Error(`the head of the worktree ${wt.id} could not be read: its directory is gone`);
+  return got.head;
 }
 
 /**
