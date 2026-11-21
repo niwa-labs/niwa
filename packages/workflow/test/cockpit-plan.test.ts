@@ -2,6 +2,7 @@
 
 import { expect, test } from "bun:test";
 
+import { describeRecompute } from "@niwa-labs/ui-kit";
 import type { Inspection, Step } from "../src/cockpit/actions.ts";
 import { planOf, recomputeOf, stepDuration, stepState, STEPS_PHASE, stopOf } from "../src/cockpit/plan.ts";
 
@@ -27,6 +28,15 @@ test("a step status is shown as the state of a ring", () => {
   expect(stepState(step("a", "completed"))).toBe("done");
   expect(stepState(step("a", "cancelled"))).toBe("stopped");
   expect(stepState(step("a", "unknown"))).toBe("pending");
+});
+
+test("selecting a send with an unknown outcome warns about repeating its effect", () => {
+  const send = step("Send", "unknown", { effect: true });
+  const inspected = inspection({ steps: [send] });
+  const target = { phase: "steps", step: send.id };
+  const phases = planOf(inspected, (one) => ({ ...plain(one), effect: one.effect }));
+  expect(recomputeOf(inspected, target)).toEqual({ run: inspected.run, from: send.key });
+  expect(describeRecompute(phases, target)).toContain("Previously sent messages or other external changes may be repeated.");
 });
 
 test("how long a step took is known once it ended", () => {
