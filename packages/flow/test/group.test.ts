@@ -5,7 +5,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 
-import { graphProblems, gridCells } from "../src/index.ts";
+import { graphProblems, gridCells, seatKeys } from "../src/index.ts";
 import { flowHost, resultOf } from "./support.ts";
 import type { FlowHost } from "./support.ts";
 
@@ -211,4 +211,9 @@ test("the cells of a grid are every combination, in the order of its keys and va
     { size: 2, mode: "x" },
     { size: 2, mode: "y" },
   ]);
+});
+test("seat keys number a seat met again with a name no other seat has", () => {
+  expect(seatKeys(["judge", "judge", "judge-2"], "a seat")).toEqual(["judge", "judge-3", "judge-2"]);
+  expect(seatKeys(["judge-2", "judge", "judge"], "a seat")).toEqual(["judge-2", "judge", "judge-3"]);
+  expect(seatKeys(["a", "a", "a"], "a seat")).toEqual(["a", "a-2", "a-3"]);
 });

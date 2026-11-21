@@ -83,15 +83,27 @@ export function agentOptions(seat: Seat): Omit<AgentCallOptions, "worktree"> {
 
 /**
  * The keys of seats in the order given: the seat's label, else its harness; a seat met again is
- * numbered (`judge`, `judge-2`), so the same harness may sit twice.
+ * numbered (`judge`, `judge-2`), so the same harness may sit twice. The names the seats were
+ * given are kept as they are: a number is never one of them, so the keys are all different.
  */
 export function seatKeys(seats: readonly Seat[], what: string): string[] {
+  const names = seats.map((seat) => (typeof seat === "string" ? seat : (seat.label ?? seat.harness)));
+  const taken = new Set(names);
   const counts = new Map<string, number>();
-  return seats.map((seat) => {
-    const name = typeof seat === "string" ? seat : (seat.label ?? seat.harness);
-    const count = (counts.get(name) ?? 0) + 1;
+  return names.map((name) => {
+    let count = (counts.get(name) ?? 0) + 1;
+    if (count === 1) {
+      counts.set(name, count);
+      return checkKey(name, what);
+    }
+    let numbered = `${name}-${String(count)}`;
+    while (taken.has(numbered)) {
+      count += 1;
+      numbered = `${name}-${String(count)}`;
+    }
     counts.set(name, count);
-    return checkKey(count === 1 ? name : `${name}-${String(count)}`, what);
+    taken.add(numbered);
+    return checkKey(numbered, what);
   });
 }
 
