@@ -1,7 +1,7 @@
 // The host program of the signs-of-life test: the signs of life of a session across a restart of the host.
 //
 // The fake control side reports the signs of life the test writes into a file of the home: one
-// instruction per line, "turn-started <n>" or "turn-ended <n>". The fake reads the file from
+// instruction per line, "turn-started <n>" or "turn-ended <n> [completed|failed|unknown]". The fake reads the file from
 // where it left off, so a host that starts again reports only what is told to it after the
 // restart. The cursor of the fake is a file of its own, so the instructions are only ever
 // appended to.
@@ -13,7 +13,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
+import { TurnOutcomeSchema, harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
 import type {
   AskAnswer,
   AskOptions,
@@ -110,7 +110,10 @@ function eventOf(line: string): LifeEvent | undefined {
   if (!Number.isInteger(turn) || turn < 1) return undefined;
   const kind = parts[0];
   if (kind === "turn-started") return { kind: "turn-started", turn };
-  if (kind === "turn-ended") return { kind: "turn-ended", turn };
+  if (kind === "turn-ended") {
+    const outcome = TurnOutcomeSchema.safeParse(parts[2]);
+    return outcome.success ? { kind: "turn-ended", turn, outcome: outcome.data } : { kind: "turn-ended", turn };
+  }
   return undefined;
 }
 

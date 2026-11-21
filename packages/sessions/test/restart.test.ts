@@ -142,3 +142,27 @@ test("a turn left open by a dead host reads as unknown, and the turn that ends i
     await home.cleanup();
   }
 });
+
+test("a turn that ends is journaled with how it ended: what the harness said, completed when it said nothing", async () => {
+  const home = await tempHome();
+  const instructions = join(home.path, INSTRUCTIONS);
+  const host = spawnHost(HOST_SCRIPT, home.path);
+  let client: NiwaApi | undefined;
+  try {
+    await host.ready();
+    client = await connectAsOwner(home.path);
+    const open = client;
+    await call(open, "session.start", { harness: HARNESS, prompt: "go" });
+    const endings = ["failed", "unknown", "completed", ""];
+    for (const [index, ending] of endings.entries()) {
+      appendFileSync(instructions, `turn-started ${String(index + 1)}\nturn-ended ${String(index + 1)} ${ending}\n`);
+    }
+    await untilCounted(open, "session.turn-ended", endings.length, "the turns did not end");
+    const ended = await open.records.read({ types: [SessionTurnEnded] });
+    expect(ended.map((record) => (record.data as { how?: string }).how)).toEqual(["failed", "unknown", "completed", "completed"]);
+  } finally {
+    await client?.close().catch(() => undefined);
+    await host.stop();
+    await home.cleanup();
+  }
+});
