@@ -34,14 +34,14 @@ import { readFileSync } from "node:fs";
 
 import { z } from "zod";
 
-import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, keyUnder, callerOf, fillRule, grant, isRuleTemplate, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, toJsonSchema } from "@niwa-labs/core";
+import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, keyUnder, callerOf, fillRule, grant, isRuleTemplate, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, storedOutcome, toJsonSchema } from "@niwa-labs/core";
 import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE } from "@niwa-labs/core";
 import { BUILTIN_WORKFLOW } from "@niwa-labs/plugin";
 import type { Subscriber } from "@niwa-labs/plugin";
-import type { Action, ActionContext, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StoredRecord } from "@niwa-labs/core";
+import type { Action, ActionContext, ArtifactStore, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StoredRecord } from "@niwa-labs/core";
 import { scriptOn } from "@niwa-labs/script";
 import { requireBox } from "@niwa-labs/sandbox";
 import type { BoxSandboxName } from "@niwa-labs/sandbox";
@@ -823,7 +823,7 @@ export function workflow(opts: WorkflowOptions = {}) {
             await ctx.emit(RunRequested, requested);
             return { run, finished: false };
           }
-          const revision = await revisionOf(journal(), facts, actionNameOf, boxFor(facts.box), facts.file, run, input.from);
+          const revision = await revisionOf(journal(), api.artifacts, facts, actionNameOf, boxFor(facts.box), facts.file, run, input.from);
           await ctx.emit(RunRequested, requested);
           return { run, finished: false, revision };
         },
@@ -844,7 +844,7 @@ export function workflow(opts: WorkflowOptions = {}) {
           // The run may only be started again when the invocation that is going has ended.
           await guardResumable(run, ctx);
           const file = resolveFile(opts.root, input.file);
-          const revision = await revisionOf(journal(), facts, actionNameOf, boxFor(facts.box), file, run, input.from);
+          const revision = await revisionOf(journal(), api.artifacts, facts, actionNameOf, boxFor(facts.box), file, run, input.from);
           await ctx.emit(RunRequested, { ...requestedOf(run, facts, file, readScript(file)?.hash), ...(input.from === undefined ? {} : { from: input.from }) });
           return { run, finished: false, revision };
         },
@@ -1714,7 +1714,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       // The calls the earlier starts of this run finished: a call with the same key and input is
       // taken from them along the longest unchanged prefix (see revise.ts).
       const before = factsOf(journal(), run)?.invocations.filter((invocation) => invocation !== current) ?? [];
-      const earlier = recordedCalls(journal(), before);
+      const earlier = recordedCalls(journal(), api.artifacts, before);
 
       // The notes of the script are emitted one after another, so a replay finds them in order.
       // Each note has a key of its own, and the key says what the note is about: a run that is
@@ -2270,6 +2270,7 @@ function originOf(from: RunOrigin): RunOrigin {
  */
 async function revisionOf(
   journal: JournalReader,
+  artifacts: ArtifactStore,
   facts: RunFacts,
   actionNameOf: (harness: string | undefined) => string,
   box: ScriptBox | undefined,
@@ -2277,7 +2278,7 @@ async function revisionOf(
   run: string = "unknown",
   from?: string,
 ): Promise<RevisionReport & { unresolved?: string }> {
-  const recorded = recordedCalls(journal, facts.invocations);
+  const recorded = recordedCalls(journal, artifacts, facts.invocations);
   const plan = await planCalls(file, facts.args, recorded, actionNameOf, run, box, from);
   return { ...plan.report, ...(plan.error === undefined ? {} : { unresolved: plan.error }) };
 }
@@ -2291,14 +2292,14 @@ const RecordedIntent = z.object({
   invocation: z.string(),
 });
 
-/** What a step outcome holds that a revision reads. */
+/** What a step outcome holds that a revision reads: a value kept as an artifact is read back first. */
 const RecordedOutcome = z.object({
   key: z.string(),
   outcome: z.object({ status: z.string(), value: JsonValueSchema.optional() }),
 });
 
 /** The calls the given invocations made, by key: the latest call under a key, finished if any attempt answered. */
-function recordedCalls(journal: JournalReader, invocations: string[]): Map<string, RecordedCall> {
+function recordedCalls(journal: JournalReader, artifacts: ArtifactStore, invocations: string[]): Map<string, RecordedCall> {
   const calls = new Map<string, RecordedCall>();
   const wanted = new Set(invocations);
   const sources = (type: string): StoredRecord[] =>
@@ -2315,7 +2316,8 @@ function recordedCalls(journal: JournalReader, invocations: string[]): Map<strin
     });
   }
   for (const row of sources("niwa.step.outcome")) {
-    const data = RecordedOutcome.parse(row.data);
+    const stored = row.data as { outcome: unknown };
+    const data = RecordedOutcome.parse({ ...stored, outcome: storedOutcome(stored.outcome, artifacts) });
     const call = calls.get(data.key);
     if (call !== undefined && data.outcome.status === "completed") {
       call.finished = true;

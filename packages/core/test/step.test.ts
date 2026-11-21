@@ -7,8 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { CORE_TYPES, NotSent, action, deny, recordId, streamId, record } from "../src/index.ts";
-import type { Action, HandlerId, InvocationId, NewRecord, Recovery, StoredRecord } from "../src/index.ts";
+import { ARTIFACT_THRESHOLD, CORE_TYPES, NotSent, action, deny, recordId, streamId, record } from "../src/index.ts";
+import type { Action, ArtifactRef, ArtifactStore, HandlerId, InvocationId, NewRecord, Recovery, StoredRecord } from "../src/index.ts";
 import { NO_INTERCEPTS, openJournal, runInvocation } from "../src/journal.ts";
 import type { InvocationSpec, Intercepts, RunResult, RunnerDeps } from "../src/journal.ts";
 
@@ -23,7 +23,7 @@ const INVOCATION = "inv:step/start:rec-wake" as InvocationId;
 type Handle = (data: unknown, step: Parameters<InvocationSpec["handler"]>[1]) => Promise<void>;
 
 /** A journal with one waking record, and the runs of handlers over it. */
-async function bench(options: { intercepts?: Intercepts } = {}) {
+async function bench(options: { intercepts?: Intercepts; artifacts?: ArtifactStore } = {}) {
   const path = await mkdtemp(join(tmpdir(), "niwa-step-test-"));
   homes.push(path);
   const journal = openJournal(path);
@@ -50,6 +50,7 @@ async function bench(options: { intercepts?: Intercepts } = {}) {
     resolveAction: () => undefined,
     interceptsOf: () => options.intercepts ?? NO_INTERCEPTS,
     emit: () => Promise.reject(new Error("no emit in this test")),
+    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
   };
   const spec = (handler: Handle): InvocationSpec => ({
     id: INVOCATION,
@@ -307,5 +308,52 @@ test("an action that says nothing was sent fails its step with no effect possibl
     { status: "failed", error: "the other side never got it", effectPossible: false },
     { status: "failed", error: "the line dropped", effectPossible: true },
   ]);
+  b.close();
+});
+
+
+/** An artifact store in memory: what it was given, by digest. */
+function memoryArtifacts(): ArtifactStore & { kept: Map<string, Uint8Array> } {
+  const kept = new Map<string, Uint8Array>();
+  const put = (bytes: Uint8Array | string, type: string): ArtifactRef => {
+    const data = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
+    const digest = `sha256:${new Bun.CryptoHasher("sha256").update(data).digest("hex")}`;
+    kept.set(digest, data);
+    return { digest, size: data.length, type };
+  };
+  return {
+    kept,
+    put,
+    writer: () => {
+      throw new Error("not written in parts here");
+    },
+    read: (ref) => {
+      const found = kept.get(ref.digest);
+      if (found === undefined) throw new Error(`no artifact ${ref.digest}`);
+      return found;
+    },
+  };
+}
+
+test("a step whose value is larger than a record should hold keeps it as an artifact, and a replay reads it back", async () => {
+  const artifacts = memoryArtifacts();
+  const b = await bench({ artifacts });
+  const Text = z.object({ text: z.string() });
+  const text = "y".repeat(ARTIFACT_THRESHOLD + 1);
+  const big = counted("step.big", "do-not-repeat", Text, () => ({ text }));
+  const small = counted("step.small", "do-not-repeat", Text, () => ({ text: "short" }));
+  const got: unknown[] = [];
+  const handler: Handle = async (_data, step) => {
+    got.push(await step(big.made, {}, { key: "big" }), await step(small.made, {}, { key: "small" }));
+  };
+  await b.run(handler);
+  const [bigOutcome, smallOutcome] = b.records(CORE_TYPES.stepOutcome).map((row) => (row.data as { outcome: Record<string, unknown> }).outcome);
+  expect(bigOutcome).toEqual({ status: "completed", artifact: { digest: expect.stringMatching(/^sha256:/), size: JSON.stringify({ text }).length, type: "application/json" } });
+  expect(smallOutcome).toEqual({ status: "completed", value: { text: "short" } });
+  expect(artifacts.kept.size).toBe(1);
+
+  await b.run(handler);
+  expect(big.calls.count).toBe(1);
+  expect(got).toEqual([{ text }, { text: "short" }, { text }, { text: "short" }]);
   b.close();
 });

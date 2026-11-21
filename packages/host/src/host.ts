@@ -2384,6 +2384,7 @@ class Niwa implements Host {
   private deps(journal: Journal): RunnerDeps {
     return {
       journal,
+      artifacts: this.artifacts,
       now: () => this.clock.now(),
       append: (records) => this.append(records),
       appendAll: (entries) => this.appendAll(entries),

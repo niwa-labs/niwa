@@ -13,6 +13,7 @@
 import { z } from "zod";
 
 import { CatchableError } from "./errors.ts";
+import type { Outcome } from "./types.ts";
 
 /** Data larger than this many bytes is kept as an artifact, and the record holds its reference. */
 export const ARTIFACT_THRESHOLD = 16 * 1024;
@@ -103,4 +104,29 @@ export interface SecretStore {
   resolve(name: string): string;
   /** The directory the secret files live in: a confined process is kept from reading it. */
   readonly dir: string;
+}
+
+/** A completed outcome whose value the journal keeps as an artifact of JSON. */
+export interface KeptCompleted {
+  readonly status: "completed";
+  readonly artifact: ArtifactRef;
+}
+
+/**
+ * An outcome as a record keeps it: a completed value whose JSON is larger than `ARTIFACT_THRESHOLD`
+ * is put in the store first, and the record holds its reference. Without a store it is kept whole.
+ */
+export function keptOutcome<O>(outcome: Outcome<O>, artifacts: ArtifactStore | undefined): Outcome<O> | KeptCompleted {
+  if (outcome.status !== "completed" || artifacts === undefined || outcome.value === undefined) return outcome;
+  const json = JSON.stringify(outcome.value);
+  if (json === undefined || Buffer.byteLength(json) <= ARTIFACT_THRESHOLD) return outcome;
+  return { status: "completed", artifact: artifacts.put(json, "application/json") };
+}
+
+/** The outcome a record holds, with a value kept as an artifact read back from the store. */
+export function storedOutcome<O>(kept: unknown, artifacts: ArtifactStore | undefined): Outcome<O> {
+  const held = kept as Outcome<O> | KeptCompleted;
+  if (held.status !== "completed" || !("artifact" in held)) return held;
+  if (artifacts === undefined) throw new ArtifactMissing(held.artifact.digest);
+  return { status: "completed", value: JSON.parse(new TextDecoder().decode(artifacts.read(held.artifact))) as O };
 }

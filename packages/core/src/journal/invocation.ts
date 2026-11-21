@@ -28,6 +28,8 @@ import {
 import type { StepsCancelled } from "../outcome.ts";
 import { CatchableError, IntegrityError, StepCancelled, UnknownAction, effectPossibleAfter } from "../errors.ts";
 import { CORE_TYPES, newRecordId, recordId, stableJson, streamId } from "../record.ts";
+import { keptOutcome, storedOutcome } from "../stores.ts";
+import type { ArtifactStore } from "../stores.ts";
 import type {
   ActionTarget,
   Action,
@@ -88,6 +90,11 @@ export interface InvocationSpec {
 export interface RunnerDeps {
   /** The journal: what was already recorded is read from here. */
   journal: Journal;
+  /**
+   * The artifacts of the host: a step's value too large for a record is kept here, and the record
+   * holds its reference. Absent, every value is kept in its record.
+   */
+  artifacts?: ArtifactStore;
   /** The clock of the host: the moment a step that reads the time sees. */
   now(): number;
   /** Commit the records and publish them. Returns the committed records. */
@@ -568,7 +575,7 @@ async function readValue(
   }
   const recorded = ctx.deps.journal.get(attemptRecordId(ctx.invocation, key, 0, "outcome"));
   if (recorded !== undefined) {
-    const outcome = readOutcome<number>(recorded.data);
+    const outcome = readOutcome<number>(ctx, recorded.data);
     if (outcome.status === "completed") return outcome.value;
   }
   if (intent === undefined) {
@@ -688,7 +695,7 @@ async function runStepOnce<I, O, In = I>(
 
   // The step already ended: its outcome is the answer, whatever it was.
   if (recorded !== undefined) {
-    const outcome = readOutcome<O>(recorded.data);
+    const outcome = readOutcome<O>(ctx, recorded.data);
     if (outcome.status !== "completed") return { key, outcome };
     // The journal holds the value as JSON; the step gives it back as the output schema reads it,
     // as it gave it the first time.
@@ -1221,7 +1228,7 @@ async function awaitRecords(
   // the type it names, at the position it was found at.
   const recorded = ctx.deps.journal.get(outcomeId);
   if (recorded !== undefined) {
-    const outcome = readOutcome<{ type: string; data: unknown; at: number }>(recorded.data);
+    const outcome = readOutcome<{ type: string; data: unknown; at: number }>(ctx, recorded.data);
     if (outcome.status === "cancelled") throw new StepCancelled(key, outcome.reason);
     if (outcome.status !== "completed") pause(ctx, `step ${key}: ${outcome.status}`, key);
     const answered = entries.find((entry) => entry.type.name === outcome.value.type);
@@ -1302,7 +1309,7 @@ function outcomeRecord<O>(ctx: RunContext, key: StepKey, outcome: Outcome<O>, at
   return recordOf(ctx, attemptRecordId(ctx.invocation, key, attempt, "outcome"), CORE_TYPES.stepOutcome, {
     invocation: ctx.invocation,
     key,
-    outcome,
+    outcome: keptOutcome(outcome, ctx.deps.artifacts),
   });
 }
 
@@ -1500,9 +1507,9 @@ function isMismatch(intent: StoredRecord, action: ActionName, input: unknown): b
   return stableJson(holder.input) !== stableJson(input);
 }
 
-/** The outcome of a recorded step: the journal holds it as it was written. */
-function readOutcome<O>(data: unknown): Outcome<O> {
-  return (data as { outcome: Outcome<O> }).outcome;
+/** The outcome of a recorded step, as it was written: a value kept as an artifact is read back. */
+function readOutcome<O>(ctx: RunContext, data: unknown): Outcome<O> {
+  return storedOutcome<O>((data as { outcome: unknown }).outcome, ctx.deps.artifacts);
 }
 
 /** The message of a thrown value. */
