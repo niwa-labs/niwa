@@ -637,6 +637,23 @@ test("a session the database does not know is resumed in the directory its calle
   expect((await requestsOf("session/resume"))[0]).toMatchObject({ workspace: { workspacePath: where, workspaceKey: where } });
 });
 
+test("resumes of one session that is not held yet share one process, and a prompt does not hold the others up", async () => {
+  const c = control();
+  const id = sessionId(harnessId("zcode-fake"), "sess_twice");
+  // Both look for the session while it is absent: only the first launches it, the other finds it held.
+  await Promise.all([c.resume(id), c.resume(id)]);
+  expect(spawned).toHaveLength(1);
+  expect(await requestsOf("session/resume")).toHaveLength(1);
+  // The turn of a prompt runs after the session is let go of, so a second resume is not held up by it.
+  const other = sessionId(harnessId("zcode-fake"), "sess_other");
+  const first = c.resume(other, { prompt: promptFromText("slow") });
+  const second = c.resume(other);
+  await second;
+  expect(await c.state(other)).toBe("running");
+  await first;
+  expect(spawned).toHaveLength(2);
+});
+
 test("a resume of a held session with the same surface changes nothing; with another, a new process takes the session on", async () => {
   const c = control();
   const server = { name: "niwa", command: "niwa", args: ["mcp"], env: { NIWA_ID: "t" } };
