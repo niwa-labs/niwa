@@ -46,6 +46,31 @@ export function hintsOf(action: ActionDescription): ToolHints {
 export interface Catalog {
   tools: Tool[];
   actions: Map<string, ActionName>;
+  /** The tools whose action takes something other than an object: the argument `input` holds it. */
+  wrapped: Set<string>;
+}
+
+/** The argument that holds the input of an action that does not take an object. */
+export const WRAPPED_INPUT = "input";
+
+/**
+ * The input schema of an action as its tool takes it: always an object, because the arguments of a
+ * tool are. An action that takes a string, a number or a list gets an object with one argument,
+ * `input`, which holds it; the call unwraps it again, so the schema the tool shows is the one it runs.
+ */
+function toolInputOf(schema: JsonSchema): { schema: JsonSchema; wrapped: boolean } {
+  if (schema.type === undefined || schema.type === "object") return { schema: { ...schema, type: "object" }, wrapped: false };
+  const defs: Record<string, JsonValue> = {};
+  const placed = placeSchema(schema, `#/properties/${WRAPPED_INPUT}`, "", defs);
+  return {
+    schema: {
+      type: "object",
+      properties: { [WRAPPED_INPUT]: placed },
+      required: [WRAPPED_INPUT],
+      ...(Object.keys(defs).length === 0 ? {} : { $defs: defs }),
+    },
+    wrapped: true,
+  };
 }
 
 /**
@@ -61,7 +86,7 @@ export function catalogOf(description: Description, visible?: readonly string[])
   // Only what the session may see takes a name: an action it cannot see never collides with one it can.
   const allowed = visible === undefined ? undefined : new Set(visible);
   const taken = new Set<string>();
-  const declared: Array<{ tool: Tool; action: ActionName }> = [];
+  const declared: Array<{ tool: Tool; action: ActionName; wrapped: boolean }> = [];
   for (const action of description.actions) {
     if (allowed !== undefined && !allowed.has(action.name)) continue;
     const name = toolNameOf(action.name);
@@ -69,19 +94,23 @@ export function catalogOf(description: Description, visible?: readonly string[])
       throw new Error(`the action "${action.name}" would make the tool "${name}", which is already taken`);
     }
     taken.add(name);
+    const input = toolInputOf(action.input);
+    const note = input.wrapped ? `\n\nThe input of the action is not an object: give it as the argument "${WRAPPED_INPUT}".` : "";
     declared.push({
       tool: {
         name,
-        description: `${action.description}\n\nThe action is "${action.name}"; effect: ${action.effect}; recovery: ${action.recovery}.`,
-        inputSchema: action.input,
+        description: `${action.description}\n\nThe action is "${action.name}"; effect: ${action.effect}; recovery: ${action.recovery}.${note}`,
+        inputSchema: input.schema,
         annotations: hintsOf(action),
       },
       action: action.name,
+      wrapped: input.wrapped,
     });
   }
   return {
     tools: declared.map((entry) => entry.tool),
     actions: new Map(declared.map((entry) => [entry.tool.name, entry.action])),
+    wrapped: new Set(declared.filter((entry) => entry.wrapped).map((entry) => entry.tool.name)),
   };
 }
 

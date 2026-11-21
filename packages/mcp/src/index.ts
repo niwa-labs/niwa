@@ -28,6 +28,7 @@ import {
   SUBMIT_ANSWER,
   TASK_ASSIGNED,
   TASK_FINISH,
+  WRAPPED_INPUT,
   catalogOf,
   withAssignedTasks,
   withOpenQuestions,
@@ -109,11 +110,7 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
   // gave out or looked at: the harness caches `tools[]`, so it is told only when this changes.
   const shownTools = async (api: Binding["api"]) => {
     const { tools, actions } = catalogOf(await api.describe(), opts.visible);
-    const shown = await exactFinishTool(api, await exactAnswerTool(api, tools, actions, opts.mark), actions);
-    return shown.map((tool) => ({
-      ...tool,
-      inputSchema: { ...tool.inputSchema, type: "object" as const },
-    }));
+    return exactFinishTool(api, await exactAnswerTool(api, tools, actions, opts.mark), actions);
   };
   let lastShown: string | undefined;
 
@@ -288,6 +285,8 @@ async function callTool(
   }
   const action = catalog.actions.get(name);
   if (action === undefined) throw new Error(`there is no tool "${name}"`);
+  // An action that takes no object has its input in `input`.
+  if (catalog.wrapped.has(name)) return api.call(action, args[WRAPPED_INPUT]);
   // The session works where its server was started: an action that takes a directory is told so when the model names none.
   const input = catalog.tools.find((tool) => tool.name === name)?.inputSchema;
   return api.call(action, withWorkingDirectory(input as JsonSchema | undefined, args));

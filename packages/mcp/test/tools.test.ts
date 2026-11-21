@@ -267,3 +267,30 @@ test("a task that declared no result schema can be finished next to one that did
   expect(accepts(alone.inputSchema, { task: "task-2", result: [1, "x"] })).toBe(true);
   expect(accepts(alone.inputSchema, { task: "task-1", result: 1 })).toBe(false);
 });
+
+test("an action that does not take an object takes its input as one argument", () => {
+  const base = { description: "x", recovery: "repeat" as const, effect: "read" as const, output: { type: "object" } };
+  const catalog = catalogOf({
+    actions: [
+      { ...base, name: actionName("a.text"), input: { type: "string", minLength: 2 } },
+      { ...base, name: actionName("a.list"), input: { type: "array", items: { $ref: "#/$defs/Item" }, $defs: { Item: { type: "integer" } } } },
+      { ...base, name: actionName("a.record"), input: { type: "object", properties: { n: { type: "integer" } } } },
+      { ...base, name: actionName("a.either"), input: { anyOf: [{ type: "object" }, { type: "object" }] } },
+    ],
+    types: [],
+  });
+  const tool = (name: string) => catalog.tools.find((one) => one.name === name)!;
+  expect([...catalog.wrapped]).toEqual(["a_text", "a_list"]);
+  for (const one of catalog.tools) expect(one.inputSchema.type).toBe("object");
+
+  // What the tool takes is what the action takes, in `input`.
+  expect(accepts(tool("a_text").inputSchema, { input: "ok" })).toBe(true);
+  expect(accepts(tool("a_text").inputSchema, { input: "x" })).toBe(false);
+  expect(accepts(tool("a_text").inputSchema, {})).toBe(false);
+  expect(accepts(tool("a_list").inputSchema, { input: [1, 2] })).toBe(true);
+  expect(accepts(tool("a_list").inputSchema, { input: ["a"] })).toBe(false);
+  expect(tool("a_text").description).toContain('"input"');
+  // An object is taken as it is written, and one that names no type is still an object.
+  expect(tool("a_record").inputSchema).toEqual({ type: "object", properties: { n: { type: "integer" } } });
+  expect(tool("a_either").inputSchema).toMatchObject({ type: "object", anyOf: expect.any(Array) });
+});
