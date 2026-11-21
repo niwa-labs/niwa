@@ -333,7 +333,8 @@ test("a session is named by the id niwa gave it: whole, by its start or its end,
 
   // `session.list` and `session.get` give the id back, with the pair.
   const listed = await call<{ sessions: { id?: string; ref: string }[] }>(niwa, "session.list", {});
-  expect(listed.sessions.map((entry) => [entry.id, entry.ref])).toEqual([
+  // The list is ordered by recency, which two starts in one millisecond do not fix: compare as a set.
+  expect(listed.sessions.map((entry) => [entry.id, entry.ref]).sort((a, b) => String(a[1]).localeCompare(String(b[1])))).toEqual([
     [first.session, first.ref],
     [second.session, second.ref],
   ]);
