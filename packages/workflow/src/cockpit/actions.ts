@@ -40,6 +40,12 @@ export const Step = z.object({
   status: StepStatus,
   session: z.string().optional(),
   phase: z.string().optional(),
+  /** The path of the branch the step is in, when it is in one. */
+  branch: z.string().optional(),
+  /** The call acts outside the run: once done, a recompute takes it instead of making it again. */
+  effect: z.boolean().optional(),
+  /** A later start of the run took the answer of this step instead of making the call again. */
+  reused: z.boolean().optional(),
 });
 export type Step = z.infer<typeof Step>;
 
@@ -83,7 +89,15 @@ export const inspectAction = {
 
 export const resumeAction = {
   name: "workflow.resume",
-  input: z.object({ run: z.string() }),
+  /** `from`: the step key, or the title of a phase, to run again from; absent, the run is started again from the top. */
+  input: z.object({ run: z.string(), from: z.string().min(1).optional() }),
+  output: z.object({ run: z.string() }),
+} as const;
+
+export const stopAction = {
+  name: "workflow.stop",
+  /** `at`: the key of the step or branch to stop; absent, the whole run. */
+  input: z.object({ run: z.string(), at: z.string().min(1).optional() }),
   output: z.object({ run: z.string() }),
 } as const;
 

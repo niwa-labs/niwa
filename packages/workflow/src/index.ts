@@ -2212,6 +2212,7 @@ export { sessionAgent } from "./agent.ts";
 export type { HarnessLaunch } from "./agent.ts";
 export {
   workflowCancel,
+  workflowStop,
   workflowCheck,
   workflowContinue,
   workflowPause,

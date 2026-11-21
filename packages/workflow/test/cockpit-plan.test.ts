@@ -3,7 +3,7 @@
 import { expect, test } from "bun:test";
 
 import type { Inspection, Step } from "../src/cockpit/actions.ts";
-import { planOf, stepDuration, stepState, STEPS_PHASE } from "../src/cockpit/plan.ts";
+import { planOf, recomputeOf, stepDuration, stepState, STEPS_PHASE, stopOf } from "../src/cockpit/plan.ts";
 
 function step(id: string, status: Step["status"], extra: Partial<Step> = {}): Step {
   return { id, label: id, key: id, action: "niwa.now", startedAt: "2026-01-01T00:00:00.000Z", status, ...extra };
@@ -71,4 +71,26 @@ test("the current phase takes on how the run ended", () => {
   const phases = [{ title: "Build", state: "current" as const, steps: [] }];
   expect(planOf(inspection({ phases, status: { run: "r", state: "finished", requests: [], outcome: { status: "failed", error: { message: "boom" } } } }), plain)[0]?.state).toBe("failed");
   expect(planOf(inspection({ phases, status: { run: "r", state: "finished", requests: [], outcome: { status: "cancelled" } } }), plain)[0]?.state).toBe("stopped");
+});
+
+test("a step a later start took is shown as reused, and a step with an effect says so to the plan", () => {
+  expect(stepState(step("a", "completed", { reused: true }))).toBe("reused");
+  expect(stepState(step("a", "completed"))).toBe("done");
+});
+
+test("recomputing a step runs again from its key, a phase from its title, and the row of loose steps from the top", () => {
+  const run = inspection({
+    phases: [{ title: "Review", state: "done", steps: [step("r1", "completed", { key: "label:review" })] }],
+    steps: [step("s1", "completed", { key: "call-3" })],
+  });
+  expect(recomputeOf(run, { phase: "phase-0", step: "r1" })).toEqual({ run: "run-1", from: "label:review" });
+  expect(recomputeOf(run, { phase: "phase-0" })).toEqual({ run: "run-1", from: "Review" });
+  expect(recomputeOf(run, { phase: "steps", step: "s1" })).toEqual({ run: "run-1", from: "call-3" });
+  expect(recomputeOf(run, { phase: "steps" })).toEqual({ run: "run-1" });
+});
+
+test("stopping a step stops it by its key and leaves the run going; stopping a phase stops the run", () => {
+  const run = inspection({ steps: [step("s1", "running", { key: "@review.a.call-1", branch: "@review.a" })] });
+  expect(stopOf(run, { phase: "steps", step: "s1" })).toEqual({ run: "run-1", at: "@review.a.call-1" });
+  expect(stopOf(run, { phase: "steps" })).toEqual({ run: "run-1" });
 });

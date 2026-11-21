@@ -4,8 +4,8 @@ import { EntityLink, PageLink, useAction, useCall, type PageProps } from "@niwa-
 import { useQueryClient } from "@tanstack/react-query";
 import { PhasePlan, StateRing, formatDuration, type PhasePlanStep, type PlanTarget } from "@niwa-labs/ui-kit";
 
-import { cancelAction, inspectAction, resumeAction, type Step } from "./actions.ts";
-import { planOf, stepDuration, stepState } from "./plan.ts";
+import { inspectAction, resumeAction, stopAction, type Step } from "./actions.ts";
+import { planOf, recomputeOf, stepDuration, stepState, stopOf } from "./plan.ts";
 import { ringOf } from "./runs.tsx";
 
 function toStep(step: Step): PhasePlanStep {
@@ -14,7 +14,10 @@ function toStep(step: Step): PhasePlanStep {
     id: step.id,
     title: step.label === "" ? step.action : step.label,
     state: stepState(step),
-    ...(took === undefined ? {} : { meta: formatDuration(took) }),
+    ...(step.effect === true ? { effect: true } : {}),
+    ...(took === undefined && step.reused !== true
+      ? {}
+      : { meta: [step.reused === true ? "from the run before" : undefined, took === undefined ? undefined : formatDuration(took)].filter(Boolean).join(" · ") }),
     ...(step.session === undefined && step.prompt === undefined
       ? {}
       : {
@@ -33,7 +36,7 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
   const queryClient = useQueryClient();
   const inspection = useCall(inspectAction, { run }, { refreshOn: { types: ["workflow.*", "niwa.step.*", "niwa.invocation.state"] } });
   const resume = useAction(resumeAction);
-  const cancel = useAction(cancelAction);
+  const stop = useAction(stopAction);
 
   if (inspection.isPending) return <p className="p-4 text-sm text-muted-foreground">Loading the run…</p>;
   if (inspection.isError) {
@@ -47,14 +50,14 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
 
   const { status, origin } = inspection.data;
   const phases = planOf(inspection.data, toStep);
-  const first = phases[0]?.id;
   const current = phases.find((phase) => phase.state === "running" || phase.state === "waiting")?.id;
   const reread = (): void => void queryClient.invalidateQueries({ queryKey: ["niwa", "call"] });
 
-  // The host runs and stops a whole run: a plan row stands for the run, so the controls sit on the rows that say so.
-  const recompute = (): void => resume.mutate({ run }, { onSettled: reread });
-  const stop = (): void => cancel.mutate({ run }, { onSettled: reread });
-  const failure = resume.error ?? cancel.error;
+  // A step or a phase runs again from where it is, the steps before it taken from the run as it was; a step stops on its
+  // own and the run goes on, a phase row stops the whole run.
+  const recompute = (target: PlanTarget): void => resume.mutate(recomputeOf(inspection.data, target), { onSettled: reread });
+  const halt = (target: PlanTarget): void => stop.mutate(stopOf(inspection.data, target), { onSettled: reread });
+  const failure = resume.error ?? stop.error;
 
   return (
     <article data-slot="run-page" className="flex min-w-0 flex-col gap-4 p-4">
@@ -85,11 +88,19 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
       <PhasePlan
         phases={phases}
         onRecompute={recompute}
-        onStop={stop}
-        canRecompute={(target: PlanTarget) => target.step === undefined && target.phase === first && status.state !== "running"}
-        canStop={(target: PlanTarget) => target.step === undefined && target.phase === current && status.state !== "finished"}
-        explainRecompute={() => "Runs the whole workflow again from the top. Calls that finished are answered from the journal; the ones that changed run again."}
-        explainStop={() => "Ends the whole run and interrupts the sessions it started."}
+        onStop={halt}
+        canRecompute={() => status.state !== "running"}
+        canStop={(target: PlanTarget) => status.state !== "finished" && (target.step !== undefined || target.phase === current)}
+        explainRecompute={(target: PlanTarget) =>
+          recomputeOf(inspection.data, target).from === undefined
+            ? "Starts the run again from the top: the steps that did not change are taken from this run, and the first changed step and everything after it run again."
+            : undefined
+        }
+        explainStop={(target: PlanTarget) =>
+          target.step === undefined
+            ? "Ends the whole run and interrupts the sessions it started."
+            : "Stops this step: it ends as cancelled, its sessions are interrupted, and the rest of the run goes on."
+        }
       />
       {failure === null ? null : <p role="alert" className="text-sm text-destructive">{failure.message}</p>}
     </article>

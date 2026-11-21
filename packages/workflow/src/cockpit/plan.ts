@@ -3,6 +3,7 @@
 import type { PhasePlanPhase, PhasePlanStep, WorkState } from "@niwa-labs/ui-kit";
 
 import type { Inspection, Step } from "./actions.ts";
+import type { PlanTarget } from "@niwa-labs/ui-kit";
 
 const STEP_STATE: Readonly<Record<Step["status"], WorkState>> = {
   running: "running",
@@ -15,7 +16,8 @@ const STEP_STATE: Readonly<Record<Step["status"], WorkState>> = {
 };
 
 export function stepState(step: Step): WorkState {
-  return STEP_STATE[step.status];
+  // A step a later start of the run took is shown as taken from the run before, whatever it ended as.
+  return step.reused === true ? "reused" : STEP_STATE[step.status];
 }
 
 /** How long a step took, in milliseconds; undefined while it has not ended. */
@@ -66,4 +68,34 @@ export function planOf(inspection: Inspection, toStep: (step: Step) => PhasePlan
     });
   }
   return phases;
+}
+
+/** The phases of a run as `planOf` names them, each with the steps of its row and the title a resume names it by. */
+function rowsOf(inspection: Inspection): Array<{ id: string; title: string | undefined; steps: readonly Step[] }> {
+  return [
+    ...inspection.phases.map((phase, index) => ({ id: `phase-${String(index)}`, title: phase.title, steps: phase.steps })),
+    { id: "steps", title: undefined, steps: inspection.steps },
+  ];
+}
+
+/**
+ * What recomputing a target of the plan asks the host: a step runs again from its key, a declared phase from its title, and
+ * the row of the steps that named no phase from the top. The steps before it are taken from the run as it was.
+ */
+export function recomputeOf(inspection: Inspection, target: PlanTarget): { run: string; from?: string } {
+  const row = rowsOf(inspection).find((one) => one.id === target.phase);
+  if (target.step !== undefined) {
+    const step = row?.steps.find((one) => one.id === target.step);
+    if (step !== undefined) return { run: inspection.run, from: step.key };
+  }
+  return row?.title === undefined ? { run: inspection.run } : { run: inspection.run, from: row.title };
+}
+
+/** What stopping a target of the plan asks the host: a step stops by its key and the run goes on; a phase stops the run. */
+export function stopOf(inspection: Inspection, target: PlanTarget): { run: string; at?: string } {
+  if (target.step === undefined) return { run: inspection.run };
+  const step = rowsOf(inspection)
+    .find((one) => one.id === target.phase)
+    ?.steps.find((one) => one.id === target.step);
+  return step === undefined ? { run: inspection.run } : { run: inspection.run, at: step.key };
 }

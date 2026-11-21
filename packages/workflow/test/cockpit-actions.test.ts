@@ -3,14 +3,15 @@
 import { expect, test } from "bun:test";
 import { unreadable, unsendable } from "@niwa-labs/testing";
 
-import { workflowCancel, workflowInspect, workflowResume, workflowRuns } from "../src/index.ts";
-import { cancelAction, inspectAction, resumeAction, runsAction } from "../src/cockpit/actions.ts";
+import { workflowCancel, workflowInspect, workflowResume, workflowRuns, workflowStop } from "../src/index.ts";
+import { cancelAction, inspectAction, resumeAction, runsAction, stopAction } from "../src/cockpit/actions.ts";
 
 test.each([
   ["workflow.runs", runsAction, workflowRuns],
   ["workflow.inspect", inspectAction, workflowInspect],
   ["workflow.resume", resumeAction, workflowResume],
   ["workflow.cancel", cancelAction, workflowCancel],
+  ["workflow.stop", stopAction, workflowStop],
 ] as const)("%s is sent as the host takes it and its answer is read", (name, copy, real) => {
   expect(copy.name).toBe(name);
   expect(String(real.name)).toBe(name);
