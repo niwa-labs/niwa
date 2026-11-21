@@ -92,7 +92,7 @@ async function cancelledMidTurn(structuredOutput: boolean): Promise<void> {
   hosts.push(niwa);
 
   const file = join(home.path, "script.js");
-  await writeFile(file, `export default workflow({ output: z.json() }, async () => { return await agent("Work.", { harness: "fake-harness" }); });`);
+  await writeFile(file, `export default workflow({ output: z.json() }, async () => { return await ask({ harness: "fake-harness" }, "Work."); });`);
   const { run } = await niwa.call(workflowStart, { file });
   // A harness that answers natively is in its turn; one that does not has asked the session through a request.
   await eventually(

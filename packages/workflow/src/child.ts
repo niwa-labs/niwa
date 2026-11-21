@@ -24,9 +24,9 @@ import { z } from "zod";
 import { JsonSchemaValue, jsonOf } from "@niwa-labs/core";
 import type { Question } from "@niwa-labs/core";
 import { WorktreeOption } from "@niwa-labs/git/records";
-import { blocksOf } from "@niwa-labs/harness";
+import { blocksOf, promptFromText } from "@niwa-labs/harness";
 import type { OptionBlocks } from "@niwa-labs/harness";
-import type { CallOptions, Duration } from "@niwa-labs/script";
+import type { CallOptions, Duration, ScriptSession, SessionPrompt } from "@niwa-labs/script";
 
 import { choiceQuestion, confirmQuestion, formQuestion, multiQuestion, textQuestion } from "./ask.ts";
 import type { AskOption } from "./ask.ts";
@@ -241,7 +241,7 @@ function answerSchema(schema: z.ZodType): JsonSchemaValue {
   return JsonSchemaValue.parse(z.toJSONSchema(schema, { io: "input" }));
 }
 
-globals.agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
+function launch(opts: AgentOptions, prompt?: SessionPrompt): Promise<unknown> {
   let schema: JsonSchemaValue | undefined;
   let blocks: OptionBlocks;
   let worktree: WorktreeOption | undefined;
@@ -258,9 +258,10 @@ globals.agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
     {
       op: "agent",
       input: {
-        prompt,
+        ...(prompt === undefined ? {} : { prompt }),
         ...(opts.harness === undefined ? {} : { harness: opts.harness }),
         ...(opts.label === undefined ? {} : { label: opts.label }),
+        ...(opts.tools === undefined ? {} : { tools: opts.tools }),
         ...(opts.visible === undefined ? {} : { visible: opts.visible }),
         ...(opts.model === undefined ? {} : { model: opts.model }),
         ...(opts.effort === undefined ? {} : { effort: opts.effort }),
@@ -283,6 +284,71 @@ globals.agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
     const parsed: unknown = await wanted.parseAsync(opts.worktree === undefined ? value : rest);
     return opts.worktree === undefined || worktree === undefined ? parsed : { ...(parsed as object), worktree };
   });
+}
+
+globals.agent = function (name: string) {
+  if (arguments.length !== 1 || typeof name !== "string" || !name.trim()) {
+    throw new TypeError("agent(name) takes the name of a mailbox agent");
+  }
+  return { tell: (text: string, opts?: CallOptions) => callOf("agent.tell", { agent: name, text }, opts) };
+};
+
+async function openSession(options: AgentOptions): Promise<ScriptSession> {
+  if (!options || typeof options !== "object" || options.schema !== undefined) {
+    throw new TypeError("session(options) takes launch options; pass the answer schema to its ask method");
+  }
+  const started = await launch(options) as { session: string; ref: string; worktree?: ScriptSession["worktree"] };
+  const id = started.session;
+  const separator = started.ref.indexOf(" ");
+  let ending: Promise<void> | undefined;
+  let previous: Promise<unknown> = Promise.resolve();
+  const askTurn = (prompt: SessionPrompt, opts: { schema?: z.ZodType; label?: string } = {}) => {
+    if (ending !== undefined) return Promise.reject(new Error("this workflow session has ended"));
+    // A harness has one conversation. Order concurrent turns even when its adapter accepts both.
+    const turn = async () => {
+      const schema = opts.schema ?? z.object({ answer: z.string() });
+      const content = typeof prompt === "string" ? promptFromText(prompt) : prompt;
+      const output = await callOf("session.ask", { session: id, prompt: content, schema: answerSchema(schema) }, opts) as { value: unknown };
+      return schema.parseAsync(output.value);
+    };
+    previous = previous.then(turn, turn);
+    return previous;
+  };
+  return {
+    id,
+    ref: started.ref,
+    address: { kind: "session", harness: started.ref.slice(0, separator), id: started.ref.slice(separator + 1) },
+    ...(started.worktree === undefined ? {} : { worktree: started.worktree }),
+    ask: askTurn as ScriptSession["ask"],
+    end(opts) {
+      const close = async () => {
+        await callOf("session.end", { session: id, reason: "workflow session ended" }, opts);
+      };
+      return ending ??= previous.then(close, close);
+    },
+  };
+}
+
+globals.session = (options: AgentOptions) => {
+  let opened: Promise<ScriptSession> | undefined;
+  let ended = false;
+  const open = () => {
+    if (ended) throw new Error("this workflow session has ended");
+    return opened ??= openSession(options);
+  };
+  return {
+    // Awaiting a session opens it when the script needs its address before its first turn.
+    then: (resolve: (session: ScriptSession) => unknown, reject: (error: unknown) => unknown) =>
+      Promise.resolve().then(open).then(resolve, reject),
+    ask: async (prompt: SessionPrompt, opts?: { label?: string; schema?: z.ZodType }) => {
+      const session = await open();
+      return opts?.schema === undefined ? session.ask(prompt, opts) : session.ask(prompt, { ...opts, schema: opts.schema });
+    },
+    end: async (opts?: CallOptions) => {
+      ended = true;
+      if (opened !== undefined) await (await opened).end(opts);
+    },
+  };
 };
 
 /** The reason a call carries, when it has one. */
@@ -407,7 +473,12 @@ function askOwner(question: Question, opts: AskOptions): Promise<unknown> {
   );
 }
 
-globals.ask = {
+globals.ask = Object.assign((options: AgentOptions, prompt: SessionPrompt) => {
+  if (!options || typeof options !== "object" || prompt === undefined) {
+    throw new TypeError("ask(options, prompt) takes launch options and a prompt");
+  }
+  return launch(options, prompt);
+}, {
   choice: (text: string, options: readonly AskOption[], opts: AskOptions = {}): Promise<unknown> =>
     askOwner(choiceQuestion(text, options), opts),
   multi: (text: string, options: readonly AskOption[], opts: AskOptions = {}): Promise<unknown> =>
@@ -417,7 +488,7 @@ globals.ask = {
   /** The value passes the schema the owner was shown, and again the zod schema of the script, here. */
   form: async (text: string, schema: z.ZodType, opts: AskOptions = {}): Promise<unknown> =>
     schema.parseAsync(await askOwner(formQuestion(text, answerSchema(schema)), opts)),
-};
+});
 
 /** What `record(name, schema)` gives: a record type a script declares in `emits` and writes with `emit`. */
 interface DeclaredRecord {
@@ -1240,7 +1311,7 @@ if (mode === "describe") {
   const unavailable = (name: string): (() => never) => () => {
     throw new Error(`${name} is not available while the module is read for its schemas: call it inside the function of the script`);
   };
-  for (const name of ["agent", "call", "wait", "sleep", "emit", "now", "random", "scope", "parallel", "stream", "race", "moveOnAfter", "failAfter", "pipeline", "phase", "log"]) {
+  for (const name of ["agent", "session", "call", "wait", "sleep", "emit", "now", "random", "scope", "parallel", "stream", "race", "moveOnAfter", "failAfter", "pipeline", "phase", "log"]) {
     globals[name] = unavailable(name);
   }
   const stub = (name: string): unknown => new Proxy(unavailable(name), { get: (_target, key) => (typeof key === "symbol" || key === "then" ? undefined : stub(`${name}.${key}`)) });

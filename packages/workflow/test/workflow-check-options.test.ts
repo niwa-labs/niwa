@@ -56,7 +56,7 @@ async function check(lines: readonly string[], bound: ReadonlyArray<readonly [st
 
 const script = (call: string, harness = "claude-sonnet"): string[] => [
   "export default workflow({}, async () => {",
-  `  await agent("go", { harness: ${JSON.stringify(harness)}, ${call} });`,
+  `  await ask({ harness: ${JSON.stringify(harness)}, ${call} }, "go");`,
   "});",
 ];
 
@@ -101,12 +101,12 @@ test("the block of another kind is an error, and so is any block for a harness g
   expect(rebound.ok).toBe(false);
   expect(rebound.errors[0]).toMatchObject({ line: 2, code: "TS2769" });
   expect((await check(script("codex: {}", "same"), [["same", CODEX]])).ok).toBe(true);
-  const none = await check(["export default workflow({}, async () => {", '  await agent("go", { claude: { advisor: false } });', "});"]);
+  const none = await check(["export default workflow({}, async () => {", '  await ask({ claude: { advisor: false } }, "go");', "});"]);
   expect(none.ok).toBe(false);
   expect(none.errors[0]).toMatchObject({ line: 2, code: "TS2769" });
 }, 60_000);
 
-test("a block that no kind declares is not an option of agent()", async () => {
+test("a block that no kind declares is not an option of ask()", async () => {
   const report = await check(script("gemini: {}"));
   expect(report.ok).toBe(false);
   expect(report.errors[0]).toMatchObject({ line: 2, code: "TS2769" });

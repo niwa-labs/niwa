@@ -46,27 +46,27 @@ their types. A script may import packages: the record types, query builders and 
 
 Calling actions:
 - niwa.<group>.<action>(input, { label }) calls the action <group>.<action>. call(name, input, { label }) is the
-  same by name. A name with a dash is niwa.agent["search-old"]. agent(prompt, { harness, visible, model, effort, mode, cwd }) starts a session
+  same by name. A name with a dash is niwa.agent["search-old"]. ask({ harness, visible, model, effort, mode, cwd }, prompt) starts a session
   (a call of session.start.<harness>) in the directory cwd, or in the host's own directory when it is absent, with the model,
   effort and mode given (mode is "ask", "auto" or "full"; auto when absent), which it keeps for its whole life (a kind that cannot apply them refuses the call); it sees only the action that answers, plus the names or masks in visible,
   which must lie within the grant of the run. The harness is one the host serves (an unknown one is an error of the check), and a model or an effort is checked against the list its adapter gives, where it gives one.
   The options of the harness's kind go in the block named after the kind:
-  agent(prompt, { harness: "claude-sonnet", claude: { advisor: false } }); only the block of that harness's kind is typed,
+  ask({ harness: "claude-sonnet", claude: { advisor: false } }, prompt); only the block of that harness's kind is typed,
   the block of another kind, or a field the block does not have, is an error of the check and is refused, and a session
   resumed later starts again with the options it was started with.
-- agent(prompt, { worktree: true }) runs the session in a new git worktree (the git module's git.worktree.create) of cwd's
+- ask({ worktree: true }, prompt) runs the session in a new git worktree (the git module's git.worktree.create) of cwd's
   repository, or { worktree: { repo, base, description } }; the base is the repository's current branch when absent. When the
   call ends with the worktree clean and no new commit, it is removed; otherwise the answer carries
   worktree: { id, path, branch, changed: true } and the branch stays for you, the agent or the owner to merge: niwa never merges.
   With a worktree the answer is an object, so a schema is a z.object (or z.record); any other schema is an error of the check.
-- agent(prompt, { box: { allow: ["bun", { read: "~/data" }] } }) gives the session's box more than the host's default
+- ask({ box: { allow: ["bun", { read: "~/data" }] } }, prompt) gives the session's box more than the host's default
   (the project and the toolchains), and { box: { only: [{ read: "." }] } } gives it that instead; an item is a profile's
   name, "project", "toolchains", { read }, { write } or { net }. The session always has its own installation's profile.
   Beyond the default the run's uses needs the rule: "box.use@bun", "box.read@/path/*", "box.write@...", "box.net@<host>".
-- agent(prompt, { schema }) with a zod schema gives a typed answer. z is a global (zod, no import): write the schema
+- ask({ schema }, prompt) with a zod schema gives a typed answer. z is a global (zod, no import): write the schema
   with z.object({ ... }), pass it, and the call gives the answer already parsed, typed as z.infer<typeof Schema>.
   Without schema the call gives { answer }, the text. The schema goes to the host as JSON Schema and is part of the
-  step: another schema is another call on a replay, and a finished call is answered from the journal without
+  step. A finished one-shot question with the same prompt and harness reuses its recorded answer without
   asking again. An answer that does not pass the schema is never returned: a harness with structured output
   has the call fail (the run pauses for a retry, a skip or a cancel), and for the others the session is told what
   was wrong when it submits, and answers again. A rule JSON Schema cannot say (a .refine, a .transform that
@@ -74,10 +74,19 @@ Calling actions:
   a failure of such a rule repeats until the call gets a new label or another schema.
 
     const Review = z.object({ verdict: z.enum(["approve", "changes"]), notes: z.array(z.string()) });
-    const review = await agent("Review the diff in ./src", { harness: "codex", schema: Review });
+    const review = await ask({ harness: "codex", schema: Review }, "Review the diff in ./src");
     if (review.verdict === "changes") log(review.notes.join("\n"));
+- For a conversation, const s = session({ harness: "codex", label: "reviewer" }).
+  Each await s.ask(prompt, { schema, label }) is a durable turn in that same conversation.
+  Use await s.end() to close it. The run closes any sessions still open when it ends.
+  uses must cover session.start.<harness>, session.ask and session.end.
+  tools chooses "all", "niwa-only", or { allow: [...] } for harness tools. visible selects Niwa actions.
+  A prompt can be text or ordered { sections: [{ id, tier, text }] }. The first ask opens the session.
+  To obtain its id, ref and address immediately, use const opened = await session(options).
+- To message a named agent, await agent("rin").tell(text, { label: "report" }) with agent.tell in uses.
+  Its inbox receives the message and the call returns its message id.
 - uses lists the actions the script calls, as names or masks ("task.*"). The check holds the script to it:
-  a call outside the list is an error, and so is an agent() call on a harness it does not list as "session.start.<harness>";
+  a call outside the list is an error, and so is an ask() call on a harness it does not list as "session.start.<harness>";
   a harness known only when the script runs is a warning of the check, which asks for an entry that covers it. The run holds exactly those rights, narrowed from the caller's: a mask the
   caller does not hold refuses the start. Without uses a script started by a caller with a grant may call
   nothing; only a caller that nothing limits (the host itself) gets every action.

@@ -50,7 +50,7 @@ export const Measures = z.object({
   }),
   /** The steps that failed and paused a run, and the runs that ended `failed`, by the phase the run was in. */
   failures: z.array(z.object({ phase: z.string().nullable(), count: z.number().int() })),
-  /** The `agent()` calls, by harness and the model the session ran (null until the harness named it). */
+  /** The `ask()` calls, by harness and the model the session ran (null until the harness named it). */
   agentCalls: z.array(
     z.object({ harness: z.string(), model: z.string().nullable(), calls: z.number().int(), failed: z.number().int(), ms: z.number() }),
   ),
@@ -160,7 +160,7 @@ function kindOf(action: string): StepKind {
   return "other";
 }
 
-/** One `agent()` call of a run. */
+/** One `ask()` call of a run. */
 interface AgentCall {
   harness?: string;
   /** The ref of its session, the pair its records carry. */

@@ -9,13 +9,13 @@ export default workflow({ phases: [{ title: "Study" }], uses: ["branches.agent"]
   phase("Study");
   const reports = await parallel([
     async () => {
-      const first = await agent("b1");
-      const second = await agent("b2");
+      const first = await ask({}, "b1");
+      const second = await ask({}, "b2");
       return [first, second];
     },
     async () => {
-      const first = await agent("c1");
-      const second = await agent("c2");
+      const first = await ask({}, "c1");
+      const second = await ask({}, "c2");
       return [first, second];
     },
   ]);

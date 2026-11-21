@@ -533,7 +533,7 @@ export function bridge(deps: BridgeDeps): Bridge {
         if (target === undefined) {
           throw new Error(`no agent action is configured for "${deps.agentName(request.input.harness)}"`);
         }
-        return act(key, target, target.name, request.input, lineage, { agent: true });
+        return act(key, target, target.name, request.input, lineage, { agent: request.input.prompt !== undefined });
       }
       case "call":
         return act(key, actionName(request.action), request.action, request.input, lineage, {

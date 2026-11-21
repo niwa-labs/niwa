@@ -1,5 +1,5 @@
 /**
- * The agent action of a harness: what an `agent()` call of a script goes to when it names that
+ * The agent action of a harness: what an `ask()` call of a script goes to when it names that
  * harness.
  *
  * It starts a session and asks it for the answer: one call is one session and one answer. The
@@ -14,10 +14,10 @@ import type { Action, ActionContext } from "@niwa-labs/core";
 import { DESCRIPTION_MAX, DESCRIPTION_MIN, EntityDescription, JsonSchemaValue, action } from "@niwa-labs/core";
 import { WorktreeOption, gitWorktreeGet, gitWorktreeRemove } from "@niwa-labs/git/records";
 import type { WorktreeOptionGiven } from "@niwa-labs/git/records";
-import { SessionModeSchema, blocksOf, withBlocks } from "@niwa-labs/harness";
+import { PromptSchema, SessionModeSchema, ToolsModeSchema, blocksOf, withBlocks } from "@niwa-labs/harness";
 import type { OptionBlocks } from "@niwa-labs/harness";
 import { BoxAccessSchema } from "@niwa-labs/sandbox";
-import { SUBMIT_ANSWER_ACTION, harnessGet, sessionAsk, sessionStart } from "@niwa-labs/sessions/records";
+import { SUBMIT_ANSWER_ACTION, harnessGet, sessionAsk, sessionEnd, sessionStart } from "@niwa-labs/sessions/records";
 import { z } from "zod";
 
 import { agentActionName } from "./language.ts";
@@ -49,11 +49,12 @@ function oneOf(listed: readonly string[] | undefined): z.ZodType<string, string>
  */
 const agentFields = (launch: HarnessLaunch) =>
   z.object({
-    prompt: z.string(),
+    prompt: z.union([z.string(), PromptSchema]).optional(),
     harness: z.string().optional(),
     label: z.string().optional(),
     /** The actions (names or masks) the session sees besides the one that answers. */
     visible: z.array(z.string()).optional(),
+    tools: ToolsModeSchema.optional(),
     /** The model of the session, for its whole life. */
     model: oneOf(launch.models).optional(),
     /** The effort of the session, for its whole life. */
@@ -154,7 +155,7 @@ const ANSWER_SCHEMA: JsonSchemaValue = {
  */
 export function sessionAgent(harness: string, launch: HarnessLaunch = {}): Action<AgentInput, unknown, AgentInputGiven> {
   return action(String(agentActionName(harness)), {
-    description: `Starts a session of the harness "${harness}" and asks it for the answer.`,
+    description: `Starts a session of the harness "${harness}" and, when given a prompt, asks it and closes it.`,
     input: agentInput(harness, launch),
     output: AgentOutput,
     // A session is started and asked: a call that was cut off may have done both.
@@ -170,31 +171,37 @@ export function sessionAgent(harness: string, launch: HarnessLaunch = {}): Actio
       // The session is the run's: started as the run, it is held to the run's grant (its box, its tools),
       // as every call of the script is.
       const run = ctx.caller.kind === "client" ? ctx.caller.principal : undefined;
-      const { session, worktree } = await ctx.step(sessionStart, {
+      const started = await ctx.step(sessionStart, {
         harness,
         prompt: "",
         ...(input.model === undefined ? {} : { model: input.model }),
         ...(input.effort === undefined ? {} : { effort: input.effort }),
+        ...(input.tools === undefined ? {} : { tools: input.tools }),
         ...(input.mode === undefined ? {} : { mode: input.mode }),
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-        ...(input.worktree === undefined ? {} : { worktree: worktreeAsked(input.worktree, input.label, input.prompt) }),
+        ...(input.worktree === undefined ? {} : { worktree: worktreeAsked(input.worktree, input.label, typeof input.prompt === "string" ? input.prompt : input.prompt?.sections[0]?.text ?? "workflow session") }),
         ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
         ...(input.box === undefined ? {} : { box: input.box }),
         ...blocksOfCall(harness, input),
         visible: { actions: [...new Set([...VISIBLE_ACTIONS, ...(input.visible ?? [])])], disabledTools: [] },
       }, run === undefined ? {} : { as: run });
+      if (input.prompt === undefined) return started;
+      const { session, worktree } = started;
+      const as = run === undefined ? {} : { as: run };
+      // A parked turn will re-enter this step. Keep its session until it has an answer.
       const { value } = await ctx.step(sessionAsk, {
         session,
         prompt: input.prompt,
         schema: answerSchema,
-      });
+      }, as);
+      await ctx.step(sessionEnd, { session, reason: "workflow question finished" }, as);
       if (worktree === undefined) return value;
       // The worktree goes when the work left nothing in it; otherwise the answer says where the work is.
-      const now = await ctx.step(gitWorktreeGet, { id: worktree.id });
+      const now = await ctx.step(gitWorktreeGet, { id: worktree.id }, as);
       const changed = now.dirty || now.aheadOfBase > 0;
-      if (!changed && now.sessions.every((live) => live === session)) {
-        // Its own session is the only one in it, and that session is done with it.
-        await ctx.step(gitWorktreeRemove, { id: worktree.id, force: true });
+      if (!changed && now.sessions.length === 0) {
+        // Recheck at removal: concurrent work may have made this worktree dirty.
+        await ctx.step(gitWorktreeRemove, { id: worktree.id }, as);
         return value;
       }
       const kept: AgentWorktree = { ...worktree, changed };

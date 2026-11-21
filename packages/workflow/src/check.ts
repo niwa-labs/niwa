@@ -61,7 +61,7 @@ export interface CheckError {
   file: string;
   line: number;
   column: number;
-  /** The code of the type checker (`TS2339`), `workflow` for a script that is not `export default workflow({ ... }, fn)`, `uses` for a mask of `uses` that names no action or an `agent()` call on a harness `uses` does not list, `emit` for a record the script may not write, `on` for an `on` the host cannot serve, `wait` for a filter of a wait no record of its type can hold or a type it names by reference that the host does not know or writes at another version, `read` for such a type of a read, `schema` for an `input`, `output` or record of `emits` that is not a JSON Schema, `phases` for phases that are not a list of `{ title, detail? }` with titles of their own, written in the declaration, or `describe` for a module that could not be read. */
+  /** The code of the type checker (`TS2339`), `workflow` for a script that is not `export default workflow({ ... }, fn)`, `uses` for a mask of `uses` that names no action or an `ask()` call on a harness `uses` does not list, `emit` for a record the script may not write, `on` for an `on` the host cannot serve, `wait` for a filter of a wait no record of its type can hold or a type it names by reference that the host does not know or writes at another version, `read` for such a type of a read, `schema` for an `input`, `output` or record of `emits` that is not a JSON Schema, `phases` for phases that are not a list of `{ title, detail? }` with titles of their own, written in the declaration, or `describe` for a module that could not be read. */
   code: string;
   message: string;
 }
@@ -233,7 +233,7 @@ function optionsFor(ts: typeof Ts, file: string): Ts.CompilerOptions {
   };
 }
 
-/** The harnesses an `agent()` call may name: the ones the host serves, and the ones of them `uses` lets the script call. */
+/** The harnesses an `ask()` call may name: the ones the host serves, and the ones of them `uses` lets the script call. */
 interface Harnesses {
   hosted: ReadonlySet<string>;
   allowed: ReadonlySet<string>;
@@ -262,7 +262,7 @@ function harnessTypes(ts: typeof Ts, type: Ts.Type): string[] | "dynamic" | unde
 }
 
 /**
- * The `agent()` calls that start a session on a harness `uses` does not list, read from what the checker knows of the
+ * The `ask()` calls that start a session on a harness `uses` does not list, read from what the checker knows of the
  * `harness` of each call: a text, a constant that holds one, or a choice between them. A call whose harness is only known
  * when the script runs is a warning, since a run pauses on the first harness outside `uses`. The type of the options
  * refuses an unlisted harness in a script that is type checked, in the terms of overloads; the error here says which
@@ -274,8 +274,8 @@ function harnessUses(ts: typeof Ts, program: Ts.Program, source: ScriptSource, h
   if (parsed === undefined || harnesses.hosted.size === 0) return found;
   const checker = program.getTypeChecker();
   const uncovered = [...harnesses.hosted].filter((name) => !harnesses.allowed.has(name));
-  for (const call of callsOf(ts, parsed, "agent")) {
-    const options = call.arguments[1] === undefined ? undefined : bare(ts, call.arguments[1]);
+  for (const call of [...callsOf(ts, parsed, "ask"), ...callsOf(ts, parsed, "session")]) {
+    const options = call.arguments[0] === undefined ? undefined : bare(ts, call.arguments[0]);
     if (options === undefined) continue;
     const written = ts.isObjectLiteralExpression(options)
       ? options.properties.find((property): property is Ts.PropertyAssignment | Ts.ShorthandPropertyAssignment => (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && property.name.getText(parsed) === "harness")
@@ -287,7 +287,7 @@ function harnessUses(ts: typeof Ts, program: Ts.Program, source: ScriptSource, h
       const value = checker.getShorthandAssignmentValueSymbol(property);
       return value === undefined ? undefined : checker.getTypeOfSymbolAtLocation(value, property.name);
     };
-    // Options that are not written in the call (`agent(p, opts)`, `{ ...opts }`) are read by the type they have.
+    // Options that are not written in the call (`ask(opts, p)`, `{ ...opts }`) are read by the type they have.
     const member = written === undefined && spread ? checker.getTypeAtLocation(options).getProperty("harness") : undefined;
     const type =
       written !== undefined
@@ -299,13 +299,13 @@ function harnessUses(ts: typeof Ts, program: Ts.Program, source: ScriptSource, h
     if (names === undefined) continue;
     if (names === "dynamic") {
       if (uncovered.length > 0) {
-        found.warnings.push({ ...place, code: "uses", message: `agent() takes a harness that is known only when the script runs: uses needs an entry for each harness it may name (session.start.<harness>, or session.start.*), or a run pauses on the first that is missing` });
+        found.warnings.push({ ...place, code: "uses", message: `${call.expression.getText(parsed)}() takes a harness that is known only when the script runs: uses needs an entry for each harness it may name (session.start.<harness>, or session.start.*), or a run pauses on the first that is missing` });
       }
       continue;
     }
     // A harness the host does not serve is the options' to refuse, with the ones it does.
     for (const name of names.filter((one) => harnesses.hosted.has(one) && !harnesses.allowed.has(one))) {
-      found.errors.push({ ...place, code: "uses", message: `agent() starts a session on the harness "${name}", which uses does not list: add "session.start.${name}" (or "session.start.*") to uses` });
+      found.errors.push({ ...place, code: "uses", message: `${call.expression.getText(parsed)}() starts a session on the harness "${name}", which uses does not list: add "session.start.${name}" (or "session.start.*") to uses` });
     }
   }
   return found;
@@ -369,7 +369,7 @@ export interface Catalogue {
   rights?: Grant | "unlimited";
   /**
    * The options block each harness takes, by its id, as the sessions module binds it (`harness.list`): what the
-   * block of an `agent()` call is typed by. A harness not in it takes no block.
+   * block of an `ask()` call is typed by. A harness not in it takes no block.
    */
   blocks?: ReadonlyMap<string, HarnessBlock>;
   /**

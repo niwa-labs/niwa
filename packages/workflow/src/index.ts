@@ -2542,7 +2542,7 @@ async function planCalls(
           case "call": {
             const call: CurrentCall =
               request.op === "agent"
-                ? { key, action: actionNameOf(request.input.harness), input: jsonOf(request.input), agent: true }
+                ? { key, action: actionNameOf(request.input.harness), input: jsonOf(request.input), agent: request.input.prompt !== undefined }
                 : { key, action: request.action, input: request.input ?? null };
             const decided = decide(recorded.get(key), call, {
               after: after === true,

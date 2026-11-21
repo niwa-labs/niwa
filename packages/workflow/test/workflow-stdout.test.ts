@@ -52,7 +52,7 @@ test("a script that writes to the stdout does not break the protocol", async () 
       [
         'export default workflow({ uses: ["revision.agent"], output: z.json() }, async () => {',
         '  console.log("the script writes a line of its own");',
-        '  const answer = await agent("Study the core.", { label: "work:first" });',
+        '  const answer = await ask({ label: "work:first" }, "Study the core.");',
         "  return answer;",
         '});',
         "",

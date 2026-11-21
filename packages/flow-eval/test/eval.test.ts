@@ -339,8 +339,8 @@ test("a blind set labels the same candidates the same whatever order they are gi
   const none = () => Promise.resolve(undefined);
   const saved = Object.fromEntries(["agent", "call", "scope", "parallel", "stream", "wait", "sleep", "now", "random", "z", "ask", "read"].map((name) => [name, globals[name]]));
   try {
-    for (const name of ["agent", "call", "parallel", "stream", "wait", "sleep", "now"]) globals[name] = none;
-    for (const name of ["z", "ask", "read"]) globals[name] = {};
+    for (const name of ["ask", "call", "parallel", "stream", "wait", "sleep", "now"]) globals[name] = none;
+    for (const name of ["z", "read"]) globals[name] = {};
     globals.scope = (_name: string, _opts: unknown, fn: () => Promise<unknown>) => fn();
     const labelling = async (order: string[]) => {
       const draws = [0.9, 0.1, 0.5];

@@ -136,7 +136,7 @@ export const CheckOutput = ScriptContract.partial().extend({
   file: z.string(),
   ok: z.boolean(),
   errors: z.array(CheckError),
-  /** What the check could not settle, such as an `agent()` call whose harness is known only when the script runs; absent when there is none. */
+  /** What the check could not settle, such as an `ask()` call whose harness is known only when the script runs; absent when there is none. */
   warnings: z.array(CheckError).optional(),
   note: z.literal("described, the script was not run"),
 });

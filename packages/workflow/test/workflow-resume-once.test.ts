@@ -123,7 +123,7 @@ test("a paused run is resolved as part of the resume, and one new run starts", a
       script,
       [
         "export default workflow({ output: z.json() }, async () => {",
-        '  const answer = await agent("This one will fail.", { label: "work:first" });',
+        '  const answer = await ask({ label: "work:first" }, "This one will fail.");',
         "  return answer;",
         "});",
         "",

@@ -252,7 +252,7 @@ test("the typing handles what the schemas of niwa hold: references, records, enu
   expect(failed.errors[0]).toMatchObject({ line: 2, code: "TS2322" });
   // Without `session.start.codex` among the callable names the wrapper is gone, the group stays.
   const narrowed = scriptTyping(catalogue, names.filter((name) => name !== "session.start.codex")).declarations;
-  // The block of the kind `codex` in the options of `agent()` is not that wrapper: it is `"codex"?`, not `"codex": {`.
+  // The block of the kind `codex` in the options of `ask()` is not that wrapper: it is `"codex"?`, not `"codex": {`.
   expect(narrowed).not.toContain('"codex": {');
   expect(narrowed).toContain('"session": {');
 }, 30_000);

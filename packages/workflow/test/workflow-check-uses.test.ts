@@ -1,4 +1,4 @@
-// An `agent()` call starts its session through `session.start.<harness>`, so a script that names a harness `uses` does
+// An `ask()` call starts its session through `session.start.<harness>`, so a script that names a harness `uses` does
 // not list would pause at its first call. The check finds it first: a harness written in the call, held by a constant or
 // chosen between two is an error, and one known only when the script runs is a warning.
 
@@ -48,26 +48,26 @@ async function report(uses: string, lines: readonly string[], file = "uses-probe
 }
 
 test("a harness written in the call that uses does not list is an error, and a listed one passes", async () => {
-  const missing = await report('"task.create"', ['  await agent("go", { harness: "codex-luna" });']);
+  const missing = await report('"task.create"', ['  await ask({ harness: "codex-luna" }, "go");']);
   expect(missing.errors.map((error) => error.code)).toEqual(["TS2769", "uses"]);
   expect(missing.errors[1]).toMatchObject({ line: 2 });
   expect(missing.errors[1]?.message).toContain('add "session.start.codex-luna"');
   expect(missing.warnings).toEqual([]);
-  expect((await report('"task.create", "session.start.codex-luna"', ['  await agent("go", { harness: "codex-luna" });'])).errors).toEqual([]);
-  expect((await report('"session.start.*"', ['  await agent("go", { harness: "codex-luna" });'])).errors).toEqual([]);
+  expect((await report('"task.create", "session.start.codex-luna"', ['  await ask({ harness: "codex-luna" }, "go");'])).errors).toEqual([]);
+  expect((await report('"session.start.*"', ['  await ask({ harness: "codex-luna" }, "go");'])).errors).toEqual([]);
   // Another harness than the one listed.
-  const other = await report('"session.start.claude-work"', ['  await agent("go", { harness: "codex-luna" });']);
+  const other = await report('"session.start.claude-work"', ['  await ask({ harness: "codex-luna" }, "go");']);
   expect(other.errors.map((error) => error.code)).toEqual(["TS2769", "uses"]);
 });
 
 test("a harness held by a constant is found as the text is", async () => {
-  const errors = (await report('"task.create"', ['  const harness = "codex-luna";', '  await agent("go", { harness });', '  const other = "claude-work";', '  await agent("go", { harness: other });'])).errors;
+  const errors = (await report('"task.create"', ['  const harness = "codex-luna";', '  await ask({ harness }, "go");', '  const other = "claude-work";', '  await ask({ harness: other }, "go");'])).errors;
   expect(errors.filter((error) => error.code === "uses").map((error) => error.line)).toEqual([3, 5]);
-  expect((await report('"session.start.codex-luna", "session.start.claude-work"', ['  const harness = "codex-luna";', '  await agent("go", { harness });'])).errors).toEqual([]);
+  expect((await report('"session.start.codex-luna", "session.start.claude-work"', ['  const harness = "codex-luna";', '  await ask({ harness }, "go");'])).errors).toEqual([]);
 });
 
 test("a script that is not type checked is held to uses all the same, with an error that says what to add", async () => {
-  const lines = ['  const harness = "codex-luna";', '  await agent("go", { harness });', '  await agent("go", { harness: "claude-work" });'];
+  const lines = ['  const harness = "codex-luna";', '  await ask({ harness }, "go");', '  await ask({ harness: "claude-work" }, "go");'];
   const { errors, warnings } = await report('"task.create"', lines, "uses-probe.js");
   expect(errors).toHaveLength(2);
   expect(errors[0]).toMatchObject({ line: 3, code: "uses" });
@@ -78,7 +78,7 @@ test("a script that is not type checked is held to uses all the same, with an er
 });
 
 test("a harness known only when the script runs is a warning that the call needs a matching uses entry", async () => {
-  const lines = ["  const chosen: unknown = JSON.parse('{}');", '  await agent("go", { harness: chosen as any });'];
+  const lines = ["  const chosen: unknown = JSON.parse('{}');", '  await ask({ harness: chosen as any }, "go");'];
   const missing = await report('"task.create"', lines);
   expect(missing.errors).toEqual([]);
   expect(missing.warnings).toHaveLength(1);
@@ -88,15 +88,15 @@ test("a harness known only when the script runs is a warning that the call needs
   expect((await report('"session.start.*"', lines)).warnings).toEqual([]);
   expect((await report('"session.start.codex-luna", "session.start.claude-work"', lines)).warnings).toEqual([]);
   // A harness that is text of any kind is the same, in a script of any kind.
-  const text = await report('"session.start.codex-luna"', ["  let harness = 'codex-luna';", '  await agent("go", { harness });'], "uses-probe.js");
+  const text = await report('"session.start.codex-luna"', ["  let harness = 'codex-luna';", '  await ask({ harness }, "go");'], "uses-probe.js");
   expect(text.errors).toEqual([]);
   expect(text.warnings).toHaveLength(1);
   expect(text.warnings[0]).toMatchObject({ line: 3, code: "uses" });
 });
 
 test("a call that names no harness, or a host that serves none, has nothing to warn of", async () => {
-  expect(await report('"task.create"', ['  await agent("go");'])).toEqual({ errors: [], warnings: [] });
-  const none = await scriptChecker()({ file: join(process.cwd(), "uses-probe.ts"), text: 'export default workflow({ output: z.json() }, async () => { await agent("go", { harness: "x" as string }); return null; });' }, { actions: [], callable: [] });
+  expect(await report('"task.create"', ['  await ask({}, "go");'])).toEqual({ errors: [], warnings: [] });
+  const none = await scriptChecker()({ file: join(process.cwd(), "uses-probe.ts"), text: 'export default workflow({ output: z.json() }, async () => { await ask({ harness: "x" as string }, "go"); return null; });' }, { actions: [], callable: [] });
   expect(none.errors).toEqual([]);
   expect(none.warnings).toEqual([]);
 });
@@ -111,7 +111,7 @@ test("workflow.check on a live host says so in its report", async () => {
   await mkdir(home.path, { recursive: true });
   const check = async (name: string, uses: string, call: string) => {
     const path = join(home.path, name);
-    await writeFile(path, ["export default workflow({ output: z.json(), uses: [" + uses + "] }, async () => {", `  await agent("a", ${call});`, "  return null;", "});"].join("\n"));
+    await writeFile(path, ["export default workflow({ output: z.json(), uses: [" + uses + "] }, async () => {", `  await ask(${call}, "a");`, "  return null;", "});"].join("\n"));
     return host.call(workflowCheck, { file: path });
   };
   const missing = await check("missing.ts", '"workflow.guide"', '{ harness: "codex-luna" }');

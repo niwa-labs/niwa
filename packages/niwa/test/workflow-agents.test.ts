@@ -23,6 +23,9 @@ import { connect } from "@niwa-labs/client";
 import type { ActionName as NiwaActionName, StoredRecord } from "@niwa-labs/core";
 import { spawnHost, tempHome, live, connectAsOwner, runFinishes } from "@niwa-labs/testing";
 import { z } from "zod";
+import { join } from "node:path";
+import { workflow, workflowResume, workflowStart, workflowWait } from "@niwa-labs/workflow";
+import { HARNESS, agentHost, dataOf, until as untilRecord } from "./fixtures/agent-host.ts";
 
 const HOST_SCRIPT = new URL("./fixtures/workflow-agents-host.ts", import.meta.url).pathname;
 
@@ -226,8 +229,8 @@ test.skipIf(!(live && Bun.which("mcode")))(
         script,
         [
           'export default workflow({ uses: ["session.start.mcode-test"], output: z.json() }, async () => {',
-          '  const first = await agent(\'Answer with exactly this JSON: {"answer":"alpha"}\', { harness: "mcode-test", label: "work:alpha" });',
-          '  const second = await agent(\'Answer with exactly this JSON: {"answer":"bravo"}\', { harness: "mcode-test", label: "work:bravo" });',
+          '  const first = await ask({ harness: "mcode-test", label: "work:alpha" }, \'Answer with exactly this JSON: {"answer":"alpha"}\');',
+          '  const second = await ask({ harness: "mcode-test", label: "work:bravo" }, \'Answer with exactly this JSON: {"answer":"bravo"}\');',
           `  if (!(await Bun.file(${JSON.stringify(flag)}).exists())) throw new Error("the script is broken");`,
           "  return { first, second };",
           '});',
@@ -299,3 +302,22 @@ test.skipIf(!(live && Bun.which("mcode")))(
   },
   RUN_DEADLINE_MS * 2 + 300_000,
 );
+
+test("agent(name).tell writes to the named mailbox once across a workflow replay", async () => {
+  const agent = { name: "rin", harness: HARNESS, prompt: "Coordinate the project." };
+  const host = await agentHost({ agents: [agent] }, { after: [workflow()] });
+  try {
+    const file = join(host.home, "tell.js");
+    await Bun.write(file, 'export default workflow({ uses: ["agent.tell"], output: z.json() }, async () => agent("rin").tell("Review the plan.", { label: "report" }));');
+    const { run } = await host.host.call(workflowStart, { file, wait: true, timeoutMs: 5_000 });
+    expect((await host.host.call(workflowWait, { run, timeoutMs: 5_000 })).outcome).toMatchObject({ status: "done", result: { message: expect.any(String) } });
+    const records = await untilRecord(host.records, "agent.turn.delivered");
+    expect(dataOf(records, "agent.turn.queued")).toMatchObject([{ agent: "rin", author: { kind: "client", id: `run:${run}` }, text: "Review the plan." }]);
+    await host.host.call(workflowResume, { run });
+    await host.host.call(workflowWait, { run, timeoutMs: 5_000 });
+    expect(dataOf(await host.records(), "agent.turn.queued")).toHaveLength(1);
+    expect(host.control.starts).toHaveLength(1);
+  } finally {
+    await host.close();
+  }
+}, 30_000);

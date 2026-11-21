@@ -3,7 +3,7 @@
 // The workflow module needs no hand glue for a script that names a harness.
 //
 // The option `harnesses` says which harnesses a script may name. For each of them the plugin
-// registers the agent action `session.start.<harness>`, so `agent({harness})` works with no hand
+// registers the agent action `session.start.<harness>`, so `session({harness})` works with no hand
 // glue.
 //
 // The scenario runs against a fake control side: the script names a harness, and the session that
@@ -127,7 +127,7 @@ test("the workflow registers the agent action of every harness it was given", as
       script,
       [
         "export default workflow({ output: z.json() }, async () => {",
-        '  const answer = await agent("Study the core.", { harness: "fake-harness" });',
+        '  const answer = await ask({ harness: "fake-harness" }, "Study the core.");',
         "  return answer;",
         "});",
         "",
@@ -173,8 +173,8 @@ test("an agent call may name the directory its session starts in, and without on
       script,
       [
         "export default workflow({ output: z.json() }, async () => {",
-        '  await agent("in the worktree", { harness: "fake-harness", cwd: "/tmp/the-worktree" });',
-        '  await agent("where the host is", { harness: "fake-harness" });',
+        '  await ask({ harness: "fake-harness", cwd: "/tmp/the-worktree" }, "in the worktree");',
+        '  await ask({ harness: "fake-harness" }, "where the host is");',
         "  return null;",
         "});",
         "",
@@ -207,8 +207,8 @@ test("an agent call may name the model and the effort of its session, and a leve
       script,
       [
         "export default workflow({ output: z.json() }, async () => {",
-        '  await agent("tuned", { harness: "fake-harness", model: "m-1", effort: "high" });',
-        '  await agent("too much", { harness: "fake-harness", effort: "max" });',
+        '  await ask({ harness: "fake-harness", model: "m-1", effort: "high" }, "tuned");',
+        '  await ask({ harness: "fake-harness", effort: "max" }, "too much");',
         "  return null;",
         "});",
         "",
@@ -241,8 +241,8 @@ test("an agent call may name the mode of its session, and a mode the kind does n
       script,
       [
         "export default workflow({ output: z.json() }, async () => {",
-        '  await agent("careful", { harness: "fake-harness", mode: "ask" });',
-        '  await agent("unrestricted", { harness: "fake-harness", mode: "full" });',
+        '  await ask({ harness: "fake-harness", mode: "ask" }, "careful");',
+        '  await ask({ harness: "fake-harness", mode: "full" }, "unrestricted");',
         "  return null;",
         "});",
         "",

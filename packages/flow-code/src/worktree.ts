@@ -40,7 +40,7 @@ export async function removeWorktree(wt: Worktree, force = false): Promise<boole
   }
 }
 
-/** A seat that works in a directory: its `agent()` calls start there. */
+/** A seat that works in a directory: its `ask()` calls start there. */
 export function seatIn(seat: Seat, cwd: string): SeatOptions {
   return { ...(typeof seat === "string" ? { harness: seat } : seat), cwd };
 }

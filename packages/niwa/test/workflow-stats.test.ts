@@ -127,7 +127,7 @@ test("the stats of a workflow by versions, and of every workflow", async () => {
   const file = await scriptIn(home, "flow.ts", [
     "export default workflow({ description: 'one agent call', output: z.string(), phases: [{ title: 'work' }] }, async () => {",
     '  phase("work");',
-    '  const reply = await agent("hi", { harness: "fake-harness" });',
+    '  const reply = await ask({ harness: "fake-harness" }, "hi");',
     "  return reply.answer;",
     "});",
   ]);
@@ -207,7 +207,7 @@ test("the fold over a journal of many runs, timed", async () => {
   const file = await scriptIn(home, "one.ts", [
     "export default workflow({ output: z.string(), phases: [{ title: 'work' }] }, async () => {",
     '  phase("work");',
-    '  const reply = await agent("hi", { harness: "fake-harness" });',
+    '  const reply = await ask({ harness: "fake-harness" }, "hi");',
     "  return reply.answer;",
     "});",
   ]);

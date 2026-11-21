@@ -54,8 +54,8 @@ test("inspect shows the declared phases with their states and steps, and links p
       }
       phase("agents");
       await parallel([
-        () => agent("left", { harness: "inspect-test" }),
-        () => agent("right", { harness: "inspect-test" }),
+        () => ask({ harness: "inspect-test" }, "left"),
+        () => ask({ harness: "inspect-test" }, "right"),
       ]);
     });`);
     const { run } = await host.call(workflowStart, { file, label: "inspection" });

@@ -48,7 +48,7 @@ test("a script error pauses the invocation with a request, and a retry goes on",
       script,
       [
         'export default workflow({ uses: ["revision.agent"], output: z.json() }, async () => {',
-        '  const first = await agent("Study the core.", { label: "work:first" });',
+        '  const first = await ask({ label: "work:first" }, "Study the core.");',
         `  if (!(await Bun.file(${JSON.stringify(flag)}).exists())) throw new Error("the script is broken");`,
         "  return first;",
         '});',
@@ -115,7 +115,7 @@ test("a resume of a run paused by a script error resolves the pause and starts o
       [
         'export default workflow({ uses: ["revision.agent"], output: z.json() }, async () => {',
         `  if (!(await Bun.file(${JSON.stringify(flag)}).exists())) throw new Error("the script is broken");`,
-        '  return await agent("Study the core.", { label: "work:first" });',
+        '  return await ask({ label: "work:first" }, "Study the core.");',
         '});',
         "",
       ].join("\n"),
@@ -141,7 +141,7 @@ async function brokenRun(homePath: string, client: Awaited<ReturnType<typeof con
     script,
     [
       'export default workflow({ uses: ["revision.agent"] }, async () => {',
-      '  await agent("Study the core.", { label: "work:first" });',
+      '  await ask({ label: "work:first" }, "Study the core.");',
       '  throw new Error("the script is broken");',
       '});',
       "",

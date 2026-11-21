@@ -15,26 +15,38 @@ export interface CallOptions {
   reason?: string;
 }
 
-/** The worktree an `agent({ worktree })` call left: present when the work changed something in it. */
-export interface AgentWorktree {
+/** The worktree an `ask({ worktree })` call left: present when the work changed something in it. */
+export interface AskWorktree {
   id: string;
   path: string;
   branch: string;
   changed: boolean;
 }
 
+export type SessionPrompt = string | { sections: { id: string; tier: "constant" | "stable" | "volatile"; text: string }[] };
+export interface ScriptSession {
+  readonly id: string;
+  readonly ref: string;
+  readonly address: { kind: "session"; harness: string; id: string };
+  readonly worktree?: Omit<AskWorktree, "changed">;
+  ask<S extends import("zod").z.ZodType>(prompt: SessionPrompt, options: { schema: S; label?: string }): Promise<import("zod").z.output<S>>;
+  ask(prompt: SessionPrompt, options?: { label?: string }): Promise<{ answer: string }>;
+  end(options?: CallOptions): Promise<void>;
+}
+
 /** One thing a box asks for: a profile by its name, `"project"`, `"toolchains"`, or a path or a host. */
 export type BoxItem = string | { read: string } | { write: string } | { net: string };
 
 /**
- * What an `agent()` call may ask for besides its schema. The options of the harness's kind go in the
+ * What an `ask()` call may ask for besides its schema. The options of the harness's kind go in the
  * block named after the kind; the block of another kind is refused. A kind with no option of its own
  * takes an empty block.
  */
-export interface AgentCallOptions {
+export interface SessionOptions {
   harness?: string;
   label?: string;
   visible?: string[];
+  tools?: "all" | "niwa-only" | { allow: readonly string[] };
   model?: string;
   effort?: string;
   mode?: "ask" | "auto" | "full";
@@ -228,17 +240,8 @@ export interface ScriptApi {
   call(name: string, input: unknown, opts?: CallOptions): Promise<any>;
   /** `niwa.task.create(input, { label })` is `call("task.create", input, { label })`; the wrappers are generated. */
   niwa: ActionGroup;
-  /**
-   * Start a session in a harness and ask it. `visible` names the actions the session sees besides the one that answers.
-   * With a zod `schema` the answer is that value, parsed and typed as the schema says; without one it is `{ answer }`, the text.
-   */
-  agent<S extends import("zod").z.ZodObject | import("zod").z.ZodRecord>(
-    prompt: string,
-    opts: AgentCallOptions & { schema: S; worktree: NonNullable<AgentCallOptions["worktree"]> },
-  ): Promise<import("zod").z.output<S> & { worktree?: AgentWorktree }>;
-  agent(prompt: string, opts: AgentCallOptions & { schema?: undefined; worktree: NonNullable<AgentCallOptions["worktree"]> }): Promise<{ answer: string; worktree?: AgentWorktree }>;
-  agent<S extends import("zod").z.ZodType>(prompt: string, opts: AgentCallOptions & { schema: S; worktree?: undefined }): Promise<import("zod").z.output<S>>;
-  agent(prompt: string, opts?: AgentCallOptions & { schema?: undefined; worktree?: undefined }): Promise<{ answer: string }>;
+  session(options: SessionOptions): Pick<ScriptSession, "ask" | "end"> & PromiseLike<ScriptSession>;
+  agent(name: string): { tell(text: string, options?: CallOptions): Promise<{ message: string }> };
   /**
    * The first record of a type whose data holds every field of `filter`, written after `from` — a
    * position an earlier wait or read answered — or after the wait began: its data and its position.
@@ -262,11 +265,15 @@ export interface ScriptApi {
   /** Sleep. The wake-up moment is recorded on the first pass: a replay does not sleep from the start. */
   sleep(duration: Duration, opts?: CallOptions): Promise<void>;
   /**
-   * Ask the owner. Each kind gives a typed value: `choice` the id picked, `multi` the ids, `confirm` a boolean,
+   * Ask a model with ask(options, prompt), or the owner with a named method. Each owner question gives a typed value: `choice` the id picked, `multi` the ids, `confirm` a boolean,
    * `text` a string, `form` what the zod schema parses. A cancel, or no answer within the timeout, throws
    * `AskCancelled` or `AskExpired`, which the script may catch.
    */
   ask: {
+    <S extends import("zod").z.ZodObject | import("zod").z.ZodRecord>(options: SessionOptions & { schema: S; worktree: NonNullable<SessionOptions["worktree"]> }, prompt: SessionPrompt): Promise<import("zod").z.output<S> & { worktree?: AskWorktree }>;
+    (options: SessionOptions & { schema?: undefined; worktree: NonNullable<SessionOptions["worktree"]> }, prompt: SessionPrompt): Promise<{ answer: string; worktree?: AskWorktree }>;
+    <S extends import("zod").z.ZodType>(options: SessionOptions & { schema: S; worktree?: undefined }, prompt: SessionPrompt): Promise<import("zod").z.output<S>>;
+    (options: SessionOptions & { schema?: undefined; worktree?: undefined }, prompt: SessionPrompt): Promise<{ answer: string }>;
     choice<const O extends readonly AskOption[]>(text: string, options: O, opts?: AskCallOptions): Promise<AskOptionId<O[number]>>;
     multi<const O extends readonly AskOption[]>(text: string, options: O, opts?: AskCallOptions): Promise<AskOptionId<O[number]>[]>;
     confirm(text: string, opts?: AskCallOptions): Promise<boolean>;

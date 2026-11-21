@@ -7,8 +7,8 @@
 export default workflow({ phases: [{ title: "Study" }], uses: ["crash.agent"], output: z.json() }, async () => {
   phase("Study");
   const reports = await parallel([
-    () => agent("Study the core.", { harness: "crash.one", label: "study:one" }),
-    () => agent("Study the state.", { harness: "crash.two", label: "study:two" }),
+    () => ask({ harness: "crash.one", label: "study:one" }, "Study the core."),
+    () => ask({ harness: "crash.two", label: "study:two" }, "Study the state."),
   ]);
   return { reports };
 });

@@ -16,8 +16,8 @@ import { JsonSchemaValue, JsonValueSchema, QuestionSchema } from "@niwa-labs/cor
 import type { ActionName } from "@niwa-labs/core";
 import { WorktreeOption } from "@niwa-labs/git/records";
 import type { WorktreeOptionGiven } from "@niwa-labs/git/records";
-import { SessionModeSchema, withBlocks } from "@niwa-labs/harness";
-import type { SessionMode } from "@niwa-labs/harness";
+import { PromptSchema, SessionModeSchema, ToolsModeSchema, withBlocks } from "@niwa-labs/harness";
+import type { SessionMode, ToolsMode } from "@niwa-labs/harness";
 import { BoxAccessSchema } from "@niwa-labs/sandbox";
 import type { BoxAccessInput } from "@niwa-labs/sandbox";
 
@@ -33,7 +33,7 @@ import type { Duration } from "@niwa-labs/script";
 export const PROTOCOL_PREFIX = "@niwa ";
 
 /**
- * What an `agent()` call may ask for. The options of the harness's kind go in the block named after
+ * What an `ask()` call may ask for. The options of the harness's kind go in the block named after
  * it (`claude: { advisor: false }`); the block of another kind is refused.
  */
 export interface AgentOptions {
@@ -43,6 +43,7 @@ export interface AgentOptions {
   label?: string;
   /** The actions (names or masks) the session sees besides the one that answers; within the run's grant. */
   visible?: string[];
+  tools?: ToolsMode;
   /** The model of the session, set once at its start; the instance's own when absent. */
   model?: string;
   /** The effort of the session, set once at its start; a kind that takes none refuses it. */
@@ -125,12 +126,13 @@ export type ScopeOutcome = z.infer<typeof ScopeOutcome>;
 export const ScopeClosing = z.enum(["done", "failed", "deadline"]);
 export type ScopeClosing = z.infer<typeof ScopeClosing>;
 
-/** The fields of an `agent()` request: every other key of it is an options block. */
+/** The fields of an `ask()` request: every other key of it is an options block. */
 export const AgentRequestFields = z.object({
-  prompt: z.string(),
+  prompt: z.union([z.string(), PromptSchema]).optional(),
   harness: z.string().optional(),
   label: z.string().optional(),
   visible: z.array(z.string()).optional(),
+  tools: ToolsModeSchema.optional(),
   model: z.string().min(1).optional(),
   effort: z.string().min(1).optional(),
   mode: SessionModeSchema.optional(),
@@ -144,12 +146,12 @@ export const AgentRequestFields = z.object({
   box: BoxAccessSchema.optional(),
 });
 
-/** The names of the fields of an `agent()` request, so the rest of it is known as its blocks. */
+/** The names of the fields of an `ask()` request, so the rest of it is known as its blocks. */
 export const AGENT_REQUEST_FIELDS: readonly string[] = Object.keys(AgentRequestFields.shape);
 
 /** What the child asks the parent to do: every request has a key, and the key says which one it is. */
 export const ScriptRequest = z.discriminatedUnion("op", [
-  /** `agent()`: start a session of a harness and ask it. */
+  /** `ask()`: start a session of a harness and ask it. */
   z.object({
     op: z.literal("agent"),
     // Every key that is not a field is the options block of the harness's kind, named after it.

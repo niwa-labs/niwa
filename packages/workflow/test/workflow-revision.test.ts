@@ -94,9 +94,9 @@ async function setup() {
 }
 
 const script = (second: string) => `export default workflow({ uses: ["rev.*"], output: z.json() }, async () => {
-  const a = await agent("first", { label: "a" });
+  const a = await ask({ label: "a" }, "first");
   const r1 = await niwa.rev.read({ name: "one" }, { label: "r1" });
-  const b = await agent("${second}", { label: "b" });
+  const b = await ask({ label: "b" }, "${second}");
   const r2 = await niwa.rev.read({ name: "two" }, { label: "r2" });
   const w = await niwa.rev.write({ name: "once" }, { label: "w" });
   return [a.answer, r1.name, b.answer, r2.name, w.name];
@@ -132,7 +132,7 @@ test("a changed call and what comes after it run; the unchanged prefix and an ef
 test("an agent call is its prompt and its harness: another effort takes the recorded answer", async () => {
   const t = await setup();
   const source = (effort: string) => `export default workflow({ uses: ["rev.*"], output: z.json() }, async () => {
-    return (await agent("same prompt", { label: "only", effort: "${effort}" })).answer;
+    return (await ask({ label: "only", effort: "${effort}" }, "same prompt")).answer;
   });`;
   await t.write(source("low"));
   const run = await t.start();
@@ -176,7 +176,7 @@ test("a change in one branch of a scope leaves the other branches taken, and wha
   const t = await setup();
   const source = (x: string) => `export default workflow({ uses: ["rev.*"], output: z.json() }, async () => {
     const got = await scope("s", undefined, async (s) => {
-      s.start("x", async () => { await agent("${x}"); return (await niwa.rev.read({ name: "x2" })).at; });
+      s.start("x", async () => { await ask({}, "${x}"); return (await niwa.rev.read({ name: "x2" })).at; });
       s.start("y", async () => { await niwa.rev.read({ name: "y1" }); return (await niwa.rev.read({ name: "y2" })).at; });
       return await s.rest();
     });

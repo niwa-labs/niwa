@@ -31,29 +31,38 @@ declare namespace z {
   type input<T> = import("zod").z.input<T>;
   type output<T> = import("zod").z.output<T>;
 }
-/** The worktree an agent({ worktree }) call left because the work changed something in it; a clean one is removed. */
-type NiwaAgentWorktree = { id: string; path: string; branch: string; changed: boolean };
-/** What agent({ worktree }) takes: true, or the repository (default: cwd), the base (default: its current branch) and a description. */
+type NiwaPrompt = string | { sections: { id: string; tier: "constant" | "stable" | "volatile"; text: string }[] };
+interface NiwaSession {
+  readonly id: string;
+  readonly ref: string;
+  readonly address: { kind: "session"; harness: string; id: string };
+  readonly worktree?: Omit<NiwaSessionWorktree, "changed">;
+  ask<S extends import("zod").z.ZodType>(prompt: NiwaPrompt, options: { schema: S; label?: string }): Promise<import("zod").z.output<S>>;
+  ask(prompt: NiwaPrompt, options?: { label?: string }): Promise<{ answer: string }>;
+  end(options?: NiwaCallOptions): Promise<void>;
+}
+
+/** The worktree an ask({ worktree }) call left because the work changed something in it; a clean one is removed. */
+type NiwaSessionWorktree = { id: string; path: string; branch: string; changed: boolean };
+/** What ask({ worktree }) takes: true, or the repository (default: cwd), the base (default: its current branch) and a description. */
 type NiwaWorktreeOption = true | { repo?: string; base?: string; description?: string };
 /** One thing a box asks for: a profile by its name, "project", "toolchains", or a path or a host. */
 type NiwaBoxItem = string | { read: string } | { write: string } | { net: string };
-/** What agent({ box }) takes: items added to the host's default (allow), or put instead of it (only). Beyond the default takes the run's box.* rules. */
+/** What ask({ box }) takes: items added to the host's default (allow), or put instead of it (only). Beyond the default takes the run's box.* rules. */
 type NiwaBoxAccess = { allow: NiwaBoxItem[] } | { only: NiwaBoxItem[] };
-/** Start a session in a new git worktree and ask it, with a zod schema of an object for the answer: the answer carries worktree when the worktree was kept. */
-declare function agent<S extends import("zod").z.ZodObject | import("zod").z.ZodRecord>(prompt: string, opts: NiwaAgentOptions & { schema: S; worktree: NiwaWorktreeOption }): Promise<import("zod").z.output<S> & { worktree?: NiwaAgentWorktree }>;
-/** Start a session in a new git worktree and ask it: the answer is { answer }, with worktree when the worktree was kept. */
-declare function agent(prompt: string, opts: NiwaAgentOptions & { schema?: undefined; worktree: NiwaWorktreeOption }): Promise<{ answer: string; worktree?: NiwaAgentWorktree }>;
-/** Start a session and ask it, with a zod schema for the answer: the call gives the answer parsed, typed as z.infer of the schema. */
-declare function agent<S extends import("zod").z.ZodType>(prompt: string, opts: NiwaAgentOptions & { schema: S; worktree?: undefined }): Promise<import("zod").z.output<S>>;
-/** Start a session and ask it: the answer is text, { answer }. */
-declare function agent(prompt: string, opts?: NiwaAgentOptions & { schema?: undefined; worktree?: undefined }): Promise<{ answer: string }>;
+declare function session(options: NiwaSessionOptions): Pick<NiwaSession, "ask" | "end"> & PromiseLike<NiwaSession>;
+declare function agent(name: "agent.tell" extends keyof NiwaActions ? string : never): { tell(text: string, options?: NiwaCallOptions): Promise<{ message: string }> };
 /** Sleep; a replay does not sleep from the start. */
 declare function sleep(duration: NiwaDuration, opts?: NiwaCallOptions): Promise<void>;
 type NiwaAskOption = string | { id: string; label?: string; description?: string };
 type NiwaAskId<T> = T extends string ? T : T extends { id: infer I extends string } ? I : never;
 type NiwaAskOptions = { timeout?: NiwaDuration; label?: string };
-/** Ask the owner; each kind gives a typed value. A cancel or no answer within the timeout throws AskCancelled or AskExpired, which the script may catch; uncaught, the run waits for a revision or a cancel. */
+/** Ask a model with ask(options, prompt), or the owner with a named method. Each owner question gives a typed value. A cancel or no answer within the timeout throws AskCancelled or AskExpired, which the script may catch; uncaught, the run waits for a revision or a cancel. */
 declare const ask: {
+  <S extends import("zod").z.ZodObject | import("zod").z.ZodRecord>(options: NiwaSessionOptions & { schema: S; worktree: NonNullable<NiwaSessionOptions["worktree"]> }, prompt: NiwaPrompt): Promise<import("zod").z.output<S> & { worktree?: NiwaSessionWorktree }>;
+  (options: NiwaSessionOptions & { schema?: undefined; worktree: NonNullable<NiwaSessionOptions["worktree"]> }, prompt: NiwaPrompt): Promise<{ answer: string; worktree?: NiwaSessionWorktree }>;
+  <S extends import("zod").z.ZodType>(options: NiwaSessionOptions & { schema: S; worktree?: undefined }, prompt: NiwaPrompt): Promise<import("zod").z.output<S>>;
+  (options: NiwaSessionOptions & { schema?: undefined; worktree?: undefined }, prompt: NiwaPrompt): Promise<{ answer: string }>;
   choice<const O extends readonly NiwaAskOption[]>(text: string, options: O, opts?: NiwaAskOptions): Promise<NiwaAskId<O[number]>>;
   multi<const O extends readonly NiwaAskOption[]>(text: string, options: O, opts?: NiwaAskOptions): Promise<NiwaAskId<O[number]>[]>;
   confirm(text: string, opts?: NiwaAskOptions): Promise<boolean>;
@@ -153,7 +162,7 @@ declare function workflow<I extends import("zod").z.ZodObject = never, O extends
   run: (...input: NiwaInput<I, On>) => Promise<NiwaResult<O>>,
 ): NiwaWorkflow;`;
 
-/** The prefix of the action that starts a session of a harness and asks it: what an `agent({ harness })` goes to. */
+/** The prefix of the action that starts a session of a harness and asks it: what an `session({ harness })` goes to. */
 const AGENT_ACTION_PREFIX = "session.start.";
 
 /** The harness an agent action serves: `codex` of `session.start.codex`; absent for any other action. */
@@ -182,7 +191,7 @@ function blocksTyping(names: readonly OptionsBlock[], own: OptionsBlock | undefi
 }
 
 /**
- * The options of `agent()`: the harness is one of those the caller may call a `session.start.<harness>` action for; the
+ * The options of `ask()`: the harness is one of those the caller may call a `session.start.<harness>` action for; the
  * model and the effort are the literals that action lists, where the adapter lists them; and the options block is the
  * one the sessions module binds the harness to (`blocks`), and no other. A call with no harness names no kind, so it
  * takes no block. A host that serves no harness has nothing to check one against, so a harness is any text and any block
@@ -190,7 +199,7 @@ function blocksTyping(names: readonly OptionsBlock[], own: OptionsBlock | undefi
  */
 function agentTyping(description: readonly ActionDescription[], callable: ReadonlySet<string>, blocks: ReadonlyMap<string, HarnessBlock>): string {
   const names = blockNames(blocks);
-  const common = `{ label?: string; visible?: string[]; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption; stuckAfter?: NiwaDuration; box?: NiwaBoxAccess }`;
+  const common = `{ label?: string; visible?: string[]; tools?: "all" | "niwa-only" | { allow: readonly string[] }; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption; stuckAfter?: NiwaDuration; box?: NiwaBoxAccess }`;
   const hosted = description.filter((action) => harnessOfAction(action.name) !== undefined);
   const served = hosted.filter((action) => callable.has(action.name));
   const variants =
@@ -203,7 +212,7 @@ function agentTyping(description: readonly ActionDescription[], callable: Readon
             return `{ harness: ${literal(harness)}; model?: ${fieldType(action.input, "model")}; effort?: ${fieldType(action.input, "effort")} } & ${blocksTyping(names, blocks.get(harness)?.block)}`;
           }),
         ];
-  return `/** What agent() takes: the harness is one the host serves, its model and effort are the ones that harness lists, and its options block is the one of its kind. */\ntype NiwaAgentOptions = ${common} & (${variants.map((variant) => `(${variant})`).join(" | ")});`;
+  return `/** What ask() takes: the harness is one the host serves, its model and effort are the ones that harness lists, and its options block is the one of its kind. */\ntype NiwaSessionOptions = ${common} & (${variants.map((variant) => `(${variant})`).join(" | ")});`;
 }
 
 /** A JSON Schema as a value: an object, or a boolean. */
@@ -309,7 +318,7 @@ function objectType(schema: Readonly<Record<string, unknown>>, scope: Scope, ind
 
 /**
  * The options of each kind the host's harnesses are of, one block each, made from the schemas those kinds declare: what
- * agent() takes besides its own options. Two harnesses of one kind have one block.
+ * ask() takes besides its own options. Two harnesses of one kind have one block.
  */
 function optionBlocksTyping(blocks: ReadonlyMap<string, HarnessBlock>): string {
   const first = new Map<OptionsBlock, JsonSchema>();

@@ -1,4 +1,4 @@
-// An agent() call may carry the options block of its harness's kind: the block crosses the script's
+// An ask() call may carry the options block of its harness's kind: the block crosses the script's
 // process, the request to the host, the agent action and session.start, and arrives at the control
 // side. A block of another kind, or a field the block does not have, fails the call before a session
 // starts: the agent action of the harness takes the block of the kind the sessions module binds it to,
@@ -98,12 +98,12 @@ async function run(
   }
 }
 
-test("the block of the harness's kind in an agent() call reaches the control side; a call without one carries none", async () => {
+test("the block of the harness's kind in an ask() call reaches the control side; a call without one carries none", async () => {
   const { control } = await run(
     [
       "export default workflow({ output: z.json() }, async () => {",
-      '  await agent("tuned", { harness: "claude-sonnet", claude: { advisor: false } });',
-      '  await agent("plain", { harness: "claude-sonnet" });',
+      '  await ask({ harness: "claude-sonnet", claude: { advisor: false } }, "tuned");',
+      '  await ask({ harness: "claude-sonnet" }, "plain");',
       "  return null;",
       "});",
       "",
@@ -115,12 +115,12 @@ test("the block of the harness's kind in an agent() call reaches the control sid
   expect(Object.keys(control.starts[1] ?? {})).not.toContain("blocks");
 }, 30_000);
 
-test("stuckAfter of an agent() call is kept in the record of the session it starts, in milliseconds", async () => {
+test("stuckAfter of an ask() call is kept in the record of the session it starts, in milliseconds", async () => {
   const { seen } = await run(
     [
       "export default workflow({ output: z.json() }, async () => {",
-      '  await agent("watched", { harness: "claude-sonnet", stuckAfter: "10m" });',
-      '  await agent("unwatched", { harness: "claude-sonnet" });',
+      '  await ask({ harness: "claude-sonnet", stuckAfter: "10m" }, "watched");',
+      '  await ask({ harness: "claude-sonnet" }, "unwatched");',
       "  return null;",
       "});",
       "",
@@ -131,11 +131,11 @@ test("stuckAfter of an agent() call is kept in the record of the session it star
   expect(started.map((row) => row.data.stuckAfter)).toEqual([600_000, undefined]);
 }, 30_000);
 
-test("the box an agent() call asks for is the session's: what it adds is in the box, and kept in the record of the session", async () => {
+test("the box an ask() call asks for is the session's: what it adds is in the box, and kept in the record of the session", async () => {
   const { control, seen } = await run(
     [
       "export default workflow({ output: z.json() }, async () => {",
-      '  await agent("boxed", { harness: "claude-sonnet", cwd: "/work", box: { allow: [{ net: "crates.io" }] } });',
+      '  await ask({ harness: "claude-sonnet", cwd: "/work", box: { allow: [{ net: "crates.io" }] } }, "boxed");',
       "  return null;",
       "});",
       "",
@@ -147,12 +147,12 @@ test("the box an agent() call asks for is the session's: what it adds is in the 
   expect(started.map((row) => row.data.box)).toEqual([{ allow: [{ net: "crates.io" }] }]);
 }, 30_000);
 
-test("an agent() call's box is held to the run's uses: wider than the default takes the run's box rule", async () => {
+test("an ask() call's box is held to the run's uses: wider than the default takes the run's box rule", async () => {
   const script = (uses: string) =>
     [
       `export default workflow({ uses: [${uses}], output: z.json() }, async () => {`,
       "  try {",
-      '    await agent("boxed", { harness: "claude-sonnet", cwd: "/work", box: { allow: [{ net: "crates.io" }] } });',
+      '    await ask({ harness: "claude-sonnet", cwd: "/work", box: { allow: [{ net: "crates.io" }] } }, "boxed");',
       '    return "started";',
       "  } catch (error) {",
       "    return String(error);",
@@ -175,7 +175,7 @@ test("the block of another kind fails the call before a session starts, and so d
   const { control, seen } = await run(
     [
       "export default workflow({ output: z.json() }, async () => {",
-      '  await agent("foreign", { harness: "claude-sonnet", codex: {} });',
+      '  await ask({ harness: "claude-sonnet", codex: {} }, "foreign");',
       "  return null;",
       "});",
       "",
@@ -188,7 +188,7 @@ test("the block of another kind fails the call before a session starts, and so d
   const typo = await run(
     [
       "export default workflow({ output: z.json() }, async () => {",
-      '  await agent("typo", { harness: "claude-sonnet", claude: { advisor: false, advisr: true } });',
+      '  await ask({ harness: "claude-sonnet", claude: { advisor: false, advisr: true } }, "typo");',
       "  return null;",
       "});",
       "",
@@ -203,7 +203,7 @@ test("a harness the sessions module binds to no options block takes no block", a
   const { control, seen } = await run(
     [
       "export default workflow({ output: z.json() }, async () => {",
-      '  await agent("bare", { harness: "claude-sonnet", claude: { advisor: false } });',
+      '  await ask({ harness: "claude-sonnet", claude: { advisor: false } }, "bare");',
       "  return null;",
       "});",
       "",

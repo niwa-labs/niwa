@@ -36,7 +36,7 @@ export default workflow({
       max: 3,
       write: (feedback) => {
         phase("Build");
-        return agent(prompt(task, feedback), { harness: "author", cwd: wt.path, schema: z.object({ sha: z.string() }) });
+        return ask({ harness: "author", cwd: wt.path, schema: z.object({ sha: z.string() }) }, prompt(task, feedback));
       },
       judge: ({ sha }) => {
         phase("Verify");

@@ -1,4 +1,4 @@
-// The typing of `agent()` and `pipeline` in a script: the harness is one of the
+// The typing of `ask()` and `pipeline` in a script: the harness is one of the
 // instances the host serves a `session.start.<harness>` action for, the model and the effort are literals where the
 // adapter lists them, the options block is the one the sessions module binds the harness to and no other, and a pipeline of two to four stages hands each stage the typed value of the one before.
 
@@ -61,40 +61,40 @@ async function errorsOf(lines: readonly string[], actions = catalogue, callable:
 test("a harness the host serves is accepted, with the model and the effort it lists", async () => {
   expect(
     await errorsOf([
-      '  await agent("a", { harness: "codex", model: "gpt-5", effort: "high" });',
-      '  await agent("b", { harness: "mcode-work", model: "any-model", effort: "any-effort", mode: "ask", cwd: "/tmp" });',
-      '  await agent("c", { label: "no harness" });',
-      '  await agent("d");',
+      '  await ask({ harness: "codex", model: "gpt-5", effort: "high" }, "a");',
+      '  await ask({ harness: "mcode-work", model: "any-model", effort: "any-effort", mode: "ask", cwd: "/tmp" }, "b");',
+      '  await ask({ label: "no harness" }, "c");',
+      '  await ask({}, "d");',
     ]),
   ).toEqual([]);
 });
 
 test("an unknown harness is an error of the check", async () => {
-  const errors = await errorsOf(['  await agent("a", { harness: "nope" });']);
+  const errors = await errorsOf(['  await ask({ harness: "nope" }, "a");']);
   expect(errors).toHaveLength(1);
   expect(errors[0]).toMatchObject({ line: 2, code: "TS2769" });
 });
 
 test("a model or an effort outside the list of its adapter is an error, and another harness is not held to it", async () => {
-  const model = await errorsOf(['  await agent("a", { harness: "codex", model: "gpt-9" });']);
+  const model = await errorsOf(['  await ask({ harness: "codex", model: "gpt-9" }, "a");']);
   expect(model).toHaveLength(1);
   expect(model[0]).toMatchObject({ line: 2 });
-  const effort = await errorsOf(['  await agent("a", { harness: "codex", effort: "max" });']);
+  const effort = await errorsOf(['  await ask({ harness: "codex", effort: "max" }, "a");']);
   expect(effort).toHaveLength(1);
   expect(effort[0]).toMatchObject({ line: 2 });
-  expect(await errorsOf(['  await agent("a", { harness: "mcode-work", model: "gpt-9", effort: "max" });'])).toEqual([]);
+  expect(await errorsOf(['  await ask({ harness: "mcode-work", model: "gpt-9", effort: "max" }, "a");'])).toEqual([]);
 });
 
 test("the typed answer of a schema still comes with a harness", async () => {
   expect(
     await errorsOf([
-      '  const review = await agent("a", { harness: "codex", model: "gpt-5", schema: z.object({ ok: z.boolean() }) });',
+      '  const review = await ask({ harness: "codex", model: "gpt-5", schema: z.object({ ok: z.boolean() }) }, "a");',
       "  const ok: boolean = review.ok;",
-      "  const text: string = (await agent(\"b\", { harness: \"mcode-work\" })).answer;",
+      "  const text: string = (await ask({ harness: \"mcode-work\" }, \"b\")).answer;",
       "  void ok; void text;",
     ]),
   ).toEqual([]);
-  const wrong = await errorsOf(['  const review = await agent("a", { harness: "codex", schema: z.object({ ok: z.boolean() }) });', "  const n: number = review.ok;"]);
+  const wrong = await errorsOf(['  const review = await ask({ harness: "codex", schema: z.object({ ok: z.boolean() }) }, "a");', "  const n: number = review.ok;"]);
   expect(wrong).toHaveLength(1);
   expect(wrong[0]).toMatchObject({ line: 3, code: "TS2322" });
 });
@@ -103,15 +103,15 @@ test("the harnesses are the ones the caller may call, and a host that serves non
   const typing = scriptTyping(catalogue, names.filter((name) => name === "session.start.mcode-work")).declarations;
   expect(typing).toContain('"mcode-work"');
   expect(typing).not.toContain('harness: "codex"');
-  expect(await errorsOf(['  await agent("a", { harness: "whatever", model: "m" });'], [], [])).toEqual([]);
+  expect(await errorsOf(['  await ask({ harness: "whatever", model: "m" }, "a");'], [], [])).toEqual([]);
 });
 
 test("the options block follows the harness: its own kind's block is typed, another kind's block is an error", async () => {
   expect(
     await errorsOf([
-      '  await agent("a", { harness: "claude-work", claude: { advisor: false } });',
-      '  await agent("b", { harness: "codex", model: "gpt-5", codex: {} });',
-      '  await agent("c", { harness: "mcode-work", mcode: {} });',
+      '  await ask({ harness: "claude-work", claude: { advisor: false } }, "a");',
+      '  await ask({ harness: "codex", model: "gpt-5", codex: {} }, "b");',
+      '  await ask({ harness: "mcode-work", mcode: {} }, "c");',
     ]),
   ).toEqual([]);
   // The block of another kind, on a harness of each kind.
@@ -120,22 +120,22 @@ test("the options block follows the harness: its own kind's block is typed, anot
     '{ harness: "claude-work", codex: {} }',
     '{ harness: "mcode-work", claude: {} }',
   ]) {
-    const errors = await errorsOf([`  await agent("a", ${call});`]);
+    const errors = await errorsOf([`  await ask(${call}, "a");`]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ line: 2, code: "TS2769" });
   }
   // With a schema the call has more overloads to fail, and each says where: the call is refused, at that line.
-  const schemed = await errorsOf(['  await agent("a", { harness: "codex", model: "gpt-5", schema: z.object({ ok: z.boolean() }), claude: { advisor: false } });']);
+  const schemed = await errorsOf(['  await ask({ harness: "codex", model: "gpt-5", schema: z.object({ ok: z.boolean() }), claude: { advisor: false } }, "a");']);
   expect(schemed.length).toBeGreaterThan(0);
   for (const error of schemed) expect(error).toMatchObject({ line: 2, code: "TS2769" });
   // A field the own block does not have, or a value of the wrong type.
-  expect(await errorsOf(['  await agent("a", { harness: "claude-work", claude: { advisor: "no" } });'])).toHaveLength(1);
-  expect(await errorsOf(['  await agent("a", { harness: "claude-work", claude: { speed: 1 } });'])).toHaveLength(1);
+  expect(await errorsOf(['  await ask({ harness: "claude-work", claude: { advisor: "no" } }, "a");'])).toHaveLength(1);
+  expect(await errorsOf(['  await ask({ harness: "claude-work", claude: { speed: 1 } }, "a");'])).toHaveLength(1);
   // A harness given without its kind's options, and a call that names no harness, take no block.
-  expect(await errorsOf(['  await agent("a", { harness: "bare", claude: { advisor: false } });'])).toHaveLength(1);
-  expect(await errorsOf(['  await agent("a", { codex: {} });'])).toHaveLength(1);
+  expect(await errorsOf(['  await ask({ harness: "bare", claude: { advisor: false } }, "a");'])).toHaveLength(1);
+  expect(await errorsOf(['  await ask({ codex: {} }, "a");'])).toHaveLength(1);
   // An unknown harness is an error, with a block or without.
-  expect(await errorsOf(['  await agent("a", { harness: "nope", claude: { advisor: false } });'])).toHaveLength(1);
+  expect(await errorsOf(['  await ask({ harness: "nope", claude: { advisor: false } }, "a");'])).toHaveLength(1);
 });
 
 test("a registered workflow is called as niwa.flow[id], typed by its literal id", async () => {
@@ -152,8 +152,8 @@ test("a pipeline hands each stage the typed value of the one before", async () =
   expect(
     await errorsOf([
       '  const [first, second, third] = await pipeline([',
-      '    () => agent("one"),',
-      '    (previous) => agent("two " + previous.answer),',
+      '    () => ask({}, "one"),',
+      '    (previous) => ask({}, "two " + previous.answer),',
       "    async (previous) => ({ words: previous.answer.split(\" \").length }),",
       "  ]);",
       "  const a: string = first.answer;",
@@ -169,7 +169,7 @@ test("a pipeline hands each stage the typed value of the one before", async () =
 });
 
 test("a stage that misuses the value before it is an error, and so is a pipeline of one or five stages", async () => {
-  const misuse = await errorsOf(['  await pipeline([() => agent("one"), (previous) => previous.nothing]);']);
+  const misuse = await errorsOf(['  await pipeline([() => ask({}, "one"), (previous) => previous.nothing]);']);
   expect(misuse).toHaveLength(1);
   expect(misuse[0]).toMatchObject({ line: 2, code: "TS2339" });
   const wrongType = await errorsOf(["  await pipeline([() => 1, (n) => n.toUpperCase()]);"]);
@@ -189,7 +189,7 @@ test("workflow.check on a live host holds a script to the harnesses and the list
   await mkdir(home.path, { recursive: true });
   const check = async (name: string, call: string) => {
     const path = join(home.path, name);
-    await writeFile(path, ["export default workflow({ output: z.json() }, async () => {", `  await agent("a", ${call});`, "  return null;", "});"].join("\n"));
+    await writeFile(path, ["export default workflow({ output: z.json() }, async () => {", `  await ask(${call}, "a");`, "  return null;", "});"].join("\n"));
     return host.call(workflowCheck, { file: path });
   };
   expect((await check("ok.ts", '{ harness: "codex", model: "gpt-5", effort: "low" }')).ok).toBe(true);
@@ -223,19 +223,19 @@ test("the agent action takes a block as an object, left to its kind to check, an
   expect(typo.error?.issues[0]?.message).toBe('the agent call of the harness "claude-work" has no field "modle"');
 });
 
-test("agent({ worktree }) is typed: the answer carries the worktree it left, with or without a schema", async () => {
+test("ask({ worktree }) is typed: the answer carries the worktree it left, with or without a schema", async () => {
   expect(
     await errorsOf([
-      '  const plain = await agent("a", { harness: "codex", worktree: true });',
+      '  const plain = await ask({ harness: "codex", worktree: true }, "a");',
       "  const branch: string | undefined = plain.worktree?.branch;",
       "  const changed: boolean | undefined = plain.worktree?.changed;",
-      '  const typed = await agent("b", { harness: "claude-work", worktree: { repo: "/tmp/repo", base: "main", description: "a try" }, schema: z.object({ ok: z.boolean() }) });',
+      '  const typed = await ask({ harness: "claude-work", worktree: { repo: "/tmp/repo", base: "main", description: "a try" }, schema: z.object({ ok: z.boolean() }) }, "b");',
       "  const ok: boolean = typed.ok;",
       "  const path: string | undefined = typed.worktree?.path;",
     ]),
   ).toEqual([]);
-  const wrong = await errorsOf(['  await agent("a", { harness: "codex", worktree: { branch: "x" } });']);
+  const wrong = await errorsOf(['  await ask({ harness: "codex", worktree: { branch: "x" } }, "a");']);
   expect(wrong).toHaveLength(1);
-  const absent = await errorsOf(['  const plain = await agent("a", { harness: "codex" });', "  plain.worktree;"]);
+  const absent = await errorsOf(['  const plain = await ask({ harness: "codex" }, "a");', "  plain.worktree;"]);
   expect(absent).toHaveLength(1);
 });

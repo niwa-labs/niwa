@@ -1,7 +1,7 @@
 // The git module's worktrees, on real git repositories in temporary directories: a worktree is made
 // from the current branch with the ignored files `.worktreeinclude` names, the list flags what is odd,
 // a remove refuses a dirty, unmerged or occupied worktree unless forced, `session.start({ worktree })`
-// runs the session in one, `agent({ worktree })` removes a clean one and keeps a changed one, and the
+// runs the session in one, `ask({ worktree })` removes a clean one and keeps a changed one, and the
 // built-in cleanup removes the old clean ones only. The replay of a create cut off by a crash is
 // tested in the git package.
 
@@ -257,13 +257,13 @@ async function runScript(host: Host, home: string, lines: readonly string[]): Pr
   return (outcome as { outcome: unknown }).outcome;
 }
 
-test("agent({ worktree: true }) removes the worktree when the agent left it clean", async () => {
+test("ask({ worktree: true }) removes the worktree when the agent left it clean", async () => {
   const repo = await makeRepo();
   const { host, home } = await served(true);
 
   const outcome = await runScript(host, home, [
     'export default workflow({ uses: ["session.start.claude-sonnet"], output: z.json() }, async () => {',
-    `  return await agent("look around", { harness: "claude-sonnet", cwd: ${JSON.stringify(repo)}, worktree: true });`,
+    `  return await ask({ harness: "claude-sonnet", cwd: ${JSON.stringify(repo)}, worktree: true }, "look around");`,
     "});",
   ]);
 
@@ -272,20 +272,20 @@ test("agent({ worktree: true }) removes the worktree when the agent left it clea
   const made = created?.data as { id: string; path: string; description: string };
   expect(made.description).toBe("look around");
   expect(existsSync(made.path)).toBe(false);
-  // Its own session is still alive in it, and is the only one: the agent removes it past that.
-  expect((await ofType(host, "git.worktree.removed")).map((row) => row.data)).toEqual([{ id: made.id, forced: true }]);
+  // Closing the session first permits a normal removal, which still checks for other work.
+  expect((await ofType(host, "git.worktree.removed")).map((row) => row.data)).toEqual([{ id: made.id, forced: false }]);
 }, 30_000);
 
-test("agent({ worktree }) keeps the worktree the agent changed, and the answer says where it is", async () => {
+test("ask({ worktree }) keeps the worktree the agent changed, and the answer says where it is", async () => {
   const repo = await makeRepo();
   const { host, home } = await served(true);
 
   const outcome = await runScript(host, home, [
     'export default workflow({ uses: ["session.start.claude-sonnet"], output: z.json() }, async () => {',
-    "  const answer = await agent(\"change a file\", {",
+    "  const answer = await ask({",
     `    harness: "claude-sonnet", worktree: { repo: ${JSON.stringify(repo)}, description: "the change" },`,
     "    schema: z.object({ answer: z.string() }),",
-    "  });",
+    '  }, "change a file");',
     "  return answer;",
     "});",
   ]);

@@ -81,7 +81,7 @@ test("check: a declared phase passes at the top and in a branch; an undeclared o
   const option = await scriptIn(home, "option.ts", [
     `export default workflow({ ${PHASES} }, async () => {`,
     '  await now({ phase: "Ревью" });',
-    '  await agent("look", { phase: "Ревью" });',
+    '  await ask({ phase: "Ревью" }, "look");',
     "});",
   ]);
   expect((await host.call(workflowCheck, { file: option })).errors).toMatchObject([
@@ -297,8 +297,8 @@ test("the phases of branches survive a kill of the host: the replay writes the s
       'export default workflow({ phases: [{ title: "Ревью" }, { title: "Фикс" }, { title: "Отчёт" }], uses: ["branches.agent"], output: z.json() }, async () => {',
       '  phase("Ревью");',
       "  const both = await parallel([",
-      '    async () => { phase("Фикс"); return agent("b1"); },',
-      '    async () => { await agent("c1"); return agent("c2"); },',
+      '    async () => { phase("Фикс"); return ask({}, "b1"); },',
+      '    async () => { await ask({}, "c1"); return ask({}, "c2"); },',
       "  ]);",
       '  phase("Отчёт");',
       "  return both;",

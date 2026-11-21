@@ -35,7 +35,7 @@ test("a worktree left clean is removed, and one with a commit is kept with its b
     export default workflow({ output: z.json() }, async (): Promise<any> => {
       const clean = await inWorktree("look", { repo: "$REPO" }, async (wt) => wt.path);
       const kept = await inWorktree("work", { repo: "$REPO" }, async (wt) => {
-        const done = await agent("Do the work", { harness: "author", cwd: wt.path, schema: z.object({ sha: z.string() }) });
+        const done = await ask({ harness: "author", cwd: wt.path, schema: z.object({ sha: z.string() }) }, "Do the work");
         return { path: wt.path, branch: wt.branch, sha: done.sha };
       });
       return { clean, kept };

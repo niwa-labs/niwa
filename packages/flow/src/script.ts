@@ -8,12 +8,12 @@
  * left it, and a helper called again in the next round of a loop does not collide with the last.
  */
 
-import type { AgentCallOptions, ScriptApi, Settled } from "@niwa-labs/script";
+import type { SessionOptions, ScriptApi, Settled } from "@niwa-labs/script";
 
 /** The globals of a script the helpers use. */
-export type ScriptGlobals = Pick<ScriptApi, "z" | "agent" | "call" | "scope" | "parallel" | "stream" | "wait" | "sleep" | "read" | "ask" | "now" | "random">;
+export type ScriptGlobals = Pick<ScriptApi, "z" | "session" | "call" | "scope" | "parallel" | "stream" | "wait" | "sleep" | "read" | "ask" | "now" | "random">;
 
-const NEEDED = ["agent", "call", "scope", "parallel", "stream", "wait", "sleep", "now", "random"] as const;
+const NEEDED = ["ask", "call", "scope", "parallel", "stream", "wait", "sleep", "now", "random"] as const;
 
 /** The zod of the script: a global of every script process, whether it runs the script or reads its schemas. */
 export function zod(): ScriptGlobals["z"] {
@@ -28,7 +28,7 @@ export function script(): ScriptGlobals {
   for (const name of NEEDED) {
     if (typeof globals[name] !== "function") throw new Error(`@niwa-labs/flow runs inside a workflow script: "${name}" is not a global here`);
   }
-  for (const name of ["z", "ask", "read"] as const) {
+  for (const name of ["z", "read"] as const) {
     if (typeof globals[name] !== "object" || globals[name] === null) throw new Error(`@niwa-labs/flow runs inside a workflow script: "${name}" is not a global here`);
   }
   return globals as unknown as ScriptGlobals;
@@ -59,14 +59,14 @@ export function checkKeys(keys: readonly string[], what: string): string[] {
 }
 
 /**
- * A seat: who takes a part in a helper. A name of a harness, or the options of an `agent()` call
+ * A seat: who takes a part in a helper. A name of a harness, or the options of an `ask()` call
  * with the harness in them; `vendor` says whose model it is, for the helpers that want judges
  * independent of an author, and `label` is the seat's name in the results, never a call's label.
  */
 export type Seat = string | SeatOptions;
 
-/** A seat written out: the options of its `agent()` calls, with the harness, and who it is. */
-export type SeatOptions = Omit<AgentCallOptions, "label" | "worktree"> & { harness: string; vendor?: string; label?: string };
+/** A seat written out: the options of its `ask()` calls, with the harness, and who it is. */
+export type SeatOptions = Omit<SessionOptions, "label" | "worktree"> & { harness: string; vendor?: string; label?: string };
 
 /** The harness of a seat. */
 export const harnessOf = (seat: Seat): string => (typeof seat === "string" ? seat : seat.harness);
@@ -74,8 +74,8 @@ export const harnessOf = (seat: Seat): string => (typeof seat === "string" ? sea
 /** Whose model a seat is: what it says, else its harness. */
 export const vendorOf = (seat: Seat): string => (typeof seat === "string" ? seat : (seat.vendor ?? seat.harness));
 
-/** The options of an `agent()` call of a seat: no label, which would name one call of the whole run, and no worktree. */
-export function agentOptions(seat: Seat): Omit<AgentCallOptions, "worktree"> {
+/** The options of an `ask()` call of a seat: no label, which would name one call of the whole run, and no worktree. */
+export function sessionOptions(seat: Seat): Omit<SessionOptions, "worktree"> {
   if (typeof seat === "string") return { harness: seat };
   const { vendor: _vendor, label: _label, ...options } = seat;
   return options;

@@ -65,7 +65,7 @@ test("a key that cannot name a branch, or one given twice, fails the helper befo
       const errors: string[] = [];
       for (const keys of [["a", "a"], ["a.b"], [""]]) {
         try {
-          await map("m" + String(errors.length), keys, { key: (k) => k }, async () => agent("work", { harness: "worker" }));
+          await map("m" + String(errors.length), keys, { key: (k) => k }, async () => ask({ harness: "worker" }, "work"));
         } catch (error) {
           errors.push((error as Error).message);
         }

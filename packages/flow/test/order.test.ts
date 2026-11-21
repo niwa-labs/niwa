@@ -93,7 +93,7 @@ test("escalate writes with the next seat after each failed judgement, and stops 
     export default workflow({ uses: ["session.start.*"], output: z.json() }, async (): Promise<any> => {
       const out = await escalate("solve", {
         seats: ["cheap", "strong", "top"],
-        write: async (seat, feedback) => (await agent("Solve it." + (feedback === null ? "" : " Last time: " + feedback.findings[0]!.title), { harness: seat as "cheap" | "strong" | "top" })).answer,
+        write: async (seat, feedback) => (await ask({ harness: seat as "cheap" | "strong" | "top" }, "Solve it." + (feedback === null ? "" : " Last time: " + feedback.findings[0]!.title))).answer,
         judge: async (value) =>
           value === "the answer"
             ? { verdict: "PASS", findings: [], method: "exact" }

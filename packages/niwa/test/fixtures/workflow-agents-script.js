@@ -13,22 +13,22 @@ export default workflow({ phases: [{ title: "Work" }], uses: ["session.start.mco
   phase("Work");
   const both = await parallel([
     () =>
-      agent('Answer with exactly this JSON: {"answer":"alpha"}', {
+      ask({
         harness: HARNESS,
         label: "work:alpha",
-      }),
+      }, 'Answer with exactly this JSON: {"answer":"alpha"}'),
     () =>
-      agent('Answer with exactly this JSON: {"answer":"bravo"}', {
+      ask({
         harness: HARNESS,
         label: "work:bravo",
-      }),
+      }, 'Answer with exactly this JSON: {"answer":"bravo"}'),
   ]);
   const chained = await pipeline([
     (previous) =>
-      agent(`Answer with exactly this JSON: {"answer":"charlie"}`, {
+      ask({
         harness: HARNESS,
         label: "work:charlie",
-      }),
+      }, `Answer with exactly this JSON: {"answer":"charlie"}`),
   ]);
   return { both, chained };
 });

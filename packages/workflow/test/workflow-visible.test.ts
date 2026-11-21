@@ -102,7 +102,7 @@ test("the session of an agent call sees the action that answers a question", asy
       script,
       [
         "export default workflow({ output: z.json() }, async () => {",
-        '  const answer = await agent("Study the core.", { harness: "fake-harness" });',
+        '  const answer = await ask({ harness: "fake-harness" }, "Study the core.");',
         "  return answer;",
         "});",
         "",

@@ -1,4 +1,4 @@
-// Live: `agent(prompt, { schema })` on a real Claude model (haiku, through Claude Code).
+// Live: `ask({ schema }, prompt)` on a real Claude model (haiku, through Claude Code).
 //
 // A script asks a tiny question with a zod schema and gets the answer parsed. Claude Code takes
 // the schema in the question and checks the answer against it, so the value that comes back
@@ -59,7 +59,7 @@ test.skipIf(!(live && Bun.which("claude") !== null))(
       [
         "const Capital = z.object({ city: z.string(), population_millions: z.number() });",
         "export default workflow({ output: z.json() }, async () => {",
-        `  const answer = await agent(${JSON.stringify(claudePrompt("What is the capital of France, and roughly how many millions of people live in the city?"))}, { harness: "claude-haiku", schema: Capital });`,
+        `  const answer = await ask({ harness: "claude-haiku", schema: Capital }, ${JSON.stringify(claudePrompt("What is the capital of France, and roughly how many millions of people live in the city?"))});`,
         "  return answer;",
         "});",
       ].join("\n"),

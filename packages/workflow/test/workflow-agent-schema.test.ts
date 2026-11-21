@@ -1,4 +1,4 @@
-// `z` as a global of a script and `agent(prompt, { schema })`.
+// `z` as a global of a script and `ask({ schema }, prompt)`.
 //
 // A script describes the answer it wants with zod; the call gives the answer parsed and typed.
 // The checks run against a fake control side that records what it was asked, and:
@@ -125,9 +125,9 @@ test("the type checker takes a typed script, and refuses a field the schema does
   const typed = await scriptIn(home, "typed.ts", [
     ...REVIEW,
     "export default workflow({ output: z.json() }, async () => {",
-    '  const review: Review = await agent("Review it", { harness: "fake-harness", schema: Review });',
+    '  const review: Review = await ask({ harness: "fake-harness", schema: Review }, "Review it");',
     "  const first: string | undefined = review.notes[0];",
-    "  const answer: { answer: string } = await agent(\"free text\", { harness: \"fake-harness\" });",
+    "  const answer: { answer: string } = await ask({ harness: \"fake-harness\" }, \"free text\");",
     "  return { verdict: review.verdict, tag: review.tag, first, text: answer.answer };",
     "});",
   ]);
@@ -136,7 +136,7 @@ test("the type checker takes a typed script, and refuses a field the schema does
   const wrong = await scriptIn(home, "wrong.ts", [
     ...REVIEW,
     "export default workflow({ output: z.json() }, async () => {",
-    '  const review = await agent("Review it", { harness: "fake-harness", schema: Review });',
+    '  const review = await ask({ harness: "fake-harness", schema: Review }, "Review it");',
     "  return review.missing;",
     "});",
   ]);
@@ -148,7 +148,7 @@ test("the type checker takes a typed script, and refuses a field the schema does
   // The text answer is `{ answer }` and nothing else.
   const text = await scriptIn(home, "text.ts", [
     "export default workflow({ output: z.json() }, async () => {",
-    '  const answer = await agent("free text", { harness: "fake-harness" });',
+    '  const answer = await ask({ harness: "fake-harness" }, "free text");',
     "  return answer.verdict;",
     "});",
   ]);
@@ -161,7 +161,7 @@ test("the schema reaches the session as JSON Schema, and the call gives the pars
   const file = await scriptIn(home, "review.js", [
     ...REVIEW.slice(0, 1),
     "export default workflow({ output: z.json() }, async () => {",
-    '  const review = await agent("Review the diff", { harness: "fake-harness", schema: Review, label: "review" });',
+    '  const review = await ask({ harness: "fake-harness", schema: Review, label: "review" }, "Review the diff");',
     "  return review;",
     "});",
   ]);
@@ -193,7 +193,7 @@ test("an answer that does not pass the schema is not returned: the step fails an
   const file = await scriptIn(home, "invalid.js", [
     ...REVIEW.slice(0, 1),
     "export default workflow({ output: z.json() }, async () => {",
-    '  const review = await agent("Review the diff", { harness: "fake-harness", schema: Review });',
+    '  const review = await ask({ harness: "fake-harness", schema: Review }, "Review the diff");',
     '  return { reached: true, review };',
     "});",
   ]);
@@ -210,7 +210,7 @@ test("a schema that JSON Schema cannot say fails in the script, before anything 
   const { host, home, control } = await served();
   const file = await scriptIn(home, "unsayable.js", [
     "export default workflow({ output: z.json() }, async () => {",
-    '  const when = await agent("When?", { harness: "fake-harness", schema: z.object({ at: z.date() }) });',
+    '  const when = await ask({ harness: "fake-harness", schema: z.object({ at: z.date() }) }, "When?");',
     "  return when;",
     "});",
   ]);
@@ -227,7 +227,7 @@ test("a replay gives the recorded value without asking again: another schema tak
   const lines = (schema: string) => [
     `const Review = ${schema};`,
     "export default workflow({ output: z.json() }, async () => {",
-    '  return await agent("Review the diff", { harness: "fake-harness", schema: Review, label: "review" });',
+    '  return await ask({ harness: "fake-harness", schema: Review, label: "review" }, "Review the diff");',
     "});",
   ];
   const file = await scriptIn(home, "replay.js", lines('z.object({ verdict: z.enum(["approve", "changes"]), notes: z.array(z.string()) })'));
@@ -260,4 +260,58 @@ test("a replay gives the recorded value without asking again: another schema tak
   await eventually(async () => (await host.records.read()).filter((row) => row.type === "workflow.run.finished").length === 4, 20_000, "the changed prompt should run");
   expect(control.asked).toHaveLength(2);
   expect(control.asked[1]?.prompt).toContain("Review the whole diff");
+}, 30_000);
+
+test("a session handle replays each labeled turn and preserves the conversation", async () => {
+  const { host, home, control } = await served();
+  control.reply = { answer: "saved" };
+  const file = await scriptIn(home, "conversation.js", [
+    'export default workflow({ uses: ["session.start.fake-harness", "session.ask", "session.end"], output: z.json() }, async () => {',
+    '  const conversation = session({ harness: "fake-harness", label: "conversation" });',
+    '  const first = await conversation.ask("first", { label: "first" });',
+    '  const next = await conversation.ask({ sections: [{ id: "followup", tier: "stable", text: "second" }] }, { label: "second", schema: z.object({ answer: z.string().transform(s => s.toUpperCase()) }) });',
+    '  const { address } = await conversation;',
+    '  await conversation.end({ label: "close" });',
+    '  return { first, next, address };',
+    '});',
+  ]);
+  const { run } = await host.call(START, { file, wait: true, timeoutMs: 20_000 }) as { run: string };
+  const status = await statusOf(host, run);
+  expect(status.outcome).toMatchObject({ status: "done", result: { first: { answer: "saved" }, next: { answer: "SAVED" }, address: { harness: HARNESS, id: "session-1" } } });
+  await host.call(RESUME, { run });
+  await eventually(async () => (await host.records.read()).filter(row => row.type === "workflow.run.finished").length === 2);
+  const rows = await host.records.read();
+  expect(rows.filter(row => row.type === "session.started")).toHaveLength(1);
+  expect(rows.filter(row => row.type === "session.ended")).toHaveLength(1);
+  expect(control.asked.map(turn => turn.prompt)).toEqual(["first", "second"]);
+  expect(rows.filter(row => row.type === "workflow.step.reused").map(row => (row.data as { key: string }).key)).toEqual(["label:conversation", "label:first", "label:second", "label:close"]);
+}, 30_000);
+
+test("concurrent first turns share a session and another handle opens its own", async () => {
+  const { host, home, control } = await served();
+  control.reply = { answer: "saved" };
+  const file = await scriptIn(home, "handles.js", [
+    'export default workflow({ uses: ["session.start.fake-harness", "session.ask", "session.end"], output: z.json() }, async () => {',
+    '  await session({ harness: "fake-harness" }).end();',
+    '  const a = session({ harness: "fake-harness", label: "a" });',
+    '  const b = session({ harness: "fake-harness", label: "b" });',
+    '  const [first, second, opened, other] = await Promise.all([a.ask("one"), a.ask("two"), a, b]);',
+    '  await Promise.all([opened.end(), opened.end()]);',
+    '  try { await opened.ask("closed"); } catch (error) { return [opened.id, other.id, error.message]; }',
+    '  throw new Error("asked a closed session");',
+    '});',
+  ]);
+  const { run } = await host.call(START, { file, wait: true, timeoutMs: 20_000 }) as { run: string };
+  const outcome = (await statusOf(host, run)).outcome;
+  expect(outcome).toMatchObject({ status: "done", result: [expect.any(String), expect.any(String), "this workflow session has ended"] });
+  await host.call(RESUME, { run });
+  await eventually(async () => (await host.records.read()).filter(row => row.type === "workflow.run.finished").length === 2);
+  const rows = await host.records.read();
+  const sessions = rows.filter(row => row.type === "session.started").map(row => (row.data as { id: string }).id);
+  expect(new Set(sessions).size).toBe(2);
+  expect(sessions).toHaveLength(2);
+  const results = rows.filter(row => row.type === "workflow.run.finished").map(row => (row.data as { outcome: { result: string[] } }).outcome.result);
+  expect(results[0]?.slice(0, 2).sort()).toEqual([...sessions].sort());
+  expect(results[1]).toEqual(results[0]);
+  expect(control.asked.map(turn => turn.prompt)).toEqual(["one", "two"]);
 }, 30_000);

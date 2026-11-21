@@ -6,7 +6,7 @@
 // The owner starts it, and a run holds only what it names: the stub agent.
 export default workflow({ phases: [{ title: "Work" }], uses: ["running.agent"], output: z.json() }, async () => {
   phase("Work");
-  const first = await agent("This call waits.", { label: "work:first" });
-  const second = await agent("This call comes after.", { label: "work:second" });
+  const first = await ask({ label: "work:first" }, "This call waits.");
+  const second = await ask({ label: "work:second" }, "This call comes after.");
   return { first, second };
 });

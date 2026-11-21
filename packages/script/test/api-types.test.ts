@@ -96,16 +96,16 @@ test("a filter of a read of references is held to their data, and is not let thr
 });
 
 test("an agent call with a worktree answers an object, so the worktree can ride along", () => {
-  expect(errorsOf(["  await api.agent('go', { worktree: true, schema: z.string() });"]).length).toBeGreaterThan(0);
-  expect(errorsOf(["  declare const opts: { worktree: true; schema: z.ZodString };", "  await api.agent('go', opts);"]).length).toBeGreaterThan(0);
+  expect(errorsOf(["  await api.ask({ worktree: true, schema: z.string() }, 'go');"]).length).toBeGreaterThan(0);
+  expect(errorsOf(["  declare const opts: { worktree: true; schema: z.ZodString };", "  await api.ask(opts, 'go');"]).length).toBeGreaterThan(0);
   expect(
     errorsOf([
-      "  const done = await api.agent('go', { worktree: true, schema: z.object({ ok: z.boolean() }) });",
+      "  const done = await api.ask({ worktree: true, schema: z.object({ ok: z.boolean() }) }, 'go');",
       "  const ok: boolean = done.ok;",
       "  const path: string | undefined = done.worktree?.path;",
-      "  const text = await api.agent('go', { schema: z.string() });",
+      "  const text = await api.ask({ schema: z.string() }, 'go');",
       "  const s: string = text;",
-      "  const answer = await api.agent('go', { worktree: { base: 'main' } });",
+      "  const answer = await api.ask({ worktree: { base: 'main' } }, 'go');",
       "  const a: string = answer.answer;",
     ]),
   ).toEqual([]);

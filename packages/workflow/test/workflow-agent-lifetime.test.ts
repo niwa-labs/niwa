@@ -1,5 +1,4 @@
-// The sessions a run's agent() calls start live no longer than the run: they stay up between the
-// calls of the run, and when the run ends each is ended and its process let go.
+// One-shot questions release the harness process before returning to the script.
 
 import { expect, test } from "bun:test";
 
@@ -54,7 +53,7 @@ const instance: Harness = {
   },
 };
 
-test("the sessions of a run's agent calls stay up while it runs and are ended when it finishes", async () => {
+test("each one-shot question closes its own session before the run finishes", async () => {
   const control = new Closing();
   const home = tempDirSync("agent-lifetime");
   const niwa = createNiwa({ home });
@@ -67,22 +66,22 @@ test("the sessions of a run's agent calls stay up while it runs and are ended wh
       script,
       [
         "export default workflow({ output: z.json() }, async () => {",
-        '  const first = await agent("one", { harness: "fake-harness" });',
-        '  const second = await agent("two", { harness: "fake-harness" });',
+        '  const first = await ask({ harness: "fake-harness" }, "one");',
+        '  const second = await ask({ harness: "fake-harness" }, "two");',
         "  return [first, second];",
         "});",
         "",
       ].join("\n"),
     );
-    const { run } = (await niwa.call("workflow.start" as ActionName, { file: script } as never)) as { run: string };
+    await niwa.call("workflow.start" as ActionName, { file: script } as never);
     const ended = async () => (await niwa.records.read()).filter((row) => row.type === "session.ended").map((row) => row.data as { session: string; reason: string });
-    await eventually(async () => (await ended()).length === 2, 10_000, "both sessions should end with the run");
+    await eventually(async () => (await niwa.records.read()).some((row) => row.type === "workflow.run.finished"), 10_000);
     const records = await niwa.records.read();
     const finishedAt = records.find((row) => row.type === "workflow.run.finished")?.seq ?? 0;
-    // Neither session was ended before the run was over: the second call did not end the first.
-    expect(records.filter((row) => row.type === "session.ended").every((row) => row.seq > finishedAt)).toBe(true);
+    // Neither completed question leaves a harness running while the script continues.
+    expect(records.filter((row) => row.type === "session.ended").every((row) => row.seq < finishedAt)).toBe(true);
     expect((await ended()).map((data) => data.session).sort()).toEqual([`${HARNESS} session-1`, `${HARNESS} session-2`]);
-    expect((await ended()).every((data) => data.reason.includes(run))).toBe(true);
+    expect((await ended()).every((data) => data.reason === "workflow question finished")).toBe(true);
     // The stream that closes with the process does not write a second end.
     await Bun.sleep(100);
     expect(await ended()).toHaveLength(2);

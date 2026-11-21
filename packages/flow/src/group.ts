@@ -8,7 +8,7 @@
 
 import type { Stream } from "@niwa-labs/script";
 
-import { agentOptions, checkKey, checkKeys, errorOf, isFatal, script, seatKeys } from "./script.ts";
+import { sessionOptions, checkKey, checkKeys, errorOf, isFatal, script, seatKeys } from "./script.ts";
 import type { Seat } from "./script.ts";
 import type { Settled } from "./types.ts";
 
@@ -183,7 +183,7 @@ export async function consensus<T>(
   return { value: values.length === 0 ? null : opts.agree(values), all };
 }
 
-/** Ask a seat with a schema: the call `agent()` makes for a seat. */
+/** Ask a seat with a schema: the call `ask()` makes for a seat. */
 export function askSeat<T>(seat: Seat, prompt: string, schema: import("zod").z.ZodType<T>): Promise<T> {
-  return script().agent(prompt, { ...agentOptions(seat), schema }) as Promise<T>;
+  return script().ask({ ...sessionOptions(seat), schema }, prompt) as Promise<T>;
 }

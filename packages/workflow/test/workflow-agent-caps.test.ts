@@ -70,7 +70,7 @@ test("two agent calls of a parallel under a ceiling of one are asked one after t
       script,
       [
         "export default workflow({ output: z.json() }, async () => {",
-        '  return await parallel([() => agent("one", { harness: "fake-harness" }), () => agent("two", { harness: "fake-harness" })]);',
+        '  return await parallel([() => ask({ harness: "fake-harness" }, "one"), () => ask({ harness: "fake-harness" }, "two")]);',
         "});",
         "",
       ].join("\n"),

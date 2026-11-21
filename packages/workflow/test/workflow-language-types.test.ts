@@ -121,11 +121,11 @@ test("the check types a read of a list that may be empty with data of unknown sh
 
 test("the check types an agent call with a worktree as one that answers an object", async () => {
   const found = await refusedLines([
-    ["await agent('go', { worktree: true, schema: z.string() });", true],
-    ["declare const opts: { worktree: true; schema: ReturnType<typeof z.string> }; => await agent('go', opts);", true],
-    ["const done = await agent('go', { worktree: true, schema: z.object({ ok: z.boolean() }) }); const ok: boolean = done.ok; const path: string | undefined = done.worktree?.path;", false],
-    ["const text = await agent('go', { schema: z.string() }); const s: string = text;", false],
-    ["const answer = await agent('go', { worktree: { base: 'main' } }); const a: string = answer.answer;", false],
+    ["await ask({ worktree: true, schema: z.string() }, 'go');", true],
+    ["declare const opts: { worktree: true; schema: ReturnType<typeof z.string> }; => await ask(opts, 'go');", true],
+    ["const done = await ask({ worktree: true, schema: z.object({ ok: z.boolean() }) }, 'go'); const ok: boolean = done.ok; const path: string | undefined = done.worktree?.path;", false],
+    ["const text = await ask({ schema: z.string() }, 'go'); const s: string = text;", false],
+    ["const answer = await ask({ worktree: { base: 'main' } }, 'go'); const a: string = answer.answer;", false],
   ]);
   expect(found).toEqual({ refused: found.expected, expected: found.expected, other: [] });
 }, 60_000);
