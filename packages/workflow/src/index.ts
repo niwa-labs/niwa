@@ -1673,7 +1673,8 @@ export function workflow(opts: WorkflowOptions = {}) {
               throw new DeniedError(`the run is on hold (${String(hold.id)}): "${name}" ${effect === "write" ? "writes" : "cannot be undone"}, and is refused until the hold is released`);
             }
           }
-          await api.authorize(runCaller, verb, name, how);
+          // A decision under an `allow` names the version of it, as the start of the run kept it.
+          await api.authorize(runCaller, verb, name, { ...how, ...(data.allow === undefined ? {} : { policy: data.allow.version }) });
         },
         visible: (masks) => {
           const narrowed = api.narrow(runCaller, masks);

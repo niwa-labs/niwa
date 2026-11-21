@@ -277,7 +277,7 @@ export class AccessControl {
   }
 
   /** Record one decision of a grant: who, what, which rule, and the outcome. */
-  decided(caller: Caller, standing: Standing, verb: Verb, name: string, answer: Permit): RecordId | undefined {
+  decided(caller: Caller, standing: Standing, verb: Verb, name: string, answer: Permit, at?: { step?: string; policy?: string }): RecordId | undefined {
     if (caller.kind !== "client" || caller.principal === undefined) return undefined;
     if (standing.kind === "unlimited" || (standing.kind === "limited" && standing.id === OWNER_GRANT_ID)) return undefined;
     const data = {
@@ -290,6 +290,8 @@ export class AccessControl {
       ...(answer.allowed && answer.answered !== undefined ? { answered: answer.answered } : {}),
       ...(answer.allowed ? {} : { reason: answer.reason }),
       ...(answer.allowed || answer.missing === undefined ? {} : { missing: answer.missing }),
+      ...(at?.step === undefined ? {} : { step: at.step }),
+      ...(at?.policy === undefined ? {} : { policy: at.policy }),
     };
     const [stored] = this.host.commit([this.record(CORE_TYPES.accessDecided, caller, data)]);
     return stored?.id;

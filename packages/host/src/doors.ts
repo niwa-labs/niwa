@@ -96,6 +96,10 @@ export const DecidedData = z.object({
   answered: z.enum(ASK_SCOPES).optional(),
   reason: z.string().optional(),
   missing: z.string().optional(),
+  /** The step of a run the decision was made at. */
+  step: z.string().optional(),
+  /** The version of the policy that narrowed the grant: the sha256 of the `allow` of a run. */
+  policy: z.string().optional(),
 });
 
 const answerKey = (id: GrantId, name: string, target: string | undefined): string =>

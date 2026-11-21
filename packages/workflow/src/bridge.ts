@@ -305,7 +305,7 @@ export function bridge(deps: BridgeDeps): Bridge {
       world: "niwa",
       run: async (): Promise<z.infer<typeof Authorized>> => {
         try {
-          await deps.authorize(verb, name, how);
+          await deps.authorize(verb, name, { ...how, step: key });
           return { allowed: true };
         } catch (error) {
           if (!(error instanceof DeniedError)) throw error;

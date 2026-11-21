@@ -1786,7 +1786,10 @@ class Niwa implements Host {
         ...(how?.reason === undefined ? {} : { reason: how.reason }),
       });
     }
-    const decision = this.access.decided(caller, standing, verb, name, answer);
+    const decision = this.access.decided(caller, standing, verb, name, answer, {
+      ...(how?.step === undefined ? {} : { step: how.step }),
+      ...(how?.policy === undefined ? {} : { policy: how.policy }),
+    });
     if (!answer.allowed) throw new DeniedError(answer.reason, this.detailsOf(answer, decision));
   }
 

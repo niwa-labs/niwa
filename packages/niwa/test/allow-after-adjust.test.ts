@@ -1,5 +1,6 @@
 // The grant of a run judges the call an action is finally made with: an adjust that moves a call
-// to another target moves it under the grant again.
+// to another target moves it under the grant again, and the decision written for a step of a run
+// says which step it was and under which `allow` the run was started.
 
 import { afterEach, expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
@@ -12,7 +13,7 @@ import type { NiwaApi } from "@niwa-labs/client";
 import { createNiwa } from "@niwa-labs/host";
 import type { Host } from "@niwa-labs/host";
 import { plugin, tempHome } from "@niwa-labs/testing";
-import { workflow } from "@niwa-labs/workflow";
+import { RunRequested, workflow } from "@niwa-labs/workflow";
 
 import { COMMENT, forge } from "./fixtures/forge-plugin.ts";
 
@@ -67,4 +68,18 @@ test("a call an adjust moves outside the allow of its run is denied", async () =
     .map((row) => row.data as { final: { repo?: string }; denied: boolean; reason?: string })
     .filter((one) => one.final.repo === "acme/other");
   expect(decisions).toEqual([expect.objectContaining({ denied: true, reason: expect.stringContaining("not in the grant") })]);
+}, 60_000);
+
+test("the decision of a step of a run names the step and the version of its allow", async () => {
+  const { host, starter, file } = await started();
+  const done = (await starter.call(START, { file, allow, wait: true, timeoutMs: 20_000 })) as { run: string; outcome?: { result?: string } };
+  expect(done.outcome?.result).toBe("commented");
+  const rows = await host.records.read();
+  const version = rows.filter((row) => row.type === RunRequested.name).map((row) => RunRequested.schema.parse(row.data)).find((one) => one.run === done.run)?.allow?.version;
+  expect(version).toMatch(/^[0-9a-f]{64}$/);
+  const decided = rows
+    .filter((row) => row.type === CORE_TYPES.accessDecided)
+    .map((row) => row.data as { name: string; outcome: string; policy?: string; step?: string })
+    .find((one) => one.name === "forge.comment.create");
+  expect(decided).toMatchObject({ outcome: "allowed", policy: version, step: expect.any(String) });
 }, 60_000);

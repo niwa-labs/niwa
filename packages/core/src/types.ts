@@ -502,6 +502,10 @@ export interface AuthorizeHow {
   readonly reason?: string;
   /** What is held to the grant is a read of the journal, not a call: under a rule that asks it is denied, not asked. */
   readonly read?: true;
+  /** The step of a run the call is made at, written with the decision. */
+  readonly step?: string;
+  /** The version of the policy that narrowed the caller's grant (the `allow` of a run), written with the decision. */
+  readonly policy?: string;
 }
 
 /** What the owner may answer to a question of a grant. */
