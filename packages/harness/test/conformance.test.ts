@@ -432,6 +432,41 @@ test("the control suite fails a side that never reports the end of a turn", asyn
   expect(report.passed).toBe(false);
 });
 
+test("the insert suite does not wait forever on an open stream, closes it, and says which events it did not reach", async () => {
+  let closed = false;
+  const insert: HarnessInsert = {
+    events() {
+      let given = false;
+      return {
+        [Symbol.asyncIterator]() {
+          return {
+            async next() {
+              if (!given) {
+                given = true;
+                return { done: false, value: { kind: "opened-by-hand", session: sid("toy-2") } as InsertEvent };
+              }
+              return new Promise<IteratorResult<InsertEvent>>(() => undefined);
+            },
+            async return() {
+              closed = true;
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      };
+    },
+  };
+  const instance: Harness = {
+    ...toyInstance,
+    sides: { insert: { nested: false, compaction: true, manualOpen: true, permission: false, end: false } },
+  };
+  const report = await insertConformance("toy", { instance, insert, eventWaitMs: 50 })();
+  const missed = report.results.filter((result) => !result.passed);
+  expect(missed.map((result) => result.name.split(" is reported")[0])).toEqual(["events: compacted"]);
+  expect(missed[0]?.detail).toContain("still open");
+  expect(closed).toBe(true);
+});
+
 test("the control suite fails, and does not hang on, a side whose turn ends without having started", async () => {
   const control: SessionControl = {
     async start() {
