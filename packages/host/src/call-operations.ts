@@ -17,8 +17,8 @@
 
 import { createHash } from "node:crypto";
 
-import type { ActionName, ArtifactStore, Caller, NewRecord, OperationId, RecordTypeName, Recovery, StoredRecord } from "@niwa-labs/core";
-import { CORE_TYPES, effectPossibleAfter, keptOutcome, newRecordId, stableJson, storedOutcome, streamId } from "@niwa-labs/core";
+import type { ActionName, ArtifactStore, Caller, NewRecord, OperationId, RecordId, RecordTypeName, Recovery, StoredRecord } from "@niwa-labs/core";
+import { CORE_TYPES, RecordRefused, effectPossibleAfter, keptOutcome, newRecordId, stableJson, storedOutcome, streamId } from "@niwa-labs/core";
 
 /** A retry under an operation id the journal cannot answer as asked. */
 export class OperationRefusal extends Error {
@@ -34,6 +34,7 @@ export class OperationRefusal extends Error {
 /** How a call under an operation ended, as the journal keeps it. */
 type Settled =
   | { status: "completed"; value: unknown }
+  | { status: "refused"; audit: RecordId }
   | { status: "failed"; error: string; code?: string; effectPossible: boolean };
 
 interface Began {
@@ -44,6 +45,7 @@ interface Began {
 
 /** What the operations need of the host: the records of an operation, and a way to commit records. */
 export interface OperationsHost {
+  get(id: RecordId): StoredRecord | undefined;
   /** The records of a type written under an operation id, oldest first. */
   find(type: RecordTypeName, operation: OperationId): StoredRecord[];
   commit(records: NewRecord[]): void;
@@ -90,7 +92,7 @@ export class CallOperations {
     action: ActionName,
     input: unknown,
     recovery: Recovery | undefined,
-    run: (operation: OperationId, began: () => void) => Promise<unknown>,
+    run: (operation: OperationId, began: () => void, actor: Caller) => Promise<unknown>,
   ): Promise<unknown> {
     const operation = operationOf(caller, given);
     const digest = createHash("sha256").update(stableJson([action, input ?? null])).digest("hex");
@@ -102,12 +104,18 @@ export class CallOperations {
       if (running.digest !== digest) throw conflict();
       return running.answer;
     }
-    const began = this.host.find(CORE_TYPES.callBegan, operation).at(-1)?.data as Began | undefined;
+    const first = this.host.find(CORE_TYPES.callBegan, operation)[0];
+    const began = first?.data as Began | undefined;
     if (began !== undefined) {
       if (began.digest !== digest) throw conflict();
       const kept = (this.host.find(CORE_TYPES.callSettled, operation).at(-1)?.data as { outcome: unknown } | undefined)?.outcome;
       const settled = kept === undefined ? undefined : (storedOutcome(kept, this.host.artifacts) as Settled);
       if (settled?.status === "completed") return settled.value;
+      if (settled?.status === "refused") {
+        const audit = this.host.get(settled.audit);
+        if (audit === undefined) throw new Error(`missing record refusal "${settled.audit}"`);
+        throw RecordRefused.fromAudit(audit);
+      }
       const repeatable = recovery === "repeat" || recovery === "repeat-with-key";
       if (settled !== undefined && settled.effectPossible && !repeatable) throw answered(settled);
       if (settled === undefined && !repeatable) {
@@ -115,7 +123,7 @@ export class CallOperations {
       }
     }
 
-    const answer = this.made(caller, operation, action, digest, run);
+    const answer = this.made(caller, first?.actor ?? caller, operation, action, digest, run);
     this.running.set(operation, { digest, answer });
     try {
       return await answer;
@@ -126,10 +134,11 @@ export class CallOperations {
 
   private async made(
     caller: Caller,
+    actor: Caller,
     operation: OperationId,
     action: ActionName,
     digest: string,
-    run: (operation: OperationId, began: () => void) => Promise<unknown>,
+    run: (operation: OperationId, began: () => void, actor: Caller) => Promise<unknown>,
   ): Promise<unknown> {
     let began = false;
     const settle = (outcome: Settled): void => {
@@ -142,10 +151,14 @@ export class CallOperations {
       const value = await run(operation, () => {
         began = true;
         this.host.commit([this.record(caller, CORE_TYPES.callBegan, { operation, action, digest } satisfies Began)]);
-      });
+      }, actor);
       settle({ status: "completed", value: value ?? null });
       return value;
     } catch (error) {
+      if (error instanceof RecordRefused) {
+        settle({status: "refused", audit: error.audit.id});
+        throw error;
+      }
       settle({
         status: "failed",
         error: error instanceof Error ? error.message : String(error),

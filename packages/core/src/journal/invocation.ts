@@ -26,8 +26,8 @@ import {
   resolutionOf,
 } from "../outcome.ts";
 import type { StepsCancelled } from "../outcome.ts";
-import { CatchableError, IntegrityError, StepCancelled, UnknownAction, effectPossibleAfter } from "../errors.ts";
-import { CORE_TYPES, newRecordId, recordId, stableJson, streamId } from "../record.ts";
+import { CatchableError, RecordRefused, IntegrityError, StepCancelled, UnknownAction, effectPossibleAfter } from "../errors.ts";
+import { actionEmits, CORE_TYPES, newRecordId, recordId, stableJson, streamId } from "../record.ts";
 import { keptOutcome, storedOutcome } from "../stores.ts";
 import type { ArtifactStore } from "../stores.ts";
 import type {
@@ -57,6 +57,7 @@ import type {
   Seq,
   Step,
   StepEmitOptions,
+  EmitBatch,
   StepKey,
   StepOptions,
   StoredRecord,
@@ -122,13 +123,7 @@ export interface RunnerDeps {
    * The placement of the record is the runtime's business: the actor is the caller, and the
    * cause and the root come from the invocation the call runs in.
    */
-  emit<T>(
-    action: ActionName,
-    type: RecordType<T>,
-    data: T,
-    caller: Caller,
-    place: Placement,
-  ): Promise<StoredRecord>;
+  emit(action: ActionName, caller: Caller, entries: readonly { type: RecordType<any>; data: unknown; place: Placement }[]): Promise<StoredRecord[]>;
   /**
    * Check a record a handler writes, as a record written over the wire is checked: the type is
    * declared, and the handler's own plugin declares it, or it is open, or the caller's grant lets it
@@ -469,7 +464,8 @@ function makeStep(ctx: RunContext, scope: KeyScope = handlerScope): Step {
       type: RecordType<T>,
       data: T,
       opts?: StepEmitOptions,
-    ): Promise<StoredRecord> => stepEmit(ctx, type, data, scope(opts)),
+    ): Promise<StoredRecord> => first(stepEmits(ctx, [{type, data, opts}], emitKey(ctx, scope(opts)), false)),
+    emitAll: async <const T extends readonly RecordType<any>[]>(entries: EmitBatch<T, Pick<StepEmitOptions, "links">>, opts?: StepOptions) => stepEmits(ctx, entries, emitKey(ctx, scope(opts)), true),
     abandon: (): void => {
       ctx.abandoned = true;
     },
@@ -514,29 +510,26 @@ function interceptStep(ctx: RunContext, intercepted: StepKey, attempt: number): 
  * finds the record that was written the first time and returns it, instead of writing a second
  * one. The key is the explicit one, or the ordinal of the key-less emits of this invocation.
  */
-async function stepEmit<T>(
-  ctx: RunContext,
-  type: RecordType<T>,
-  data: T,
-  opts?: StepEmitOptions,
-): Promise<StoredRecord> {
-  const key = emitKey(ctx, opts);
-  const admitted = ctx.deps.admitEmit(ctx.actor, type.name, data);
-  const rec: NewRecord = {
-    id: recordId(`${ctx.invocation}/emit/${key}`),
-    stream: ctx.stream,
-    type: type.name,
-    schema: admitted.version,
-    data: admitted.data,
-    actor: ctx.actor,
-    cause: ctx.cause,
-    root: ctx.root,
-  };
-  // A replay finds the record it wrote the first time: that is not progress.
-  if (ctx.deps.journal.get(rec.id) === undefined) startRunning(ctx);
+function stepEmits(
+  ctx: RunContext, entries: EmitBatch<readonly RecordType<any>[], Pick<StepEmitOptions, "links">>,
+  key: string, batch: boolean,
+): StoredRecord[] {
+  const writes = entries.map(({type, data, opts}, index) => {
+    const admitted = ctx.deps.admitEmit(ctx.actor, type.name, data);
+    return {
+      record: {
+        id: recordId(batch ? `${ctx.invocation}/batch/${key}/${index + 1}` : `${ctx.invocation}/emit/${key}`),
+        stream: ctx.stream, type: type.name, schema: admitted.version, data: admitted.data,
+        actor: ctx.actor, cause: ctx.cause, root: ctx.root,
+      },
+      links: opts?.links,
+    };
+  });
+  if (writes.some(({record}) => ctx.deps.journal.get(record.id) === undefined)) startRunning(ctx);
   try {
-    return first(ctx.deps.appendAll([{ record: rec, links: opts?.links }]));
+    return ctx.deps.appendAll(writes);
   } catch (error) {
+    if (error instanceof RecordRefused) throw error;
     // The same key with other content is a replay mismatch, not a failure of the host.
     if (error instanceof IntegrityError) pause(ctx, `replay mismatch at emit ${key}`);
     return appendFailed(ctx, error);
@@ -950,7 +943,7 @@ async function callAction<I, O, In = I>(
       caller: callerAs(ctx, as),
       invocation: ctx.invocation,
       signal: controller.signal,
-      emit: emitFor(ctx, action.name, operation),
+      ...emitFor(ctx, action.name, operation),
       wait: waitFor(ctx, key, attempt),
       waitAnyOf: waitAnyFor(ctx, key, attempt),
       step: nested.step,
@@ -1004,20 +997,14 @@ async function callAction<I, O, In = I>(
  * ordinal of the write, and the operation is stable across repeats of a step, so a repeat
  * returns the record it wrote instead of writing a second one.
  */
-function emitFor(ctx: RunContext, action: ActionName, operation: OperationId): ActionContext["emit"] {
-  let ordinal = 0;
-  return async <T>(type: RecordType<T>, data: T): Promise<StoredRecord> => {
-    ordinal += 1;
-    const id = recordId(`${operation}/emit/${ordinal}`);
-    // A repeat finds the record it wrote the first time: that is not progress.
-    if (ctx.deps.journal.get(id) === undefined) startRunning(ctx);
-    return ctx.deps.emit(action, type, data, ctx.actor, {
-      id,
-      stream: ctx.stream,
-      cause: ctx.cause,
-      root: ctx.root,
-    });
-  };
+function emitFor(ctx: RunContext, action: ActionName, operation: OperationId) {
+  return actionEmits(async entries => {
+    const placed = entries.map(({type, data, ordinal}) => ({
+      type, data, place: {id: recordId(`${operation}/emit/${ordinal}`), stream: ctx.stream, cause: ctx.cause, root: ctx.root},
+    }));
+    if (placed.some(({place}) => ctx.deps.journal.get(place.id) === undefined)) startRunning(ctx);
+    return ctx.deps.emit(action, ctx.actor, placed);
+  });
 }
 
 /**

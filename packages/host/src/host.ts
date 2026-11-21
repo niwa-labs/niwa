@@ -16,6 +16,8 @@ import { z } from "zod";
 
 import {
   effectOfCall,
+  actionEmits,
+  RecordRefused,
   action,
   actionName,
   realClock,
@@ -87,6 +89,7 @@ import type {
   ClientId,
   Description,
   EmitOptions,
+  EmitBatch,
   GuardFn,
   Handler,
   HandlerId,
@@ -212,6 +215,7 @@ const TRANSPORT_CLOCK: Clock = realClock();
 
 /** A call a client named with an operation id: the id it runs under, and what to do as it begins. */
 interface MadeUnder {
+  readonly actor: Caller;
   readonly operation: OperationId;
   began(): void;
 }
@@ -647,6 +651,7 @@ class Niwa implements Host {
   readonly secrets: SecretStore = secretStore(() => this.realHome());
   /** The calls clients named with an operation id: a retry under one answers the first call. */
   private readonly operations = new CallOperations({
+    get: id => this.requireJournal().get(id),
     find: (type, operation) => this.requireJournal().find({ type, field: "operation", equals: operation }),
     commit: (records) => {
       this.append(records);
@@ -949,10 +954,14 @@ class Niwa implements Host {
       artifacts: this.artifacts,
       secrets: this.secrets,
       emit: async <T>(type: RecordType<T>, data: T, opts?: EmitOptions): Promise<StoredRecord> => {
-        if (!installed.types.some((own) => own.name === type.name)) {
+        if (this.plugins.get(plugin.name) !== installed || !installed.types.some((own) => own.name === type.name)) {
           throw new UnknownType(type.name);
         }
         return this.write({ kind: "host" }, type.name, data, opts);
+      },
+      emitAll: async entries => {
+        if (this.plugins.get(plugin.name) !== installed) throw new Error(`plugin "${plugin.name}" is not installed`);
+        return this.writeOwned(installed.types, entries);
       },
       state: <T>(name: string, schema: z.ZodType<T>, initial: T): StateHandle<T> => {
         live();
@@ -993,15 +1002,11 @@ class Niwa implements Host {
     }
     // The version of a plugin without an explicit one covers the handlers it registered, wherever
     // they are defined: the setup has run, so they are known now.
+    for (const {name, guard} of installed.types) {
+      if (guard) sources.push(JSON.stringify([name, guard.group, ...[guard.key, guard.initial, guard.admit, guard.fold].map(String)]));
+    }
     sealVersion(plugin, sources);
     installed.version = plugin.version;
-    // Earlier versions stay pinned: they were pinned when they were installed.
-    for (const entry of installed.handlers) {
-      this.pinned.set(pinKey(handlerIdOf(`${plugin.name}/${entry.name}`), plugin.version), {
-        handler: entry.handler,
-        type: entry.type,
-      });
-    }
     // A plugin that read a point when it was installed keeps what it read: a replacement of the plugin that
     // offered there that offers something else is refused, because the reader would go on with the old.
     const replaced = this.plugins.get(plugin.name);
@@ -1023,12 +1028,28 @@ class Niwa implements Host {
       if (name === plugin.name) continue;
       for (const type of installed.types) {
         const taken = other.types.find((theirs) => overlaps(theirs.name, type.name));
+        if (type.guard && other.types.some(theirs => theirs.guard?.group === type.guard!.group)) {
+          throw new TypeError(`guard group "${type.guard.group}" is owned by plugin "${name}"`);
+        }
         if (taken !== undefined) {
           throw new TypeError(
             `plugin "${plugin.name}" declares "${type.name}", which "${name}" owns as "${taken.name}": a record type has one owner`,
           );
         }
       }
+    }
+    for (const type of installed.types) {
+      if (type.guard && [...CORE_TYPE_NAMES].some(core => overlaps(type.name, core))) {
+        throw new TypeError(`plugin "${plugin.name}" cannot guard core records with "${type.name}"`);
+      }
+    }
+    this.prepareGuards(plugin.name, installed.types);
+    // Earlier versions stay pinned: they were pinned when they were installed.
+    for (const entry of installed.handlers) {
+      this.pinned.set(pinKey(handlerIdOf(`${plugin.name}/${entry.name}`), plugin.version), {
+        handler: entry.handler,
+        type: entry.type,
+      });
     }
     // A plugin that replaces another takes its services over: the old ones stop, the new ones
     // start when the host is already serving.
@@ -1038,11 +1059,19 @@ class Niwa implements Host {
     if (this.journal !== undefined) this.startServicesOf(plugin.name);
   }
 
+  /** A replacement whose fold cannot replay history leaves the previous plugin serving. */
+  private prepareGuards(owner: PluginName, next: readonly AnyType[]): void {
+    if (!this.journal) return;
+    const others = [...this.plugins].flatMap(([name, plugin]) => name === owner ? [] : plugin.types);
+    this.journal.setGuards([...others, ...next]);
+  }
+
   installed(name: PluginName): Plugin | undefined {
     return this.plugins.get(name)?.source;
   }
 
   unload(name: PluginName): void {
+    this.prepareGuards(name, []);
     this.stopServicesOf(name);
     this.plugins.delete(name);
     this.rebuild();
@@ -1112,6 +1141,10 @@ class Niwa implements Host {
           throw new UnknownType(type.name);
         }
         return this.write({ kind: "host" }, type.name, data, opts);
+      },
+      emitAll: async entries => {
+        if (run.stopped) throw new Error(`the service of "${name}" has stopped`);
+        return this.writeOwned(own, entries);
       },
       now: (): Timestamp => timestamp(this.clock.now()),
       schedule: (at, fn) => this.clock.schedule(at, fn),
@@ -1656,6 +1689,7 @@ class Niwa implements Host {
     const journal = openJournal(this.home, { takeover: this.takeover, clock: this.clock });
     this.journal = journal;
     try {
+      journal.setGuards([...this.types.values()]);
       this.openDoors(journal);
       // Before anything loads a plugin file again: the copies of files no installation is made from are taken away.
       await removeStaleCopies(journal);
@@ -2456,7 +2490,7 @@ class Niwa implements Host {
         }
       },
       standingOf: (caller) => this.access.standing(caller),
-      emit: (action, type, data, caller, place) => this.emitAs(action, type, data, caller, place),
+      emit: (action, caller, entries) => this.emitAs(action, caller, entries),
       admitEmit: (caller, name, data) => {
         const declared = this.declaredType(name);
         if (declared === undefined) throw new UnknownType(name);
@@ -2488,7 +2522,13 @@ class Niwa implements Host {
 
   /** Commit the records with their links, then publish them. */
   private appendAll(entries: AppendEntry[]): StoredRecord[] {
-    const committed = this.requireJournal().appendAll(entries);
+    let committed: StoredRecord[];
+    try {
+      committed = this.requireJournal().appendAll(entries);
+    } catch (error) {
+      if (error instanceof RecordRefused && error.newlyRecorded) this.publish([error.audit]);
+      throw error;
+    }
     // What a record of access says takes effect before anything that watches the journal reacts.
     for (const row of committed) if (ACCESS_TYPES.has(row.type)) this.doors?.fold(row);
     this.publish(committed);
@@ -2531,6 +2571,10 @@ class Niwa implements Host {
 
   async emit<T>(type: RecordType<T>, data: T, opts?: EmitOptions): Promise<StoredRecord> {
     return this.write({ kind: "host" }, type.name, data, opts);
+  }
+
+  async emitAll<const T extends readonly AnyType[]>(entries: EmitBatch<T, EmitOptions>): Promise<StoredRecord[]> {
+    return this.appendAll(entries.map(({type, data, opts}) => this.externalEntry({kind: "host"}, type.name, data, opts)));
   }
 
   async trace(id: RecordId): Promise<TracedRecord[]> {
@@ -2616,6 +2660,17 @@ class Niwa implements Host {
     data: unknown,
     opts?: EmitOptions,
   ): Promise<StoredRecord> {
+    return this.appendAll([this.externalEntry(caller, name, data, opts)])[0]!;
+  }
+
+  private writeOwned(own: readonly AnyType[], entries: EmitBatch<readonly AnyType[], EmitOptions>): StoredRecord[] {
+    return this.appendAll(entries.map(({type, data, opts}) => {
+      if (!own.some(declared => declared.name === type.name)) throw new UnknownType(type.name);
+      return this.externalEntry({ kind: "host" }, type.name, data, opts);
+    }));
+  }
+
+  private externalEntry(caller: Caller, name: RecordTypeName, data: unknown, opts?: EmitOptions): AppendEntry {
     const declared = this.declaredType(name);
     if (declared === undefined) throw new UnknownType(name);
     const parsed = declared.schema.safeParse(data);
@@ -2623,23 +2678,11 @@ class Niwa implements Host {
       throw new ValidationError(`the data of "${name}" is not valid`, parsed.error.issues);
     }
     const id = opts?.id === undefined ? newRecordId("rec") : recordId(opts.id);
-    const [committed] = this.appendAll([
-      {
-        record: {
-          id,
-          stream: streamId(`input:${name}`),
-          type: name,
-          schema: declared.version,
-          data: parsed.data,
-          actor: caller,
-          cause: null,
-          root: id,
-        },
-        links: opts?.links,
-      },
-    ]);
-    if (committed === undefined) throw new Error("the record was not committed");
-    return committed;
+    return {
+      record: {id, stream: streamId(`input:${name}`), type: name, schema: declared.version,
+        data: parsed.data, actor: caller, cause: null, root: id},
+      links: opts?.links,
+    };
   }
 
   /**
@@ -2663,35 +2706,18 @@ class Niwa implements Host {
    * invocation it runs in, and a call outside an invocation starts a chain of its own. The
    * schema of the type is the one that was declared, so the data is checked before it is kept.
    */
-  private async emitAs<T>(
-    action: ActionName,
-    type: RecordType<T>,
-    data: T,
-    caller: Caller,
-    place: Placement,
-  ): Promise<StoredRecord> {
-    const declared = this.declaredType(type.name);
-    if (declared === undefined || this.typesOfAction(action)?.has(declared.name) !== true) {
-      throw new UnknownType(type.name);
-    }
-    const parsed = declared.schema.safeParse(data);
-    if (!parsed.success) {
-      throw new ValidationError(`the data of "${type.name}" is not valid`, parsed.error.issues);
-    }
-    const record: NewRecord = {
-      id: place.id,
-      stream: place.stream,
-      type: type.name,
-      schema: declared.version,
-      data: parsed.data,
-      actor: caller,
-      cause: place.cause,
-      root: place.root,
-    };
-    const committed = this.append([record]);
-    const first = committed[0];
-    if (first === undefined) throw new Error("the record was not committed");
-    return first;
+  private async emitAs(
+    action: ActionName, caller: Caller,
+    entries: readonly { type: AnyType; data: unknown; place: Placement }[],
+  ): Promise<StoredRecord[]> {
+    const owned = this.typesOfAction(action);
+    return this.append(entries.map(({type, data, place}) => {
+      const declared = this.declaredType(type.name);
+      if (declared === undefined || !owned?.has(declared.name)) throw new UnknownType(type.name);
+      const parsed = declared.schema.safeParse(data);
+      if (!parsed.success) throw new ValidationError(`the data of "${type.name}" is not valid`, parsed.error.issues);
+      return { ...place, type: type.name, schema: declared.version, data: parsed.data, actor: caller };
+    }));
   }
 
   /** Call an action outside any invocation: not a step, not journaled. */
@@ -2780,7 +2806,6 @@ class Niwa implements Host {
     // A call the client named runs under the operation id made from its name, and says it began.
     const operation = made?.operation ?? newOperationId();
     made?.began();
-    let ordinal = 0;
     const output = await found.run(decision.final, {
       operationId: operation,
       caller,
@@ -2789,15 +2814,14 @@ class Niwa implements Host {
       // and is its own root, and the later ones of the same call belong to it. Every record
       // after the first hangs on the one before it, so the trace down from the root reaches
       // all of them.
-      emit: async <T>(type: RecordType<T>, data: T): Promise<StoredRecord> => {
-        ordinal += 1;
-        return this.emitAs(name, type, data, caller, {
+      ...actionEmits(entries => this.emitAs(name, made?.actor ?? caller, entries.map(({type, data, ordinal}) => ({
+        type, data, place: {
           id: recordId(`${operation}/emit/${ordinal}`),
           stream: streamId(`input:${type.name}`),
           cause: ordinal === 1 ? null : recordId(`${operation}/emit/${ordinal - 1}`),
           root: recordId(`${operation}/emit/1`),
-        });
-      },
+        },
+      })))),
       // A call outside an invocation has no invocation to suspend, so it cannot wait. The
       // answer is looked for and its absence is reported: the caller asked for something that
       // is not there, and that is said rather than waited for.
@@ -2961,8 +2985,8 @@ class Niwa implements Host {
           if (operation === undefined) return this.runAction(caller, target, input, true, message.reason);
           this.operations.requireNamed(connection.isNamed, operation);
           const recovery = this.actionOf(target)?.recovery;
-          return await this.operations.once(caller, operation, target, input, recovery, (id, began) =>
-            this.runAction(caller, target, input, true, message.reason, { operation: id, began }),
+          return await this.operations.once(caller, operation, target, input, recovery, (id, began, actor) =>
+            this.runAction(caller, target, input, true, message.reason, { operation: id, began, actor }),
           );
         });
       }
@@ -2973,6 +2997,11 @@ class Niwa implements Host {
           return this.write(caller, type, data, { id: record, links });
         });
       }
+      case "emitAll":
+        return reply(connection, message.id, async () => this.appendAll(message.entries.map(({type, data, record, links}) => {
+          this.permitEmit(caller, type);
+          return this.externalEntry(caller, type, data, {id: record, links});
+        })));
       case "trace":
         return reply(connection, message.id, async () => {
           await this.authorize(caller, "call", TRACE_ACTION);
@@ -3061,6 +3090,9 @@ function refuse(connection: Connection, id: number, error: unknown): void {
     ok: false,
     error: error instanceof Error ? error.message : String(error),
     code: error instanceof Error ? error.name : undefined,
+    ...(error instanceof RecordRefused ? {refusal: {
+      code: error.code, reason: error.reason, entity: error.entity, recordType: error.recordType, audit: error.audit,
+    }} : {}),
     ...(error instanceof DeniedError && error.denied !== undefined ? { denied: error.denied } : {}),
   });
 }

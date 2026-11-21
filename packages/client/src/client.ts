@@ -13,7 +13,7 @@ import type { z } from "zod";
 import { expandHome } from "./home.ts";
 import { MAX_QUEUED_FRAMES, channelName, frameFor } from "./live.ts";
 import { RetryPause } from "./pause.ts";
-import { RecordQuerySchema, resolveQuery, seq, targetName } from "@niwa-labs/core";
+import { RecordRefused, RecordQuerySchema, resolveQuery, seq, targetName } from "@niwa-labs/core";
 import type {
   ActionTarget,
   CallOptions,
@@ -22,6 +22,7 @@ import type {
   ClientId,
   Description,
   EmitOptions,
+  EmitBatch,
   LiveFrame,
   RecordReadQuery,
   RecordQuery,
@@ -330,7 +331,9 @@ class WireConnection {
       pending?.resolve(decoded.value);
       return;
     }
-    const error = new HostError(decoded.error, decoded.code, decoded.denied);
+    const error = decoded.refusal
+      ? new RecordRefused(decoded.refusal.code, decoded.refusal.reason, decoded.refusal.entity, decoded.refusal.recordType, decoded.refusal.audit, false)
+      : new HostError(decoded.error, decoded.code, decoded.denied);
     if (decoded.id === this.helloId || this.subscriptionIds.has(decoded.id)) {
       // The host will not talk to this client, or refused the subscription: retrying would spin.
       this.die(error, true);
@@ -847,6 +850,14 @@ class Client implements NiwaApi {
       ...(opts?.links === undefined ? {} : { links: opts.links }),
     }));
     return parseReturned(storedRecordSchema, value, "the record it wrote");
+  }
+
+  async emitAll<const T extends readonly RecordType<any>[]>(entries: EmitBatch<T, EmitOptions>): Promise<StoredRecord[]> {
+    const value = await this.request(id => ({
+      id, op: "emitAll",
+      entries: entries.map(({type, data, opts}) => ({type: type.name, data, record: opts?.id, links: opts?.links})),
+    }));
+    return parseList(storedRecordSchema, value, "the records it wrote");
   }
 
   /**

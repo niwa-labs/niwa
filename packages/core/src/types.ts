@@ -102,12 +102,26 @@ export interface NewRecord {
   root: RecordId;
 }
 
+/** A pure state transition. Types with the same group in a plugin share entity state. */
+export interface RecordGuard<T, S> {
+  group: string;
+  key(data: T): string;
+  initial(): S;
+  admit(state: S, data: T): void | { code: string; reason: string };
+  fold(state: S, data: T, record: StoredRecord): S;
+}
+
+export type EmitBatch<T extends readonly RecordType<any>[], Options = never> = {
+  [K in keyof T]: { type: T[K]; data: NoInfer<z.output<T[K]["schema"]>>; opts?: Options };
+};
+
 /** A declared record type: `record("ci.build-failed", schema)`. */
 export interface RecordType<T> {
   kind: "record";
   name: RecordTypeName;
   version: number;
   schema: z.ZodType<T>;
+  guard?: RecordGuard<T, any>;
   /** The plugin that produces the records of this type, so a missing one can be named. */
   provider?: string;
   /**
@@ -274,6 +288,8 @@ export interface ActionContext {
    * The id follows the operation, so a repeat of the same step returns the record it wrote.
    */
   emit<T>(type: RecordType<T>, data: T): Promise<StoredRecord>;
+  /** Commit all records or refuse the whole batch. */
+  emitAll<const T extends readonly RecordType<any>[]>(entries: EmitBatch<T>): Promise<StoredRecord[]>;
   /**
    * Wait for a record of a declared type, of its version, whose data holds the filter.
    *
@@ -341,7 +357,7 @@ export interface ActionStepOptions {
 }
 
 /** What a check sees: it reads the outcome, it never writes. */
-export type CheckContext = Omit<ActionContext, "emit" | "wait" | "waitAnyOf" | "step">;
+export type CheckContext = Omit<ActionContext, "emit" | "emitAll" | "wait" | "waitAnyOf" | "step">;
 
 /**
  * The client-side face of an action: its name and its two schemas, with nothing to run.
@@ -493,6 +509,9 @@ export interface Step {
    * was written the first time instead of writing a second one.
    */
   emit<T>(type: RecordType<T>, data: T, opts?: StepEmitOptions): Promise<StoredRecord>;
+  emitAll<const T extends readonly RecordType<any>[]>(
+    entries: EmitBatch<T, Pick<StepEmitOptions, "links">>, opts?: StepOptions,
+  ): Promise<StoredRecord[]>;
   /**
    * Say that the work of this invocation is no longer wanted (the run it serves was cancelled).
    * A step that does not complete after that does not pause the invocation, and the step that
@@ -650,6 +669,7 @@ export interface JournalReader {
 export interface Journal extends JournalReader {
   /** Random id of this writer, recorded in the database when the journal was opened. */
   readonly instance: string;
+  setGuards(types: readonly RecordType<any>[]): void;
   /** Idempotent by id: same content returns the existing record, different content throws IntegrityError. */
   append(rec: NewRecord): StoredRecord;
   /** All or nothing, in one transaction. */
@@ -665,6 +685,7 @@ export interface Journal extends JournalReader {
 
 /** Built-in record type names written by the core itself. */
 export const CORE = {
+  recordRefused: "niwa.record.refused",
   invocationAdmitted: "niwa.invocation.admitted", // { invocation, handler, record, pluginVersion }
   invocationState: "niwa.invocation.state",       // { invocation, state, reason?, choices?, key? }
   invocationResolved: "niwa.invocation.resolved", // { invocation, key, choice }

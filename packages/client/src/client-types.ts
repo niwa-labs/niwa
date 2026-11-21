@@ -1,5 +1,5 @@
 // The API a client holds: the shape the host and a connected client share.
-import type { ActionTarget, CallOptions, Description, EmitOptions, LiveFrame, RecordReadQuery, RecordId, RecordQuery, RecordType, StoredRecord, TracedRecord } from "@niwa-labs/core";
+import type { ActionTarget, CallOptions, Description, EmitBatch, EmitOptions, LiveFrame, RecordReadQuery, RecordId, RecordQuery, RecordType, StoredRecord, TracedRecord } from "@niwa-labs/core";
 
 /** The frames of one channel, from the moment the host registered the listener. */
 export interface LiveSubscription extends AsyncIterableIterator<LiveFrame> {
@@ -32,6 +32,7 @@ export interface NiwaApi {
    * existing record, the same id with different content is an integrity error.
    */
   emit<T>(type: RecordType<T>, data: T, opts?: EmitOptions): Promise<StoredRecord>;
+  emitAll<const T extends readonly RecordType<any>[]>(entries: EmitBatch<T, EmitOptions>): Promise<StoredRecord[]>;
   /**
    * Call an action by typed reference, by value or by name, outside any invocation.
    *

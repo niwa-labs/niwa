@@ -141,6 +141,13 @@ export const descriptionSchema = z.strictObject({
   ),
 });
 
+const emitFields = {
+  type: recordTypeNameSchema,
+  data: z.unknown().optional(),
+  record: recordIdSchema.optional(),
+  links: z.array(recordIdSchema).optional(),
+};
+
 /** What a client may send to the host: `op` tells the operations apart. */
 export const clientMessageSchema = z.discriminatedUnion("op", [
   // The token is what says who the connection is; the client label only names it for people.
@@ -157,11 +164,9 @@ export const clientMessageSchema = z.discriminatedUnion("op", [
   z.strictObject({
     id: requestIdSchema,
     op: z.literal("emit"),
-    type: recordTypeNameSchema,
-    data: z.unknown().optional(),
-    record: recordIdSchema.optional(),
-    links: z.array(recordIdSchema).optional(),
+    ...emitFields,
   }),
+  z.strictObject({id: requestIdSchema, op: z.literal("emitAll"), entries: z.array(z.strictObject(emitFields))}),
   z.strictObject({
     id: requestIdSchema,
     op: z.literal("since"),
@@ -199,6 +204,9 @@ export const hostMessageSchema = z.union([
       code: z.string().optional(),
       /** Set when a grant refused the call: whose grant, and the rule it lacks. */
       denied: deniedSchema.optional(),
+      refusal: z.strictObject({
+        code: z.string(), reason: z.string(), entity: z.string(), recordType: recordTypeNameSchema, audit: storedRecordSchema,
+      }).optional(),
     }),
   ]),
   z.strictObject({ id: requestIdSchema, record: storedRecordSchema }),

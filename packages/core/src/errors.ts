@@ -7,7 +7,7 @@
  * (`new WriterBusy(message)`); the message belongs to the caller, the class supplies a default.
  */
 
-import type { ActionName, RecordId, RecordTypeName } from "./types.ts";
+import type { ActionName, RecordId, RecordTypeName, StoredRecord } from "./types.ts";
 
 /** Another living process holds the journal: a dead one is taken over, a living one is reported. */
 export class WriterBusy extends Error {
@@ -69,6 +69,28 @@ export class IntegrityError extends Error {
 export class CatchableError extends Error {
   override name = "CatchableError";
   readonly code: string = "CatchableError";
+}
+
+/** A record owner refused this transition. The audit record identifies the attempted intent. */
+export class RecordRefused extends CatchableError {
+  override name = "RecordRefused";
+  static fromAudit(audit: StoredRecord, newlyRecorded = false): RecordRefused {
+    const {code, reason, entity, recordType} = audit.data as {
+      code: string; reason: string; entity: string; recordType: RecordTypeName;
+    };
+    return new RecordRefused(code, reason, entity, recordType, audit, newlyRecorded);
+  }
+
+  constructor(
+    override readonly code: string,
+    readonly reason: string,
+    readonly entity: string,
+    readonly recordType: RecordTypeName,
+    readonly audit: StoredRecord,
+    readonly newlyRecorded: boolean,
+  ) {
+    super(`${recordType} refused for "${entity}" (${code}): ${reason}`);
+  }
 }
 
 /**

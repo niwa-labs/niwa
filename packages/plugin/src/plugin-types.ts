@@ -14,6 +14,7 @@ import type {
   AuthorizeHow,
   Caller,
   EmitOptions,
+  EmitBatch,
   Grant,
   GuardFn,
   Handler,
@@ -149,6 +150,7 @@ export interface ServiceContext {
    * the same id with the same content returns the record that is already committed.
    */
   emit<T>(type: RecordType<T>, data: T, opts?: EmitOptions): Promise<StoredRecord>;
+  emitAll<const T extends readonly RecordType<any>[]>(entries: EmitBatch<T, EmitOptions>): Promise<StoredRecord[]>;
   /** The clock, in milliseconds since the epoch. */
   now(): Timestamp;
   /**
@@ -326,6 +328,7 @@ export interface PluginApi {
    * error. That is what a fact that may arrive twice needs — an update from Telegram, say.
    */
   emit<T>(type: RecordType<T>, data: T, opts?: EmitOptions): Promise<StoredRecord>;
+  emitAll<const T extends readonly RecordType<any>[]>(entries: EmitBatch<T, EmitOptions>): Promise<StoredRecord[]>;
   /**
    * Make a token for a subject this plugin starts: a session or a run. Nothing else — the owner
    * and the plugins are the host's to make. The token is the only time the secret is seen; the

@@ -15,6 +15,10 @@
 import type { z } from "zod";
 import { CORE } from "./types.ts";
 import type {
+  ActionContext,
+  EmitBatch,
+  StoredRecord,
+  RecordGuard,
   RecordId,
   RecordType,
   RecordTypeName,
@@ -88,6 +92,7 @@ export function timestamp(value: number): Timestamp {
  * the shapes they carry. Their data is not validated: the core knows what it writes.
  */
 export const CORE_TYPES = {
+  recordRefused: recordTypeName(CORE.recordRefused),
   invocationAdmitted: recordTypeName(CORE.invocationAdmitted),
   invocationState: recordTypeName(CORE.invocationState),
   invocationResolved: recordTypeName(CORE.invocationResolved),
@@ -138,10 +143,10 @@ export function newRecordId(prefix: string): RecordId {
  * A type is closed unless `open` is set: over the wire only the plugin that declares it writes
  * it.
  */
-export function record<T>(
+export function record<T, S = never>(
   name: string,
   schema: z.ZodType<T>,
-  opts?: { version?: number; open?: boolean },
+  opts?: { version?: number; open?: boolean; guard?: RecordGuard<NoInfer<T>, S> },
 ): RecordType<T> {
   const version = opts?.version ?? 1;
   if (!Number.isInteger(version) || version < 1) {
@@ -154,8 +159,10 @@ export function record<T>(
       `record type ${JSON.stringify(name)}: schema must be a zod schema`,
     );
   }
+  if (opts?.guard) requireName(opts.guard.group, "guard group");
   return {
     kind: "record",
+    ...(opts?.guard ? { guard: opts.guard } : {}),
     name: recordTypeName(name),
     version,
     schema,
@@ -224,4 +231,17 @@ function sortValue(value: unknown, path: Set<object>, key: string): unknown {
   } finally {
     path.delete(value);
   }
+}
+
+/** Both action emit forms draw ids from the same operation-local sequence. */
+export function actionEmits(
+  write: (entries: readonly { type: RecordType<any>; data: unknown; ordinal: number }[]) => Promise<StoredRecord[]>,
+): Pick<ActionContext, "emit" | "emitAll"> {
+  let ordinal = 0;
+  const emitAll = <const T extends readonly RecordType<any>[]>(entries: EmitBatch<T>) =>
+    write(entries.map(({type, data}) => ({type, data, ordinal: ++ordinal})));
+  return {
+    emit: async (type, data) => (await emitAll([{type, data}]))[0]!,
+    emitAll,
+  };
 }

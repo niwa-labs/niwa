@@ -11,19 +11,21 @@
  */
 
 import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { deserialize, serialize } from "node:v8";
 
 import { grantId } from "../grant.ts";
 import { JOURNAL_FILE, principalSchema } from "../access.ts";
-import { IntegrityError, LostOwnership, WriterBusy } from "../errors.ts";
+import { IntegrityError, LostOwnership, RecordRefused, WriterBusy } from "../errors.ts";
 import { holds } from "../filter.ts";
-import { isFamily } from "../record-query.ts";
+import { isFamily, selectsType } from "../record-query.ts";
 import type { ResolvedQuery } from "../record-query.ts";
 import { realClock } from "../clock.ts";
 import type { Clock } from "../clock.ts";
-import { recordId, recordTypeName, seq as seqOf, stableJson, streamId, timestamp } from "../record.ts";
+import { CORE_TYPES, newRecordId, recordId, recordTypeName, seq as seqOf, stableJson, streamId, timestamp } from "../record.ts";
 import { RECORD_DATA_LIMIT, RecordTooLarge } from "../stores.ts";
 import type {
   AppendEntry,
@@ -35,6 +37,8 @@ import type {
   JournalQuery,
   NewRecord,
   RecordId,
+  RecordGuard,
+  RecordType,
   RecordTypeName,
   Seq,
   StoredRecord,
@@ -47,7 +51,7 @@ import type {
  * It grows when the tables change. The statements that create the tables are idempotent, so a
  * journal of a lower version is brought forward by running them again.
  */
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS records (
@@ -72,6 +76,11 @@ CREATE TABLE IF NOT EXISTS links (
   PRIMARY KEY (from_id, to_id)
 );
 CREATE INDEX IF NOT EXISTS links_to ON links (to_id);
+CREATE TABLE IF NOT EXISTS refused_intents (
+  intent TEXT PRIMARY KEY,
+  digest TEXT NOT NULL,
+  audit TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS writer (
   id       INTEGER PRIMARY KEY CHECK (id = 1),
   epoch    INTEGER NOT NULL,
@@ -276,6 +285,12 @@ function typeClause(selector: string, params: SQLQueryBindings[]): string {
   return "(type >= ? AND type < ?)";
 }
 
+function batchDigest(entries: AppendEntry[]): string {
+  return createHash("sha256").update(stableJson(entries.map(({ record, links }) => ({
+    ...record, links: [...new Set(links)].sort(),
+  })))).digest("hex");
+}
+
 class SqliteJournal implements Journal {
   readonly instance: string;
   readonly epoch: number;
@@ -284,12 +299,55 @@ class SqliteJournal implements Journal {
   /** The clock of the host: the moment a record was committed. */
   private readonly clock: Clock;
   private closed = false;
+  private guards = new Map<RecordTypeName, RecordGuard<any, any>>();
+  private families: RecordTypeName[] = [];
 
   constructor(db: Database, instance: string, epoch: number, clock: Clock) {
     this.db = db;
     this.instance = instance;
     this.epoch = epoch;
     this.clock = clock;
+  }
+
+  /** Rebuild the entity index with the currently installed folds, without re-admitting history. */
+  setGuards(types: readonly RecordType<any>[]): void {
+    const guards = new Map(types.flatMap(type => type.guard ? [[type.name, type.guard] as const] : []));
+    if (guards.size === this.guards.size && [...guards].every(([type, guard]) => this.guards.get(type) === guard)) return;
+    const families = [...guards.keys()].filter(isFamily);
+    inTransaction(this.db, () => {
+      this.assertOwnership();
+      this.db.run("CREATE TEMP TABLE IF NOT EXISTS guard_states (namespace TEXT, entity TEXT, state BLOB NOT NULL, PRIMARY KEY(namespace, entity))");
+      this.db.run("DELETE FROM guard_states");
+      if (guards.size === 0) return;
+      const params: SQLQueryBindings[] = [];
+      const clauses = [...guards.keys()].map(name => typeClause(name, params));
+      for (const raw of this.db.query<RecordRow, SQLQueryBindings[]>(`SELECT * FROM records WHERE ${clauses.join(" OR ")} ORDER BY seq`).iterate(...params)) {
+        const row = decode(raw);
+        const guard = this.lookupGuard(row.type, guards, families);
+        if (!guard) continue;
+        const entity = guard.key(row.data);
+        this.fold(guard, entity, this.state(guard, entity), row);
+      }
+    });
+    this.guards = guards;
+    this.families = families;
+  }
+
+  private lookupGuard(name: RecordTypeName, guards = this.guards, families = this.families) {
+    const family = guards.has(name) ? name : families.find(type => selectsType({ types: [type] }, name));
+    return family === undefined ? undefined : guards.get(family);
+  }
+
+  private state(guard: RecordGuard<any, any>, entity: string): unknown {
+    if (typeof entity !== "string" || !entity.length) throw new TypeError("guard entity key must be a non-empty string");
+    const row = this.db.query<{state: Uint8Array}, [string, string]>("SELECT state FROM guard_states WHERE namespace = ? AND entity = ?").get(guard.group, entity);
+    return row === null ? guard.initial() : deserialize(row.state);
+  }
+
+  private fold(guard: RecordGuard<any, any>, entity: string, state: unknown, row: StoredRecord): void {
+    const next = guard.fold(state, row.data, row);
+    if (next === undefined || next instanceof Promise) throw new TypeError("guard fold must return synchronous state");
+    this.db.run("INSERT OR REPLACE INTO guard_states (namespace, entity, state) VALUES (?, ?, ?)", [guard.group, entity, serialize(next)]);
   }
 
   append(rec: NewRecord): StoredRecord {
@@ -312,10 +370,21 @@ class SqliteJournal implements Journal {
   appendAll(entries: AppendEntry[]): StoredRecord[] {
     if (entries.length === 0) return [];
     this.assertOpen();
-    return inTransaction(this.db, () => {
-      // Checked inside the transaction: a takeover that happened while this transaction waited for
-      // the write lock must be seen by it, not by a check before it.
+    const result = inTransaction(this.db, () => {
       this.assertOwnership();
+      const intent = entries[0]!.record.id;
+      const prior = this.db.query<{digest: string; audit: string}, [string]>("SELECT digest, audit FROM refused_intents WHERE intent = ?");
+      for (const {record} of entries) {
+        const previous = prior.get(record.id);
+        if (!previous) continue;
+        if (previous.digest !== batchDigest(entries)) {
+          throw new IntegrityError(record.id, `refused intent "${record.id}" repeated with different content`);
+        }
+        const audit = this.get(recordId(previous.audit))!;
+        return RecordRefused.fromAudit(audit);
+      }
+      // A refused batch leaves only its decision, in this same transaction.
+      this.db.run("SAVEPOINT admission");
       const written: StoredRecord[] = [];
       for (const entry of entries) {
         const rec = entry.record;
@@ -324,21 +393,39 @@ class SqliteJournal implements Journal {
           const differing = differingFields(existing, rec);
           if (!sameLinks(this.linksOf(rec.id), entry.links)) differing.push("links");
           if (differing.length > 0) {
-            throw new IntegrityError(
-              rec.id,
-              `record "${rec.id}" already exists with different content (${differing.join(", ")})`,
-              { differing },
-            );
+            throw new IntegrityError(rec.id, `record "${rec.id}" already exists with different content (${differing.join(", ")})`, { differing });
           }
           written.push(existing);
           continue;
         }
+        const guard = this.lookupGuard(rec.type);
+        const entity = guard?.key(rec.data);
+        const state = guard && this.state(guard, entity!);
+        if (guard) {
+          const denial = guard.admit(state, rec.data);
+          if (denial !== undefined) {
+            if (typeof denial?.code !== "string" || typeof denial?.reason !== "string") throw new TypeError("guard admit must return a synchronous refusal or undefined");
+            this.db.run("ROLLBACK TO admission");
+            const id = newRecordId("refusal");
+            const audit = this.insert({
+              id, type: CORE_TYPES.recordRefused, schema: 1, stream: rec.stream, actor: rec.actor,
+              cause: rec.cause !== null && this.get(rec.cause) ? rec.cause : null,
+              root: this.get(rec.root) ? rec.root : id,
+              data: { intent, attempted: rec.id, recordType: rec.type, group: guard.group, entity, code: denial.code, reason: denial.reason },
+            }, this.clock.now());
+            this.db.run("INSERT INTO refused_intents VALUES (?, ?, ?)", [rec.id, batchDigest(entries), id]);
+            return RecordRefused.fromAudit(audit, true);
+          }
+        }
         const inserted = this.insert(rec, this.clock.now());
+        if (guard) this.fold(guard, entity!, state, inserted);
         this.writeLinks(rec.id, entry.links);
         written.push(inserted);
       }
       return written;
     });
+    if (result instanceof RecordRefused) throw result;
+    return result;
   }
 
   /**
