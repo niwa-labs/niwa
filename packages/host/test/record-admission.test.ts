@@ -226,3 +226,29 @@ test("an action's next write follows the refusal when the action handles a lost 
     expect(note).toMatchObject({cause: audit!.id, root: audit!.id});
   } finally { await host.close(); await home.cleanup(); }
 });
+
+test("guard keys see the same JSON on first write and after restart", async () => {
+  const home = await tempHome();
+  const Dates = record("admission.dates", z.object({when: z.coerce.date()}), {guard: {
+    group: "admission.dates", initial: () => 0, key: data => data.when.toISOString(),
+    admit: () => undefined, fold: count => count + 1,
+  }});
+  const normalized = record("admission.normalized", z.object({when: z.string().transform(value => value.trim())}), {guard: {
+    group: "admission.normalized", initial: () => false, key: data => data.when,
+    admit: seen => seen ? {code: "duplicate", reason: "already seen"} : undefined, fold: () => true,
+  }});
+  const provider = plugin("admission", api => api.declare(Dates, normalized));
+  let host = createNiwa({home: home.path});
+  try {
+    host.use(provider);
+    await host.serve();
+    await expect(host.emit(Dates, {when: new Date(0)})).rejects.toThrow("must preserve its data in JSON");
+    await host.emit(normalized, {when: " day "});
+    await host.close();
+    host = createNiwa({home: home.path});
+    host.use(provider);
+    await host.serve();
+    expect(await host.records.read({types: [Dates]})).toHaveLength(0);
+    await expect(host.emit(normalized, {when: "day"})).rejects.toMatchObject({code: "duplicate"});
+  } finally { await host.close(); await home.cleanup(); }
+});

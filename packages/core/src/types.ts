@@ -102,7 +102,7 @@ export interface NewRecord {
   root: RecordId;
 }
 
-/** A pure state transition. Types with the same group in a plugin share entity state. */
+/** A pure transition over JSON record data. Types with the same group in a plugin share entity state. */
 export interface RecordGuard<T, S> {
   group: string;
   key(data: T): string;

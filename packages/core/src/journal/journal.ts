@@ -15,11 +15,12 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { deserialize, serialize } from "node:v8";
 
 import { grantId } from "../grant.ts";
 import { JOURNAL_FILE, principalSchema } from "../access.ts";
-import { IntegrityError, LostOwnership, RecordRefused, WriterBusy } from "../errors.ts";
+import { IntegrityError, LostOwnership, RecordRefused, ValidationError, WriterBusy } from "../errors.ts";
 import { holds } from "../filter.ts";
 import { isFamily, selectsType } from "../record-query.ts";
 import type { ResolvedQuery } from "../record-query.ts";
@@ -399,10 +400,14 @@ class SqliteJournal implements Journal {
           continue;
         }
         const guard = this.lookupGuard(rec.type);
-        const entity = guard?.key(rec.data);
+        const data = guard ? JSON.parse(stableJson(rec.data)) : rec.data;
+        if (guard && !isDeepStrictEqual(rec.data, data)) {
+          throw new ValidationError(`guarded record "${rec.type}" must preserve its data in JSON`);
+        }
+        const entity = guard?.key(data);
         const state = guard && this.state(guard, entity!);
         if (guard) {
-          const denial = guard.admit(state, rec.data);
+          const denial = guard.admit(state, data);
           if (denial !== undefined) {
             if (typeof denial?.code !== "string" || typeof denial?.reason !== "string") throw new TypeError("guard admit must return a synchronous refusal or undefined");
             this.db.run("ROLLBACK TO admission");
