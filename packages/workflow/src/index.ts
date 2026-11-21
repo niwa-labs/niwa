@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 
 import { z } from "zod";
 
-import { AccessGranted, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, callerOf, grant, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, toJsonSchema } from "@niwa-labs/core";
+import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, keyUnder, callerOf, grant, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, toJsonSchema } from "@niwa-labs/core";
 import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -51,6 +51,7 @@ import { SessionEnded, SessionMarked, sessionInterrupt } from "@niwa-labs/sessio
 import { AskCancelled, AskExpired, bridge } from "./bridge.ts";
 import {
   workflowCancel,
+  workflowStop,
   workflowCheck,
   workflowContinue,
   workflowPause,
@@ -97,6 +98,8 @@ import {
   PhaseEntered,
   PhaseLeft,
   ScopeBranched,
+  ScopeClosed,
+  ScopeOpened,
   StepPhase,
   RunId,
   RunRequested,
@@ -499,6 +502,17 @@ export function workflow(opts: WorkflowOptions = {}) {
       input: { file: string; args: unknown; label?: string; box?: boolean } & RunOrigin,
     ): Promise<RunId> {
       const file = input.file;
+      // A child run takes the limits of its parent, and is not started deeper than they allow.
+      const limits = input.limits ?? (input.parent === undefined ? undefined : factsOf(journal(), input.parent.run)?.limits);
+      if (input.parent !== undefined && limits?.depth !== undefined) {
+        // The run that started the tree is one deep; each child is one deeper than its parent.
+        const depth = depthOf(journal(), input.parent.run) + 2;
+        if (depth > limits.depth) {
+          throw new RunRefusal("too-deep", `the run would be ${String(depth)} deep in its tree, and its limits allow ${String(limits.depth)}`);
+        }
+      }
+      // A child run takes the concurrency of its parent unless it is given its own.
+      const concurrency = input.concurrency ?? (input.parent === undefined ? undefined : factsOf(journal(), input.parent.run)?.concurrency);
       const run = runIndex.issue(ctx.operationId);
       // The script is read once: the text that is checked is the text whose hash is pinned. A
       // script that cannot be read is not refused here, the run that reads it fails as it
@@ -534,8 +548,8 @@ export function workflow(opts: WorkflowOptions = {}) {
         ...(input.version === undefined ? {} : { version: input.version }),
         ...(input.directory === undefined ? {} : { directory: input.directory }),
         ...(input.parent === undefined ? {} : { parent: input.parent }),
-        ...(input.concurrency === undefined ? {} : { concurrency: input.concurrency }),
-        ...(input.limits === undefined ? {} : { limits: input.limits }),
+        ...(concurrency === undefined ? {} : { concurrency }),
+        ...(limits === undefined ? {} : { limits }),
       });
       return run;
     }
@@ -657,26 +671,46 @@ export function workflow(opts: WorkflowOptions = {}) {
       run: async (input, ctx) => {
         const run = runOf(input.run, ctx.caller);
         mayAct(ctx.caller, ownerOfRun(journal(), run), `pause the run "${run}"`);
-        return changeControl(run, async () => {
-          const status = statusOf(journal(), run);
-          if (status.state === "running" && status.manualPause === undefined) {
-            await ctx.emit(RunPauseRequested, { run });
-          }
-          return statusOf(journal(), run);
-        });
+        await pauseTree(run, ctx);
+        return statusOf(journal(), run);
       },
     }));
+
+    /** Pause a run and the runs it started that are going, down the tree. */
+    const pauseTree = async (run: RunId, ctx: ActionContext): Promise<void> => {
+      await changeControl(run, async () => {
+        const status = statusOf(journal(), run);
+        if (status.state === "running" && status.manualPause === undefined) await ctx.emit(RunPauseRequested, { run });
+      });
+      for (const child of childrenOf(journal(), run)) {
+        if (statusOf(journal(), child).state !== "finished") await pauseTree(child, ctx);
+      }
+    };
+
+    /** Release the manual pauses of the runs a run started, down the tree. */
+    const continueChildren = async (run: RunId, ctx: ActionContext): Promise<void> => {
+      for (const child of childrenOf(journal(), run)) {
+        await changeControl(child, async () => {
+          const pause = activeManualPause(journal(), child);
+          if (pause !== undefined) await ctx.emit(RunContinued, { run: child, pause: String(pause.id) });
+        });
+        await continueChildren(child, ctx);
+      }
+    };
 
     api.action(action(workflowContinue, {
       recovery: "repeat",
       run: async (input, ctx) => {
         const run = runOf(input.run, ctx.caller);
         mayAct(ctx.caller, ownerOfRun(journal(), run), `continue the run "${run}"`);
-        return changeControl(run, async () => {
+        const released = await changeControl(run, async () => {
           const pause = activeManualPause(journal(), run);
-          if (pause?.id === input.pause) await ctx.emit(RunContinued, { run, pause: input.pause });
-          return statusOf(journal(), run);
+          if (pause?.id !== input.pause) return false;
+          await ctx.emit(RunContinued, { run, pause: input.pause });
+          return true;
         });
+        if (released) await continueChildren(run, ctx);
+        return statusOf(journal(), run);
       },
     }));
 
@@ -763,26 +797,80 @@ export function workflow(opts: WorkflowOptions = {}) {
         recovery: "do-not-repeat",
         run: async (input, ctx) => {
           const run = runOf(input.run, ctx.caller);
-          const facts = known(run);
+          known(run);
           mayAct(ctx.caller, ownerOfRun(journal(), run), `cancel the run "${run}"`);
-          // The end of the run is written first: the run of the script sees it and ends there.
-          await changeControl(run, async () => {
-            await ctx.emit(RunFinished, { run, outcome: { status: "cancelled" } });
-            const pause = activeManualPause(journal(), run);
-            if (pause !== undefined) await ctx.emit(RunContinued, { run, pause: String(pause.id) });
-          });
-          // The child process of the run is stopped: a run that was cancelled is not running
-          // any more, whatever its script was doing.
-          stopRun(run);
-          // The agents it started are not left working for nobody.
-          for (const session of sessionsOf(journal(), facts.invocations)) await ctx.step.outcome(sessionInterrupt, { session });
-          // What the run asked is not left open: the owner is not asked about a run that ended, and a
-          // session that was asked through a request is no longer waited for. The cancel is made as the
-          // address the request was put to, the one that may withdraw it.
-          for (const { id, to } of openRequestsOfInvocations(journal(), facts.invocations)) {
-            await ctx.step.outcome(requestCancel, { id, reason: "the run was cancelled", by: to });
-          }
+          await cancelTree(run, ctx);
           return { run, finished: true };
+        },
+      }),
+    );
+
+    /**
+     * End a run and the runs it started, down the tree.
+     *
+     * The end of the run is written first: the run of the script sees it and ends there. Its process
+     * is stopped, the agents it started are interrupted, and what it asked is withdrawn.
+     */
+    async function cancelTree(run: RunId, ctx: ActionContext): Promise<void> {
+      const facts = known(run);
+      if (statusOf(journal(), run).state !== "finished") {
+        await changeControl(run, async () => {
+          await ctx.emit(RunFinished, { run, outcome: { status: "cancelled" } });
+          const pause = activeManualPause(journal(), run);
+          if (pause !== undefined) await ctx.emit(RunContinued, { run, pause: String(pause.id) });
+        });
+        // The child process of the run is stopped: a run that was cancelled is not running
+        // any more, whatever its script was doing.
+        stopRun(run);
+        // The agents it started are not left working for nobody.
+        for (const session of sessionsOf(journal(), facts.invocations)) await ctx.step.outcome(sessionInterrupt, { session });
+        // What the run asked is not left open: the owner is not asked about a run that ended, and a
+        // session that was asked through a request is no longer waited for. The cancel is made as the
+        // address the request was put to, the one that may withdraw it.
+        for (const { id, to } of openRequestsOfInvocations(journal(), facts.invocations)) {
+          await ctx.step.outcome(requestCancel, { id, reason: "the run was cancelled", by: to });
+        }
+      }
+      for (const child of childrenOf(journal(), run)) await cancelTree(child, ctx);
+    }
+
+    /** The end of a child run, as a step of the run whose branch started it: the tree goes down with a cancel of the branch. */
+    const cancelChild = action("workflow.run.cancel-child", {
+      description: "End a run that a cancelled branch of its parent started, with the runs it started.",
+      input: z.object({ run: RunId }),
+      output: z.null(),
+      recovery: "repeat",
+      run: async (input, ctx) => {
+        await cancelTree(input.run, ctx);
+        return null;
+      },
+    });
+
+    api.action(
+      action(workflowStop, {
+        // The steps are cancelled once: a stop that was cut off may have cancelled them, so it is not made again.
+        recovery: "do-not-repeat",
+        run: async (input, ctx) => {
+          const run = runOf(input.run, ctx.caller);
+          known(run);
+          mayAct(ctx.caller, ownerOfRun(journal(), run), `stop the run "${run}"`);
+          if (input.at === undefined) {
+            await cancelTree(run, ctx);
+            return { run, finished: true };
+          }
+          const latest = latestInvocationOf(journal(), run);
+          if (latest === undefined || latest.state === "done") {
+            throw new RunRefusal("not-going", `the run "${run}" is not going: there is nothing of it to stop`);
+          }
+          const at = input.at;
+          // A shielded scope under what is stopped is spared, unless the stop goes through shields.
+          const except = input.force === true ? [] : openShieldsOf(journal(), run).filter((open) => open !== at && keyUnder(open, at));
+          const reason = input.reason ?? "stopped by the owner";
+          await ctx.step(CANCEL_STEPS_ACTION, { invocation: latest.invocation, prefixes: [at], ...(except.length === 0 ? {} : { except }), reason });
+          const held = heldBy(journal(), latest.invocation, [at], except);
+          for (const session of held.sessions) await ctx.step.outcome(sessionInterrupt, { session });
+          for (const child of held.children) await cancelTree(child, ctx);
+          return { run, finished: false };
         },
       }),
     );
@@ -1368,7 +1456,10 @@ export function workflow(opts: WorkflowOptions = {}) {
         recovery: "do-not-repeat",
         run: async (input: unknown, ctx: ActionContext) => {
           const current = workflowOf(registered.id);
-          const run = await requestRun(ctx, { ...registeredTarget(current), args: input });
+          // A run that calls a workflow is the parent of the run it starts: a cancel and a pause go down to it.
+          const caller = ctx.caller.kind === "client" && ctx.caller.principal?.kind === "run" ? String(ctx.caller.principal.id) : undefined;
+          const parent = caller === undefined ? undefined : { run: caller, step: String(ctx.operationId) };
+          const run = await requestRun(ctx, { ...registeredTarget(current), args: input, ...(parent === undefined ? {} : { parent }) });
           const status = await settleFully(run);
           const outcome = status.outcome;
           if (outcome?.status === "done") return outcome.result;
@@ -1465,6 +1556,8 @@ export function workflow(opts: WorkflowOptions = {}) {
         runId: run,
         ...(data.concurrency === undefined ? {} : { concurrency: data.concurrency }),
         schedule: scheduleAt,
+        cancelChild,
+        heldBy: (invocation, prefixes, except) => heldBy(journal(), invocation, prefixes, except),
         journal,
         agentAction: actionFor,
         agentName: actionNameOf,
@@ -1797,6 +1890,74 @@ function sessionsOf(journal: JournalReader, invocations: readonly string[]) {
     .filter((row) => row.actor.kind === "handler" && invocations.includes(String(row.actor.invocation)))
     .map((row) => SessionMarked.schema.parse(row.data).session)
     .filter((session) => !ended.has(session));
+}
+
+/** The runs a run started, by the parent they name. */
+function childrenOf(journal: JournalReader, run: string): RunId[] {
+  return [
+    ...new Set(
+      journal
+        .find({ type: RunRequested.name })
+        .map((row) => RunRequested.schema.parse(row.data))
+        .filter((data) => data.parent?.run === run)
+        .map((data) => data.run),
+    ),
+  ];
+}
+
+/** How deep a run is in its tree: 0 for a run no run started. */
+function depthOf(journal: JournalReader, run: string): number {
+  let depth = 0;
+  for (let at = factsOf(journal, run)?.parent?.run; at !== undefined && depth < 1_000; at = factsOf(journal, at)?.parent?.run) depth += 1;
+  return depth;
+}
+
+/** The shielded scopes of a run that are open: opened and not closed. */
+function openShieldsOf(journal: JournalReader, run: string): string[] {
+  const closed = new Set(journal.find({ type: ScopeClosed.name, field: "run", equals: run }).map((row) => ScopeClosed.schema.parse(row.data).scope));
+  return [
+    ...new Set(
+      journal
+        .find({ type: ScopeOpened.name, field: "run", equals: run })
+        .map((row) => ScopeOpened.schema.parse(row.data))
+        .filter((opened) => opened.shield === true && !closed.has(opened.scope))
+        .map((opened) => opened.scope),
+    ),
+  ];
+}
+
+/**
+ * The sessions and the child runs that steps of an invocation under the prefixes started, and that
+ * are still going: what a cancel of those steps interrupts and ends with them.
+ */
+function heldBy(journal: JournalReader, invocation: string, prefixes: readonly string[], except: readonly string[]): { sessions: Array<z.infer<typeof SessionMarked.schema>["session"]>; children: RunId[] } {
+  const held = (key: string): boolean => prefixes.some((prefix) => keyUnder(key, prefix)) && !except.some((spared) => keyUnder(key, spared));
+  // An operation is `<invocation>/<key>`, with `#<n>` for a later attempt.
+  const keyOf = (operation: string): string | undefined =>
+    operation.startsWith(`${invocation}/`) ? operation.slice(invocation.length + 1).replace(/#\d+$/, "") : undefined;
+  const ended = new Set(journal.find({ type: SessionEnded.name }).map((row) => SessionEnded.schema.parse(row.data).session));
+  const sessions = journal
+    .find({ type: SessionMarked.name })
+    .filter((row) => {
+      const id = String(row.id);
+      const key = keyOf(id.slice(0, id.lastIndexOf("/emit/")));
+      return key !== undefined && held(key);
+    })
+    .map((row) => SessionMarked.schema.parse(row.data).session)
+    .filter((session) => !ended.has(session));
+  const children = [
+    ...new Set(
+      journal
+        .find({ type: RunRequested.name })
+        .map((row) => RunRequested.schema.parse(row.data))
+        .filter((data) => {
+          const key = data.parent === undefined ? undefined : keyOf(data.parent.step);
+          return key !== undefined && held(key) && statusOf(journal, data.run).state !== "finished";
+        })
+        .map((data) => data.run),
+    ),
+  ];
+  return { sessions: [...new Set(sessions)], children };
 }
 
 /**

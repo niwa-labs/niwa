@@ -47,7 +47,7 @@ export const StartInput = z.object({
   directory: z.string().regex(ABSOLUTE_PATH, "a directory is an absolute path").optional(),
   /** The most branches each scope of the run runs at once; a scope's own lower limit holds. Default: no limit from outside. */
   concurrency: z.number().int().positive().optional(),
-  /** The limits of the run: `depth`, how deep the runs it starts (and theirs) may go below it. Its child runs take them. */
+  /** The limits of the run: `depth`, how many runs deep its tree may go, the run itself being one. Its child runs take them. */
   limits: z.object({ depth: z.number().int().positive().optional() }).optional(),
   /** Answer when the run finishes or pauses, or when `timeoutMs` has passed, as `workflow.wait` does. Default: answer at once. */
   wait: z.boolean().optional(),
@@ -167,6 +167,23 @@ export const workflowRevise = actionRef("workflow.revise", {
   description: "Resume an edited workflow script: unchanged calls reuse their results, new calls run, and a changed input under an old key is shown and nothing runs.",
   input: ReviseInput,
   output: ReviseOutput,
+});
+
+/** What a stop names: the run, and a branch, scope or step of it by its key prefix; with none, the whole run. */
+export const StopInput = RunInput.extend({
+  /** The key prefix of what is stopped: a scope (`@review`), a branch of it (`@review.a`), or a step. Absent: the whole run. */
+  at: z.string().min(1).optional(),
+  /** Stop through the shields under it as well: their blocks are not waited for. */
+  force: z.boolean().optional(),
+  /** Why it is stopped, which the cancelled steps keep. Default: stopped by the owner. */
+  reason: z.string().min(1).optional(),
+});
+
+export const workflowStop = actionRef("workflow.stop", {
+  description:
+    "Stop a branch, a scope or a step of a run by its key prefix: its steps end as cancelled, its sessions are interrupted and its child runs cancelled, and the rest of the run goes on. A shielded scope under it is spared unless force is set. Without at it stops the whole run with its child runs. For whoever started the run, and the owner.",
+  input: StopInput,
+  output: RunOutput,
 });
 
 export const workflowCancel = actionRef("workflow.cancel", {

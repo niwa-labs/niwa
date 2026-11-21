@@ -53,7 +53,7 @@ const RunOrigin = {
   parent: z.object({ run: z.string(), step: z.string() }).optional(),
   /** The most branches each group of the run runs at once, set from outside; the script's own limit holds when it is lower. */
   concurrency: z.number().int().positive().optional(),
-  /** The limits of the run: how deep its tree of runs may go below it. A child run takes the limits of its parent. */
+  /** The limits of the run: how many runs deep its tree may go, the run that started it being one. A child run takes them. */
   limits: z.object({ depth: z.number().int().positive().optional() }).optional(),
 };
 

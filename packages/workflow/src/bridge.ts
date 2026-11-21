@@ -13,6 +13,8 @@ import type { Action, ActionTarget, AuthorizeHow, JournalReader, Principal, Reco
 import { owner } from "@niwa-labs/core";
 import { AskAnswered, answeredBy, QuestionName, RequestCancelled, RequestExpired, requestAsk } from "@niwa-labs/requests/records";
 import { TimerSlept, sleepKey, timerSleepRequest } from "@niwa-labs/timer/records";
+import { sessionInterrupt } from "@niwa-labs/sessions/records";
+import type { SessionMarked } from "@niwa-labs/sessions/records";
 import { z } from "zod";
 
 import { valueOf } from "./ask.ts";
@@ -39,6 +41,14 @@ export interface BridgeDeps {
   concurrency?: number;
   /** Run `fn` when the clock of the host reaches `at`; the function returned forgets it. */
   schedule(at: number, fn: () => void): () => void;
+  /** The step that ends a child run of a cancelled branch, with the runs below it. */
+  cancelChild: Action<{ run: RunId }, null, { run: string }>;
+  /** The sessions and the child runs that steps of the invocation under the prefixes started, and that are going. */
+  heldBy(
+    invocation: string,
+    prefixes: readonly string[],
+    except: readonly string[],
+  ): { sessions: Array<z.infer<typeof SessionMarked.schema>["session"]>; children: RunId[] };
   /** The journal, when the host is serving. */
   journal(): JournalReader;
   /** The action an agent call of that harness goes to. */
@@ -480,6 +490,11 @@ export function bridge(deps: BridgeDeps): Bridge {
         await guarded(() =>
           step(CANCEL_STEPS_ACTION, { invocation, prefixes: request.prefixes, ...(except.length === 0 ? {} : { except }), reason: request.reason }, { key }),
         );
+        // The agents the branches started are interrupted, and the runs they started are ended. Each is a step
+        // keyed by what it ends, so a replay meets the ones that are still going under the same keys.
+        const held = deps.heldBy(invocation, request.prefixes, except);
+        for (const session of held.sessions) await step.outcome(sessionInterrupt, { session }, { key: `${key}~interrupt:${String(session)}` });
+        for (const child of held.children) await guarded(() => step(deps.cancelChild, { run: child }, { key: `${key}~child:${child}` }));
         return null;
       }
       case "scope-snapshot":
