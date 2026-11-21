@@ -7,8 +7,8 @@
 
 import { existsSync } from "node:fs";
 
-import { KIND_OPTIONS, defineHarnessKind, harnessId } from "@niwa-labs/harness";
-import type { HarnessDetection, SideCapabilities } from "@niwa-labs/harness";
+import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import type { HarnessDetection, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { MCODE_LAUNCH, mcodeControl } from "./control.ts";
 import type { McodeControlOptions, MinimaxLineage } from "./control.ts";
@@ -37,6 +37,28 @@ export function minimaxSides(): SideCapabilities {
       structuredOutput: true,
       launch: MCODE_LAUNCH,
     },
+  };
+}
+
+/**
+ * What the two kinds declare they can serve. The upstream build is proved against a live
+ * MiniMax Code; of the fork, only a start with a permission answered is proved live, and the rest
+ * is taken from the code it shares with the upstream build.
+ */
+export function minimaxCapabilities(lineage: MinimaxLineage): KindCapabilities {
+  const proved = lineage === "upstream" ? VERIFIED : ADMITTED;
+  return {
+    reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
+    control: {
+      start: VERIFIED,
+      resume: proved,
+      send: proved,
+      interrupt: proved,
+      ask: proved,
+      structuredOutput: proved,
+      launch: { model: proved, effort: MCODE_LAUNCH.effort, modes: MCODE_LAUNCH.modes },
+    },
+    insert: NO_INSERT,
   };
 }
 
@@ -78,6 +100,7 @@ export function minimaxKind(spec: MinimaxKindSpec, options: McodeKindOptions) {
       ...profileOf(options, spec.lineage),
       lineage: spec.lineage,
     }),
+    capabilities: minimaxCapabilities(spec.lineage),
     detect: spec.detect,
     options: KIND_OPTIONS[spec.name],
   });

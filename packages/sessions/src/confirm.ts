@@ -24,8 +24,15 @@ import {
   HarnessKindSchema,
   HarnessProposalSchema,
   MachineIdSchema,
+  admitInstance,
 } from "@niwa-labs/harness";
-import type { Harness, HarnessInstanceRegistry, HarnessProposal, SideCapabilities } from "@niwa-labs/harness";
+import type {
+  Harness,
+  HarnessInstanceRegistry,
+  HarnessKindRegistry,
+  HarnessProposal,
+  SideCapabilities,
+} from "@niwa-labs/harness";
 
 import { HarnessProposed } from "./discover.ts";
 
@@ -107,16 +114,23 @@ export interface HarnessConfirmOptions {
    * of them can do. A kind that is not named has no sides.
    */
   readonly sides?: Readonly<Record<string, SideCapabilities>>;
+  /**
+   * The kinds, when they are known: a confirmed installation may claim no more than its kind
+   * declares, so sides that would widen the declaration are refused instead of registered.
+   */
+  readonly kinds?: HarnessKindRegistry;
 }
 
 /** The plugin that asks the owner about a proposal and registers what the owner confirms. */
 export function harnessConfirm(options: HarnessConfirmOptions): Plugin {
   const registry = options.registry;
   const sides = options.sides ?? {};
-  const instanceOf = (confirmed: ConfirmedInstallation): Harness => ({
-    ...confirmed,
-    sides: sides[String(confirmed.kind)] ?? {},
-  });
+  const instanceOf = (confirmed: ConfirmedInstallation): Harness => {
+    const instance = { ...confirmed, sides: sides[String(confirmed.kind)] ?? {} };
+    const kind = options.kinds?.get(instance.kind);
+    if (kind !== undefined) admitInstance(instance, kind);
+    return instance;
+  };
   return plugin("harness-confirm", (api) => {
     api.declare(HarnessConfirmed);
 

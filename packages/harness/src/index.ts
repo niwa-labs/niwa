@@ -5,41 +5,72 @@
 
 import type { Harness, HarnessId, HarnessKind } from "./instance.ts";
 import { harnessKind } from "./instance.ts";
-import type { HarnessSide } from "./capabilities.ts";
 import type { HarnessInsert } from "./insert.ts";
 import type { SessionControl } from "./control.ts";
 import type { SessionReading } from "./reading.ts";
 import type { HarnessDetection } from "./discover.ts";
 import type { KindOptions } from "./options.ts";
+import { KindCapabilitiesSchema, excessOf, narrowSides, sidesOf } from "./declaration.ts";
+import type { KindCapabilities } from "./declaration.ts";
 
-/** A harness kind: a name and the sides its code implements. A side may be absent. */
+/**
+ * A harness kind: a name, the sides its code implements, and what it declares those sides can
+ * serve. A side may be absent; its abilities are then all declared unsupported.
+ */
 export interface HarnessKindDefinition {
   readonly kind: HarnessKind;
   readonly reading?: SessionReading;
   readonly control?: SessionControl;
   readonly insert?: HarnessInsert;
+  /** Every ability of every side, supported or not; an installation may claim no more. */
+  readonly capabilities: KindCapabilities;
   /** How an installation of this kind is found on a machine. */
   readonly detect?: HarnessDetection;
   /** The options block a session of this kind takes at its start: its name and its schema. */
   readonly options?: KindOptions;
 }
 
+/** Which sides a kind has code for. */
+function implementedOf(kind: { reading?: unknown; control?: unknown; insert?: unknown }) {
+  return { reading: kind.reading !== undefined, control: kind.control !== undefined, insert: kind.insert !== undefined };
+}
+
+/**
+ * A kind, once its declaration is whole and within its code: a declaration that leaves out an
+ * ability, or supports one on a side the kind has no code for, does not register.
+ */
 export function defineHarnessKind(spec: {
   name: string;
   reading?: SessionReading;
   control?: SessionControl;
   insert?: HarnessInsert;
+  capabilities: KindCapabilities;
   detect?: HarnessDetection;
   options?: KindOptions;
 }): HarnessKindDefinition {
+  const kind = harnessKind(spec.name);
+  const capabilities = KindCapabilitiesSchema.parse(spec.capabilities);
+  const beyond = excessOf(sidesOf(capabilities), capabilities, implementedOf(spec)).filter((line) => line.includes("has no"));
+  if (beyond.length > 0) {
+    throw new Error(`harness kind "${kind}" declares abilities of sides it has no code for: ${beyond.join(", ")}`);
+  }
   return {
-    kind: harnessKind(spec.name),
+    kind,
     reading: spec.reading,
     control: spec.control,
     insert: spec.insert,
+    capabilities,
     detect: spec.detect,
     options: spec.options,
   };
+}
+
+/**
+ * Refuse an installation that claims what its kind cannot serve: a side without code, an ability
+ * the kind does not support, a model choice, an effort level or a working mode it does not declare.
+ */
+export function admitInstance(instance: Harness, kind: HarnessKindDefinition): void {
+  narrowSides(instance.id, kind.kind, kind.capabilities, instance.sides, implementedOf(kind));
 }
 
 /** The registry of kinds. A name is taken once. */
@@ -116,12 +147,6 @@ export class HarnessInstanceRegistry {
   }
 }
 
-/** The sides an instance claims but its kind does not implement; empty when consistent. */
-export function sideMismatch(instance: Harness, kind: HarnessKindDefinition): HarnessSide[] {
-  const sides: HarnessSide[] = ["reading", "control", "insert"];
-  return sides.filter((side) => instance.sides[side] !== undefined && kind[side] === undefined);
-}
-
 export {
   HarnessBinarySchema,
   HarnessIdSchema,
@@ -167,6 +192,22 @@ export type {
   SideAbilities,
   SideCapabilities,
 } from "./capabilities.ts";
+
+export {
+  ADMITTED,
+  CapabilityExceeded,
+  KindCapabilitiesSchema,
+  NO_CONTROL,
+  NO_INSERT,
+  NO_READING,
+  SupportSchema,
+  UNSUPPORTED,
+  VERIFIED,
+  excessOf,
+  narrowSides,
+  sidesOf,
+} from "./declaration.ts";
+export type { KindCapabilities, Support } from "./declaration.ts";
 
 export {
   ClaudeOptions,

@@ -18,7 +18,11 @@ import {
   harnessKind,
   machineId,
   sessionId,
+  NO_INSERT,
+  NO_READING,
+  UNSUPPORTED,
 } from "@niwa-labs/harness";
+import { CLAUDE_CODE_CAPABILITIES } from "@niwa-labs/harness-claude";
 import type {
   AskAnswer,
   AskOptions,
@@ -233,7 +237,14 @@ test("a resume of a session that was started with no options gives none", async 
 test("a kind registry carries the options each kind declares to the sessions plugin", async () => {
   const control = new RecordingControl();
   const kinds = new HarnessKindRegistry();
-  kinds.register(defineHarnessKind({ name: "claude-code", control, options: KIND_OPTIONS.claude }));
+  kinds.register(
+    defineHarnessKind({
+      name: "claude-code",
+      control,
+      capabilities: { ...CLAUDE_CODE_CAPABILITIES, reading: NO_READING, insert: NO_INSERT },
+      options: KIND_OPTIONS.claude,
+    }),
+  );
   const harnesses = new HarnessInstanceRegistry();
   harnesses.register(installation("claude-code"));
   const { niwa } = await serve({ harnesses, kinds });
@@ -282,4 +293,24 @@ test("every kind niwa serves declares the block named after it", () => {
     zcode().options?.block,
   ];
   expect(blocks).toEqual(["claude", "claude", "codex", "mcode", "ncode", "pi", "zcode"]);
+});
+
+test("an installation that claims more than its kind declares is refused before the plugin serves", async () => {
+  const kinds = new HarnessKindRegistry();
+  kinds.register(
+    defineHarnessKind({
+      name: "claude-code",
+      control: new RecordingControl(),
+      capabilities: {
+        ...CLAUDE_CODE_CAPABILITIES,
+        reading: NO_READING,
+        insert: NO_INSERT,
+        control: { ...CLAUDE_CODE_CAPABILITIES.control, structuredOutput: UNSUPPORTED },
+      },
+      options: KIND_OPTIONS.claude,
+    }),
+  );
+  const harnesses = new HarnessInstanceRegistry();
+  harnesses.register(installation("claude-code", true));
+  await expect(serve({ harnesses, kinds })).rejects.toThrow(/control\.structuredOutput/);
 });

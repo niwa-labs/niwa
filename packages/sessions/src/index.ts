@@ -58,6 +58,7 @@ import {
   DeliveryReceiptSchema,
   HarnessInstanceRegistry,
   HarnessKindRegistry,
+  admitInstance,
   blocksOf,
   requireAbility,
   requireLaunch,
@@ -1202,11 +1203,12 @@ function manifestRecord(made: BoxRecord, mark: string): BoxManifest {
  */
 function resolveBindings(options: SessionsOptions): HarnessBinding[] {
   const { harnesses, kinds } = options;
-  const sidesOf = (instance: Harness) => ({
-    reading: kinds?.get(instance.kind)?.reading,
-    control: kinds?.get(instance.kind)?.control,
-    options: kinds?.get(instance.kind)?.options,
-  });
+  const sidesOf = (instance: Harness) => {
+    const kind = kinds?.get(instance.kind);
+    // An installation that claims what its kind cannot serve is refused here, before any call.
+    if (kind !== undefined) admitInstance(instance, kind);
+    return { reading: kind?.reading, control: kind?.control, options: kind?.options };
+  };
   if (harnesses instanceof HarnessInstanceRegistry) {
     return harnesses.ids().map((id) => {
       const instance = harnesses.resolve(id);
@@ -1214,12 +1216,15 @@ function resolveBindings(options: SessionsOptions): HarnessBinding[] {
       return { instance, ...sidesOf(instance) };
     });
   }
-  return (harnesses ?? []).map((binding) => ({
-    instance: binding.instance,
-    reading: binding.reading ?? sidesOf(binding.instance).reading,
-    control: binding.control ?? sidesOf(binding.instance).control,
-    options: binding.options ?? sidesOf(binding.instance).options,
-  }));
+  return (harnesses ?? []).map((binding) => {
+    const ofKind = sidesOf(binding.instance);
+    return {
+      instance: binding.instance,
+      reading: binding.reading ?? ofKind.reading,
+      control: binding.control ?? ofKind.control,
+      options: binding.options ?? ofKind.options,
+    };
+  });
 }
 
 /** The options block the kind of a harness takes, when it declares one. */

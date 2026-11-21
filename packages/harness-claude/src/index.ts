@@ -1,4 +1,5 @@
 export {
+  CLAUDE_CODE_CAPABILITIES,
   ClaudeCodeReading,
   claudeCode,
   claudeCodeControl,
@@ -32,6 +33,7 @@ export {
 
 export { CLAUDE_SDK_LAUNCH } from "./sdk/control.ts";
 export {
+  CLAUDE_SDK_CAPABILITIES,
   ClaudeSdkControl,
   MessageStream,
   claudeSdkKind,

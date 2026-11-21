@@ -9,8 +9,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { KIND_OPTIONS, defineHarnessKind, harnessId } from "@niwa-labs/harness";
-import type { SideCapabilities } from "@niwa-labs/harness";
+import { KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import type { KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { ZCODE_LAUNCH, zcodeControl } from "./control.ts";
 import type { ZcodeControlOptions } from "./control.ts";
@@ -43,6 +43,21 @@ export const zcodeSides: SideCapabilities = {
   },
 };
 
+/** What the kind declares it can serve, proved against a live ZCode. */
+export const ZCODE_CAPABILITIES: KindCapabilities = {
+  reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
+  control: {
+    start: VERIFIED,
+    resume: VERIFIED,
+    send: VERIFIED,
+    interrupt: VERIFIED,
+    ask: VERIFIED,
+    structuredOutput: VERIFIED,
+    launch: { model: VERIFIED, effort: ZCODE_LAUNCH.effort, modes: ZCODE_LAUNCH.modes },
+  },
+  insert: NO_INSERT,
+};
+
 /** What the kind needs: the installation, and how its control side is set up. */
 export interface ZcodeKindOptions extends ZcodeReadingOptions {
   /**
@@ -62,6 +77,7 @@ export function zcodeKind(options: ZcodeKindOptions) {
     name: "zcode",
     reading: new ZcodeReading(options),
     control: zcodeControl({ harness: options.harness, home: options.home, ...(options.control ?? {}) }),
+    capabilities: ZCODE_CAPABILITIES,
     detect: ZCODE_DETECTION,
     options: KIND_OPTIONS.zcode,
   });

@@ -10,8 +10,8 @@
  * insert/; this file names the kind and says where pi's sessions are.
  */
 
-import { KIND_OPTIONS, defineHarnessKind } from "@niwa-labs/harness";
-import type { HarnessKindDefinition, SideCapabilities } from "@niwa-labs/harness";
+import { KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@niwa-labs/harness";
+import type { HarnessKindDefinition, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { PiInsert } from "./insert/index.ts";
 import type { InsertReporter } from "./insert/index.ts";
@@ -43,6 +43,24 @@ export const piSides: SideCapabilities = {
     structuredOutput: false,
     launch: PI_LAUNCH,
   },
+};
+
+/**
+ * What the kind declares it can serve, proved against a live pi. pi asks its questions through
+ * its own extension protocol, so it cannot be asked from here.
+ */
+export const PI_CAPABILITIES: KindCapabilities = {
+  reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
+  control: {
+    start: VERIFIED,
+    resume: VERIFIED,
+    send: VERIFIED,
+    interrupt: VERIFIED,
+    ask: UNSUPPORTED,
+    structuredOutput: UNSUPPORTED,
+    launch: { model: VERIFIED, effort: PI_LAUNCH.effort, modes: PI_LAUNCH.modes },
+  },
+  insert: { nested: UNSUPPORTED, compaction: VERIFIED, manualOpen: VERIFIED, permission: VERIFIED },
 };
 
 /** What the kind needs: the installation that is read, and how its sides are set up. */
@@ -85,6 +103,8 @@ export function pi(options: PiKindOptions): HarnessKindDefinition {
       : {
           insert: new PiInsert({ report: reporter, owned: options.insert?.owned }),
         }),
+    // Without a reporter the kind has no insert side, and declares none.
+    capabilities: reporter === undefined ? { ...PI_CAPABILITIES, insert: NO_INSERT } : PI_CAPABILITIES,
     detect: PI_DETECTION,
     options: KIND_OPTIONS.pi,
   });

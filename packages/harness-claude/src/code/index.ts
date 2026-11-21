@@ -10,8 +10,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { KIND_OPTIONS, defineHarnessKind, harnessId } from "@niwa-labs/harness";
-import type { HarnessId, SideCapabilities } from "@niwa-labs/harness";
+import { ADMITTED, KIND_OPTIONS, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CLAUDE_CODE_ADAPTER, claudeCodeControl } from "./control.ts";
 import { CLAUDE_CODE_LAUNCH } from "./launch.ts";
@@ -52,6 +52,24 @@ export const claudeCodeSides: SideCapabilities = {
   },
 };
 
+/**
+ * What the kind declares it can serve. The control side and the reading side are proved against
+ * a live Claude Code; the insert side's hooks are taken from Claude Code's hook documentation.
+ */
+export const CLAUDE_CODE_CAPABILITIES: KindCapabilities = {
+  reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
+  control: {
+    start: VERIFIED,
+    resume: VERIFIED,
+    send: VERIFIED,
+    interrupt: VERIFIED,
+    ask: VERIFIED,
+    structuredOutput: VERIFIED,
+    launch: { model: VERIFIED, effort: CLAUDE_CODE_LAUNCH.effort, modes: CLAUDE_CODE_LAUNCH.modes },
+  },
+  insert: { nested: ADMITTED, compaction: ADMITTED, manualOpen: ADMITTED, permission: ADMITTED },
+};
+
 /** What the kind needs: the installation, and how its control side is set up. */
 export interface ClaudeCodeKindOptions extends ClaudeCodeReadingOptions {
   /**
@@ -78,6 +96,7 @@ export function claudeCodeKind(options: ClaudeCodeKindOptions) {
         await installClaudeCodeInsert(join(options.home, "plugins"), { home: opts.home, ...(opts.cli === undefined ? {} : { cli: opts.cli }) });
       },
     },
+    capabilities: CLAUDE_CODE_CAPABILITIES,
     detect: CLAUDE_CODE_DETECTION,
     options: KIND_OPTIONS.claude,
   });

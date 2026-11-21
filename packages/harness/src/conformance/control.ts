@@ -19,16 +19,20 @@ import { requireAbility, supports, Unavailable } from "../capabilities.ts";
 import type { ControlCapabilities } from "../capabilities.ts";
 import { DeliveryReceiptSchema, LifeEventSchema, promptFromText } from "../control.ts";
 import type { LifeEvent, SessionControl } from "../control.ts";
+import { excessOf } from "../declaration.ts";
+import type { KindCapabilities } from "../declaration.ts";
 import type { Harness } from "../instance.ts";
 import type { SessionId } from "../reading.ts";
 
 import { attempt, collector } from "./reading.ts";
 import type { ConformanceReport } from "./reading.ts";
 
-/** The control side under test, and the installation that declares it. */
+/** The control side under test, the installation that declares it, and what its kind declares. */
 export interface ControlConformanceSides {
   readonly instance: Harness;
   readonly control: SessionControl;
+  /** What the kind declares it can serve; the installation is checked against it when given. */
+  readonly declared?: KindCapabilities;
 }
 
 /**
@@ -40,10 +44,20 @@ const TURN_DEADLINE_MS = 120_000;
 
 export function controlConformance(
   kind: string,
-  { instance, control }: ControlConformanceSides,
+  { instance, control, declared }: ControlConformanceSides,
 ): () => Promise<ConformanceReport> {
   return async () => {
     const { check, report } = collector(kind);
+    if (declared !== undefined) {
+      // The installation is bounded by its kind: an ability, a model choice, an effort level or
+      // a mode its kind does not declare is a promise nobody can keep.
+      const excess = excessOf(instance.sides, declared, {
+        reading: instance.sides.reading !== undefined,
+        control: true,
+        insert: instance.sides.insert !== undefined,
+      });
+      check("capabilities: the installation claims no more than the kind declares", excess.length === 0, excess.join(", "));
+    }
     if (!supports(instance, "control", "start")) {
       check("the side declares it can start", false, "control.start is not declared");
       return report();

@@ -7,8 +7,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { KIND_OPTIONS, defineHarnessKind, harnessId } from "@niwa-labs/harness";
-import type { HarnessId, SideCapabilities } from "@niwa-labs/harness";
+import { KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { ClaudeCodeReading } from "../code/reading.ts";
 import { CLAUDE_SDK_LAUNCH, ClaudeSdkControl } from "./control.ts";
@@ -44,6 +44,21 @@ export const claudeSdkSides: SideCapabilities = {
     structuredOutput: true,
     launch: CLAUDE_SDK_LAUNCH,
   },
+};
+
+/** What the kind declares it can serve, proved against a live Claude Agent SDK. */
+export const CLAUDE_SDK_CAPABILITIES: KindCapabilities = {
+  reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
+  control: {
+    start: VERIFIED,
+    resume: VERIFIED,
+    send: VERIFIED,
+    interrupt: VERIFIED,
+    ask: VERIFIED,
+    structuredOutput: VERIFIED,
+    launch: { model: VERIFIED, effort: CLAUDE_SDK_LAUNCH.effort, modes: CLAUDE_SDK_LAUNCH.modes },
+  },
+  insert: NO_INSERT,
 };
 
 /** What the kind needs. */
@@ -82,6 +97,7 @@ export function claudeSdkKind(options: ClaudeSdkOptions = {}) {
       ...(options.permissions === undefined ? {} : { permissions: options.permissions }),
       ...(options.claude === undefined ? {} : { claude: options.claude }),
     }),
+    capabilities: CLAUDE_SDK_CAPABILITIES,
     detect: CLAUDE_SDK_DETECTION,
     options: KIND_OPTIONS.claude,
   });

@@ -8,8 +8,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { KIND_OPTIONS, defineHarnessKind, harnessId } from "@niwa-labs/harness";
-import type { HarnessId, SideCapabilities } from "@niwa-labs/harness";
+import { KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CODEX_LAUNCH, codexControl } from "./control.ts";
 import type { CodexControlOptions } from "./control.ts";
@@ -41,6 +41,21 @@ export const codexSides: SideCapabilities = {
   },
 };
 
+/** What the kind declares it can serve, proved against a live Codex. */
+export const CODEX_CAPABILITIES: KindCapabilities = {
+  reading: { list: VERIFIED, read: VERIFIED, watch: UNSUPPORTED },
+  control: {
+    start: VERIFIED,
+    resume: VERIFIED,
+    send: VERIFIED,
+    interrupt: VERIFIED,
+    ask: VERIFIED,
+    structuredOutput: VERIFIED,
+    launch: { model: VERIFIED, effort: CODEX_LAUNCH.effort, modes: CODEX_LAUNCH.modes },
+  },
+  insert: NO_INSERT,
+};
+
 /** What the kind needs: the installation, and how its control side is set up. */
 export interface CodexKindOptions extends CodexReadingOptions {
   /**
@@ -59,6 +74,7 @@ export function codexKind(options: CodexKindOptions) {
     name: "codex",
     reading: new CodexReading(options),
     control: codexControl({ harness: options.harness, ...(options.control ?? {}) }),
+    capabilities: CODEX_CAPABILITIES,
     detect: CODEX_DETECTION,
     options: KIND_OPTIONS.codex,
   });

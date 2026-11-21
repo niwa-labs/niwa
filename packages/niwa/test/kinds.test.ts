@@ -26,8 +26,8 @@ import {
   machineId,
   promptFromText,
   readingConformance,
+  admitInstance,
   requireAbility,
-  sideMismatch,
 } from "@niwa-labs/harness";
 import type {
   ControlCapabilities,
@@ -104,8 +104,8 @@ function checkSides(
   }
 
   const instance = installation(kind.kind, control, HARNESS, "/tmp/niwa-kinds", insert !== undefined);
-  // The side the installation claims is the side the kind has.
-  expect(sideMismatch(instance, kind)).toEqual([]);
+  // The sides the installation claims are within what the kind declares and has code for.
+  expect(() => admitInstance(instance, kind)).not.toThrow();
 
   const reading = kind.reading;
   if (reading === undefined) return;
@@ -382,6 +382,7 @@ test("the control side of the claude-code kind passes the conformance suite", as
     const report = await controlConformance("claude-code", {
       instance: installation(kind.kind, controlOf(claudeCodeSides), HARNESS, fake.dir),
       control,
+      declared: kind.capabilities,
     })();
     const failed = report.results.filter((result) => !result.passed);
     expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
@@ -405,6 +406,7 @@ test("the control side of the codex kind passes the conformance suite", async ()
     const report = await controlConformance("codex", {
       instance: installation(kind.kind, controlOf(codexSides), HARNESS, fake.dir),
       control,
+      declared: kind.capabilities,
     })();
     const failed = report.results.filter((result) => !result.passed);
     expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
@@ -428,6 +430,7 @@ test("the control side of the pi kind passes the conformance suite", async () =>
     const report = await controlConformance("pi", {
       instance: installation(kind.kind, controlOf(piSides), HARNESS, fake.dir),
       control,
+      declared: kind.capabilities,
     })();
     const failed = report.results.filter((result) => !result.passed);
     expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
@@ -583,6 +586,7 @@ for (const [name, make, sides] of [
       const report = await controlConformance(name, {
         instance: installation(kind.kind, controlOf(sides), HARNESS, fake.dir),
         control,
+        declared: kind.capabilities,
       })();
       const failed = report.results.filter((result) => !result.passed);
       expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
