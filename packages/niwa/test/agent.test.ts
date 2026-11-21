@@ -10,6 +10,8 @@ import type { ActionName, StoredRecord } from "@niwa-labs/core";
 import { connectAsOwner } from "@niwa-labs/testing";
 import { partVersions, AgentDefinition, turnText } from "@niwa-labs/agent";
 
+import { Unsupported, harnessId } from "@niwa-labs/harness";
+
 import { HARNESS, ScriptedControl, agentHost, dataOf, until } from "./fixtures/agent-host.ts";
 import type { AgentHost } from "./fixtures/agent-host.ts";
 
@@ -215,4 +217,25 @@ test("a session the host seemed to hold whose process is gone is resumed, and th
   expect(dataOf(records, "agent.turn.failed")).toEqual([]);
   expect(host.control.resumes).toHaveLength(1);
   expect(host.control.sends.map((one) => one.message)).toEqual([turnText({ kind: "message", author: { kind: "owner" }, text: "two" })]);
+});
+
+test("a start its harness refused by name fails the turn as unsent, and one that broke after it went as possibly sent", async () => {
+  const refused = new (class extends ScriptedControl {
+    override async start(): Promise<never> {
+      throw new Unsupported(harnessId(HARNESS), "control", "start", "not on this machine");
+    }
+  })();
+  const host = await served({ agents: [RIN] }, { control: refused });
+  await asOwner(host, "agent.tell", { agent: "rin", text: "Start." });
+  const records = await until(host.records, "agent.turn.failed");
+  expect(dataOf(records, "agent.turn.failed")).toEqual([expect.objectContaining({ agent: "rin", status: "unsent" })]);
+
+  const broke = new (class extends ScriptedControl {
+    override async start(): Promise<never> {
+      throw new Error("the connection closed after the prompt was written");
+    }
+  })();
+  const other = await served({ agents: [RIN] }, { control: broke });
+  await asOwner(other, "agent.tell", { agent: "rin", text: "Start." });
+  expect(dataOf(await until(other.records, "agent.turn.failed"), "agent.turn.failed")).toEqual([expect.objectContaining({ status: "possibly-sent" })]);
 });

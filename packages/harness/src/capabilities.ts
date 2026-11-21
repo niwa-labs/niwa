@@ -9,6 +9,7 @@
  * return an empty list.
  */
 
+import { NotSent } from "@niwa-labs/core";
 import { z } from "zod";
 
 import type { Harness } from "./instance.ts";
@@ -111,10 +112,10 @@ export interface SideAbilities {
   insert: keyof InsertCapabilities;
 }
 
-/** The ability is not declared for that side. */
-export class Unsupported extends Error {
+/** The ability is not declared for that side. Refused by name, before anything is sent. */
+export class Unsupported extends NotSent {
   override name = "Unsupported";
-  readonly code = "Unsupported";
+  override readonly code = "Unsupported";
 
   constructor(
     readonly harness: Harness["id"],
