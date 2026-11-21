@@ -9,7 +9,7 @@ import { SessionStarted, SessionTurnStarted } from "@niwa-labs/sessions/records"
 import { SleepRequested, clockOf } from "@niwa-labs/timer/records";
 import { z } from "zod";
 
-import { WAIT } from "./bridge.ts";
+import { WAIT_NAME } from "./bridge.ts";
 import { RunRequested, RunStarted } from "./records.ts";
 
 const Intent = z.object({ action: z.string(), key: z.string(), input: z.unknown().optional() });
@@ -45,7 +45,7 @@ export function waitingFor(journal: JournalReader, run: string, requests: readon
     const turn = journal.find({ type: SessionTurnStarted.name, field: "session", equals: started.session }).at(-1);
     return `agent ${harness} session ${started.id}${turn === undefined ? "" : ` turn ${String(SessionTurnStarted.schema.parse(turn.data).turn)}`}`;
   }
-  if (action === WAIT_ACTION || action === WAIT.name) {
+  if (action === WAIT_ACTION || action === WAIT_NAME) {
     if (given.type === "timer.slept") {
       const sleeping = journal.find({ type: SleepRequested.name, field: "key", equals: `${invocation}:${key}` }).at(-1);
       const until = sleeping === undefined ? "" : ` until ${clockOf(SleepRequested.schema.parse(sleeping.data).at)}`;

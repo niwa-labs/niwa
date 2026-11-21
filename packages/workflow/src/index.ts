@@ -1859,6 +1859,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         agentAction: actionFor,
         agentName: actionNameOf,
         emits: emitTypesOf(described),
+        recordType: (name) => emits.get(name) ?? api.recordType(name),
         earlier,
         ...(data.from === undefined ? {} : { from: data.from }),
         emitted: (key) => {

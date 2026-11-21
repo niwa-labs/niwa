@@ -57,6 +57,8 @@ export interface BridgeDeps {
   agentName(harness: string | undefined): string;
   /** The record types the script declares in `emits`, by their short name: it may emit only these. */
   emits: ReadonlyMap<string, RecordType<unknown>>;
+  /** The record type the host knows by a name, at its version: what a wait for that name waits for. */
+  recordType(name: string): RecordType<unknown> | undefined;
   /** The calls the earlier starts of the run recorded, by key. */
   earlier: ReadonlyMap<string, RecordedCall>;
   /** What an earlier start of the run emitted under a key: the type and the data, and the start that wrote it. */
@@ -97,31 +99,41 @@ const WaitInput = z.object({
 /** The data of a state change, as the journal holds it. */
 const StateChange = z.object({ name: z.string(), value: z.unknown() });
 
+/** The name of the wait of a script as a step. */
+export const WAIT_NAME = actionName("workflow.script.wait");
+
 /**
  * The wait as an action: it waits for the record, or for the wake of its timeout.
+ *
+ * The type is the one the host knows by the name, at its version and read through its schema, so a
+ * type at a later version answers the same wait; a name the host does not know is a type of data of
+ * any shape at the first version, as the records of a script are.
  *
  * A wake that belongs to another sleep must not end this wait: the wake is waited for with the
  * key of this wait's sleeping place, and the answer names the type that arrived.
  */
-export const WAIT = action("workflow.script.wait", {
-  description: "Wait for a record of a type whose data holds the filter, or for the end of the timeout.",
-  input: WaitInput,
-  output: z.union([z.object({ data: z.unknown(), at: z.number() }), z.object({ timedOut: z.literal(true) })]),
-  // The wait reads and waits: it may be entered again.
-  recovery: "repeat",
-  effect: "read",
-  world: "niwa",
-  run: async (input, ctx) => {
-    const wanted = { type: record(input.type, z.unknown()), ...(input.filter === undefined ? {} : { filter: input.filter }) };
-    const from = input.since === undefined ? {} : { from: seq(input.since) };
-    if (input.place === undefined) {
-      const got = await ctx.wait(wanted.type, { ...wanted, ...from });
-      return { data: got.data, at: got.at };
-    }
-    const got = await ctx.waitAnyOf([wanted, { type: TimerSlept, filter: { key: input.place } }] as const, from);
-    return got.type === TimerSlept.name && input.type !== TimerSlept.name ? { timedOut: true as const } : { data: got.data, at: got.at };
-  },
-});
+function waitAction(typeOf: (name: string) => RecordType<unknown> | undefined) {
+  return action(WAIT_NAME, {
+    description: "Wait for a record of a type whose data holds the filter, or for the end of the timeout.",
+    input: WaitInput,
+    output: z.union([z.object({ data: z.unknown(), at: z.number() }), z.object({ timedOut: z.literal(true) })]),
+    // The wait reads and waits: it may be entered again.
+    recovery: "repeat",
+    effect: "read",
+    world: "niwa",
+    run: async (input, ctx) => {
+      const type = typeOf(input.type) ?? record(input.type, z.unknown());
+      const wanted = { type, ...(input.filter === undefined ? {} : { filter: input.filter }) };
+      const from = input.since === undefined ? {} : { from: seq(input.since) };
+      if (input.place === undefined) {
+        const got = await ctx.wait(wanted.type, { ...wanted, ...from });
+        return { data: got.data, at: got.at };
+      }
+      const got = await ctx.waitAnyOf([wanted, { type: TimerSlept, filter: { key: input.place } }] as const, from);
+      return got.type === TimerSlept.name && input.type !== TimerSlept.name ? { timedOut: true as const } : { data: got.data, at: got.at };
+    },
+  });
+}
 
 /** The actions that read the journal: they are made with it, so the host's own is not needed. */
 function readers(journal: () => JournalReader) {
@@ -266,6 +278,7 @@ export interface Bridge {
 export function bridge(deps: BridgeDeps): Bridge {
   const { step } = deps;
   const own = readers(deps.journal);
+  const waitFor = waitAction((name) => deps.recordType(name));
   /** The open groups whose block an outer cancel waits for. */
   const shields = new Set<string>();
   /** The waits for a deadline that are going, each with the way to answer it now. */
@@ -424,10 +437,10 @@ export function bridge(deps: BridgeDeps): Bridge {
     // A wait is the same wait when it waits for the same type and filter: one that was answered in an earlier start keeps its answer.
     const before = deps.earlier.get(key);
     const asked = { type: request.type, filter: request.filter ?? null };
-    const recorded = before?.action === WAIT.name && before.input !== null && typeof before.input === "object" && !Array.isArray(before.input)
+    const recorded = before?.action === WAIT_NAME && before.input !== null && typeof before.input === "object" && !Array.isArray(before.input)
       ? { ...before, input: { type: before.input.type ?? null, filter: before.input.filter ?? null } }
       : before;
-    return takeOrRun(key, recorded, { key, action: WAIT.name, input: jsonOf(asked) }, lineage, () => waiting(key, request, lineage));
+    return takeOrRun(key, recorded, { key, action: WAIT_NAME, input: jsonOf(asked) }, lineage, () => waiting(key, request, lineage));
   };
 
   const waiting = async (key: string, request: Extract<ScriptRequest, { op: "wait" }>, lineage: Lineage): Promise<unknown> => {
@@ -439,10 +452,10 @@ export function bridge(deps: BridgeDeps): Bridge {
     const since = request.from ?? (request.timeoutMs === undefined ? undefined : (await guarded(() => step(own.mark, {}, { key: `${key}~mark` }))).seq);
     const after = since === undefined ? {} : { since };
     if (request.timeoutMs === undefined) {
-      return guarded(() => step(WAIT, { type: request.type, ...filter, ...after }, { key }));
+      return guarded(() => step(waitFor, { type: request.type, ...filter, ...after }, { key }));
     }
     const place = await arm(key, request.timeoutMs, lineage);
-    return guarded(() => step(WAIT, { type: request.type, ...filter, place, ...after }, { key }));
+    return guarded(() => step(waitFor, { type: request.type, ...filter, place, ...after }, { key }));
   };
 
   const ask = async (key: string, request: Extract<ScriptRequest, { op: "ask" }>, lineage: Lineage): Promise<unknown> => {
