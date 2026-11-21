@@ -8,7 +8,7 @@
 //
 //   1. "niwa describe" lists the actions the host declares
 //   2. "niwa <action> --field value" calls the action: the output comes back
-//   3. "niwa <action> --input '{...}'" calls the action the other way
+//   3. "niwa <action> --json '{...}'" calls the action the other way
 //   4. a plugin declares a new action — the action is installed in the running host
 //   5. the new action is a command at once, with no change to the CLI
 //   6. the machine form is JSON, and a failure exits non-zero with the host's code
@@ -77,7 +77,7 @@ test("generated surfaces: a new action is a CLI command, with no change to the C
     expect(greeted.out).toContain("ok: true");
 
     // 3. The whole input may be given as JSON.
-    const whoami = await cli(homePath, ["--json", "surface.whoami", "--input", '{"caller":"liar"}']);
+    const whoami = await cli(homePath, ["--json", "surface.whoami", "--json", '{"caller":"liar"}']);
     expect(whoami.code).toBe(0);
     const answered = JSON.parse(whoami.out) as { caller: string; kind: string };
     expect(answered.kind).toBe("client");

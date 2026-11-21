@@ -27,7 +27,9 @@ defines them. Where this file and the host disagree, the host is right.
   `session_open_questions`).
 - **CLI otherwise.** `niwa <group>.<action> --field value ...`, for example
   `niwa task.get --id task-3f9a21`. A field that is an object or a list takes JSON
-  (`--visible '{"actions":["task.*"]}'`), or give the whole input at once with `--input '{...}'`.
+  (`--visible '{"actions":["task.*"]}'`). Every flag is the field of the same name, so a field
+  called `input` is `--input`. After the command, `--json '{...}'` gives the whole input at once
+  (`--json -` reads it from stdin).
   `--json` goes before the command and asks for the machine form: `niwa --json harness.list`.
 - **Is the host up:** `niwa status`.
 - You see the actions that whoever started you made visible. That set is your mandate. Do not route
@@ -92,10 +94,12 @@ that waits for the answer. For handing work over, use `session.start`.)
   needed to answer, and say which option you recommend.
 - Prefer `choice` with concrete options over free text.
 - One request per decision. Put related fields in one `form`, not five requests.
-- The call waits for the answer (the wait survives a host restart) and returns `{id, answer}`, the
-  id being `req-...`. Give a `deadline` if you cannot wait for ever. If you cannot afford to block,
-  ask from a workflow script (`ask.choice`, ...) and carry on meanwhile. `request.get` and
-  `request.list` read a request later.
+- Called directly (MCP or CLI), `request.ask` does not wait: it creates the request and returns
+  `{id, status: "open"}` at once, the id being `req-...`. Read the answer later with `request.get`
+  (its `status` leaves `open` and `answer` appears); `request.list` shows what still waits. Give a
+  `deadline` if the question may go stale.
+- To block on the answer, ask from a workflow script (`ask.choice`, ...): as a step the ask waits
+  (the wait survives a host restart) and returns the answer.
 - Before asking, check that the answer is not already in the records, a session or the repository.
 - No answer, a cancel or an expiry is neither yes nor no. Take the safe path, or stop and report.
 
@@ -121,16 +125,18 @@ read them.
    It is the reference; nothing here replaces it.
 2. Write the script to a file.
 3. Run `workflow.check --file <file>` until it is clean.
-4. To run it once: `workflow.start --file <file>`. To keep it: `workflow.register --file <file>`
-   gives `wf-...`, then `workflow.start --id wf-... --args ...`. Registering with the same `--id`
-   adds a version.
+4. `workflow.start` runs a script: once from a file (`workflow.start --file <file>`), or a registered
+   workflow by its id. To keep one: `workflow.register --file <file>` gives `wf-...`, then
+   `workflow.start --id wf-... --args ...`. Registering with the same `--id` adds a version.
 5. Follow the run `run-...` with `workflow.inspect` or `workflow.wait`. History is in
    `workflow.runs` and `workflow.stats`.
 6. A failure pauses the run: answer it with `workflow.resume --run <run> --choice retry|skip|cancel`.
    To change the script, edit the file and `workflow.revise --run <run> --file <file>`; finished
    steps keep their results. Do not start a fresh run to get past a pause.
-7. `workflow.install` makes niwa start runs by itself on matching records (`sub-...`). Do it only
-   when the owner asked for standing automation.
+7. `workflow.install` is a subscription, not a run: it makes niwa start a run by itself for every
+   record that matches the workflow's `on` (`sub-...`), and starts nothing now. Use it only when the
+   owner asked for standing automation; to run a script now, use `workflow.start`.
+   `workflow.uninstall` ends a subscription.
 
 Rules that scripts break most often:
 - Label every step whose result must survive an edit of the script.

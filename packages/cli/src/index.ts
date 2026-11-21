@@ -11,7 +11,7 @@
  * The command of an action is its own name:
  *
  *     niwa telegram.send --chat 42 --text "hello"
- *     niwa telegram.send --input '{"chat": 42, "text": "hello"}'
+ *     niwa telegram.send --json '{"chat": 42, "text": "hello"}'
  *
  * The fields and their types come from the action's input schema.
  *
@@ -120,8 +120,9 @@ export function homeOf(argv: string[], env: Record<string, string | undefined>):
  * The input of an action, from the command line.
  *
  * `--field value` is read in the type the schema gives the field (number, integer, boolean,
- * array, object; a string otherwise). `--input '{...}'` gives the whole input at once; fields
- * named after it win over it.
+ * array, object; a string otherwise), and every flag names the field of the same name, so an action
+ * with a field called `input` takes `--input`. `--json '{...}'` gives the whole input at once;
+ * fields named after it win over it. (`--json -` reads the JSON from stdin: see `withStdinJson`.)
  */
 export function inputOf(action: ActionDescription, args: string[]): Record<string, unknown> {
   const properties = (action.input as { properties?: Record<string, unknown> }).properties;
@@ -129,12 +130,12 @@ export function inputOf(action: ActionDescription, args: string[]): Record<strin
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
-    if (argument === "--input") {
+    if (argument === "--json") {
       const text = args[index + 1];
-      if (text === undefined) throw new CliError("--input needs the JSON as its next argument");
+      if (text === undefined) throw new CliError("--json needs the JSON as its next argument");
       const parsed = parseJson(text);
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new CliError("--input must hold an object");
+        throw new CliError("--json must hold an object");
       }
       Object.assign(input, parsed);
       index += 1;
@@ -147,8 +148,9 @@ export function inputOf(action: ActionDescription, args: string[]): Record<strin
     // `--timeout-ms` is the field `timeoutMs`: the dashed form is the one a command line reads in.
     const name = properties !== undefined && !Object.hasOwn(properties, written) ? camelCase(written) : written;
     if (properties !== undefined && !Object.hasOwn(properties, name)) {
+      const hint = written === "input" ? " (the whole input as JSON is --json)" : "";
       throw new CliError(
-        `${action.name} has no field "${written}"; its fields are: ${Object.keys(properties).join(", ")}`,
+        `${action.name} has no field "${written}"${hint}; its fields are: ${Object.keys(properties).join(", ")}`,
       );
     }
     const value = args[index + 1];
@@ -167,6 +169,15 @@ export function inputOf(action: ActionDescription, args: string[]): Record<strin
     });
   }
   return input;
+}
+
+/** The arguments with `--json -` replaced by the JSON read from stdin. */
+export async function withStdinJson(args: string[], readStdin: () => Promise<string>): Promise<string[]> {
+  const at = args.findIndex((argument, index) => argument === "--json" && args[index + 1] === "-");
+  if (at < 0) return args;
+  const copy = [...args];
+  copy[at + 1] = await readStdin();
+  return copy;
 }
 
 /** `timeout-ms` as `timeoutMs`. */
@@ -329,7 +340,7 @@ async function runAction(
   args: CliArgs,
   format: Format,
 ): Promise<CliResult> {
-  const input = inputOf(action, args.args);
+  const input = inputOf(action, await withStdinJson(args.args, () => Bun.stdin.text()));
   const result = await api.call(action.name, input);
   return { output: renderAnswer(result, format), code: 0 };
 }
@@ -418,6 +429,9 @@ export async function usage(api?: NiwaApi): Promise<string> {
     "",
     "The home of the host: --home, else NIWA_HOME, else ~/.niwa.",
     "--json, before the command, asks for the machine form.",
+    "--field value gives one field of the action; after the command, --json '{...}' (or --json - for stdin)",
+    "gives the whole input as JSON.",
+    "workflow.start runs a script now; workflow.install subscribes one: niwa then starts a run for every matching record.",
   ].join("\n");
 }
 

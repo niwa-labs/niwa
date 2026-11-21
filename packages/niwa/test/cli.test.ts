@@ -13,7 +13,7 @@ import { createNiwa } from "@niwa-labs/host";
 import { plugin } from "@niwa-labs/plugin";
 import { record, seq, Address } from "@niwa-labs/core";
 import type { StoredRecord } from "@niwa-labs/core";
-import { RequestAnswered, RequestCreated, requestAsk, question, requests } from "@niwa-labs/requests";
+import { answeredBy, RequestAnswered, RequestCreated, requestAsk, question, requests } from "@niwa-labs/requests";
 import { eventually, spawnHost, tempHome, connectAsOwner, opt } from "@niwa-labs/testing";
 import { z } from "zod";
 
@@ -244,8 +244,8 @@ test("the CLI reads fields in the schema's types and refuses what does not fit",
     expect(unknown.code).toBe(1);
     expect(unknown.err).toContain("text");
 
-    // A broken --input is a usage error, not a crash.
-    const broken = await cli(home.path, ["surface.greet", "--input", "{nope"]);
+    // A broken --json is a usage error, not a crash.
+    const broken = await cli(home.path, ["surface.greet", "--json", "{nope"]);
     expect(broken.code).toBe(1);
     expect(broken.err).toContain("not valid JSON");
 
@@ -378,6 +378,34 @@ test("a field is written with dashes, and a boolean field with no value is a fla
   }
 }, 40_000);
 
+test("the CLI asks a question field by field: --input is the field, and the ask returns the open request", async () => {
+  const home = await tempHome();
+  const host = createNiwa({ home: home.path });
+  try {
+    host.use(requests());
+    await host.serve();
+    const asked = await cli(home.path, [
+      "--json",
+      "request.ask",
+      "--to",
+      '{"kind":"owner"}',
+      "--question",
+      "deploy",
+      "--input",
+      '{"kind":"choice","title":"Ship it?","options":[{"id":"yes","label":"Yes","flavor":"plain"},{"id":"no","label":"No","flavor":"plain"}]}',
+    ]);
+    expect(asked.err).toBe("");
+    expect(asked.code).toBe(0);
+    const answered = JSON.parse(asked.out) as { id: string; status: string };
+    expect(answered.status).toBe("open");
+    const read = await cli(home.path, ["--json", "request.get", "--id", answered.id]);
+    expect(JSON.parse(read.out)).toMatchObject({ id: answered.id, status: "open", question: "deploy" });
+  } finally {
+    await host.close();
+    await home.cleanup();
+  }
+}, 30_000);
+
 async function recordsOf(home: string, settleMs: number): Promise<StoredRecord[]> {
   const reader = await connectAsOwner(home);
   const records: StoredRecord[] = [];
@@ -403,7 +431,7 @@ test("the CLI speaks as the owner: a request to the owner is answered from the t
       plugin("cli-asker", (api) => {
         api.declare(Start, Continued);
         api.on(Start, async (data, step) => {
-          const { answer } = await step(requestAsk, { to: data.to, ...Choice });
+          const { answer } = answeredBy(await step(requestAsk, { to: data.to, ...Choice }));
           await step.emit(Continued, { answer: JSON.stringify(answer) });
         });
       }),
