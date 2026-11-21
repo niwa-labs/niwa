@@ -12,7 +12,7 @@ import { MessageSent } from "@niwa-labs/messages/records";
 
 import { fold } from "./owner.ts";
 import type { TaskState } from "./owner.ts";
-import { TaskCreated, TaskDone } from "./records.ts";
+import { TaskCreated, TaskDone, TaskUpdated } from "./records.ts";
 
 /** What the journal says of the tasks. */
 export interface TaskLedger {
@@ -22,6 +22,8 @@ export interface TaskLedger {
   state(task: string): TaskState | undefined;
   /** The record that created a task. */
   created(task: string): StoredRecord | undefined;
+  /** The updates of a task, in the order they were written. */
+  updates(task: string): StoredRecord[];
   /**
    * The Assignment of a task: the first message of that kind the creation of the task caused. A
    * message that only says it is the assignment of the task is not it.
@@ -29,6 +31,8 @@ export interface TaskLedger {
   assignment(task: string): StoredRecord | undefined;
   /** The record a call wrote first under an operation id: what a call that was cut off may have done. */
   written(operation: string): StoredRecord | undefined;
+  /** The ids of the records that the updates of a task caused to be sent, as messages. */
+  deliveredUpdates(task: string): Set<string>;
 }
 
 /** The ledger of the tasks in the journal of a plugin. */
@@ -67,6 +71,18 @@ export function taskLedger(journal: () => JournalReader | undefined): TaskLedger
     },
     written(operation) {
       return journal()?.get(recordId(`${operation}/emit/1`));
+    },
+    deliveredUpdates(task) {
+      const delivered = new Set<string>();
+      for (const stored of journal()?.find({ type: MessageSent.name, field: "task", equals: task }) ?? []) {
+        if (stored.cause !== null && MessageSent.schema.safeParse(stored.data).data?.body.type === "update") delivered.add(stored.cause);
+      }
+      return delivered;
+    },
+    updates(task) {
+      return (journal()?.find({ type: TaskUpdated.name, field: "task", equals: task }) ?? []).filter(
+        (stored) => TaskUpdated.schema.safeParse(stored.data).success,
+      );
     },
   };
 }

@@ -26,11 +26,11 @@
 import { z } from "zod";
 
 import { IdIndex, action } from "@niwa-labs/core";
-import type { Action, ActionContext, Address, Caller, CheckResult, JournalReader, StoredRecord } from "@niwa-labs/core";
+import type { Action, ActionContext, Address, Caller, CheckResult, JournalReader, Seq, Step, StoredRecord } from "@niwa-labs/core";
 import { bindingOf, COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import type { CallerBinding, MessagesOptions, Plugin } from "@niwa-labs/plugin";
-import { birthOf, issuedIds, messageSendRef } from "@niwa-labs/messages/records";
+import { MessageSent, birthOf, issuedIds, messageSendRef } from "@niwa-labs/messages/records";
 import type { MessageBody } from "@niwa-labs/messages/records";
 
 import { taskLedger } from "./ledger.ts";
@@ -142,13 +142,16 @@ export function tasks(opts: TasksOptions = {}): Plugin {
       });
     });
 
-    // The end of the task goes there too: the Result, or the Failure.
+    // The end of the task goes there too: the Result, or the Failure, after the updates written
+    // before it. The outcomes of two tasks owe each other nothing, so one that waits for its
+    // updates holds no other.
     api.on(
       TaskDone,
-      { id: "task.done.report" },
-      async (data, step) => {
+      { id: "task.done.report", concurrency: Number.POSITIVE_INFINITY, requires: [MessageSent] },
+      async (data, step, record) => {
         const contract = ledger.state(data.task)?.contract;
         if (contract === undefined) return;
+        await updatesDelivered(ledger, step, data.task, record.seq);
         await step(messageSendRef, {
           from: contract.responsible,
           to: contract.reportTo,
@@ -167,6 +170,26 @@ export function tasks(opts: TasksOptions = {}): Plugin {
       },
     );
   });
+}
+
+/**
+ * Wait until the updates written before the end of a task have been sent, so the addressee never
+ * reads a progress report after the result.
+ *
+ * Each update is sent by a handler of its own, which may be late. Whatever is not sent yet is sent
+ * after the end was written, so the wait starts at the end: a message sent while this looks is not
+ * missed, and each message that arrives takes the wait one step on.
+ */
+async function updatesDelivered(ledger: TaskLedger, step: Step, task: TaskId, end: Seq): Promise<void> {
+  const pending = () => {
+    const delivered = ledger.deliveredUpdates(task);
+    return ledger.updates(task).some((update) => update.seq < end && !delivered.has(update.id));
+  };
+  let from = end;
+  for (let round = 1; pending(); round += 1) {
+    const arrived = await step.wait(MessageSent, { key: `updates-${String(round)}`, from, filter: { task, "body.type": "update" } });
+    from = arrived.at;
+  }
 }
 
 /** The callers that wait for the end of a task in this process, by task. */
