@@ -10,11 +10,12 @@
  * insert/; this file names the kind and says where pi's sessions are.
  */
 
-import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@niwa-labs/harness";
+import { dirname, resolve } from "node:path";
+
+import { ADMITTED, KIND_OPTIONS, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@niwa-labs/harness";
 import type { HarnessKindDefinition, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
-import { PiInsert } from "./insert/index.ts";
-import type { InsertReporter } from "./insert/index.ts";
+import { installPiInsert } from "./insert/index.ts";
 import { PI_LAUNCH, PiControl } from "./control.ts";
 import type { PiControlOptions } from "./control.ts";
 import { piReading } from "./reading.ts";
@@ -66,23 +67,15 @@ export const PI_CAPABILITIES: KindCapabilities = {
     launch: { model: VERIFIED, effort: PI_LAUNCH.effort, modes: PI_LAUNCH.modes },
     tools: { niwaOnly: UNSUPPORTED, allow: ADMITTED },
   },
-  insert: { nested: UNSUPPORTED, compaction: VERIFIED, manualOpen: VERIFIED, permission: VERIFIED, end: ADMITTED },
+  // The insert is a file in pi's extensions directory. A pi opened by hand that loads it and reports to the
+  // host is proved live (`manualOpen`); a compaction needs a model run and is admitted from pi's documented
+  // event. A question pi asks the person is the person's to answer at pi's prompt: the answer cannot go back
+  // from here, so the kind does not claim a permission route.
+  insert: { nested: UNSUPPORTED, compaction: ADMITTED, manualOpen: VERIFIED, permission: UNSUPPORTED, end: ADMITTED },
 };
 
 /** What the kind needs: the installation that is read, and how its sides are set up. */
 export interface PiKindOptions extends PiReadingOptions {
-  /**
-   * How the insert side is set up.
-   *
-   * The reporter says how the events reach niwa. Without it the kind serves the reading side and
-   * the control side only: a kind that cannot report has no insert to serve.
-   */
-  readonly insert?: {
-    /** How events reach niwa. */
-    readonly report: InsertReporter;
-    /** The session was started by niwa, so it is not taken for one opened by hand. */
-    readonly owned?: boolean;
-  };
   /**
    * How the control side is set up: the pi it drives and the model it asks for.
    *
@@ -93,24 +86,27 @@ export interface PiKindOptions extends PiReadingOptions {
 }
 
 /**
- * The pi kind, with its reading side, its control side and, when it is given one, its insert side.
+ * The pi kind, with its reading side, its control side and its insert side.
  *
  * The options say which installation is being read: the id the owner gave it, and where pi keeps
- * its sessions. The insert side is served when the options say how its events reach niwa.
+ * its sessions. The insert is put into the agent directory of that installation, which is the
+ * parent of its sessions root (`<home>/sessions`): the extension is written to `<home>/extensions`.
  */
 export function pi(options: PiKindOptions): HarnessKindDefinition {
-  const reporter = options.insert?.report;
   return defineHarnessKind({
     name: PI_KIND,
     reading: piReading(options),
     control: new PiControl({ harness: options.harness, ...(options.control ?? {}) }),
-    ...(reporter === undefined
-      ? {}
-      : {
-          insert: new PiInsert({ report: reporter, owned: options.insert?.owned, harness: options.harness }),
-        }),
-    // Without a reporter the kind has no insert side, and declares none.
-    capabilities: reporter === undefined ? { ...PI_CAPABILITIES, insert: NO_INSERT } : PI_CAPABILITIES,
+    insert: {
+      install: async (opts) => {
+        await installPiInsert(dirname(resolve(options.sessionsRoot)), {
+          home: opts.home,
+          harness: options.harness,
+          ...(opts.cli === undefined ? {} : { cli: opts.cli }),
+        });
+      },
+    },
+    capabilities: PI_CAPABILITIES,
     detect: PI_DETECTION,
     options: KIND_OPTIONS.pi,
   });
@@ -134,7 +130,7 @@ export type { PiControlOptions, PiSessionControl } from "./control.ts";
 
 export { piSkills } from "./skills.ts";
 
-export { PI_HARNESS, PI_INSTANCE_ENV, PiInsert, piSession, default as niwaPiExtension } from "./insert/index.ts";
+export { PI_EXTENSION_FILE, PI_HARNESS, PI_INSTANCE_ENV, PiInsert, installPiInsert, piExtensionSource, piSession, default as niwaPiExtension } from "./insert/index.ts";
 export type {
   InsertReporter,
   PiExtensionApi,

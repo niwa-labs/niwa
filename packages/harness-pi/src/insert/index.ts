@@ -10,5 +10,7 @@ export type {
   PiSessionStart,
   PiUiPromptStart,
 } from "./insert.ts";
+export { PI_EXTENSION_FILE, installPiInsert, piExtensionSource } from "./install.ts";
+export type { PiInstallOptions } from "./install.ts";
 export { default, insertOf } from "./extension.ts";
 export type { PiExtensionApi, PiExtensionContext } from "./extension.ts";

@@ -61,7 +61,7 @@ import {
 } from "@niwa-labs/harness-mcode";
 import { CODEX_HARNESS, codex, codexSides, writeCodexFixtures } from "@niwa-labs/harness-codex";
 import { zcode, zcodeSides } from "@niwa-labs/harness-zcode";
-import { PiControl, pi, piSides, PiInsert } from "@niwa-labs/harness-pi";
+import { PI_EXTENSION_FILE, PiControl, pi, piSides } from "@niwa-labs/harness-pi";
 
 /** The id the claude-code fixtures are written for. */
 const CLAUDE_CODE_HARNESS = harnessId(CLAUDE_CODE_NAME);
@@ -185,20 +185,32 @@ test("the codex kind serves the reading side and the control side", () => {
 });
 
 test("the pi kind serves the reading side, the control side and the insert side", () => {
-  const kind = pi({
-    harness: HARNESS,
-    sessionsRoot: "/tmp/niwa-kinds-pi",
-    insert: { report: async () => {} },
-  });
+  const kind = pi({ harness: HARNESS, sessionsRoot: "/tmp/niwa-kinds-pi" });
   expect(String(kind.kind)).toBe("pi");
   expect(kind.reading).toBeDefined();
   expect(kind.control).toBeDefined();
-  checkSides(kind, controlOf(piSides), "events");
+  checkSides(kind, controlOf(piSides), "install");
 
+  // The insert is put into pi, and pi reports for itself: there is no stream to read.
   const insert = kind.insert;
   if (insert === undefined) throw new Error("the kind has no insert side");
-  expect(typeof insert.events).toBe("function");
-  expect(insert.install).toBeUndefined();
+  expect(insert.events).toBeUndefined();
+  expect(insert.answerPermission).toBeUndefined();
+});
+
+test("installing the pi insert writes the extension into the agent directory of the installation, told where the host is", async () => {
+  const dir = await tempDir("kinds-pi-install");
+  try {
+    const kind = pi({ harness: HARNESS, sessionsRoot: join(dir, "sessions") });
+    await kind.insert?.install?.({ home: "/tmp/niwa-host-home", cli: "/opt/niwa/bin/niwa.ts" });
+    const file = await Bun.file(join(dir, "extensions", PI_EXTENSION_FILE)).text();
+    expect(file).toContain('process.env.NIWA_HOME ??= "/tmp/niwa-host-home";');
+    expect(file).toContain('process.env.NIWA_CLI ??= "/opt/niwa/bin/niwa.ts";');
+    expect(file).toContain(`process.env.NIWA_PI_INSTANCE ??= "${String(HARNESS)}";`);
+    expect(file).toContain("/harness-pi/src/insert/extension.ts");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("the pi control side declares what pi's RPC mode really supports", () => {
@@ -224,12 +236,6 @@ test("the claude-code insert installs the plugin into the plugins directory of i
   } finally {
     await rm(home, { recursive: true, force: true });
   }
-});
-
-test("the pi kind serves the reading side only when it is given no reporter", () => {
-  const kind = pi({ harness: HARNESS, sessionsRoot: "/tmp/niwa-kinds-pi" });
-  expect(kind.reading).toBeDefined();
-  expect(kind.insert).toBeUndefined();
 });
 
 test("the mcode kind serves the reading side and the control side", () => {
@@ -636,47 +642,15 @@ test("the control side of the claude-sdk kind passes the conformance suite", asy
 });
 
 test("the insert side of the pi kind passes the conformance suite", async () => {
-  // The pi insert pulls its events out of pi, so it needs a reporter to send them to.
-  const reported: InsertEvent[] = [];
-  const kind = pi({
-    harness: HARNESS,
-    sessionsRoot: "/tmp/niwa-kinds-pi",
-    insert: { report: async (event) => void reported.push(event) },
-  });
+  // The pi insert is put into pi: it is installed, and it has no stream to read, so the suite
+  // takes the install branch.
+  const kind = pi({ harness: HARNESS, sessionsRoot: "/tmp/niwa-kinds-pi" });
   const insert = kind.insert;
   if (insert === undefined) throw new Error("the kind has no insert side");
-  // The pi insert reports what pi does: the kind names it as the generic side, so the pi side
-  // itself is what the events come from.
-  const piInsert = insert as PiInsert;
-
-  // The suite reads the events the side yields, and only those from the moment it subscribed:
-  // the stream is forward-only. So the suite starts first, and the events come after it did.
-  const report = insertConformance("pi", {
-    instance: insertInstallation(kind.kind),
-    insert,
-  })();
-
-  // The pi insert reports what pi does that cannot be seen from outside: a session the owner
-  // opened by hand, and a compaction. It never reports a nested session, and pi has no way to
-  // answer a question, so the installation declares neither.
-  const session = { id: "sess-1", cwd: "/tmp/niwa-kinds-pi" };
-  await piInsert.onSessionStart({ reason: "startup" }, session);
-  // The suite reads at most 32 events, so a stream that never ends must still be read: the
-  // events come until the suite has enough of them.
-  for (let index = 0; index < 40; index += 1) {
-    await piInsert.onSessionCompact({ compactionEntry: { summary: "so far" } }, session);
-  }
-
-  const done = await report;
-  const failed = done.results.filter((result) => !result.passed);
+  const report = await insertConformance("pi", { instance: insertInstallation(kind.kind), insert })();
+  const failed = report.results.filter((result) => !result.passed);
   expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
-  expect(done.passed).toBe(true);
-  expect(done.results.map((result) => result.name)).toContain(
-    "events: compacted is reported exactly when compaction is declared",
-  );
-  // The events the pi insert reported are the ones the suite read.
-  expect(reported.map((event) => event.kind)).toContain("opened-by-hand");
-  expect(reported.map((event) => event.kind)).toContain("compacted");
+  expect(report.passed).toBe(true);
 });
 
 test("the insert side of the claude-code kind passes the conformance suite", async () => {

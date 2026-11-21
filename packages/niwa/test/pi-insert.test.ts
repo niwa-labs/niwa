@@ -5,6 +5,8 @@
 // insert plugin. The reports arrive in niwa's journal as the records of that plugin.
 
 import { afterEach, expect, test } from "bun:test";
+import { rm } from "node:fs/promises";
+import { join } from "node:path";
 
 import { connect } from "@niwa-labs/client";
 import { createNiwa } from "@niwa-labs/host";
@@ -13,11 +15,12 @@ import type { StoredRecord } from "@niwa-labs/core";
 import { harnessId, sessionId } from "@niwa-labs/harness";
 import { PermissionRouter, insertPlugin } from "@niwa-labs/sessions";
 import type { HarnessInsert, PermissionAskedEvent } from "@niwa-labs/harness";
-import { tempHome, connectAsOwner } from "@niwa-labs/testing";
+import { eventually, tempDir, tempHome, connectAsOwner } from "@niwa-labs/testing";
 
-import { PiInsert, niwaPiExtension, piSession } from "@niwa-labs/harness-pi";
+import { PiInsert, niwaPiExtension, pi as piKind, piSession } from "@niwa-labs/harness-pi";
 import type { PiExtensionApi, PiExtensionContext } from "@niwa-labs/harness-pi";
 import { niwaCli } from "./fixtures/niwa-cli.ts";
+import { installInsert } from "../src/inserts.ts";
 
 type Handler = (event: never, ctx: PiExtensionContext) => Promise<void>;
 
@@ -118,16 +121,6 @@ test("pi leaving a session is its end, and a reload is not", async () => {
   expect(reported).toEqual(["quit", "new", "resume", "fork"].map((reason) => ({ kind: "session-ended", session: piSession(session.id), reason, at: expect.any(Number) })));
 });
 
-test("the readers of the insert get the events from the moment they listen", async () => {
-  const insert = new PiInsert({ report: async () => {} });
-  await insert.onSessionCompact({ compactionEntry: { summary: "missed" } }, session);
-  const events = insert.events()[Symbol.asyncIterator]();
-  const next = events.next();
-  await insert.onSessionCompact({ compactionEntry: { summary: "seen" } }, session);
-  expect((await next).value).toMatchObject({ kind: "compacted", summary: "seen" });
-  await events.return?.();
-});
-
 test("the extension never fails pi, whatever is wrong", async () => {
   const handlers = loadExtension();
 
@@ -173,7 +166,55 @@ test("a permission answer goes only to the side that asked, once", async () => {
   expect(answered).toEqual(["claude:req-1"]);
   await expect(router.answer(asked("claude-code").session, answer)).rejects.toThrow("req-1");
 
-  const pi = new PiInsert({ report: async () => {} });
+  // The pi kind's insert is put into pi and carries no answers.
+  const pi = piKind({ harness: harnessId("pi"), sessionsRoot: "/tmp/niwa-pi-insert" }).insert;
+  if (pi === undefined) throw new Error("the pi kind has no insert side");
   router.ask(pi, asked("pi"));
   await expect(router.answer(asked("pi").session, answer)).rejects.toThrow("cannot carry answers");
 });
+
+/** The pi this machine has, if any: it needs no account and no model for this test, only to start. */
+const PI_BIN = process.env["PI_BIN"] ?? Bun.which("pi") ?? "";
+
+test.skipIf(PI_BIN === "")(
+  "a pi the owner opened by hand loads the installed insert and its session reaches the host as opened by hand",
+  async () => {
+    const piHome = await tempDir("pi-insert-home");
+    const home = await tempHome();
+    const niwa = createNiwa({ home: home.path });
+    niwa.use(insertPlugin());
+    await niwa.serve();
+    const kind = piKind({ harness: harnessId("pi-hand"), sessionsRoot: join(piHome, "sessions") });
+    // Put into pi the way an installation is: through niwa, which names its own CLI to report through.
+    await installInsert(kind, home.path);
+
+    // A pi nobody started from niwa: its environment names no niwa at all.
+    const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("NIWA_")));
+    const child = Bun.spawn([PI_BIN, "--mode", "rpc"], {
+      env: { ...environment, PI_CODING_AGENT_DIR: piHome } as Record<string, string>,
+      stdin: "pipe",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      child.stdin.write(`${JSON.stringify({ type: "get_state", id: "1" })}\n`);
+      await child.stdin.flush();
+      let opened: StoredRecord | undefined;
+      await eventually(
+        async () => {
+          opened = (await niwa.records.read()).find((record) => record.type === "insert.opened-by-hand");
+          return opened !== undefined;
+        },
+        60_000,
+        "the pi insert should report the session",
+      );
+      expect(opened?.data).toMatchObject({ session: { harness: "pi-hand" } });
+    } finally {
+      child.kill();
+      await niwa.close().catch(() => {});
+      await home.cleanup();
+      await rm(piHome, { recursive: true, force: true });
+    }
+  },
+  90_000,
+);

@@ -8,17 +8,12 @@
  */
 
 import { harnessId, sessionId } from "@niwa-labs/harness";
-import type { HarnessInsert, InsertEvent, SessionId } from "@niwa-labs/harness";
+import type { InsertEvent, SessionId } from "@niwa-labs/harness";
 
 /** How an event reaches niwa: the action "insert.report". */
 export type InsertReporter = (event: InsertEvent) => Promise<void>;
 
-/**
- * How the pi insert is set up.
- *
- * The reporter says how the events reach niwa; without it the insert has nothing to report to,
- * and a kind that names no reporter does not serve the insert side at all.
- */
+/** How the pi insert is set up: how its events reach niwa, and which installation its sessions belong to. */
 export interface PiInsertOptions {
   /** How events reach niwa. */
   readonly report: InsertReporter;
@@ -80,8 +75,12 @@ export interface PiSessionInfo {
 /** The prompts that ask the person to allow or refuse something. */
 const QUESTION_KINDS: ReadonlySet<PiUiPromptStart["kind"]> = new Set(["select", "confirm"]);
 
-export class PiInsert implements HarnessInsert {
-  private readonly readers = new Set<(event: InsertEvent) => void>();
+/**
+ * What the extension inside a pi process does with pi's events. It reports them to the host through
+ * its reporter and keeps nothing: the kind's insert side is the installation of the extension, and
+ * the events reach niwa through `niwa insert report`.
+ */
+export class PiInsert {
   private readonly report: InsertReporter;
   private readonly owned: boolean;
   private readonly harness: string;
@@ -92,31 +91,6 @@ export class PiInsert implements HarnessInsert {
     this.report = options.report;
     this.owned = options.owned ?? false;
     this.harness = options.harness ?? PI_HARNESS;
-  }
-
-  /** The events from the moment of the call, as they happen. */
-  events(): AsyncIterable<InsertEvent> {
-    const readers = this.readers;
-    return {
-      async *[Symbol.asyncIterator]() {
-        const queue: InsertEvent[] = [];
-        let wake: (() => void) | undefined;
-        const reader = (event: InsertEvent) => {
-          queue.push(event);
-          wake?.();
-        };
-        readers.add(reader);
-        try {
-          for (;;) {
-            const event = queue.shift();
-            if (event !== undefined) yield event;
-            else await new Promise<void>((resolve) => (wake = resolve));
-          }
-        } finally {
-          readers.delete(reader);
-        }
-      },
-    };
   }
 
   /** A session the owner started or opened anew; a reload, a resume or a fork continues one. */
@@ -160,7 +134,6 @@ export class PiInsert implements HarnessInsert {
   }
 
   private async emit(event: InsertEvent): Promise<void> {
-    for (const reader of this.readers) reader(event);
     await this.report(event);
   }
 }
