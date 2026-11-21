@@ -261,19 +261,21 @@ class BoxedProcess extends EventEmitter implements AgentProcess {
     this.stdin.on("end", () => box.stdin.end());
     const drained = Promise.all([pump(box.stdout, this.stdout), pump(box.stderr, this.stderr)]).then(() => undefined, () => undefined);
     void box.exited.then(
-      (code) => this.#end(code, undefined, drained),
-      (error: unknown) => this.#end(null, error, drained),
+      async (code) => this.#end(code, (await box.signaled) ?? null, undefined, drained),
+      (error: unknown) => this.#end(null, null, error, drained),
     );
   }
 
   /**
-   * The box is gone. A clean-up that failed leaves the process ended without a code: the exit is
+   * The box is gone, by a code or by the signal that ended it. A clean-up that failed leaves the process ended without a code: the exit is
    * told with `null`, and the failure goes to whoever listens for `error`. An error nobody is
    * listening for is not thrown.
    */
-  async #end(code: number | null, failure: unknown, drained: Promise<void>): Promise<void> {
-    const outcome: Outcome = { code, signal: null };
-    this.exitCode = code;
+  async #end(code: number | null, signal: NodeJS.Signals | null, failure: unknown, drained: Promise<void>): Promise<void> {
+    // As a child process tells it: a process ended by a signal has no exit code, whatever status it left.
+    const outcome: Outcome = signal === null ? { code, signal } : { code: null, signal };
+    this.exitCode = outcome.code;
+    this.signalCode = outcome.signal;
     this.#exited = outcome;
     if (failure !== undefined) this.#failure = failure instanceof Error ? failure : new Error(String(failure));
     this.emit("exit", outcome.code, outcome.signal);
@@ -285,10 +287,14 @@ class BoxedProcess extends EventEmitter implements AgentProcess {
 
   /** The launch failed after the process was handed out; whoever holds it hears of it once it can listen. */
   fail(error: unknown): void {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    // Kept before anyone is told, so a listener that comes later is told the same.
+    this.#failure = failure;
+    this.#closed = { code: null, signal: null };
     this.stdout.end();
     this.stderr.end();
     setImmediate(() => {
-      this.emit("error", error instanceof Error ? error : new Error(String(error)));
+      if (this.listenerCount("error") > 0) this.emit("error", failure);
       this.emit("close", null, null);
     });
   }
@@ -296,6 +302,8 @@ class BoxedProcess extends EventEmitter implements AgentProcess {
 
 /** Resolves when the stream can take more, or can take nothing more. */
 function drained(stream: PassThrough): Promise<void> {
+  // The reader that went away has no `drain` or `close` still to come.
+  if (stream.destroyed) return Promise.resolve();
   return new Promise((resolve) => {
     const done = () => {
       stream.off("drain", done);
@@ -316,6 +324,10 @@ async function pump(from: ReadableStream<Uint8Array>, to: PassThrough): Promise<
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (to.destroyed) {
+        await reader.cancel();
+        break;
+      }
       if (!to.write(value)) await drained(to);
       if (to.destroyed) {
         await reader.cancel();

@@ -8,6 +8,9 @@
 //   4. a listener that comes after the box ended is still told of the exit and the close
 //   5. a relative path of a spec is read from its working directory, in the flags and in the check
 //   6. a wrapper that is not there is `SandboxUnavailable`, not a bare ENOENT
+//   7. a reader that closes its end does not keep the process from closing
+//   8. a launch that fails behind the returned process is told to a late listener, and never throws
+//   9. a process ended by a signal reports the signal and no code; an exit with a signal's code is a code
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
@@ -16,7 +19,7 @@ import { chmod, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, spawnAgent, srt, useSandbox } from "@niwa-labs/sandbox";
+import { SandboxUnavailable, SandboxUnsupported, boxSpec, nono, spawnAgent, spawnAgentNow, srt, useSandbox } from "@niwa-labs/sandbox";
 import type { AgentProcess, LaunchedBox, Sandbox } from "@niwa-labs/sandbox";
 import { tempDir } from "@niwa-labs/testing";
 
@@ -255,4 +258,66 @@ test("a wrapper that is not there is SandboxUnavailable, and a working directory
   );
   expect(failure).toBeInstanceOf(Error);
   expect(failure).not.toBeInstanceOf(SandboxUnavailable);
+});
+
+test("a reader that closes its end does not keep the process from closing", async () => {
+  // Output keeps coming after the reader has gone, so a write finds the stream closed already.
+  let pulled = 0;
+  const stdout = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      await sleep(20);
+      controller.enqueue(bytes(1024));
+      if (++pulled >= 5) controller.close();
+    },
+  });
+  const child = await spawnFake(() => ({
+    pid: 1,
+    stdin: inert,
+    stdout,
+    stderr: new ReadableStream<Uint8Array>({ start: (controller) => controller.close() }),
+    exited: Promise.resolve(0),
+    kill: () => undefined,
+  }));
+  // The reader gives up on the stream with an error it has heard already: no event is left to come.
+  child.stdout.on("error", () => undefined);
+  child.stdout.destroy(new Error("the reader is gone"));
+  child.stderr.destroy();
+  const closed = new Promise<string>((resolve) => child.once("close", () => resolve("closed")));
+  expect(await Promise.race([closed, sleep(2000).then(() => "silent")])).toBe("closed");
+});
+
+test("a launch that fails behind the returned process is told to a late listener as well, and does not throw", async () => {
+  undo.push(
+    useSandbox("nono", {
+      ...fake(() => {
+        throw new Error("unused");
+      }),
+      launch: async () => {
+        throw new Error("the box could not start");
+      },
+    }),
+  );
+  const child = spawnAgentNow({ harness: "t", program: "unused", args: [], cwd: "/", box: { sandbox: "nono", spec: { cwd: "/" } } });
+  // Only `close` is heard: with no `error` listener the failure must not be thrown.
+  const early = new Promise<string>((resolve) => child.once("close", () => resolve("closed")));
+  expect(await Promise.race([early, sleep(2000).then(() => "silent")])).toBe("closed");
+
+  const late: string[] = [];
+  child.once("error", (error) => late.push(`error ${error.message}`));
+  child.once("close", () => late.push("close"));
+  await sleep(50);
+  expect(late).toEqual(["error the box could not start", "close"]);
+});
+
+test("a process ended by a signal reports the signal and no code; an exit with a signal's code is a code", async () => {
+  const signalled = await boxed("/bin/sh", ["-c", "kill -TERM $$"], false);
+  const ended = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => signalled.once("close", (code, signal) => resolve([code, signal])));
+  expect(ended).toEqual([null, "SIGTERM"]);
+  expect(signalled.exitCode).toBeNull();
+  expect(signalled.signalCode).toBe("SIGTERM");
+
+  const exited = await boxed("/bin/sh", ["-c", "exit 143"], false);
+  const code = await new Promise<[number | null, NodeJS.Signals | null]>((resolve) => exited.once("close", (code, signal) => resolve([code, signal])));
+  expect(code).toEqual([143, null]);
+  expect(exited.signalCode).toBeNull();
 });

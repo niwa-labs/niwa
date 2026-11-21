@@ -35,6 +35,12 @@ export interface LaunchedBox {
    * where the sandbox has no step of its own after the process: `exited` is then the same moment.
    */
   readonly ended?: Promise<number>;
+  /**
+   * The signal that ended the wrapper, `null` when it exited by itself; settled no later than
+   * `exited`. A process killed by a signal also has a conventional exit code (143 for SIGTERM): this
+   * tells the two apart, as a child process's `signalCode` does. A box that cannot tell may leave it out.
+   */
+  readonly signaled?: Promise<NodeJS.Signals | null>;
   /** Signals the wrapper's process (SIGTERM by default), as a child process's `kill` does. */
   kill(signal?: NodeJS.Signals | number): void;
 }

@@ -1,6 +1,7 @@
 /** Shared by the process-class sandboxes: start the wrapper, and the command inside it with exactly the listed environment. */
 
 import { existsSync, statSync } from "node:fs";
+import { constants } from "node:os";
 
 import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { LaunchOptions, LaunchedBox, SandboxName } from "./sandbox.ts";
@@ -51,6 +52,13 @@ export function insideBox(
     command: ["/bin/sh", "-c", script, "niwa-box", guest.cwd, ...argv],
     carried: Object.fromEntries(names.map((name) => [`${CARRIED}${name}`, guest.env[name] ?? ""])),
   };
+}
+
+/** The name of the signal that ended a process, however the runtime reports it. */
+function signalName(signal: NodeJS.Signals | number | null): NodeJS.Signals | null {
+  if (typeof signal !== "number") return signal;
+  const named = Object.entries(constants.signals).find(([, number]) => number === signal);
+  return named === undefined ? null : (named[0] as NodeJS.Signals);
 }
 
 /** Is the program not to be found, where the spawn looks for it? */
@@ -116,6 +124,7 @@ export function spawnBox(
     stderr: child.stderr,
     exited,
     ended,
+    signaled: exited.then(() => signalName(child.signalCode), () => null),
     kill: (signal) => child.kill(signal),
   };
 }
