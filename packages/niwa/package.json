@@ -2,10 +2,15 @@
   "name": "niwa",
   "version": "0.0.0",
   "type": "module",
+  "bin": {
+    "niwa": "./bin/niwa.ts"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.325",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@niwa-labs/acp": "workspace:*",
     "@niwa-labs/agent": "workspace:*",
     "@niwa-labs/cli": "workspace:*",
@@ -39,6 +44,11 @@
     "@niwa-labs/timer": "workspace:*",
     "@niwa-labs/ui-kit": "workspace:*",
     "@niwa-labs/web": "workspace:*",
-    "@niwa-labs/workflow": "workspace:*"
+    "@niwa-labs/workflow": "workspace:*",
+    "@zed-industries/claude-code-acp": "0.16.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@niwa-labs/testing": "workspace:*"
   }
 }
