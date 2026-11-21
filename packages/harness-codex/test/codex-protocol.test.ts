@@ -178,7 +178,7 @@ function incomingOfCaptured(method: string, type?: string): Incoming {
 
 test("a turn begins and ends with the notifications of its turn", () => {
   expect(incomingOfCaptured("turn/started")).toEqual({ kind: "turn-started", turnId: "00000000-0000-4000-8000-000000000002" });
-  expect(incomingOfCaptured("turn/completed")).toEqual({ kind: "turn-ended", turn: { status: "completed", message: undefined } });
+  expect(incomingOfCaptured("turn/completed")).toEqual({ kind: "turn-ended", turn: { id: "00000000-0000-4000-8000-000000000002", status: "completed", message: undefined } });
 });
 
 test("the final answer of the turn is the agent's message that is done, and nothing else is", () => {
@@ -207,10 +207,10 @@ test("a turn that began or ended is still known to have, when the rest of its no
   expect(incomingOfDrifted("turn/started", { turn: { id: "t9", more: true } })).toEqual({ kind: "turn-started", turnId: "t9" });
   expect(incomingOfDrifted("turn/completed", { turn: { id: "t9", status: "paused", error: { message: "why" } } })).toEqual({
     kind: "turn-ended",
-    turn: { status: "paused", message: "why" },
+    turn: { id: "t9", status: "paused", message: "why" },
   });
   // An end that cannot be read is an end that is not a success.
-  expect(incomingOfDrifted("turn/completed", { nothing: true })).toEqual({ kind: "turn-ended", turn: { status: "was not readable", message: undefined } });
+  expect(incomingOfDrifted("turn/completed", { nothing: true })).toEqual({ kind: "turn-ended", turn: { id: undefined, status: "was not readable", message: undefined } });
   expect(incomingOfDrifted("serverRequest/resolved", { requestId: "r" })).toMatchObject({ kind: "request-resolved", requestId: "r" });
   expect(incomingOfDrifted("novel/thing", { n: 1 })).toBeUndefined();
 });

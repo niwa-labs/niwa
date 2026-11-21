@@ -147,7 +147,15 @@ interface TurnEnd {
 /** A turn's end: the turn Codex reported, or `undefined` when it timed out or the child died. */
 interface TurnWait {
   readonly done: Promise<TurnEnd | undefined>;
+  /** Names the turn this wait is for, by Codex's id of it, once that is known: another turn's end then leaves it waiting. */
+  bind(turnId: string | undefined): void;
   cancel(): void;
+}
+
+/** A wait for the end of a turn, and the id of the turn it waits for once Codex named it. */
+interface TurnWaiter {
+  turnId: string | undefined;
+  readonly settle: (end: TurnEnd | undefined) => void;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -219,7 +227,7 @@ class LiveSession {
    */
   private unwatched: LifeEvent[] | undefined = [];
   readonly pending = new Map<number, (outcome: RpcOutcome) => void>();
-  private readonly turnWaiters: Array<(end: TurnEnd | undefined) => void> = [];
+  private readonly turnWaiters: TurnWaiter[] = [];
 
   constructor(readonly child: AgentProcess) {}
 
@@ -277,18 +285,21 @@ class LiveSession {
   }
 
   expectTurn(timeoutMs: number): TurnWait {
-    if (this.ended) return { done: Promise.resolve(undefined), cancel: () => {} };
-    let waiter: (turn: TurnEnd | undefined) => void = () => {};
+    if (this.ended) return { done: Promise.resolve(undefined), bind: () => {}, cancel: () => {} };
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let waiter: TurnWaiter | undefined;
     const drop = (): void => {
       clearTimeout(timer);
-      const at = this.turnWaiters.indexOf(waiter);
+      const at = waiter === undefined ? -1 : this.turnWaiters.indexOf(waiter);
       if (at !== -1) this.turnWaiters.splice(at, 1);
     };
     const done = new Promise<TurnEnd | undefined>((resolve) => {
-      waiter = (end) => {
-        clearTimeout(timer);
-        resolve(end);
+      waiter = {
+        turnId: undefined,
+        settle: (end) => {
+          clearTimeout(timer);
+          resolve(end);
+        },
       };
       this.turnWaiters.push(waiter);
       timer = setTimeout(() => {
@@ -296,13 +307,37 @@ class LiveSession {
         resolve(undefined);
       }, timeoutMs);
     });
-    return { done, cancel: drop };
+    return {
+      done,
+      bind: (turnId) => {
+        if (waiter !== undefined && waiter.turnId === undefined) waiter.turnId = turnId;
+      },
+      cancel: drop,
+    };
   }
 
-  settleTurn(turn: EndedTurn | undefined): void {
+  /** Codex named the turn that began: the oldest wait that has no turn yet is the wait for it. */
+  bindTurn(turnId: string): void {
+    const waiting = this.turnWaiters.find((waiter) => waiter.turnId === undefined);
+    if (waiting !== undefined) waiting.turnId = turnId;
+  }
+
+  /**
+   * A turn ended: the waits for it are settled. A wait for another turn, one Codex named already,
+   * keeps waiting; a wait that has no turn yet, and an end that names none, cannot be told apart.
+   * The child going away (`undefined`) ends every wait. With `named`, only the waits Codex named
+   * for exactly this turn end: the end of a turn that is not the running one touches no other.
+   */
+  settleTurn(turn: EndedTurn | undefined, named = false): void {
     // The answer of the turn that ends is the text as it stands now; the next turn clears it.
     const end: TurnEnd = { turn, text: this.text };
-    for (const waiter of this.turnWaiters.splice(0)) waiter(end);
+    const waiting = this.turnWaiters.splice(0);
+    for (const waiter of waiting) {
+      const other = turn?.id !== undefined && waiter.turnId !== undefined && waiter.turnId !== turn.id;
+      const unnamed = named && waiter.turnId === undefined;
+      if (other || unnamed) this.turnWaiters.push(waiter);
+      else waiter.settle(end);
+    }
   }
 
   /** The child is gone: every call in flight and every waiter is released, every watcher told. */
@@ -545,10 +580,17 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     switch (incoming.kind) {
       case "turn-started":
         session.activeTurnId = incoming.turnId;
+        session.bindTurn(incoming.turnId);
         session.busy = true;
         session.emit({ kind: "turn-started", turn: session.turn, at });
         return;
       case "turn-ended":
+        // The end of a turn that is not the running one (a late end of an interrupted turn, say) is not the end of this one.
+        if (incoming.turn.id !== undefined && session.activeTurnId !== undefined && incoming.turn.id !== session.activeTurnId) {
+          session.settleTurn(incoming.turn, true);
+          session.emit({ kind: "activity", at, detail: `turn ${incoming.turn.id} ended (the running turn is ${session.activeTurnId})` });
+          return;
+        }
         session.activeTurnId = undefined;
         session.busy = false;
         session.cancelAsking();
@@ -781,7 +823,9 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     }
     // The end may already have been processed, and a newer turn may already have taken over:
     // only a turn that is still the running one gets its id.
-    if (session.busy && session.turn === turn) session.activeTurnId = idOf(asRecord(started.result).turn);
+    const nativeTurn = idOf(asRecord(started.result).turn);
+    wait.bind(nativeTurn);
+    if (session.busy && session.turn === turn) session.activeTurnId = nativeTurn;
     return { turn, wait };
   }
 

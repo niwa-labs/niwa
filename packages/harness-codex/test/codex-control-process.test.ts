@@ -61,8 +61,17 @@ let pending = [];
 let released = 0;
 let turns = 0;
 let refused = false;
+let staleSent = false;
 setInterval(() => {
   if (mode !== "hold") return;
+  // A late end of a turn that is not the running one, when the test asks for it.
+  if (!staleSent) {
+    try {
+      readFileSync(dir + "/stale", "utf8");
+      staleSent = true;
+      emit(turnCompleted(THREAD, "old-turn", "completed"));
+    } catch {}
+  }
   let wanted = 0;
   try {
     wanted = Number(readFileSync(dir + "/release", "utf8"));
@@ -510,6 +519,54 @@ test("the start returns before the first turn ends: a first turn that never ends
   // The session takes messages at once: they wait behind the first turn.
   expect(await codex.send(id, "two")).toMatchObject({ status: "queued", turn: 2 });
   await codex.dispose();
+});
+
+/** Asks the fake server to end a turn that is not the running one. */
+async function endAnotherTurn(): Promise<void> {
+  await writeFile(join(dir, "stale"), "1");
+  await until(async () => (await events()).some((event) => event.method === "turn/completed" && (event.params.turn as { id: string }).id === "old-turn"), "the stale end was sent");
+  // The control side has read it by now: nothing else is in flight.
+  await Bun.sleep(150);
+}
+
+test("the end of a turn that is not the running one does not end the running turn", async () => {
+  process.env.FAKE_MODE = "hold";
+  const codex = control();
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+  const signs: LifeEvent[] = [];
+  void (async () => {
+    for await (const event of codex.life(id)) signs.push(event);
+  })();
+  await codex.send(id, "one");
+  await until(async () => (await codex.state(id)) === "running", "the turn started");
+
+  await endAnotherTurn();
+  expect(await codex.state(id)).toBe("running");
+  expect(signs.filter((sign) => sign.kind === "turn-ended")).toEqual([]);
+
+  // The running turn's own end is the end of the turn.
+  await release(1);
+  await eventually(() => signs.some((sign) => sign.kind === "turn-ended"), 10_000, "the turn ended");
+  expect(signs.filter((sign) => sign.kind === "turn-ended")).toMatchObject([{ turn: 1 }]);
+  expect(await codex.state(id)).toBe("idle");
+});
+
+test("an ask is answered by the end of its own turn, not by the end of another", async () => {
+  process.env.FAKE_MODE = "hold";
+  process.env.FAKE_TEXT = '{"v":7}';
+  const codex = control();
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+  let settled = false;
+  const asked = codex.ask(id, { schema: z.object({ v: z.number() }), prompt: promptFromText("question") }).finally(() => {
+    settled = true;
+  });
+  await until(async () => (await startedTurns()).length === 1, "the ask began its turn");
+
+  await endAnotherTurn();
+  expect(settled).toBe(false);
+
+  await release(1);
+  expect((await asked).value).toEqual({ v: 7 });
 });
 
 /** A session this control side does not hold, named by its thread. */

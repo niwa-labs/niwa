@@ -15,8 +15,9 @@ import type { JsonValue } from "@niwa-labs/core";
 
 import type { RequestId, ServerNotification, ThreadItem } from "./protocol/generated/app-server.ts";
 
-/** A turn as it ended: the status Codex gave it, and the reason when it gave one. */
+/** A turn as it ended: Codex's id of it when it gave one, the status Codex gave it, and the reason when it gave one. */
 export interface EndedTurn {
+  readonly id: string | undefined;
   readonly status: string;
   readonly message: string | undefined;
 }
@@ -91,8 +92,8 @@ export function incomingOf(notification: ServerNotification): Incoming {
     case "turn/started":
       return { kind: "turn-started", turnId: notification.params.turn.id };
     case "turn/completed": {
-      const { status, error } = notification.params.turn;
-      return { kind: "turn-ended", turn: { status, message: error?.message } };
+      const { id, status, error } = notification.params.turn;
+      return { kind: "turn-ended", turn: { id, status, message: error?.message } };
     }
     case "item/started":
     case "item/completed":
@@ -242,7 +243,7 @@ export function incomingOfDrifted(method: string, params: JsonValue | undefined)
     case "turn/completed": {
       const turn = DriftedTurnSchema.safeParse(params);
       const read = turn.success ? turn.data.turn : undefined;
-      return { kind: "turn-ended", turn: { status: read?.status ?? "was not readable", message: read?.error?.message } };
+      return { kind: "turn-ended", turn: { id: read?.id, status: read?.status ?? "was not readable", message: read?.error?.message } };
     }
     case "item/started":
     case "item/completed": {
