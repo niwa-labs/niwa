@@ -196,3 +196,24 @@ test("a question waits behind a turn that runs, as a send does: no query of its 
     await control.dispose();
   }
 });
+
+test("the end of a turn carries how it ended: failed when the program's result is an error, completed when it succeeded", async () => {
+  const fake = scriptedQuery();
+  const control = new ClaudeSdkControl({ harness: HARNESS, query: fake.query });
+  try {
+    const block = fake.hold();
+    const { session: id } = await control.start({ prompt: promptFromText("one") });
+    const seen = watch(control, id);
+    await control.interrupt(id);
+    block.release();
+    await control.send(id, "two");
+    await until(() => turnsOf(seen).includes("turn-ended:2"), "the second turn to end");
+    const outcomes = seen.flatMap((event) => (event.kind === "turn-ended" ? [[event.turn, event.outcome]] : []));
+    expect(outcomes).toEqual([
+      [1, "failed"],
+      [2, "completed"],
+    ]);
+  } finally {
+    await control.dispose();
+  }
+});

@@ -280,6 +280,7 @@ export type {
 export {
   DeliveryReceiptSchema,
   LifeEventSchema,
+  TurnOutcomeSchema,
   ModelNameSchema,
   NO_VISIBLE_ACTIONS,
   PermissionMarkSchema,
@@ -303,6 +304,7 @@ export type {
   AskOptions,
   DeliveryReceipt,
   LifeEvent,
+  TurnOutcome,
   McpServerSpec,
   ModelName,
   ZcodeMcpOptions,

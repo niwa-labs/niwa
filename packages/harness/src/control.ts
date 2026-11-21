@@ -157,6 +157,14 @@ export type ProtocolName = z.output<typeof ProtocolNameSchema>;
 export const VariantNameSchema = z.string().brand<"VariantName">();
 export type VariantName = z.output<typeof VariantNameSchema>;
 
+/**
+ * How a turn ended, as far as the harness knows: `completed` (its result says it finished), `failed`
+ * (the harness refused it or reported an error for it), `unknown` (the connection went, or the
+ * harness did not answer, so nobody knows what became of it). A harness that says none leaves it out.
+ */
+export const TurnOutcomeSchema = z.enum(["completed", "failed", "unknown"]);
+export type TurnOutcome = z.output<typeof TurnOutcomeSchema>;
+
 /** A sign of life. */
 export const LifeEventSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -168,6 +176,7 @@ export const LifeEventSchema = z.discriminatedUnion("kind", [
     kind: z.literal("turn-ended"),
     turn: z.number().int().positive(),
     at: z.number().int().nonnegative().optional(),
+    outcome: TurnOutcomeSchema.optional(),
   }),
   z.object({
     kind: z.literal("activity"),

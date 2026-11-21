@@ -354,11 +354,22 @@ class LiveSession {
         }
         this.questioned = asked.session;
         this.#begin(turn);
-        asked.done.then(resolve, reject).finally(() => {
-          this.questioned = undefined;
-          this.emit({ kind: "turn-ended", turn, at: Date.now() });
-          this.#drain();
-        });
+        asked.done
+          .then(
+            (value) => {
+              resolve(value);
+              return "completed" as const;
+            },
+            (error: unknown) => {
+              reject(error);
+              return "failed" as const;
+            },
+          )
+          .then((outcome) => {
+            this.questioned = undefined;
+            this.emit({ kind: "turn-ended", turn, at: Date.now(), outcome });
+            this.#drain();
+          });
       };
       if (!this.busy) {
         begin();
@@ -380,7 +391,10 @@ class LiveSession {
     const ran = this.running;
     this.running = false;
     this.#stopAsking();
-    if (ran) this.emit({ kind: "turn-ended", turn: this.turn, at: Date.now() });
+    if (ran) {
+      const outcome = result.subtype === "success" && !result.is_error ? "completed" : "failed";
+      this.emit({ kind: "turn-ended", turn: this.turn, at: Date.now(), outcome });
+    }
     for (const waiter of this.resultWaiters.splice(0)) waiter(result);
     this.#drain();
   }

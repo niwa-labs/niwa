@@ -1086,3 +1086,21 @@ test("a turn over its time whose cancel the agent never answers closes the proce
   for (let waited = 0; waited < 2_000 && (await agentsAlive()).length > 0; waited += 25) await Bun.sleep(25);
   expect(await agentsAlive()).toEqual([]);
 });
+
+test("the end of a turn carries how it ended: completed when the agent finished it, unknown when the connection went", async () => {
+  control = claudeCodeControl({ harness: "fake", command: [await fakeAgent({ turnMs: 0, crashAt: 2 })] });
+  const { session: id } = await control.start({ prompt: promptFromText("one") });
+  const events: LifeEvent[] = [];
+  const watching = (async () => {
+    for await (const event of control!.life(id)) events.push(event);
+  })();
+  while ((await control.state(id)) !== "idle") await Bun.sleep(10);
+  // The agent dies while it works on the second turn: nobody knows what became of it.
+  await control.send(id, "two");
+  await watching;
+  const ended = events.flatMap((event) => (event.kind === "turn-ended" ? [[event.turn, event.outcome]] : []));
+  expect(ended).toEqual([
+    [1, "completed"],
+    [2, "unknown"],
+  ]);
+});

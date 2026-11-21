@@ -51,6 +51,7 @@ import type {
   SessionId,
   ReverseHandler,
   ClaudeOptions,
+  TurnOutcome,
 } from "@niwa-labs/harness";
 import {
   InputNotSent,
@@ -1631,6 +1632,21 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     return outcome.dispatch === "unsent" && session.failure !== undefined ? session.failure : outcome.error;
   }
 
+  /**
+   * How a turn ended, from what the agent answered the prompt with: it finished the turn, it
+   * refused or ended it otherwise (an error, a refusal, a cancel), or it said nothing that proves
+   * either (the connection went, or the cancel it was asked for went unanswered).
+   */
+  function turnOutcomeOf(answered: RpcOutcome): TurnOutcome {
+    if (answered.ok) {
+      const result = typeof answered.result === "object" && answered.result !== null ? (answered.result as Record<string, unknown>) : {};
+      return result.stopReason === STOP_TURN ? "completed" : "failed";
+    }
+    // A turn over its time whose cancel the agent confirmed ended, and not well.
+    if (answered.dispatch === "refused" || (answered.timedOut === true && answered.unconfirmed !== true)) return "failed";
+    return "unknown";
+  }
+
   /** What follows the agent's answer to a prompt: the turn is over, the queue goes on. */
   async function finishPrompt(session: LiveSession, answer: Promise<RpcOutcome>, turn: number): Promise<ClaudeAcpTurn> {
     // A turn over its time is cancelled, and it ends only when the agent answers the cancelled
@@ -1646,7 +1662,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     const text = finalSegment(session);
 
     session.settleIdle();
-    session.emit({ kind: "turn-ended", turn, at: Date.now() });
+    session.emit({ kind: "turn-ended", turn, at: Date.now(), outcome: turnOutcomeOf(answered) });
 
     if (!answered.ok && answered.unconfirmed === true) {
       // The agent did not answer the cancel: it still holds a prompt this side has given up on, so
