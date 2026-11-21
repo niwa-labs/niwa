@@ -1463,13 +1463,19 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       if (failed.dispatch === "unsent") throw new InputNotSent(harnessId, "send", failed.error);
       throw new InputPossiblySent(harnessId, "send", failed.error);
     }
+    // An agent that does not read its input leaves a large line waiting in the pipe: the wait is bounded,
+    // and what is written of it may still be read, so it is not said to be unsent.
+    let accepted: "taken" | "slow";
     try {
-      await session.accepted;
+      accepted = await Promise.race([session.accepted.then(() => "taken" as const), sleep(callTimeoutMs).then(() => "slow" as const)]);
     } catch (error) {
       // The input took the line and failed it: the message did not go out, and the turn it began never ran.
       const reason = error instanceof Error ? error.message : String(error);
       if (session.running && session.current === turn) session.failTurn(new Error(`the prompt could not be written: ${reason}`));
       throw new InputNotSent(harnessId, "send", reason);
+    }
+    if (accepted === "slow") {
+      throw new InputPossiblySent(harnessId, "send", `the agent's input did not take the message within ${callTimeoutMs} ms; part of it may have been read`);
     }
     return { status: "started", turn, at };
   }

@@ -317,6 +317,12 @@ for await (const chunk of Bun.stdin.stream()) {
       // Like real mcode: one prompt at a time per session.
       if (active !== undefined) { send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Invalid params: A prompt is already active for this session." } }); continue; }
       if (message.params.prompt[0].text === "die") process.exit(3);
+      // "stall" ends its turn and then stops reading its input for a while, as a stuck agent does.
+      if (message.params.prompt[0].text === "stall") {
+        send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4000);
+        continue;
+      }
       // "orphan" ends its turn and exits, leaving a grandchild that holds the agent's stdout open: the
       // process is gone and its input is closed, but the pipe of its output has not closed yet.
       if (message.params.prompt[0].text === "orphan") {
@@ -1547,3 +1553,13 @@ test("a message to an agent that has exited but whose output has not closed yet 
   control = undefined;
 });
 
+test("a large message to an agent that does not read its input is not waited for without end", async () => {
+  control = await fakeControl({ callTimeoutMs: 500 });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  await control.send(id, "stall");
+  for (let i = 0; i < 100 && (await control.state(id)) !== "idle"; i += 1) await Bun.sleep(20);
+  const asked = Date.now();
+  // Part of it may be read once the agent reads again, so it is not reported as unsent.
+  await expect(control.send(id, "x".repeat(4_000_000))).rejects.toMatchObject({ code: "InputPossiblySent" });
+  expect(Date.now() - asked).toBeLessThan(3_000);
+});
