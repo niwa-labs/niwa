@@ -231,6 +231,78 @@ test("coverage rises round by round until the measure reports the threshold", as
   expect(flow.calls.author).toHaveLength(2);
 }, 30_000);
 
+test("a coverage measure that fails gives no coverage, whatever it printed", async () => {
+  const flow = await host({ author: (call) => ({ sha: commitFile(dirOf(call), "t.txt", "x\n") }) });
+  const ended = await flow.run(`
+    import { coverageLoop, inWorktree } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, (wt) =>
+        coverageLoop("cov", { wt, threshold: 0.5, author: "author", measure: { cmd: ["sh", "-c", "echo '{\\"coverage\\": 1}'; echo tests crashed; exit 1"], cwd: wt.path } }).then(
+          () => "measured",
+          (error: any) => ({ name: error.name, message: error.message, digest: error.artifact?.digest }),
+        )));`);
+  const out = resultOf(ended) as { name: string; message: string; digest: string };
+  expect(out.name).toBe("MeasureFailed");
+  expect(out.message).toContain("tests crashed");
+  expect(out.digest).toMatch(/^sha256:/);
+  expect(flow.calls.author).toHaveLength(0);
+}, 30_000);
+
+test("a coverage measure that fails after a round is sent to the author and is the last word when it stays failed", async () => {
+  const flow = await host({
+    author: (call) => {
+      const dir = dirOf(call);
+      if (call.prompt.includes("did not count")) {
+        gitIn(dir, "rm", "-q", "broken");
+        gitIn(dir, "commit", "-q", "-m", "mend");
+        return { sha: gitIn(dir, "rev-parse", "HEAD") };
+      }
+      return { sha: commitFile(dir, "broken", "x\n") };
+    },
+  });
+  const ended = await flow.run(`
+    import { coverageLoop, inWorktree } from "@niwa-labs/flow-code";
+    const measure = (cwd: string) => ({ cmd: ["sh", "-c", "if test -f broken; then echo suite crashed; exit 1; fi; echo '{\\"coverage\\": 0.25}'"], cwd });
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const stuck = await inWorktree("one", { repo: "$REPO" }, (wt) => coverageLoop("cov", { wt, threshold: 0.7, author: "author", max: 1, measure: measure(wt.path) }));
+      const mended = await inWorktree("two", { repo: "$REPO" }, (wt) => coverageLoop("cov", { wt, threshold: 0.7, author: "author", max: 2, measure: measure(wt.path) }));
+      return { stuck, mended };
+    });`);
+  const out = resultOf(ended) as { stuck: { after: number; reached: boolean; failure?: { reason: string } }; mended: { reached: boolean; failure?: unknown } };
+  expect(out.stuck).toMatchObject({ before: 0.25, after: 0.25, reached: false });
+  expect(out.stuck.failure?.reason).toContain("suite crashed");
+  expect(out.mended.failure).toBeUndefined();
+  expect(flow.calls.author?.[2]?.prompt).toContain("suite crashed");
+}, 30_000);
+
+test("a test that times out in the red phase has shown no failure", async () => {
+  const flow = await host({ author: (call) => ({ sha: commitFile(dirOf(call), call.prompt.includes("fails now") ? "check.sh" : "impl.txt", "x\n") }) });
+  const ended = await flow.run(`
+    import { inWorktree, tddLoop } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, async (wt) => {
+        // It hangs until impl.txt exists: the red phase times out, and the green phase would pass.
+        const test = { cmd: ["sh", "-c", "if test -f impl.txt; then exit 0; fi; exec sleep 5"], cwd: wt.path, timeout: 300 };
+        const out = await tddLoop("tdd", { task: "add impl", wt, author: "author", test, max: 1 });
+        return { stopped: out.stopped, redSha: out.value.redSha, titles: out.judged.findings.map((f) => f.title) };
+      }));`);
+  expect(resultOf(ended)).toEqual({ stopped: "max-rounds", redSha: "", titles: ["the new test did not finish"] });
+  expect(flow.calls.author).toHaveLength(1);
+}, 30_000);
+
+test("a repro that times out is no bug to fix", async () => {
+  const flow = await host({ author: (call) => ({ sha: commitFile(dirOf(call), "x.txt", "x\n"), cause: "none" }) });
+  const ended = await flow.run(`
+    import { debugLoop, inWorktree } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      inWorktree("wt", { repo: "$REPO" }, async (wt) => {
+        const out = await debugLoop("bug", { symptom: "it hangs", wt, author: "author", repro: { cmd: ["sh", "-c", "exec sleep 5"], cwd: wt.path, timeout: 300 } });
+        return { verdict: out.judged.verdict, sha: out.sha, titles: out.judged.findings.map((f) => f.title) };
+      }));`);
+  expect(resultOf(ended)).toEqual({ verdict: "INCONCLUSIVE", sha: "", titles: ["the repro did not finish"] });
+  expect(flow.calls.author).toHaveLength(0);
+}, 30_000);
+
 test("a self-test fails on any failed or broken scenario and is inconclusive with nothing passed", () => {
   expect(selfTestVerdict([{ status: "pass" }, { status: "pass" }])).toBe("PASS");
   expect(selfTestVerdict([{ status: "pass" }, { status: "gated" }])).toBe("PASS+NOTES");

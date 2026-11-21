@@ -17,7 +17,8 @@ const passed = (what: string): Judged => ({ verdict: "PASS", findings: [], metho
 
 /**
  * Test first: the author writes a test for the task that fails, then makes it pass. A round whose
- * new test passes before the change is a fail, and the next round writes the test again. At most
+ * new test passes before the change is a fail, and so is one that does not finish (it timed out or
+ * was cancelled: no failure was seen); the next round writes the test again. At most
  * `max` rounds (three by default).
  */
 export async function tddLoop(
@@ -34,6 +35,11 @@ export async function tddLoop(
       if (redSha === "") {
         const red = await commitBy(opts.author, opts.wt, `Write a test for this task that fails now, before any change for it, and nothing else:\n${opts.task}${notes}`);
         const before = await runCheck("red", opts.test);
+        if (before.exit === null) {
+          // A test that timed out or was cancelled has not failed: nothing was seen.
+          outcome.set(round, { verdict: "FAIL", findings: [{ title: "the new test did not finish", evidence: before.summary, severity: "blocks" }], method: "check (red)" });
+          return { sha: red.sha, redSha: "", check: before.artifact };
+        }
         if (before.ok) {
           outcome.set(round, { verdict: "FAIL", findings: [{ title: "the new test passes before the change", evidence: before.summary, severity: "blocks" }], method: "check (red)" });
           return { sha: red.sha, redSha: "", check: before.artifact };
@@ -92,7 +98,8 @@ export async function diagnoseLoop(
 /**
  * Fix a bug a repro shows: the repro must fail first; then the author fixes it, round after round,
  * until the repro passes or `max` rounds (three by default) are spent. A repro that passes before any
- * change is no bug to fix: the answer is `INCONCLUSIVE` with no commit.
+ * change is no bug to fix, and one that does not finish (it timed out or was cancelled) shows none:
+ * the answer is `INCONCLUSIVE` with no commit.
  */
 export async function debugLoop(
   key: string,
@@ -102,13 +109,15 @@ export async function debugLoop(
   const { z } = script();
   return script().scope(key, undefined, async () => {
     const before = await runCheck("before", opts.repro);
-    if (before.ok) {
+    if (before.ok || before.exit === null) {
+      // A repro that passes shows no bug; one that did not finish (timed out, cancelled) shows nothing.
+      const title = before.ok ? "the repro passes before any change" : "the repro did not finish";
       return {
         cause: "",
         sha: "",
         before: before.artifact,
         after: before.artifact,
-        judged: { verdict: "INCONCLUSIVE" as const, findings: [{ title: "the repro passes before any change", evidence: before.summary, severity: "note" as const }], method: "check (before)" },
+        judged: { verdict: "INCONCLUSIVE" as const, findings: [{ title, evidence: before.summary, severity: before.ok ? ("note" as const) : ("blocks" as const) }], method: "check (before)" },
       };
     }
     const results = new Map<number, { ok: boolean; dirty: boolean; summary: string; artifact: ArtifactRef }>();
@@ -142,40 +151,61 @@ export function coverageOf(report: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/** A coverage measure that gave no coverage: it failed, or printed no report with one. */
+export class MeasureFailed extends Error {
+  override name = "MeasureFailed";
+  constructor(
+    message: string,
+    readonly artifact: ArtifactRef,
+  ) {
+    super(message);
+  }
+}
+
 /**
  * Raise coverage to `threshold`: the measure reports it (`report: "json"` by default, read as its
  * `coverage`), and the author adds tests until it reaches the threshold or `max` rounds (three by
- * default) are spent.
+ * default) are spent. A measure that fails gives no coverage, whatever it printed: before the first
+ * round that is a `MeasureFailed`; after a round it is sent to the author as the reason the round did
+ * not count, and the answer carries it as `failure` when it is the last word.
  */
 export async function coverageLoop(
   key: string,
   opts: { wt: Worktree; measure: Check; threshold: number; author: Seat; max?: number },
-): Promise<{ before: number; after: number; sha: string; reached: boolean }> {
+): Promise<{ before: number; after: number; sha: string; reached: boolean; failure?: { reason: string; artifact: ArtifactRef } }> {
   checkKey(key, "the key of a coverage loop");
   const measure: Check = { ...opts.measure, report: opts.measure.report ?? "json" };
-  const read = async (label: string): Promise<number> => {
+  const read = async (label: string): Promise<{ coverage: number } | { failure: { reason: string; artifact: ArtifactRef } }> => {
     const measured = await runCheck(label, measure);
+    if (!measured.ok) return { failure: { reason: `the coverage measure did not pass: ${measured.summary}`, artifact: measured.artifact } };
     const coverage = coverageOf(measured.report);
-    if (coverage === undefined) throw new Error(`the coverage measure printed no report with a coverage: ${measured.summary}`);
-    return coverage;
+    if (coverage === undefined) return { failure: { reason: `the coverage measure printed no report with a coverage: ${measured.summary}`, artifact: measured.artifact } };
+    return { coverage };
   };
+  type State = { coverage: number; sha: string; clean: boolean; failure?: { reason: string; artifact: ArtifactRef } };
   return script().scope(key, undefined, async () => {
-    const before = await read("before");
-    const raised = await loop("raise", {
+    const first = await read("before");
+    if ("failure" in first) throw new MeasureFailed(first.failure.reason, first.failure.artifact);
+    const before = first.coverage;
+    const raised = await loop<State>("raise", {
       init: { coverage: before, sha: "", clean: true },
       max: opts.max ?? 3,
-      done: (state) => state.clean && state.coverage >= opts.threshold,
+      done: (state) => state.failure === undefined && state.clean && state.coverage >= opts.threshold,
       step: async (state) => {
         const added = await commitBy(
           opts.author,
           opts.wt,
           `Add tests that raise the coverage from ${String(state.coverage)} to at least ${String(opts.threshold)}. Change no code under test.` +
-            (state.clean ? "" : "\n\nThe last round left changes uncommitted: commit them."),
+            (state.clean ? "" : "\n\nThe last round left changes uncommitted: commit them.") +
+            (state.failure === undefined ? "" : `\n\nThe last round did not count:\n${state.failure.reason}`),
         );
-        return { coverage: await read("measure"), sha: added.sha, clean: !added.dirty };
+        const measured = await read("measure");
+        return "failure" in measured
+          ? { coverage: state.coverage, sha: added.sha, clean: !added.dirty, failure: measured.failure }
+          : { coverage: measured.coverage, sha: added.sha, clean: !added.dirty };
       },
     });
-    const { coverage, sha, clean } = raised.state;
-    return { before, after: coverage, sha, reached: clean && coverage >= opts.threshold };
+    const { coverage, sha, clean, failure } = raised.state;
+    return { before, after: coverage, sha, reached: failure === undefined && clean && coverage >= opts.threshold, ...(failure === undefined ? {} : { failure }) };
   });
 }

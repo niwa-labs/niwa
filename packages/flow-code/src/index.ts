@@ -5,7 +5,7 @@
 export { forkRace, forkSelect, headOf, inWorktree, makeWorktree, removeWorktree, seatIn, stateOf } from "./worktree.ts";
 export type { Worktree } from "./worktree.ts";
 export { checkFailed, commitBy, findingsText, reviewFix, reviewPanel, reviewSubject, uncommitted } from "./review.ts";
-export { coverageLoop, coverageOf, debugLoop, diagnoseLoop, tddLoop } from "./loops.ts";
+export { MeasureFailed, coverageLoop, coverageOf, debugLoop, diagnoseLoop, tddLoop } from "./loops.ts";
 export type { Hypothesis } from "./loops.ts";
 export { ImplementStopped, implement, integrate, selfTest, selfTestVerdict } from "./build.ts";
 export type { ImplementMode, ScenarioStatus } from "./build.ts";
