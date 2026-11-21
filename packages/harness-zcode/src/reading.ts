@@ -206,7 +206,9 @@ function recordsOf(
       if (part.synthetic === true) return [];
       const base = { at: at(part.time?.start), incomplete: running };
       if (message.role === "user") {
-        return isHumanMessage(message) ? [{ sub: 0, record: { kind: "user", text: part.text, ...base } }] : [];
+        // The messages ZCode keeps for the model alone and the parts it marks synthetic are left out above,
+        // so what is read here is what the person typed.
+        return isHumanMessage(message) ? [{ sub: 0, record: { kind: "user", text: part.text, inserted: [], ...base } }] : [];
       }
       if (message.role === "assistant") {
         const model = modelOf(message);

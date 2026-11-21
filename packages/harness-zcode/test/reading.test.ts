@@ -103,7 +103,8 @@ test("maps text, thoughts, tool calls and results; the harness's own messages an
   ]);
   const records = await all(reading().read(id("sess_a")));
   expect(records.map((record) => record.kind)).toEqual(["user", "thinking", "assistant", "tool-call", "tool-result", "tool-call", "tool-result"]);
-  expect(records[0]).toMatchObject({ kind: "user", text: "do it", incomplete: false });
+  // The reminder ZCode keeps for the model alone and the synthetic part are not read, so nothing in the text is inserted.
+  expect(records[0]).toMatchObject({ kind: "user", text: "do it", inserted: [], incomplete: false });
   expect(records[1]).toMatchObject({ kind: "thinking", text: "weighing it", redacted: false, at: 2200, incomplete: false });
   expect(records[2]).toMatchObject({ kind: "assistant", text: "on it", model: "builtin:zai/GLM-5.3-Flash", at: 2500 });
   expect(records[3]).toMatchObject({ kind: "tool-call", callId: "call_m3", name: "Bash", input: { command: "ls" }, at: 2000 });
