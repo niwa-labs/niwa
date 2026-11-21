@@ -9,7 +9,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { COCKPIT_MODULE, createNiwa, loginWeb, plugin, tempHome, webFetch } from "@niwa-labs/testing";
@@ -26,7 +26,7 @@ const IMPORTS = { react: "/assets/react-abc.js", "react/jsx-runtime": "/assets/j
 
 type Setup = { web: WebServer; dir: string; app: WebApp };
 
-async function setup(options: { app?: boolean } = {}): Promise<Setup> {
+async function setup(options: { app?: boolean; root?: (dir: string) => Promise<string> } = {}): Promise<Setup> {
   const home = await tempHome();
   const dir = join(home.path, "site");
   await mkdir(join(dir, "assets"), { recursive: true });
@@ -42,7 +42,7 @@ async function setup(options: { app?: boolean } = {}): Promise<Setup> {
   const host = createNiwa({ home: home.path });
   host.use(plugin("offers", (api) => api.offer(COCKPIT_MODULE, { id: "demo", entry: join(module, "index.tsx"), styles: [join(module, "demo.css")] })));
   await host.serve();
-  const app: WebApp = { root: dir, imports: IMPORTS };
+  const app: WebApp = { root: options.root === undefined ? dir : await options.root(dir), imports: IMPORTS };
   const web = await serveWebPages({ home: home.path, port: 0, speaksFor: "owner", ...(options.app === false ? {} : { app }) });
   await loginWeb(web);
   cleanups.push(async () => {
@@ -93,6 +93,29 @@ test("the app's files are served with their types, and nothing outside the folde
   expect((await webFetch(`${web.url}/runs/run-1`, { method: "POST" })).status).toBe(405);
   // Without the cookie nothing is served.
   expect((await fetch(`${web.url}/assets/app.js`)).status).toBe(401);
+});
+
+test("a link inside the folder does not lead out of it, and one that stays inside is a file of the app", async () => {
+  const { web, app } = await setup();
+  await symlink(join(app.root, "..", "secret.txt"), join(app.root, "assets", "leak.txt"));
+  await symlink(join(app.root, "assets", "app.js"), join(app.root, "assets", "alias.js"));
+  expect((await webFetch(`${web.url}/assets/leak.txt`)).status).toBe(404);
+  expect(await (await webFetch(`${web.url}/assets/alias.js`)).text()).toBe(`console.log("app");`);
+});
+
+test("the folder of the app may be named with a trailing slash or through a link", async () => {
+  const named = [
+    async (site: string) => `${site}/`,
+    async (site: string) => {
+      await symlink(site, `${site}-link`);
+      return `${site}-link`;
+    },
+  ];
+  for (const root of named) {
+    const { web } = await setup({ root });
+    expect(await (await webFetch(`${web.url}/assets/app.js`)).text()).toBe(`console.log("app");`);
+    expect((await webFetch(`${web.url}/assets/../index.html`)).status).toBe(404);
+  }
 });
 
 type Catalogue = { modules: Array<{ id: string; package: string; version: string; entry: string; hash: string; styles?: string[] }> };

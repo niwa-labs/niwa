@@ -7,8 +7,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize, sep } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, sep } from "node:path";
 
 import { CATALOG_ACTION, CatalogOutput } from "@niwa-labs/client";
 import type { NiwaApi } from "@niwa-labs/client";
@@ -52,8 +52,9 @@ export const ASSETS_PREFIX = "/assets/";
 export const MODULES_PREFIX = "/modules/";
 
 /**
- * The file of the app a path names, or undefined when it names none: only files inside the folder, and only regular files.
- * A path that climbs out of the folder names nothing.
+ * The file of the app a path names, or undefined when it names none: only regular files inside the folder, whichever links
+ * lie on the way. The folder and the file are both resolved to where they really are before the one is held to the other,
+ * and the path that comes back is the resolved one, so what is read is what was checked.
  */
 export async function assetFile(app: WebApp, path: string): Promise<string | undefined> {
   let decoded: string;
@@ -63,9 +64,11 @@ export async function assetFile(app: WebApp, path: string): Promise<string | und
     return undefined;
   }
   if (decoded.includes("\0")) return undefined;
-  const file = normalize(join(app.root, decoded));
-  if (!file.startsWith(normalize(app.root) + sep)) return undefined;
   try {
+    const root = await realpath(app.root);
+    const file = await realpath(join(root, decoded));
+    const within = relative(root, file);
+    if (within === "" || isAbsolute(within) || within.split(sep)[0] === "..") return undefined;
     return (await stat(file)).isFile() ? file : undefined;
   } catch {
     return undefined;
