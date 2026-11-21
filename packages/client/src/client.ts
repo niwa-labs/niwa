@@ -12,7 +12,7 @@ import type { z } from "zod";
 
 import { expandHome } from "./home.ts";
 import { channelName, frameFor } from "./live.ts";
-import { resolveQuery, seq, targetName } from "@niwa-labs/core";
+import { RecordQuerySchema, resolveQuery, seq, targetName } from "@niwa-labs/core";
 import type {
   ActionTarget,
   CallOptions,
@@ -99,6 +99,14 @@ function onWire(query: ResolvedQuery): { types?: string[]; filter?: Record<strin
     ...(query.stream === undefined ? {} : { stream: query.stream }),
     ...(query.from === undefined ? {} : { from: query.from }),
   };
+}
+
+/** Refuse a query the wire does not accept, with the reason. */
+function checkQuery(query: ResolvedQuery): void {
+  const parsed = RecordQuerySchema.safeParse(onWire(query));
+  if (parsed.success) return;
+  const why = parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
+  throw new HostError(`the query is not one the wire accepts: ${why}`);
 }
 
 interface PendingCall {
@@ -726,11 +734,14 @@ class Client implements NiwaApi {
     this.records = {
       since: (query?: RecordQuery<any>): AsyncIterable<StoredRecord> => {
         if (this.isClosed) throw new HostError(CLOSED_MESSAGE);
+        // A query the wire refuses is the caller's mistake: it is told now, not retried as a dropped socket.
+        const resolved = resolveQuery(query);
+        checkQuery(resolved);
         const subscription = new RecordSubscription({
           home: this.home,
           client: this.client,
           token: this.token,
-          query: resolveQuery(query),
+          query: resolved,
           onDone: () => {
             this.subscriptions.delete(subscription);
           },
