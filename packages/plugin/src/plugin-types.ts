@@ -69,6 +69,12 @@ export interface HandlerOptions<T = unknown> {
    * that produces a type in its `provider`, so the refusal can say what to install.
    */
   requires?: readonly RecordType<any>[];
+  /**
+   * The types of other plugins this handler writes, as a plugin writes its own: the request of a
+   * sleep, which the timers own. A handler writes a type its plugin declares, an open type, a type
+   * listed here, or one a grant lets it write; any other write is refused.
+   */
+  emits?: readonly RecordType<any>[];
 }
 
 /**

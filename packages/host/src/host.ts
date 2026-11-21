@@ -53,6 +53,7 @@ import {
   readFiltered,
   targetName,
   holds,
+  overlaps,
 } from "@niwa-labs/core";
 import type {
   Clock,
@@ -289,6 +290,8 @@ interface HandlerEntry {
   /** The record types another plugin has to declare for this handler to work. */
   readonly requires: readonly AnyType[];
   readonly subscribing: Subscribing;
+  /** The types of other plugins it writes. */
+  readonly emits: readonly AnyType[];
 }
 
 /** What one installed version of a plugin declared while its setup function ran. */
@@ -578,7 +581,7 @@ class Niwa implements Host {
   private readonly intercepts = new Map<ActionName, Intercepts>();
   private readonly handlers = new Map<
     HandlerId,
-    { type: AnyType; version: PluginVersion; handler: Handler<any>; subscribing: Subscribing }
+    { type: AnyType; version: PluginVersion; handler: Handler<any>; subscribing: Subscribing; emits: ReadonlySet<string> }
   >();
   /** Everything that watches the journal: the host's own subscriptions and the clients'. */
   private readonly feeds = new Set<Feed>();
@@ -816,7 +819,7 @@ class Niwa implements Host {
           );
         }
         const subscribing = subscribingOf(`plugin "${plugin.name}", handler "${name}"`, options);
-        installed.handlers.push({ name, type, handler, requires: options.requires ?? [], subscribing });
+        installed.handlers.push({ name, type, handler, requires: options.requires ?? [], emits: options.emits ?? [], subscribing });
         sources.push(handlerSource(name, handler));
       },
       // The reader is a function: the journal opens when the host starts serving, which is
@@ -882,6 +885,19 @@ class Niwa implements Host {
         handler: entry.handler,
         type: entry.type,
       });
+    }
+    // The owner of a record type is one plugin: two would each be refused the other's writes, and a
+    // name under another plugin's family would have two schemas.
+    for (const [name, other] of this.plugins) {
+      if (name === plugin.name) continue;
+      for (const type of installed.types) {
+        const taken = other.types.find((theirs) => overlaps(theirs.name, type.name));
+        if (taken !== undefined) {
+          throw new TypeError(
+            `plugin "${plugin.name}" declares "${type.name}", which "${name}" owns as "${taken.name}": a record type has one owner`,
+          );
+        }
+      }
     }
     // A plugin that replaces another takes its services over: the old ones stop, the new ones
     // start when the host is already serving.
@@ -1220,6 +1236,7 @@ class Niwa implements Host {
           version: installed.version,
           handler: entry.handler,
           subscribing: entry.subscribing,
+          emits: new Set(entry.emits.map((type) => type.name)),
         });
       }
     }
@@ -1533,7 +1550,11 @@ class Niwa implements Host {
     const principal = caller.kind === "client" ? caller.principal : undefined;
     const declared = this.declaredType(type);
     const owner = this.typeOwners.get(declared?.name ?? type);
-    const own = principal?.kind === "plugin" && principal.id === String(owner);
+    // A plugin writes its own types: over the wire as its principal, and from a handler of its own. A
+    // handler writes the types of others it lists as its own writes.
+    const writer = caller.kind === "handler" ? String(caller.handler).split("/")[0] : principal?.kind === "plugin" ? String(principal.id) : undefined;
+    const listed = caller.kind === "handler" && this.handlers.get(caller.handler)?.emits.has(declared?.name ?? type) === true;
+    const own = listed || (writer !== undefined && writer === String(owner));
     const closed = `"${type}" is closed: only the "${owner}" plugin writes it`;
     let answer: Permit;
     if (standing.kind === "closed" || standing.kind === "off") {
@@ -2125,6 +2146,14 @@ class Niwa implements Host {
         }
       },
       emit: (action, type, data, caller, place) => this.emitAs(action, type, data, caller, place),
+      admitEmit: (caller, name, data) => {
+        const declared = this.declaredType(name);
+        if (declared === undefined) throw new UnknownType(name);
+        this.permitEmit(caller, name);
+        const parsed = declared.schema.safeParse(data);
+        if (!parsed.success) throw new ValidationError(`the data of "${name}" is not valid`, parsed.error.issues);
+        return { data: parsed.data, version: declared.version };
+      },
     };
   }
 

@@ -106,6 +106,13 @@ export interface RunnerDeps {
     caller: Caller,
     place: Placement,
   ): Promise<StoredRecord>;
+  /**
+   * Check a record a handler writes, as a record written over the wire is checked: the type is
+   * declared, and the handler's own plugin declares it, or it is open, or the caller's grant lets it
+   * write it. The data is read through the schema of the type as it is declared, not through the copy
+   * the handler holds. Throws when the record may not be written.
+   */
+  admitEmit(caller: Caller, type: RecordTypeName, data: unknown): { readonly data: unknown; readonly version: number };
 }
 
 /** Where a record written by a call belongs: under the invocation, or on its own chain. */
@@ -445,17 +452,13 @@ async function stepEmit<T>(
   opts?: StepEmitOptions,
 ): Promise<StoredRecord> {
   const key = emitKey(ctx, opts);
-  const parsed = type.schema.safeParse(data);
-  if (!parsed.success) {
-    const error = describeIssues(`data of ${type.name} does not match its schema`, parsed.error.issues);
-    throw new TypeError(error);
-  }
+  const admitted = ctx.deps.admitEmit(ctx.actor, type.name, data);
   const rec: NewRecord = {
     id: recordId(`${ctx.invocation}/emit/${key}`),
     stream: ctx.stream,
     type: type.name,
-    schema: type.version,
-    data: parsed.data,
+    schema: admitted.version,
+    data: admitted.data,
     actor: ctx.actor,
     cause: ctx.cause,
     root: ctx.root,
