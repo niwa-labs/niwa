@@ -57,6 +57,9 @@ export function timerFiredQuery(timer: TimerId): TypeQuery<TimerFiredData> {
   return queryOf(TimerFired, { timer });
 }
 
+/** The schema of a sleep key as the data of a record carries it: a non-empty string without whitespace. */
+const SleepKeyText = z.string().regex(/^\S+$/, "a sleep key must be a non-empty string without whitespace");
+
 /**
  * The key of one sleep: the invocation and the sleeping place.
  *
@@ -72,10 +75,17 @@ export type SleepKey = string & { readonly __brand: "SleepKey" };
  * @throws when the key cannot be part of a record id.
  */
 export function sleepKey(value: string): SleepKey {
-  if (typeof value !== "string" || value.length === 0 || /\s/.test(value)) {
+  const parsed = readSleepKey(value);
+  if (parsed === undefined) {
     throw new TypeError(`a sleep key must be a non-empty string without whitespace, got ${JSON.stringify(value)}`);
   }
-  return value as SleepKey;
+  return parsed;
+}
+
+/** A sleep key, or undefined when what a record carries cannot be one. */
+export function readSleepKey(value: unknown): SleepKey | undefined {
+  const parsed = SleepKeyText.safeParse(value);
+  return parsed.success ? (parsed.data as SleepKey) : undefined;
 }
 
 /**
@@ -91,7 +101,7 @@ export const SleepRequested = record(
     /** When the sleep ends, in milliseconds since the epoch. */
     at: z.number(),
     /** The key of the sleeping place the wake is addressed to. */
-    key: z.string(),
+    key: SleepKeyText,
   }),
 );
 
@@ -119,7 +129,7 @@ export const TimerSlept = record(
   "timer.slept",
   z.object({
     /** The key of the sleeping place that is woken. */
-    key: z.string(),
+    key: SleepKeyText,
   }),
 );
 

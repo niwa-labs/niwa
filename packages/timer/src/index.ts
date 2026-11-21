@@ -73,7 +73,7 @@ import { TIMER_OFFER, plugin, trigger } from "@niwa-labs/plugin";
 import type { MissedRule, Plugin, ServiceContext, StateHandle, TimerDef, TimerOffer, Trigger } from "@niwa-labs/plugin";
 import { z } from "zod";
 
-import { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerFiredQuery, timerId, timerSleepRequest } from "./records.ts";
+import { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, readSleepKey, sleepKey, timerFiredQuery, timerId, timerSleepRequest } from "./records.ts";
 import type {
   SleepKey,
   SleepRequestedData,
@@ -81,7 +81,7 @@ import type {
   TimerSleptData,
 } from "./records.ts";
 
-export { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, sleepKey, timerFiredQuery, timerId, timerSleepRequest } from "./records.ts";
+export { SleepRequested, TimerFired, TimerId, TimerSlept, clockOf, readSleepKey, sleepKey, timerFiredQuery, timerId, timerSleepRequest } from "./records.ts";
 export type {
   SleepKey,
   SleepRequestedData,
@@ -91,6 +91,9 @@ export type {
 // The definition of a timer and the point plugins offer one at (`TIMER_OFFER`) are the plugin layer's: a plugin that
 // needs a timer offers it without importing this module.
 export type { MissedRule, TimerDef };
+
+/** How long a write that failed waits before it is tried again. */
+const RETRY_MS = 1000;
 
 /** The rule a timer uses when it says nothing: one firing for all the missed dues. */
 export const DEFAULT_MISSED: MissedRule = "once";
@@ -248,6 +251,9 @@ function sleepKeyOf(scope: InvocationScope, place: string): SleepKey {
  */
 const sleepsOf = new WeakMap<InvocationScope, number>();
 
+/** The sleeping places one invocation has used, so a place is never slept at twice. */
+const placesOf = new WeakMap<InvocationScope, Set<string>>();
+
 /**
  * Sleep for `ms` milliseconds, and go on when the time has come.
  *
@@ -260,7 +266,8 @@ const sleepsOf = new WeakMap<InvocationScope, number>();
  * twice may give the two sleeps two keys; without one, the sleeps are told apart by their
  * number.
  *
- * @throws when the sleep is asked for outside an invocation: there is nothing to wait with.
+ * @throws when the sleep is asked for outside an invocation: there is nothing to wait with, or
+ * when the key was used by an earlier sleep of the same invocation: the wake of a place comes once.
  */
 export async function sleep(step: Step, ms: number, key?: string): Promise<void> {
   if (!Number.isFinite(ms) || ms < 0) {
@@ -271,9 +278,16 @@ export async function sleep(step: Step, ms: number, key?: string): Promise<void>
     throw new Error("a sleep is a step of an invocation: it cannot be made outside one");
   }
   const number = (sleepsOf.get(scope) ?? 0) + 1;
-  sleepsOf.set(scope, number);
   const waitKey = `timer.sleep-${number}`;
-  const place = sleepKeyOf(scope, key ?? waitKey);
+  const named = key ?? waitKey;
+  const places = placesOf.get(scope) ?? new Set<string>();
+  if (places.has(named)) {
+    throw new Error(`the sleeping place "${named}" was slept at already in this invocation: a place is woken once, so a second sleep needs a key of its own`);
+  }
+  const place = sleepKeyOf(scope, named);
+  places.add(named);
+  placesOf.set(scope, places);
+  sleepsOf.set(scope, number);
   const at = (await step.now()) + ms;
   // The wait is begun before the request is written. The wake of a sleep can only be written
   // after the request is, and a wait looks for the records that came after it began: a wait
@@ -391,6 +405,8 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
       // The sleeps that are over, by the key of the sleeping place, and the wakes that are
       // armed for the ones that are not.
       const ended = new Set<SleepKey>();
+      // The wakes whose record is being written: not over until the write is confirmed.
+      const writing = new Set<SleepKey>();
       const wakes = new Map<SleepKey, () => void>();
       /**
        * End one sleep: the wake is written for the sleeping place, and the handler that waits
@@ -398,21 +414,30 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
        *
        * A wake that was written before is not written again: the id is a function of the
        * sleeping place, so a host that restarts and finds the sleep still waiting writes the
-       * same record.
+       * same record. The sleep is over only when the write is confirmed: a write that failed is
+       * tried again after a delay, so the handler is not left asleep.
        */
       const wake = async (key: SleepKey): Promise<void> => {
-        if (stopped || ended.has(key)) return;
-        ended.add(key);
+        if (stopped || ended.has(key) || writing.has(key)) return;
+        writing.add(key);
         try {
           await ctx.emit(TimerSlept, { key }, { id: sleptId(key) });
+          ended.add(key);
         } catch (error) {
-          // Written in the meantime, or the host is closing.
-          if (error instanceof IntegrityError || stopped) return;
+          // Written in the meantime: the sleep is over.
+          if (error instanceof IntegrityError) {
+            ended.add(key);
+            return;
+          }
+          if (stopped) return;
           console.error(
-            `niwa: the sleep "${key}" could not be woken: ${
+            `niwa: the sleep "${key}" could not be woken, it is tried again: ${
               error instanceof Error ? error.message : String(error)
             }`,
           );
+          armSleep(key, ctx.now() + RETRY_MS);
+        } finally {
+          writing.delete(key);
         }
       };
       /**
@@ -443,7 +468,8 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
        * place, so the second request is the same sleep.
        */
       askSleep = (data: SleepRequestedData): void => {
-        const key = sleepKey(data.key);
+        const key = readSleepKey(data.key);
+        if (key === undefined) return skipped("a sleep request", data.key);
         if (stopped || ended.has(key)) return;
         armSleep(key, data.at);
       };
@@ -453,11 +479,17 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
        */
       const scan = (): void => {
         for (const row of journal?.since(seq(0), [TimerSlept.name]) ?? []) {
-          ended.add(sleepKey((row.data as TimerSleptData).key));
+          const key = readSleepKey((row.data as TimerSleptData).key);
+          if (key === undefined) skipped("a wake", (row.data as TimerSleptData).key);
+          else ended.add(key);
         }
         for (const row of journal?.since(seq(0), [SleepRequested.name]) ?? []) {
           const data = row.data as SleepRequestedData;
-          const key = sleepKey(data.key);
+          const key = readSleepKey(data.key);
+          if (key === undefined) {
+            skipped("a sleep request", data.key);
+            continue;
+          }
           if (ended.has(key)) continue;
           armSleep(key, data.at);
         }
@@ -542,11 +574,12 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
     /** The sleeps that are not over: the records that asked for them, by the sleeping place. */
     const pendingSleeps = (): Array<{ at: number; row: StoredRecord }> => {
       const journal = api.journal?.();
+      // A record whose key cannot be one is no sleep: the scan of the service reports it.
       const ended = new Set(journal?.since(seq(0), [TimerSlept.name]).map((row) => (row.data as TimerSleptData).key));
       const pending = new Map<string, { at: number; row: StoredRecord }>();
       for (const row of journal?.since(seq(0), [SleepRequested.name]) ?? []) {
         const data = row.data as SleepRequestedData;
-        if (!ended.has(sleepKey(data.key))) pending.set(data.key, { at: data.at, row });
+        if (readSleepKey(data.key) !== undefined && !ended.has(data.key)) pending.set(data.key, { at: data.at, row });
       }
       return [...pending.values()].sort((a, b) => a.at - b.at);
     };
@@ -806,6 +839,11 @@ function nextTimeOfDay(time: string, from: Timestamp): Timestamp {
     day.setHours(hours ?? 0, minutes ?? 0, 0, 0);
   }
   return timestamp(day.getTime());
+}
+
+/** A stored record that cannot be what it says it is: it is left out, and the log says so. */
+function skipped(what: string, key: unknown): void {
+  console.error(`niwa: ${what} with the sleep key ${JSON.stringify(key)} is skipped: a sleep key is a non-empty string without whitespace`);
 }
 
 /** What the plugin remembers about its timers. */
