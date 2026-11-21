@@ -6,3 +6,7 @@ export { matchText, recordText, searchRecords, searchTranscript } from "./search
 export { readTranscript, searchSession } from "./read.ts";
 export type { ReadAnswer, ReadQuery, ReadingBinding } from "./read.ts";
 export type { SearchMatch, SearchQuery } from "./records.ts";
+export { history } from "./plugin.ts";
+export type { HistoryOptions } from "./plugin.ts";
+export { DEFAULT_WATCH_TIMING, SYSTEM_CLOCK, watchSession } from "./watch.ts";
+export type { Progress, WatchClock, WatchEvent, WatchOptions, WatchTiming } from "./watch.ts";

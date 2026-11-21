@@ -5,12 +5,15 @@
 
 import { z } from "zod";
 
+import { actionRef, record } from "@niwa-labs/core";
 import { BriefSchema, DigestEntrySchema, DigestModeSchema, FileIndexSchema } from "@niwa-labs/digest";
 import {
   AssistantRecordSchema,
   ChecklistRecordSchema,
   CompactionRecordSchema,
+  HarnessIdSchema,
   LocatorSchema,
+  SessionIdSchema,
   NestedRecordSchema,
   PermissionRecordSchema,
   ThinkingRecordSchema,
@@ -102,4 +105,50 @@ export const DigestReadSchema = z.object({
   files: FileIndexSchema,
   /** How many records left nothing in the window. */
   omitted: z.number().int().nonnegative(),
+});
+
+/** A watch of a session began: the session, its harness, and the directory it works in when the harness says. */
+export const HistorySessionSeen = record(
+  "history.session.seen",
+  z.object({ session: SessionIdSchema, harness: HarnessIdSchema, cwd: z.string().optional() }),
+);
+
+/** A watched session wrote nothing for a while: what it holds up to here can be worked on. */
+export const HistorySessionPaused = record(
+  "history.session.paused",
+  z.object({ session: SessionIdSchema, upto: LocatorSchema, why: z.enum(["idle"]) }),
+);
+
+/**
+ * A watched session is over: `exact` when it is known, `guessed` when it only wrote nothing for
+ * longer than the watch waits, which is all a transcript can tell of another harness's session.
+ */
+export const HistorySessionEnded = record(
+  "history.session.ended",
+  z.object({ session: SessionIdSchema, certainty: z.enum(["exact", "guessed"]) }),
+);
+
+/** A watch was stopped before the session ended. */
+export const HistorySessionUnwatched = record("history.session.unwatched", z.object({ session: SessionIdSchema }));
+
+/** How far the agent's checklist is, written when it changes; the checklist itself is read on demand. */
+export const SessionProgress = record(
+  "session.progress",
+  z.object({ session: SessionIdSchema, done: z.number().int().nonnegative(), total: z.number().int().nonnegative() }),
+);
+
+/** The record types the history plugin declares. */
+export const HISTORY_TYPES = [HistorySessionSeen, HistorySessionPaused, HistorySessionEnded, HistorySessionUnwatched, SessionProgress] as const;
+
+export const historyWatch = actionRef("history.watch", {
+  description:
+    "Follows a session of any harness while it grows: writes how far its checklist is when that changes, when it pauses, and when it ends (a guess for a session niwa did not start). Watching a session already watched changes nothing.",
+  input: z.object({ session: SessionIdSchema }),
+  output: z.object({ watching: z.boolean() }),
+});
+
+export const historyUnwatch = actionRef("history.unwatch", {
+  description: "Stops following a session.",
+  input: z.object({ session: SessionIdSchema }),
+  output: z.object({ stopped: z.boolean() }),
 });

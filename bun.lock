@@ -239,8 +239,10 @@
       "name": "@niwa-labs/history",
       "version": "0.0.0",
       "dependencies": {
+        "@niwa-labs/core": "workspace:*",
         "@niwa-labs/digest": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
+        "@niwa-labs/plugin": "workspace:*",
         "zod": "^4.6.7",
       },
     },
