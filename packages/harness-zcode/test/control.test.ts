@@ -628,6 +628,15 @@ test("a session that was not started here is resumed in a process of its own, in
   await c.resume(id, { visible: { actions: ["a"], disabledTools: [] } });
 });
 
+test("a session the database does not know is resumed in the directory its caller says it started in", async () => {
+  const where = join(dir, "workspace");
+  await mkdir(where);
+  const c = control();
+  await c.resume(sessionId(harnessId("zcode-fake"), "sess_unlisted"), { cwd: where });
+  expect(spawned[0]).toEqual([bin, "app-server", "--stdio", "--cwd", where]);
+  expect((await requestsOf("session/resume"))[0]).toMatchObject({ workspace: { workspacePath: where, workspaceKey: where } });
+});
+
 test("a resume of a held session with the same surface changes nothing; with another, a new process takes the session on", async () => {
   const c = control();
   const server = { name: "niwa", command: "niwa", args: ["mcp"], env: { NIWA_ID: "t" } };

@@ -1168,9 +1168,9 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       }
       const surface = surfaceOf(launch.servers, launch.tools, launch.visible);
 
-      // The session is resumed in the directory it ran in; one the database does not know is
-      // resumed where this process is, and the CLI says whether it has it.
-      const cwd = (home === undefined ? undefined : directoryOf(home, id.native)) ?? held?.cwd ?? process.cwd();
+      // The session is resumed in the directory it ran in: the database's, else the one the caller says
+      // it started in. One neither knows is resumed where this process is, and the CLI says whether it has it.
+      const cwd = (home === undefined ? undefined : directoryOf(home, id.native)) ?? resumeOptions?.cwd ?? held?.cwd ?? process.cwd();
       let session: LiveSession;
       try {
         session = await spawnSession(cwd, launch);
