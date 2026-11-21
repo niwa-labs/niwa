@@ -210,6 +210,28 @@ export const BriefingSectionInput = z.object({ agent: AgentName });
 /** What it answers: the text of the section; an empty text leaves the section out. */
 export const BriefingSectionOutput = z.object({ text: z.string() });
 
+/**
+ * A section a plugin adds to the prompt of an agent's sessions: the action that writes it, asked with `{ agent }` when a
+ * session of the agent starts, answering `{ text }`. It goes as a stable section after the agent's own prompt, so what it
+ * says is read live at each start (a charter that grows), not fixed when the plugin is set up. An empty text leaves it out.
+ */
+export interface PromptSectionOffer {
+  /** Its name among the sections of the offering plugin; the session sees it as `<plugin>:<id>`. */
+  readonly id: string;
+  /** The action that writes it: input `PromptSectionInput`, output `PromptSectionOutput`. */
+  readonly action: string;
+  /** The agent whose sessions it is for; absent, every agent's. */
+  readonly agent?: string;
+}
+
+/** Where a plugin offers a section of the prompt of an agent's sessions (`api.offer(AGENT_PROMPT_SECTION, { id, action })`). */
+export const AGENT_PROMPT_SECTION: OfferKey<PromptSectionOffer> = offerKey("agent.prompt", "agents");
+
+/** What the action of a prompt section is asked with. */
+export const PromptSectionInput = z.object({ agent: AgentName });
+/** What it answers: the text of the section; an empty text leaves the section out. */
+export const PromptSectionOutput = z.object({ text: z.string() });
+
 /** One agent as the list shows it. */
 export const AgentStatus = z.enum(["new", "working", "asleep"]);
 export type AgentStatus = z.output<typeof AgentStatus>;

@@ -45,6 +45,7 @@ import { TASK_TYPES, fold as foldTasks } from "@niwa-labs/tasks/records";
 
 import {
   AGENT_BRIEFING,
+  AGENT_PROMPT_SECTION,
   AGENT_TYPES,
   AgentAttached,
   AgentCreated,
@@ -56,6 +57,7 @@ import {
   AgentTurnFailed,
   AgentTurnQueued,
   BriefingSectionOutput,
+  PromptSectionOutput,
   agentAttach,
   agentAttachment,
   agentBounds,
@@ -332,10 +334,12 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       const harness = definition.harness ?? (definition.role === undefined ? undefined : options.roles?.[definition.role]);
       if (harness === undefined) return void (await failed("unsent", `the role "${definition.role ?? ""}" of agent "${turn.agent}" names no harness`));
       const seed = main === undefined ? undefined : await seedOf(step, main.session);
+      const offeredSections = await sectionsOf(step, turn.agent);
       const prompt = {
         sections: [
           ...(definition.character === undefined ? [] : [{ id: "character", tier: "constant" as const, text: definition.character }]),
           { id: "agent", tier: "stable" as const, text: `${definition.prompt}\n\n${selfText(turn.agent)}` },
+          ...offeredSections,
           ...(seed === undefined ? [] : [{ id: "seed", tier: "volatile" as const, text: seed.text }]),
           { id: "turn", tier: "volatile" as const, text },
         ],
@@ -378,6 +382,24 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
       if (sent.status === "completed") await step.emit(AgentTurnDelivered, { agent: turn.agent, turn: turn.turn, session: started.value.ref, receipt: sent.value.receipt }, { key: "delivered" });
       else await failed(sent.status === "failed" && !sent.effectPossible ? "unsent" : "possibly-sent", sent.status === "failed" ? sent.error : sent.status);
     });
+
+    /**
+     * The sections plugins offer for the prompt of a new session of an agent, as their actions write them now: each a
+     * step of its own, so a turn handled again reads what the first start was given. A section that fails, or says
+     * nothing, is left out: the session starts without it rather than not at all.
+     */
+    const sectionsOf = async (step: Step, name: string): Promise<Array<{ id: string; tier: "stable"; text: string }>> => {
+      const sections: Array<{ id: string; tier: "stable"; text: string }> = [];
+      for (const { plugin: by, value } of api.offers(AGENT_PROMPT_SECTION)) {
+        if (value.agent !== undefined && value.agent !== name) continue;
+        const id = `${String(by)}:${value.id}`;
+        if (sections.some((one) => one.id === id)) continue;
+        const written = await step.outcome<unknown, unknown>(actionName(value.action), { agent: name }, { key: `section:${id}` });
+        const parsed = written.status === "completed" ? PromptSectionOutput.safeParse(written.value) : undefined;
+        if (parsed?.success === true && parsed.data.text.trim() !== "") sections.push({ id, tier: "stable", text: parsed.data.text.trim() });
+      }
+      return sections;
+    };
 
     /** What a new session of an agent knows of itself. */
     const selfText = (name: string): string =>

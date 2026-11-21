@@ -4,11 +4,12 @@
 
 import { afterEach, expect, test } from "bun:test";
 
-import { agent as agentAddress, grant, principalOf } from "@niwa-labs/core";
+import { action, actionRef, agent as agentAddress, grant, principalOf } from "@niwa-labs/core";
 import { connect } from "@niwa-labs/client";
 import type { ActionName, StoredRecord } from "@niwa-labs/core";
 import { connectAsOwner } from "@niwa-labs/testing";
-import { partVersions, AgentDefinition, turnText } from "@niwa-labs/agent";
+import { AGENT_PROMPT_SECTION, PromptSectionInput, PromptSectionOutput, partVersions, AgentDefinition, turnText } from "@niwa-labs/agent";
+import { plugin } from "@niwa-labs/plugin";
 
 import { Unsupported, harnessId } from "@niwa-labs/harness";
 
@@ -238,4 +239,31 @@ test("a start its harness refused by name fails the turn as unsent, and one that
   const other = await served({ agents: [RIN] }, { control: broke });
   await asOwner(other, "agent.tell", { agent: "rin", text: "Start." });
   expect(dataOf(await until(other.records, "agent.turn.failed"), "agent.turn.failed")).toEqual([expect.objectContaining({ status: "possibly-sent" })]);
+});
+
+const charterSection = actionRef("chartertest.section", { description: "A section of the prompt.", input: PromptSectionInput, output: PromptSectionOutput });
+
+test("a plugin's prompt section is written when a session of its agent starts, and goes as a stable section of that session", async () => {
+  // The section is live: what it says is read at the start of each session, not fixed when the plugin is set up.
+  let charter = "Rule 1: ask before a release.";
+  const asked: string[] = [];
+  const sections = plugin("chartertest", (api) => {
+    api.offer(AGENT_PROMPT_SECTION, { id: "charter", agent: "rin", action: charterSection.name });
+    api.offer(AGENT_PROMPT_SECTION, { id: "empty", action: charterSection.name.replace("section", "nothing") });
+    api.action(action(charterSection, { recovery: "repeat", effect: "read", run: ({ agent }) => (asked.push(agent), { text: charter }) }));
+    api.action(action(actionRef("chartertest.nothing", { description: "Says nothing.", input: PromptSectionInput, output: PromptSectionOutput }), { recovery: "repeat", effect: "read", run: () => ({ text: " " }) }));
+  });
+  const host = await served({ agents: [RIN, { name: "bob", harness: HARNESS, prompt: "Another agent." }] }, { after: [sections] });
+  charter = "Rule 1: ask before a release. Rule 2: no messages at night.";
+  await asOwner(host, "agent.tell", { agent: "rin", text: "first" });
+  await asOwner(host, "agent.tell", { agent: "bob", text: "first" });
+  await until(host.records, "agent.turn.delivered", 2);
+
+  const ofAgent = (name: string) => host.control.starts.find((start) => start.prompt.sections.some((one) => one.text.includes(`agent:${name}`)))?.prompt.sections ?? [];
+  const rin = ofAgent("rin");
+  expect(rin.map((one) => one.id)).toEqual(["character", "agent", "chartertest:charter", "turn"]);
+  expect(rin.find((one) => one.id === "chartertest:charter")).toEqual({ id: "chartertest:charter", tier: "stable", text: "Rule 1: ask before a release. Rule 2: no messages at night." });
+  // A section offered for one agent is not another's, and an empty one is left out.
+  expect(ofAgent("bob").map((one) => one.id)).toEqual(["agent", "turn"]);
+  expect(asked).toEqual(["rin"]);
 });
