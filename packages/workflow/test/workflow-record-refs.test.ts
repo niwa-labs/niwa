@@ -192,3 +192,9 @@ test("the types of the script package type a wait and a read by reference the sa
     { line: 9, code: "TS2339" },
   ]);
 }, 60_000);
+
+test("a script that imports a package is not given the errors the package has under the options of the script", async () => {
+  const { host, home } = await served();
+  const file = await scriptIn(home, "imports.js", [importing("Ping"), "export default workflow({}, async () => {", "  void Ping;", "});"]);
+  expect(await errorsOf(host, file)).toEqual([]);
+}, 60_000);

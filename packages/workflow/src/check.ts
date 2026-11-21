@@ -322,8 +322,14 @@ function diagnose(ts: typeof Ts, source: ScriptSource, typing: string, harnesses
     return parsed;
   };
   const program = ts.createProgram([source.file, TYPING_FILE], options, host);
-  const errors = ts
-    .getPreEmitDiagnostics(program)
+  // A package the script imports is read under the options of the script, not its own: what it says of the package is
+  // not the script's error, and it is not checked, only read for the types the script takes from it.
+  const own = program.getSourceFiles().filter((file) => !program.isSourceFileFromExternalLibrary(file));
+  const errors = [
+    ...program.getOptionsDiagnostics(),
+    ...program.getGlobalDiagnostics(),
+    ...own.flatMap((file) => [...program.getSyntacticDiagnostics(file), ...program.getSemanticDiagnostics(file)]),
+  ]
     .filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)
     .map((diagnostic): CheckError => {
       const where =
