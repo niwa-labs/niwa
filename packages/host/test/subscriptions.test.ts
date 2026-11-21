@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 
-import { CORE_TYPES, record, seq } from "@niwa-labs/core";
+import { CORE_TYPES, action, record, seq } from "@niwa-labs/core";
 import type { ActionName, Handler, RecordType, StoredRecord } from "@niwa-labs/core";
 import { createNiwa } from "@niwa-labs/host";
 import { plugin } from "@niwa-labs/plugin";
@@ -318,6 +318,29 @@ test("a reentrant subscription is woken by its own records down to its depth, an
     await niwa.close();
   } finally {
     console.error = original;
+    await home.cleanup();
+  }
+});
+
+test("a new subscription to a type the journal has no record of writes no position until there is one", async () => {
+  const home = await tempHome();
+  try {
+    const seen: number[] = [];
+    const niwa = await serving(home.path, [producer(), consumer((data) => void seen.push(data.n))]);
+    await niwa.emit(Answer, { n: 0 });
+    await Bun.sleep(50);
+    expect(await positionsOf(niwa)).toEqual([]);
+    await niwa.emit(Item, { n: 1 });
+    await eventually(() => seen.length === 1);
+    await niwa.close();
+    // After a restart it is not new: it goes on from what it admitted.
+    const again = await serving(home.path, [producer(), consumer((data) => void seen.push(data.n))]);
+    await again.emit(Item, { n: 2 });
+    await eventually(() => seen.length === 2);
+    expect(seen).toEqual([1, 2]);
+    expect(await positionsOf(again)).toEqual([]);
+    await again.close();
+  } finally {
     await home.cleanup();
   }
 });

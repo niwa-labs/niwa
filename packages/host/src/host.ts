@@ -2030,7 +2030,9 @@ class Niwa implements Host {
     if (!known && typeof from === "number") position = from;
     this.positions.set(id, position);
     this.keep(id, position);
-    if (!known && from === "now" && journal.last() > 0) {
+    // A new subscription to types the journal holds no record of starts the same at the beginning as
+    // now: nothing needs writing down until one is written.
+    if (!known && from === "now" && journal.query({ types }, 1).length > 0) {
       position = journal.last();
       this.positions.set(id, position);
       this.writePosition(id, position, "installed");
