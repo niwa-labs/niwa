@@ -119,7 +119,7 @@ function turn(content) {
   const response = content.includes("give the fenced word")
     ? "Here it is: \`\`\`json\\n{\\"word\\":\\"fenced\\"}\\n\`\`\`"
     : content.includes("give the word") ? '{"word":"ok"}'
-    : content.startsWith("silent") ? ""
+    : content.startsWith("silent") || content.startsWith("empty") ? ""
     : "fake reply";
   setTimeout(() => {
     settle("turn.completed", { response, resultType: "success" });

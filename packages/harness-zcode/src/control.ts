@@ -181,8 +181,13 @@ interface ModelSelection {
   readonly options?: { readonly reasoningLevel: string };
 }
 
+/** How a turn ended, and which message of the transcript began it, when the server said. */
+interface EndedTurn extends TurnEnd {
+  readonly messageId?: string | undefined;
+}
+
 interface TurnWait {
-  readonly done: Promise<TurnEnd | undefined>;
+  readonly done: Promise<EndedTurn | undefined>;
   cancel(): void;
 }
 
@@ -225,6 +230,8 @@ class LiveSession {
   busy = false;
   /** Whether the running turn's start was reported. */
   began = false;
+  /** The message of the transcript the running turn began with, once the server has named it. */
+  turnMessage: string | undefined;
   stopping = false;
   ended = false;
   /** The surface (servers, allow-list, deny-list) the process was given, as JSON; a resume compares it. */
@@ -249,7 +256,7 @@ class LiveSession {
   /** The turn signs before anyone watched: the first watcher is given them, after it nothing is kept. */
   private unwatched: LifeEvent[] | undefined = [];
   readonly pending = new Map<number, (outcome: Outcome) => void>();
-  private readonly turnWaiters: Array<(end: TurnEnd | undefined) => void> = [];
+  private readonly turnWaiters: Array<(end: EndedTurn | undefined) => void> = [];
 
   constructor(readonly child: AgentProcess) {}
 
@@ -294,14 +301,14 @@ class LiveSession {
 
   expectTurn(timeoutMs: number): TurnWait {
     if (this.ended) return { done: Promise.resolve(undefined), cancel: () => {} };
-    let waiter: (end: TurnEnd | undefined) => void = () => {};
+    let waiter: (end: EndedTurn | undefined) => void = () => {};
     let timer: ReturnType<typeof setTimeout> | undefined;
     const drop = (): void => {
       clearTimeout(timer);
       const at = this.turnWaiters.indexOf(waiter);
       if (at !== -1) this.turnWaiters.splice(at, 1);
     };
-    const done = new Promise<TurnEnd | undefined>((resolve) => {
+    const done = new Promise<EndedTurn | undefined>((resolve) => {
       waiter = (end) => {
         clearTimeout(timer);
         resolve(end);
@@ -315,7 +322,7 @@ class LiveSession {
     return { done, cancel: drop };
   }
 
-  settleTurn(end: TurnEnd | undefined): void {
+  settleTurn(end: EndedTurn | undefined): void {
     for (const waiter of this.turnWaiters.splice(0)) waiter(end);
   }
 
@@ -616,6 +623,9 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     }
     // A subagent's turn is not this session's.
     if (notification.method === "session/event" && notification.params.sessionId !== session.nativeId) return;
+    if (notification.method === "session/event" && notification.params.type === "turn.started") {
+      session.turnMessage = notification.params.payload?.messageId;
+    }
     switch (action.do) {
       case "end-turn":
         endTurn(session, action.end);
@@ -647,7 +657,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     session.busy = false;
     if (end.error !== undefined) session.emit({ kind: "activity", at, detail: end.error });
     session.emit({ kind: "turn-ended", turn: session.turn, at });
-    session.settleTurn(end);
+    session.settleTurn({ ...end, messageId: session.turnMessage });
     // A message that waited for this turn becomes a turn of its own.
     drainQueue(session);
   }
@@ -806,6 +816,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     session.turn += 1;
     session.busy = true;
     session.began = false;
+    session.turnMessage = undefined;
     const turn = session.turn;
     const wait = session.expectTurn(turnTimeoutMs);
     const params: Record<string, unknown> = { sessionId: session.nativeId, content: text };
@@ -847,29 +858,43 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   }
 
   /** Wait for a started turn; anything but a completed turn is an error. Returns its answer. */
-  async function finishTurn(session: LiveSession, wait: TurnWait): Promise<string> {
+  async function finishTurn(session: LiveSession, wait: TurnWait, text: string): Promise<string> {
     const end = await wait.done;
     if (end === undefined) throw unavailable("send", session.failure ?? "the turn did not end");
     if (end.outcome !== "completed") throw unavailable("send", `the turn was ${end.outcome}: ${end.error ?? "no reason given"}`);
-    return end.response !== "" ? end.response : await lastAnswer(session);
+    return end.response !== "" ? end.response : await turnAnswer(session, end.messageId, text);
   }
 
-  /** The last assistant text of the session, read back when the end of the turn carried none. */
-  async function lastAnswer(session: LiveSession): Promise<string> {
+  /**
+   * The answer of one turn, read back from the transcript when the end of the turn carried none: the
+   * last text of the assistant messages that answer the message the turn began with. That message is
+   * the one the server named when the turn started, else the last one that said what was sent. A turn
+   * that left no text of its own has none: the text of another turn is never its answer.
+   */
+  async function turnAnswer(session: LiveSession, started: string | undefined, sent: string): Promise<string> {
     const read = await call(session, "session/messages", { sessionId: session.nativeId });
     const messages = MessagesResultSchema.safeParse(read.result);
     if (!read.ok || !messages.success) return "";
-    let answer = "";
+    const known: Array<z.output<typeof SessionMessageSchema>> = [];
     for (const item of messages.data.messages) {
       const message = SessionMessageSchema.safeParse(item);
-      if (!message.success) {
-        // One message the snapshot does not know costs that message, not the answer.
-        const unknown: UnknownVariant = { protocol: "zcode", discriminator: "method", value: "session/messages", why: "does not fit the snapshot", raw: item };
-        emitUnknown(session, unknown);
+      if (message.success) {
+        known.push(message.data);
         continue;
       }
-      if (message.data.info.role !== "assistant") continue;
-      const text = message.data.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+      // One message the snapshot does not know costs that message, not the answer.
+      const unknown: UnknownVariant = { protocol: "zcode", discriminator: "method", value: "session/messages", why: "does not fit the snapshot", raw: item };
+      emitUnknown(session, unknown);
+    }
+    const textOf = (message: z.output<typeof SessionMessageSchema>): string =>
+      message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+    const beginning =
+      started ?? known.findLast((message) => message.info.role === "user" && textOf(message).trim() === sent.trim())?.info.messageId;
+    if (beginning === undefined) return "";
+    let answer = "";
+    for (const message of known) {
+      if (message.info.role !== "assistant" || message.info.parentMessageId !== beginning) continue;
+      const text = textOf(message);
       if (text.trim() !== "") answer = text;
     }
     return answer;
@@ -877,7 +902,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
 
   async function runTurn(session: LiveSession, text: string): Promise<string> {
     const { wait } = await startTurn(session, text);
-    return finishTurn(session, wait);
+    return finishTurn(session, wait, text);
   }
 
   /**
@@ -894,7 +919,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
           wait.cancel();
           return undefined;
         }
-        return finishTurn(session, wait).then(next.ask.resolve, next.ask.reject);
+        return finishTurn(session, wait, next.text).then(next.ask.resolve, next.ask.reject);
       })
       .catch((error: unknown) => {
         next.ask?.reject(error);
@@ -1165,6 +1190,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
             session.queue.push({ text: instruction, ask: { resolve, reject } });
           })
         : await runTurn(session, instruction);
+      if (text.trim() === "") throw unavailable("ask", "the turn left no answer");
       const checked = askOptions.schema.safeParse(parseJson(text));
       if (!checked.success) {
         throw unavailable("ask", `the answer did not pass the schema: ${checked.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);

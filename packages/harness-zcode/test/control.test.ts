@@ -410,6 +410,27 @@ test("an ask returns the value that passed the schema, from the JSON in the answ
   await expect(c.ask(session, { schema: z.object({ word: z.number() }), prompt: promptFromText("give the word") })).rejects.toThrow("did not pass the schema: word");
 });
 
+test("a turn that left no text of its own does not answer with the text of an earlier turn", async () => {
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText(""), cwd: dir });
+  const word = z.object({ word: z.string() });
+  // The transcript holds a valid answer from this turn; the next turn says nothing, anywhere.
+  expect((await c.ask(session, { schema: word, prompt: promptFromText("give the word") })).value).toEqual({ word: "ok" });
+  await expect(c.ask(session, { schema: word, prompt: promptFromText("empty") })).rejects.toThrow("the turn left no answer");
+  await expect(c.ask(session, { schema: z.string(), prompt: promptFromText("empty") })).rejects.toThrow("the turn left no answer");
+  // Its own answer is still read back for the turn that has one.
+  expect((await c.ask(session, { schema: z.string(), prompt: promptFromText("silent") })).value).toBe("from the transcript");
+});
+
+test("a server that names no message for a turn is read by what was sent", async () => {
+  await writeFile(join(dir, "no-message-id"), "");
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText(""), cwd: dir });
+  expect((await c.ask(session, { schema: z.object({ word: z.string() }), prompt: promptFromText("give the word") })).value).toEqual({ word: "ok" });
+  expect((await c.ask(session, { schema: z.string(), prompt: promptFromText("silent") })).value).toBe("from the transcript");
+  await expect(c.ask(session, { schema: z.string(), prompt: promptFromText("empty") })).rejects.toThrow("the turn left no answer");
+});
+
 test("an ask to a busy session is answered after the turn that runs", async () => {
   const c = control();
   const { session } = await c.start({ prompt: promptFromText("slow"), cwd: dir });
