@@ -7,7 +7,7 @@
  *
  * Known secret values are replaced before a byte is written, and before it is kept in the tail:
  * a secret that straddles two chunks is still found, because the end of a chunk is held back until
- * the next one shows it cannot start a secret.
+ * the next one shows it cannot start a secret. The chunks of the two streams keep the order they came in.
  */
 
 import type { ArtifactRef, ArtifactStore, ArtifactWriter } from "@niwa-labs/core";
@@ -74,36 +74,139 @@ export interface Captured {
   readonly truncated: boolean;
 }
 
-/** One command's output, from the first byte to the artifact. */
+/** The most bytes a stream's held-back end may keep the other stream waiting for. */
+const HELD_LIMIT = 256 * 1024;
+
+type Stream = "out" | "err";
+
+/** A chunk as it came, waiting for what is held back before it to be settled. */
+interface Piece {
+  readonly stream: Stream;
+  readonly bytes: Buffer;
+}
+
+/**
+ * Where a known secret lies in `bytes`: the spans, merged and in order. `carry` bytes at the start
+ * are the rest of a secret whose beginning was already written as its replacement.
+ */
+function spansOf(secrets: readonly Buffer[], bytes: Buffer, carry: number): Array<[number, number]> {
+  const found: Array<[number, number]> = carry > 0 ? [[-1, carry]] : [];
+  for (const secret of secrets) {
+    for (let at = bytes.indexOf(secret); at !== -1; at = bytes.indexOf(secret, at + 1)) found.push([at, at + secret.length]);
+  }
+  found.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const span of found) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && span[0] < last[1]) last[1] = Math.max(last[1], span[1]);
+    else merged.push([span[0], span[1]]);
+  }
+  return merged;
+}
+
+/**
+ * One command's output, from the first byte to the artifact.
+ *
+ * With no secret to hold back, a chunk is kept as it comes. With one, each stream is read for
+ * secrets on its own, so one that a stream split across chunks is found even when the other
+ * stream spoke in between, and the chunks are written in the order they came: a chunk waits
+ * behind the end of an earlier one only while that end could still be the start of a secret.
+ * What is written then goes through one more scrubber, so a secret the two streams make
+ * together, where one ends and the other begins, is found too.
+ */
 export class OutputCapture {
   readonly #options: CaptureOptions;
-  readonly #scrubbers: { readonly out: Scrubber; readonly err: Scrubber };
+  readonly #secrets: readonly Buffer[];
+  readonly #hold: number;
+  readonly #merged: Scrubber;
   readonly #writer: ArtifactWriter;
+  #queue: Piece[] = [];
+  readonly #scan: Record<Stream, Buffer> = { out: Buffer.alloc(0), err: Buffer.alloc(0) };
+  readonly #carry: Record<Stream, number> = { out: 0, err: 0 };
   #size = 0;
   #truncated = false;
   #tail: Buffer = Buffer.alloc(0);
 
   constructor(options: CaptureOptions) {
     this.#options = options;
-    this.#scrubbers = { out: new Scrubber(options.secrets), err: new Scrubber(options.secrets) };
+    this.#secrets = options.secrets.filter((value) => value.length > 0).map((value) => Buffer.from(value));
+    this.#hold = Math.max(0, ...this.#secrets.map((value) => value.length - 1));
+    this.#merged = new Scrubber(options.secrets);
     this.#writer = options.artifacts.writer("text/plain");
   }
 
+  /** The bytes waiting behind a held-back end. */
+  get queued(): number {
+    return this.#scan.out.length + this.#scan.err.length;
+  }
+
   /** Takes a chunk of one of the two streams, in the order it came. */
-  feed(stream: "out" | "err", chunk: Uint8Array): void {
-    this.#keep(this.#scrubbers[stream].push(chunk));
+  feed(stream: Stream, chunk: Uint8Array): void {
+    if (this.#secrets.length === 0) {
+      this.#keep(Buffer.from(chunk));
+      return;
+    }
+    const bytes = Buffer.from(chunk);
+    this.#queue.push({ stream, bytes });
+    this.#scan[stream] = Buffer.concat([this.#scan[stream], bytes]);
+    // A stream that stays silent while holding the start of a secret must not make the other
+    // one pile up in memory: past the limit the held-back ends are let go. A secret that was
+    // split there is then written in two parts, and is replaced only if they end up together.
+    this.#release(this.queued > HELD_LIMIT);
   }
 
   /** Flushes what is held back, makes the artifact durable and gives its name. */
   finish(): Captured {
-    this.#keep(this.#scrubbers.out.end());
-    this.#keep(this.#scrubbers.err.end());
+    this.#release(true);
+    this.#keep(this.#merged.end());
     return { output: this.#writer.finish(), tail: new TextDecoder().decode(this.#tail), truncated: this.#truncated };
   }
 
   /** Throws away what was captured: the command never got to its end. */
   discard(): void {
     this.#writer.discard();
+  }
+
+  /** Writes the chunks, front first, whose bytes are settled: no secret can still start in them. */
+  #release(everything: boolean): void {
+    const state = {} as Record<Stream, { spans: Array<[number, number]>; limit: number; offset: number }>;
+    for (const stream of ["out", "err"] as const) {
+      const scan = this.#scan[stream];
+      state[stream] = {
+        spans: spansOf(this.#secrets, scan, this.#carry[stream]),
+        limit: everything ? scan.length : Math.max(0, scan.length - this.#hold),
+        offset: 0,
+      };
+    }
+    const settled: Buffer[] = [];
+    let taken = 0;
+    for (const piece of this.#queue) {
+      const at = state[piece.stream];
+      const start = at.offset;
+      const end = start + piece.bytes.length;
+      if (end > at.limit) break;
+      const scan = this.#scan[piece.stream];
+      let cursor = start;
+      for (const span of at.spans) {
+        if (span[1] <= start) continue;
+        if (span[0] >= end) break;
+        const from = Math.max(span[0], start);
+        if (cursor < from) settled.push(scan.subarray(cursor, from));
+        if (span[0] >= start) settled.push(REDACTED);
+        cursor = Math.min(span[1], end);
+      }
+      if (cursor < end) settled.push(scan.subarray(cursor, end));
+      at.offset = end;
+      taken += 1;
+    }
+    this.#queue = this.#queue.slice(taken);
+    for (const stream of ["out", "err"] as const) {
+      const { spans, offset } = state[stream];
+      // The rest of a secret whose replacement was just written is dropped when its bytes come.
+      this.#carry[stream] = Math.max(0, ...spans.filter((span) => span[0] < offset).map((span) => span[1] - offset));
+      this.#scan[stream] = this.#scan[stream].subarray(offset);
+    }
+    if (settled.length > 0) this.#keep(this.#merged.push(Buffer.concat(settled)));
   }
 
   #keep(bytes: Buffer): void {

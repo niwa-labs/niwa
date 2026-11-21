@@ -114,6 +114,94 @@ test("a secret at the very end of a stream is replaced, and a part of one that n
   expect(lone.push(enc("abc")).toString() + lone.end().toString()).toBe("abc");
 });
 
+test("with a secret to hold back, the two streams stay in the order their chunks came", async () => {
+  const { home, capture: out } = await capture(["hunter2-token"], 1 << 20, 64);
+  try {
+    out.feed("err", enc("first\n"));
+    out.feed("out", enc("second\n"));
+    out.feed("err", enc("third\n"));
+    const done = out.finish();
+    expect(home.text(done.output)).toBe("first\nsecond\nthird\n");
+    expect(done.tail).toBe("first\nsecond\nthird\n");
+  } finally {
+    await home.cleanup();
+  }
+});
+
+test("a secret one stream split is replaced even when the other stream spoke in between", async () => {
+  const { home, capture: out } = await capture(["hunter2-token"], 1 << 20, 64);
+  try {
+    out.feed("out", enc("key=hunter2"));
+    out.feed("err", enc("E"));
+    out.feed("out", enc("-token\n"));
+    const done = out.finish();
+    const stored = home.text(done.output);
+    expect(stored).not.toContain("hunter2");
+    expect(stored).not.toContain("-token");
+    expect(stored).toBe("key=***E\n");
+    expect(done.tail).toBe(stored);
+  } finally {
+    await home.cleanup();
+  }
+});
+
+test("a secret that two streams' ends make together is replaced where they meet", async () => {
+  const { home, capture: out } = await capture(["hunter2-token"], 1 << 20, 64);
+  try {
+    out.feed("out", enc("a hunter2"));
+    out.feed("err", enc("-token b"));
+    const done = out.finish();
+    const stored = home.text(done.output);
+    expect(stored).toBe("a *** b");
+    expect(done.tail).toBe("a *** b");
+  } finally {
+    await home.cleanup();
+  }
+});
+
+test("a stream that holds a part of a secret back cannot make the other pile up without end", async () => {
+  const { home, capture: out } = await capture(["hunter2-token"], 1 << 24, 16);
+  try {
+    out.feed("out", enc("hunter2"));
+    const block = Buffer.alloc(64 * 1024, "e");
+    for (let i = 0; i < 16; i += 1) out.feed("err", block);
+    expect(out.queued).toBeLessThanOrEqual(256 * 1024 + block.length);
+    out.feed("out", enc("-token"));
+    const done = out.finish();
+    const stored = home.text(done.output);
+    expect(stored.length).toBeGreaterThanOrEqual(16 * 64 * 1024);
+    expect(stored).not.toContain("hunter2-token");
+  } finally {
+    await home.cleanup();
+  }
+});
+
+test("however the chunks of two streams are cut, a secret never reaches the artifact and the rest of each stream is kept in order", async () => {
+  const secrets = ["hunter2-token", "abc"];
+  let seed = 7;
+  const random = (n: number) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  for (let round = 0; round < 40; round += 1) {
+    const pieces = Array.from({ length: 12 }, (_, i) => `[${i}]${["hunter2-token", "abc", "xyz", "hunter2", "-token", " "][random(6)]}`);
+    const { home, capture: out } = await capture(secrets, 1 << 20, 4096);
+    try {
+      // One stream carries everything, cut at random places: what is stored is the text with the secrets replaced.
+      const text = pieces.join("");
+      for (let at = 0; at < text.length; ) {
+        const next = Math.min(text.length, at + 1 + random(9));
+        out.feed("out", enc(text.slice(at, next)));
+        at = next;
+      }
+      const stored = home.text(out.finish().output);
+      expect(stored).toBe(text.replaceAll("hunter2-token", "***").replaceAll("abc", "***"));
+    } finally {
+      await home.cleanup();
+    }
+  }
+});
+
 test("a discarded capture leaves no file behind", async () => {
   const { home, capture: out } = await capture();
   try {
