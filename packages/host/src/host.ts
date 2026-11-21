@@ -631,6 +631,8 @@ class Niwa implements Host {
   private readonly running = new Map<InvocationId, { again: boolean; woken: boolean }>();
   /** The invocations suspended on a wait, with what each of their open waits waits for. */
   private readonly waiting = new Map<InvocationId, { slots: readonly WaitSlot[]; spec: RunSpec }>();
+  /** The invocations whose steps were cancelled while they ran: one that ends waiting runs again at once. */
+  private readonly cancelledWhileRunning = new Set<InvocationId>();
   /**
    * The waiting invocations by what wakes them: a wait without a key under its type, a keyed one
    * under (type, field, value). A record looks up only the entries it can match, so it does not
@@ -1466,9 +1468,11 @@ class Niwa implements Host {
           this.append([{ ...this.invocationRecord(spec, "sc", CORE_TYPES.stepCancelled, cancel, ctx.caller), id }]);
         }
         const aborted = abortSteps(cancel);
-        // A waiting invocation runs again, so the waits the cancel holds end.
+        // A waiting invocation runs again, so the waits the cancel holds end; one that is running now runs
+        // again if it ends waiting, since it may wait on a step the cancel holds.
         const waiting = this.waiting.get(spec.invocation);
         if (waiting !== undefined) this.schedule(waiting.spec);
+        else if (this.running.has(spec.invocation)) this.cancelledWhileRunning.add(spec.invocation);
         return { aborted };
       },
     });
@@ -2152,7 +2156,10 @@ class Niwa implements Host {
         parse: (data: unknown) => pinned.type.schema.parse(data),
         woken,
       });
-      if (result === "waiting") this.park(journal, spec, before);
+      if (result === "waiting") {
+        if (this.cancelledWhileRunning.delete(spec.invocation)) this.schedule(spec);
+        else this.park(journal, spec, before);
+      } else this.cancelledWhileRunning.delete(spec.invocation);
     } catch (error) {
       if (this.journal === undefined) return; // the host is closed: nothing to say it to
       if (error instanceof LostOwnership) {
