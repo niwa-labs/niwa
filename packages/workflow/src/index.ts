@@ -2013,5 +2013,5 @@ export {
   workflowWait,
 } from "./actions.ts";
 export { WorkflowInspection, WorkflowStep } from "./inspect.ts";
-export { Measures, StatsInput, StatsOutput, VersionStats, workflowStats } from "./stats.ts";
+export { Measures, StatsFold, StatsInput, StatsOutput, VersionStats, workflowStats } from "./stats.ts";
 export type { CheckError, CheckReport } from "./check.ts";
