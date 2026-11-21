@@ -3,8 +3,8 @@
 import { expect, test } from "bun:test";
 import { unreadable, unsendable } from "@niwa-labs/testing";
 
-import { requestAnswer, requestOpen } from "../src/index.ts";
-import { answerAction, openAction } from "../src/cockpit/actions.ts";
+import { requestAnswer, requestOpen, requestResolve } from "../src/index.ts";
+import { answerAction, openAction, overrideAction } from "../src/cockpit/actions.ts";
 
 test("the open requests are read from what the host lists", () => {
   expect(openAction.name).toBe(String(requestOpen.name));
@@ -15,4 +15,10 @@ test("an answer is sent as the host takes it, and the host's reply is read", () 
   expect(answerAction.name).toBe(String(requestAnswer.name));
   expect(unsendable(answerAction.input, requestAnswer.input)).toEqual([]);
   expect(unreadable(answerAction.output, requestAnswer.output)).toEqual([]);
+});
+
+test("an explicit override uses the host's ordinary resolution contract", () => {
+  expect(overrideAction.name).toBe(String(requestResolve.name));
+  expect(unsendable(overrideAction.input, requestResolve.input)).toEqual([]);
+  expect(unreadable(overrideAction.output, requestResolve.output)).toEqual([]);
 });

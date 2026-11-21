@@ -182,9 +182,13 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
 
 /**
  * Who gives the answer of a resolve: the address a client is bound to, which must be the addressee
- * of the request or the owner. The host and the handlers are in-process and answer for nobody.
+ * of the request or the owner. A configured owner surface can give the operator’s explicit answer.
  */
-function answerer(caller: Caller, bind: CallerBinding, to: Address): Address | undefined {
+function answerer(caller: Caller, bind: CallerBinding, to: Address, forwarded: boolean): Address | undefined {
+  if (caller.kind === "handler" && !forwarded) {
+    const surface = bind(caller);
+    return surface?.kind === "owner" ? surface : undefined;
+  }
   if (caller.kind !== "client") return undefined;
   const by = bind(caller);
   if (by === undefined) {
@@ -371,7 +375,7 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
       if (state?.created.answerPolicy === "owner-only") return { answered: false };
       // A client that gives an answer is held to its binding as the one who answers is: the
       // addressee, or the owner. `submit-answer` and answers forwarded by another module reach the request here.
-      const by = input.answer === undefined || state === undefined ? undefined : answerer(ctx.caller, bind, state.created.to);
+      const by = input.answer === undefined || state === undefined ? undefined : answerer(ctx.caller, bind, state.created.to, input.info !== undefined);
       // The same answer to a request it already answered stands: a call made again says so.
       if (
         input.answer !== undefined &&

@@ -14,7 +14,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildCockpit, cockpitApp } from "@niwa-labs/cockpit";
-import { requests } from "@niwa-labs/requests";
+import { requestAsk, requestGet, requests } from "@niwa-labs/requests";
+import { RequestAnswered } from "@niwa-labs/requests/records";
 import { baseStack, connectAsOwner, createNiwa, eventually, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 import { taskCreate } from "@niwa-labs/tasks";
@@ -201,6 +202,24 @@ run("the cockpit app in a browser", () => {
     await page.click('[data-slot="request"] button[type="submit"]');
     await page.waitForSelector('text=Nothing waits for an answer');
     await page.context().close();
+  }, 60_000);
+
+  test("the owner overrides an ordinary judge question from its card", async () => {
+    const { id } = await host.call(requestAsk, {
+      to: { kind: "agent", id: "judge" }, question: "fixture.judge", input: { kind: "text", title: "Which branch?" },
+    });
+    const page = await open("/requests");
+    try {
+      const card = page.locator('[data-slot="request"]').filter({ hasText: "Which branch?" });
+      await card.getByRole("textbox").fill("main");
+      await card.getByRole("button", { name: "Override", exact: true }).click();
+      await card.waitFor({ state: "detached" });
+      expect(await host.call(requestGet, { id })).toMatchObject({ status: "answered", answer: { text: "main" } });
+      const receipt = (await host.records.read({ types: [RequestAnswered.name] })).find((row) => RequestAnswered.schema.parse(row.data).id === id);
+      expect(receipt).toMatchObject({ actor: { kind: "client", principal: { kind: "owner" }, issuedBy: "requests" }, data: { by: { kind: "owner" } } });
+    } finally {
+      await page.context().close();
+    }
   }, 60_000);
 
   test("the tasks page lists a task, and its page shows the contract", async () => {

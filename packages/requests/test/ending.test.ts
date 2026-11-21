@@ -62,7 +62,7 @@ interface World {
   context(operation: string, caller?: Caller): ActionContext;
 }
 
-function world(resolver?: Resolver): World {
+function world(resolver?: Resolver, asSurface?: (caller: Caller) => Address | undefined): World {
   const memory = new Memory();
   const ledger = new RequestLedger(REQUEST_TYPES.map((type) => type.name), () => memory.reader);
   const resolvers = new ResolverRegistry();
@@ -74,7 +74,7 @@ function world(resolver?: Resolver): World {
       memory.append(RequestExpiredRecord, { id }, String(expiryId(id)));
     },
   };
-  const bind = (caller: Caller): Address | undefined => (caller.kind === "client" ? (caller.id === "owner" ? owner : { kind: "client", id: caller.id }) : undefined);
+  const bind = (caller: Caller): Address | undefined => (caller.kind === "client" ? (caller.id === "owner" ? owner : { kind: "client", id: caller.id }) : asSurface?.(caller));
   return {
     memory,
     time,
@@ -201,4 +201,23 @@ test("an owner-only decision can be answered only through the addressee action",
   expect(await w.actions.resolve.run({ id: ID, answer: { text: "forwarded" } }, w.context("forwarded", { kind: "host" }))).toEqual({ answered: false });
   expect(calls).toBe(0);
   expect(await w.actions.answer.run({ id: ID, answer: { text: "operator" } }, w.context("operator"))).toEqual({ id: ID, accepted: true });
+});
+
+
+test("only the configured owner handler is credited for a direct ordinary resolution", async () => {
+  const trusted = { kind: "handler", handler: "surface/input", invocation: "inv-in" } as Caller;
+  const ordinary = { kind: "handler", handler: "surface/worker", invocation: "inv-work" } as Caller;
+  for (const [caller, forwarded, expected] of [[trusted, false, owner], [ordinary, false, undefined], [trusted, true, undefined]] as const) {
+    const w = world(undefined, (who) => who.kind === "handler" && who.handler === "surface/input" ? owner : undefined);
+    born(w.memory, { to: { kind: "agent", id: "judge" } });
+    const result = await w.actions.resolve.run({
+      id: ID, answer: { text: "chosen" }, ...(forwarded ? { info: { how: "forwarded" } } : {}),
+    }, w.context("op", caller));
+    expect(result.answered).toBe(true);
+    expect(RequestAnswered.schema.parse(w.memory.rows.at(-1)?.data).by).toEqual(expected);
+  }
+  const w = world(undefined, () => owner);
+  born(w.memory, { answerPolicy: "owner-only" });
+  expect(await w.actions.resolve.run({ id: ID, answer: { text: "chosen" } }, w.context("op", trusted))).toEqual({ answered: false });
+  expect(w.memory.typesOf()).toEqual([RequestCreated.name]);
 });

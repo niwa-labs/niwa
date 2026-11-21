@@ -1,11 +1,11 @@
 /** The questions that wait for an answer, each with the form that answers it. */
 
-import { EntityLink, useAction, useCall } from "@niwa-labs/cockpit-sdk";
+import { EntityLink, useAction, useCall, useViewer } from "@niwa-labs/cockpit-sdk";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Badge, Button, cn } from "@niwa-labs/ui-kit";
 
-import { answerAction, openAction, resolveAction, type OpenPaused, type OpenRequest, type Option } from "./actions.ts";
+import { answerAction, openAction, overrideAction, resolveAction, type OpenPaused, type OpenRequest, type Option } from "./actions.ts";
 import { addressText, answerOf, EMPTY, subjectLines, type Built, type Filled } from "./answers.ts";
 
 function OptionButton({ option, selected, onPick }: { option: Option; selected: boolean; onPick: () => void }) {
@@ -28,7 +28,12 @@ function OptionButton({ option, selected, onPick }: { option: Option; selected: 
 /** The form of one question: options to pick, a text, or a JSON value, and the button that sends the answer. */
 function AnswerForm({ request, onSent }: { request: OpenRequest; onSent: () => void }) {
   const question = request.input;
-  const send = useAction(answerAction);
+  const viewer = useViewer();
+  const overriding = viewer.owner && request.to.kind !== "owner" && request.answerPolicy !== "owner-only";
+  const answer = useAction(answerAction);
+  const override = useAction(overrideAction);
+  const send = overriding ? override : answer;
+  const allowed = viewer.can(overriding ? overrideAction : answerAction);
   const [filled, setFilled] = useState<Filled>(EMPTY);
   const [problem, setProblem] = useState<string | undefined>();
 
@@ -41,7 +46,9 @@ function AnswerForm({ request, onSent }: { request: OpenRequest; onSent: () => v
   const single = question.kind === "choice" || question.kind === "confirm" || question.kind === "permission";
   const toggle = (id: string): void =>
     setFilled((now) => ({ ...now, picked: now.picked.includes(id) ? now.picked.filter((one) => one !== id) : question.kind === "multi" ? [...now.picked, id] : [id] }));
-  const refused = send.data !== undefined && !send.data.accepted ? `The answer was not taken: the request was ${send.data.reason ?? "over"}.` : undefined;
+  const refused = overriding
+    ? override.data?.answered === false ? "The request did not accept the override." : undefined
+    : answer.data?.accepted === false ? `The answer was not taken: the request was ${answer.data.reason ?? "over"}.` : undefined;
   const typed = question.kind === "text" || question.kind === "form" || ("allowOther" in question && question.allowOther === true);
 
   return (
@@ -70,8 +77,8 @@ function AnswerForm({ request, onSent }: { request: OpenRequest; onSent: () => v
         />
       ) : null}
       <div className="flex min-w-0 items-center gap-3">
-        <Button type="submit" size="sm" disabled={send.isPending}>
-          {send.isPending ? "Sending…" : "Answer"}
+        <Button type="submit" size="sm" disabled={send.isPending || !allowed}>
+          {send.isPending ? "Sending…" : overriding ? "Override" : "Answer"}
         </Button>
         {problem === undefined && refused === undefined && !send.isError ? null : (
           <span role="alert" className="min-w-0 truncate text-xs text-destructive">
