@@ -1,15 +1,16 @@
 /**
  * The proc module: run a command.
  *
- * - **proc.run** runs a command in a box from `@niwa-labs/sandbox`: it may write only in its working
- *   directory, it has no network, and it has no credentials: its environment is `PATH`, a `HOME` and
- *   a `TMPDIR` of its own inside its directory, and what the call lists; it reads its directory, the
- *   system's places and the directories of its programs, and nothing else of the user's. Because the
- *   box holds this, the class of the action is honest for any command: a write in the local world.
- *   It never runs without a box: a box that cannot run here, or whose policy does not hold this
- *   (writes only in the directory, reads from an allow-list, no network), stops the call before a
- *   process exists. What the result and the record say of the
- *   box is that policy, as the sandbox reports it, not the spec it was given.
+ * - **proc.run** runs a command in a box from `@niwa-labs/sandbox`: it writes its working directory,
+ *   a temp directory inside it and the places of the profiles it takes, it has no network, and the
+ *   places of every profile it did not take (a harness's sign-in among them), the user's keys and
+ *   niwa's own secrets are closed to it. Its environment is `PATH`, the real `HOME`, `TMPDIR` and what
+ *   the call lists. The box is the host's default (`toolchains`), what the call asks for besides or
+ *   instead, and nothing a grant does not cover. Because the box holds this, the class of the action
+ *   is honest for any command: a write in the local world. It never runs without a box: a box that
+ *   cannot run here, or cannot be held as it was asked, stops the call before a process exists. The
+ *   result and the record carry the box's manifest: the request, the paths and where each came
+ *   from, the rules taken and the policy the sandbox reports it applies.
  *
  * - **proc.exec** runs a command with no box. Nothing limits what it writes or reaches, so it is an
  *   irreversible action in the external world, and a grant has to name it. It gets `PATH`, `HOME`,
@@ -30,21 +31,21 @@
  * itself dies is not stopped by it.
  */
 
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 
-import { HOST_KEY_FILE, OWNER_TOKEN_FILE, RECORD_DATA_LIMIT, action } from "@niwa-labs/core";
+import { RECORD_DATA_LIMIT, action, closedPlacesOf, coveringRule } from "@niwa-labs/core";
 import type { ActionContext } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin } from "@niwa-labs/plugin";
-import { BoxRefused, SandboxUnavailable, boxSpec, nono, requireSandbox } from "@niwa-labs/sandbox";
-import type { BoxSpec, Sandbox } from "@niwa-labs/sandbox";
+import { BoxRefused, SandboxUnavailable, admit, boxManifest, nono, requireSandbox, sandbox as sandboxHost, sandboxOf } from "@niwa-labs/sandbox";
+import type { BoxAccess, Sandbox, SandboxHost, SandboxManifest } from "@niwa-labs/sandbox";
 
 import { OutputCapture } from "./artifact.ts";
 import { ProcRefusal } from "./refusal.ts";
 import { MAX_TAIL_BYTES, ProcFinished, fileTarget, procExec, procRun } from "./records.ts";
-import type { BoxUsed, ProcFinishedData, ProcResult } from "./records.ts";
+import type { ProcFinishedData, ProcResult } from "./records.ts";
 import { launchPlain, supervise } from "./supervise.ts";
 
 export * from "./records.ts";
@@ -54,17 +55,13 @@ export type { ProcRefusalCode } from "./refusal.ts";
 /** What the module is given. Every field has a default. */
 export interface ProcOptions {
   /**
-   * The sandbox of `proc.run`. The policy its manifest reports has to keep writes to the directory
-   * and reads to an allow-list, with no network. Default: nono.
+   * The host's sandbox (`sandbox({ adapter, profiles })` of `@niwa-labs/sandbox`): the adapter of
+   * `proc.run` (default nono) and the profiles a run may take, with the installations whose places it
+   * keeps closed. Default: the catalog alone.
    */
-  readonly sandbox?: Sandbox;
-  /**
-   * The directories of programs a run may read besides the system's: its toolchains. Default: the
-   * directories of the host's PATH. One that is not an absolute existing directory, that holds the
-   * user's home, or that holds or lies in a place a run may not read, is left out. A call's own PATH
-   * adds nothing to them.
-   */
-  readonly toolchains?: readonly string[];
+  readonly sandbox?: SandboxHost;
+  /** What a run's box has when the call asks for nothing. Default `{ allow: ["toolchains"] }`. */
+  readonly box?: BoxAccess;
   /** The most bytes of output kept in an artifact. Default: 16 MiB. */
   readonly outputLimit?: number;
   /**
@@ -80,9 +77,6 @@ const DEFAULT_OUTPUT_LIMIT = 16 * 1024 * 1024;
 const DEFAULT_TAIL_BYTES = 4096;
 const DEFAULT_KILL_GRACE_MS = 2000;
 const DRAIN_MS = 1000;
-
-/** Places under the user's home where credentials live. A box does not read them. */
-const CREDENTIAL_PLACES = [".ssh", ".aws", ".gnupg", ".netrc", ".config/gh", ".config/gcloud", ".docker", ".kube"] as const;
 
 /**
  * The directory a call is about, as a grant names it: the real path, so a link cannot name a place
@@ -116,90 +110,33 @@ function directoryOf(cwd: string, authorized: string | undefined): string {
 }
 
 /**
- * The box of a run, as the sandbox says it will apply the spec, when that keeps what `proc.run`
- * promises: writes only in the directory (and the devices a process needs), reads from an
- * allow-list, no network. A sandbox that does not say what it applies is taken not to keep it.
+ * The policy a sandbox reports for a run's box, when it keeps what `proc.run` promises: no network.
+ * A sandbox that does not say what it applies is taken not to keep it.
  */
-function boxOf(sandbox: Sandbox, spec: BoxSpec): BoxUsed {
-  const policy = sandbox.manifest(spec).policy;
+function heldPolicy(sandbox: Sandbox, manifest: SandboxManifest): void {
   const refuse = (why: string): never => {
-    throw new BoxRefused([{ code: "adapter", message: `${why}, and a run may write only in its directory, read only what it is given and reach no network` }], sandbox.name);
+    throw new BoxRefused([{ code: "adapter", message: `${why}, and a run reaches no network` }], sandbox.name);
   };
-  if (policy === undefined) return refuse("it does not say what a box lets a process reach");
-  if (!("only" in policy.read)) return refuse("its reads are open but for the places it is told to close");
-  const outside = policy.write.find((path) => path !== spec.cwd && !path.startsWith(`${spec.cwd}${sep}`));
-  if (outside !== undefined) refuse(`it lets a process write ${outside}`);
-  const host = policy.net[0];
+  if (manifest.policy === undefined) return refuse("it does not say what a box lets a process reach");
+  const host = manifest.policy.net[0];
   if (host !== undefined) refuse(`it lets a process reach ${host}`);
-  return { sandbox: sandbox.name, write: [...policy.write], devices: [...policy.devices], read: [...policy.read.only], net: [...policy.net] };
-}
-
-/** Is `path` the place `root` names, or under it? */
-function covers(root: string, path: string): boolean {
-  return path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
-}
-
-/** The real path of a place, or the place as it is spelled when it is not there. */
-function realOr(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
-  }
 }
 
 /**
- * The program directories a run may be given to read, as real paths: each absolute, an existing
- * directory, and not the user's home or a place above it. Read once, when the module is made.
+ * A run's temp directory, inside its cwd, the one place besides the cwd itself its box always lets
+ * it write; removed after the run. A cwd it cannot be made in refuses the run.
  */
-function programDirectories(candidates: readonly string[]): string[] {
-  const home = realOr(homedir());
-  const found: string[] = [];
-  for (const candidate of candidates) {
-    if (!isAbsolute(candidate)) continue;
-    let real: string;
-    try {
-      real = realpathSync(candidate);
-      if (!statSync(real).isDirectory()) continue;
-    } catch {
-      continue;
-    }
-    if (!covers(real, home) && !found.includes(real)) found.push(real);
-  }
-  return found;
-}
-
-/**
- * A run's own directories inside its cwd, the one place its box lets it write: a home and a temp
- * directory, both removed after the run. A cwd they cannot be made in refuses the run: a command
- * pointed at the user's home or the shared temp area would find places its box closes.
- */
-function runDirectoriesIn(cwd: string): { readonly root: string; readonly home: string; readonly temp: string } {
-  let root: string;
+function tempIn(cwd: string): string {
   try {
-    root = mkdtempSync(join(cwd, ".niwa-run-"));
+    return mkdtempSync(join(cwd, ".niwa-tmp-"));
   } catch (error) {
-    throw new ProcRefusal("bad-cwd", `${cwd} cannot be written: a run keeps its home and temp files there (${(error as Error).message})`);
+    throw new ProcRefusal("bad-cwd", `${cwd} cannot be written: a run keeps its temp files there (${(error as Error).message})`);
   }
-  const made = { root, home: join(root, "home"), temp: join(root, "tmp") };
-  try {
-    mkdirSync(made.home);
-    mkdirSync(made.temp);
-  } catch (error) {
-    rmSync(root, { recursive: true, force: true });
-    throw new ProcRefusal("bad-cwd", `${cwd} cannot be written: a run keeps its home and temp files there (${(error as Error).message})`);
-  }
-  return made;
 }
 
 /** The environment every command has before the call adds to it. */
 function baseEnv(): Record<string, string> {
   return { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: homedir() };
-}
-
-/** The host's PATH, as a list of directories. */
-function hostPath(): string[] {
-  return (process.env["PATH"] ?? "").split(":");
 }
 
 /**
@@ -210,7 +147,8 @@ async function beforeStart<T>(start: () => Promise<T>): Promise<T> {
   try {
     return await start();
   } catch (error) {
-    if (error instanceof SandboxUnavailable || error instanceof BoxRefused) throw new ProcRefusal("no-sandbox", error.message);
+    if (error instanceof SandboxUnavailable) throw new ProcRefusal("no-sandbox", error.message);
+    if (error instanceof BoxRefused) throw new ProcRefusal("box-refused", error.message);
     throw error;
   }
 }
@@ -243,9 +181,8 @@ export function proc(options: ProcOptions = {}): Plugin {
   const limit = wholeNumber("outputLimit", options.outputLimit, DEFAULT_OUTPUT_LIMIT, 1, Number.MAX_SAFE_INTEGER);
   const tailBytes = wholeNumber("tailBytes", options.tailBytes, DEFAULT_TAIL_BYTES, 0, MAX_TAIL_BYTES);
   const killGraceMs = wholeNumber("killGraceMs", options.killGraceMs, DEFAULT_KILL_GRACE_MS, 0, Number.MAX_SAFE_INTEGER);
-  const natural = [nono()];
-  // The directories of the run's programs, which its box may read: the owner's choice, never the call's.
-  const programs = programDirectories(options.toolchains ?? hostPath());
+  const boxes = options.sandbox ?? sandboxHost();
+  const boxDefault: BoxAccess = options.box ?? { allow: ["toolchains"] };
   // The host reads the target of a call to match its grant, then runs the action with the same
   // input object. The real path the target named is kept here, keyed by that object, so the
   // action starts the command in the directory the grant covered and in no other.
@@ -256,12 +193,8 @@ export function proc(options: ProcOptions = {}): Plugin {
     return fileTarget(real);
   };
 
-  /** The sandbox of a run: the one given, or the first of the natural ones that can run here. */
-  const sandboxOf = async (): Promise<Sandbox> => {
-    if (options.sandbox !== undefined) return await requireSandbox(options.sandbox);
-    for (const candidate of natural) if (await candidate.available()) return candidate;
-    return await requireSandbox(natural[0] as Sandbox);
-  };
+  /** The sandbox of a run: the host's, or nono. */
+  const runSandbox = async (): Promise<Sandbox> => await requireSandbox(boxes.adapter === undefined ? nono() : sandboxOf(boxes.adapter));
 
   return plugin("proc", (api) => {
     api.declare(ProcFinished);
@@ -286,30 +219,32 @@ export function proc(options: ProcOptions = {}): Plugin {
         target: (input) => targetOf(input),
         async run(input, ctx) {
           const cwd = directoryOf(input.cwd, authorized.get(input));
-          const sandbox = await beforeStart(sandboxOf);
+          const sandbox = await beforeStart(runSandbox);
           // Cancelled while the sandbox was being found: nothing was started, and nothing will be.
           ctx.signal?.throwIfAborted();
-          const closedPlaces = [
-            join(home(), OWNER_TOKEN_FILE),
-            join(home(), HOST_KEY_FILE),
-            api.secrets.dir,
-            ...CREDENTIAL_PLACES.map((place) => join(homedir(), place)),
-          ];
-          const closed = closedPlaces.map(realOr);
-          // The home and temp files go inside the directory, where the box lets the command write; the call may name others.
-          const own = runDirectoriesIn(cwd);
+          // The temp files go inside the directory, where the box lets the command write.
+          const temp = tempIn(cwd);
           const capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
           try {
-            const spec: BoxSpec = boxSpec({
+            const plan = boxes.plan({
               cwd,
-              read: programs.filter((dir) => !closed.some((place) => covers(place, dir) || covers(dir, place))),
-              write: [cwd],
-              net: [],
-              env: { ...baseEnv(), HOME: own.home, TMPDIR: own.temp, TMP: own.temp, TEMP: own.temp, ...input.env },
-              closed: closedPlaces,
+              defaults: boxDefault,
+              request: input.box,
+              writes: [
+                { path: cwd, from: "cwd" },
+                { path: temp, from: "temp" },
+              ],
+              closed: [...closedPlacesOf(home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
+              network: false,
             });
-            const box = await beforeStart(async () => boxOf(sandbox, spec));
-            const child = await beforeStart(() => sandbox.launch(spec, input.cmd, { detached: true }));
+            const rights = api.rights(ctx.caller);
+            const env = { ...baseEnv(), TMPDIR: temp, TMP: temp, TEMP: temp, ...input.env };
+            const admitted = await beforeStart(async () =>
+              admit(plan, sandbox, (needed) => (rights === "unlimited" ? needed : coveringRule(rights, needed)), { env }),
+            );
+            await beforeStart(async () => heldPolicy(sandbox, admitted.manifest));
+            const box = boxManifest(plan, admitted.rules, admitted.manifest);
+            const child = await beforeStart(() => sandbox.launch(admitted.spec, input.cmd, { detached: true }));
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
             const result = await finish(ctx, { action: "proc.run", cwd, program: input.cmd[0] as string, box }, { ...ended, ...capture.finish() });
             return { ...result, box };
@@ -317,7 +252,7 @@ export function proc(options: ProcOptions = {}): Plugin {
             capture.discard();
             throw error;
           } finally {
-            rmSync(own.root, { recursive: true, force: true });
+            rmSync(temp, { recursive: true, force: true });
           }
         },
       }),

@@ -1,10 +1,11 @@
 /**
  * The records entry of the proc module: the two actions that run a command, the record that says
- * how a command ended, and the schemas they share. It needs the contracts of core and zod only,
- * so a script or another plugin can name the actions without the sandbox behind them.
+ * how a command ended, and the schemas they share. It needs the contracts of core, the box schemas
+ * of the sandbox and zod, so a script or another plugin can name the actions.
  *
- * - `proc.run` always runs in a box: it may write only in its working directory, it has no network
- *   and no credentials. The box is what makes its class honest, so the class is `write` in `local`.
+ * - `proc.run` always runs in a box: it writes its working directory and what its box takes, it
+ *   has no network and no credentials. The box is what makes its class honest, so the class is
+ *   `write` in `local`.
  * - `proc.exec` runs without a box, so nothing limits what it reaches. It is `irreversible` in
  *   `external`, and a grant has to name it.
  *
@@ -14,6 +15,7 @@
  */
 
 import { ArtifactRefSchema, SecretName, SecretRef, actionRef, record } from "@niwa-labs/core";
+import { BoxAccessSchema, BoxManifestSchema } from "@niwa-labs/sandbox";
 import { z } from "zod";
 
 /**
@@ -85,26 +87,15 @@ export const ProcResult = z.strictObject({
 });
 export type ProcResult = z.infer<typeof ProcResult>;
 
-/** What a command ran in: the sandbox and what it let through, as the sandbox reports it applies the box. */
-export const BoxUsed = z.strictObject({
-  sandbox: z.string(),
-  /** Every place the command could write, besides the devices. */
-  write: z.array(z.string()),
-  /** The devices the command could write: the null device, the terminal, its descriptors. */
-  devices: z.array(z.string()),
-  /** Every place the command could read: nothing else of the machine was open to it. */
-  read: z.array(z.string()),
-  net: z.array(z.string()),
-});
-export type BoxUsed = z.infer<typeof BoxUsed>;
-
 export const procRun = actionRef("proc.run", {
   description:
-    "Run a command in a box: it may write only in `cwd`, it has no network and no credentials. " +
+    "Run a command in a box: it writes `cwd` and a temp directory inside it, it has no network and no credentials. " +
     "`cmd` is the program and its arguments, run as they are (a shell is [\"sh\", \"-c\", \"…\"]). " +
     "`timeout` is in milliseconds; a command that runs longer is stopped, with everything it started, as is one whose call is cancelled. " +
-    "`env` is the whole environment besides PATH, and a HOME and a TMPDIR (also TMP and TEMP) of the run's own: directories inside `cwd` that exist for the run and are removed after it (list HOME or TMPDIR to use another place). " +
-    "The command reads `cwd`, the system's places and the directories of the host's programs, nothing else of the user's home. " +
+    "`env` is the whole environment besides PATH, HOME (the user's own) and a TMPDIR (also TMP and TEMP) inside `cwd` that exists for the run and is removed after it. " +
+    "`box` adds to the host's default (`allow`, by default the toolchains: the PATH, Homebrew and the catalog's programs, readable) or replaces it (`only`): a profile by its name (`bun`, `git`, `npm`, `node`, `cargo`, `uv` and the host's), `\"toolchains\"`, or a path (`{ read }`, `{ write }`). " +
+    "The places of every profile the run does not take, the user's keys and niwa's own secrets are closed to it. Going beyond the default needs the caller's `box.use@<profile>`, `box.read@<path>` or `box.write@<path>` rule. " +
+    "A command that needs credentials or the network is for proc.exec. " +
     "The result has the exit code, the end of the output (`tail`) and the output as an artifact, which keeps its first 16 MiB: with `truncated` the artifact holds the start and `tail` the end. " +
     "A non-zero exit is a result, not an error. A command is stopped with its process group: one that left the group is not reached. " +
     "A grant names the real path of `cwd` (`proc.run@/work/repo`); a space or another character a rule cannot hold is written as % and its hex code (`My%20Project`). " +
@@ -114,8 +105,9 @@ export const procRun = actionRef("proc.run", {
     cwd: Cwd,
     timeout: Timeout,
     env: z.record(EnvName, z.string()).optional(),
+    box: BoxAccessSchema.optional(),
   }),
-  output: ProcResult.extend({ box: BoxUsed }),
+  output: ProcResult.extend({ box: BoxManifestSchema }),
 });
 
 export const procExec = actionRef("proc.exec", {
@@ -147,8 +139,8 @@ export const ProcFinished = record(
     cwd: z.string(),
     /** The program, without its arguments: they may say more than a journal should keep. */
     program: z.string(),
-    /** The box of a `proc.run`; absent for `proc.exec`. */
-    box: BoxUsed.optional(),
+    /** The manifest of the box of a `proc.run`; absent for `proc.exec`. */
+    box: BoxManifestSchema.optional(),
   }),
 );
 export type ProcFinishedData = z.infer<typeof ProcFinished.schema>;

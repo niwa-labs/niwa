@@ -11,7 +11,7 @@ import type { Host } from "@niwa-labs/testing";
 
 import { proc } from "../src/index.ts";
 import { reportOf } from "../src/flow.ts";
-import { recordingSandbox } from "./support.ts";
+import { procOptions, recordingSandbox } from "./support.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -24,7 +24,7 @@ async function runScript(source: string): Promise<{ result: unknown; sandbox: Re
   const home = realpathSync(temp.path);
   const sandbox = recordingSandbox();
   const host: Host = createNiwa({ home });
-  host.use(requests(), timers([]), proc({ sandbox }), workflow());
+  host.use(requests(), timers([]), proc(procOptions({ sandbox })), workflow());
   await host.serve();
   cleanups.push(async () => {
     await host.close().catch(() => {});

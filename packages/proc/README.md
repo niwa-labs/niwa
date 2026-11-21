@@ -2,17 +2,20 @@
 
 Running commands.
 
-- `proc.run { cmd, cwd, timeout, env? }` always runs in a box from `@niwa-labs/sandbox`: it may write only in
-  `cwd`, has no network and no credentials. Because the box holds that, the action is a write in the local world.
-  A box that cannot run here stops the call; a run never falls back to no box. The policy the sandbox reports for
-  the box has to keep writes to `cwd` (and the devices a process needs), reads to an allow-list and the network
-  closed: nono's does; srt's does not (its own temp directory is writable and its reads are open), so a run is
-  refused with it. The `box` of the result and of `proc.finished` is that policy: `write`, `devices`, `read`, `net`.
-  The command has a `HOME` and a `TMPDIR` (also `TMP`, `TEMP`) of its own inside `cwd`, made for the run and
-  removed after it; a `cwd` they cannot be made in refuses the run. A tool that asks the system for its temp
-  directory instead of reading `TMPDIR` (Apple's `mktemp`) finds none it may write. It reads `cwd`, the system's
-  places and the directories of its programs (`toolchains`, by default those of the host's PATH, never one that
-  holds the user's home or a place it may not read); the call's own `PATH` adds nothing to them.
+- `proc.run { cmd, cwd, timeout, env?, box? }` always runs in a box from `@niwa-labs/sandbox`: it writes `cwd`, a
+  temp directory inside it (`TMPDIR`, also `TMP`, `TEMP`, removed after the run) and the places of the profiles it
+  takes; it has no network and no credentials. Because the box holds that, the action is a write in the local world.
+  `HOME` is the user's own. The box is the host's default (`proc({ box })`, by default `{ allow: ["toolchains"] }`:
+  the PATH, Homebrew and the catalog's programs, readable), what `box.allow` adds or what `box.only` puts instead: a
+  profile by its name (`git`, `bun`, `npm`, `node`, `cargo`, `uv`, the host's own), `"toolchains"`, `{ read }`,
+  `{ write }`. The places of every profile the run does not take (every harness installation's among them), the
+  user's keys (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/Library/Keychains`) and niwa's journal and secrets are closed to it.
+  A host it asks for is refused: a command that needs the network or a credential is for `proc.exec`. Going beyond
+  the default needs the caller's `box.use@<profile>`, `box.read@<path>` or `box.write@<path>` rule. A box that cannot
+  run here, or that its sandbox cannot hold as it was asked (nono by default, `proc({ sandbox: sandbox({ adapter })
+  })` for another), stops the call before a process exists, with every reason. The `box` of the result and of
+  `proc.finished` is the box's manifest: the request and where each item came from, the paths and theirs, what was
+  closed and left out, the rules taken, the policy the sandbox applies and the names of the environment.
 - `proc.exec { cmd, cwd, timeout, env?, net?, secrets? }` runs with no box. It is irreversible and external, so a
   grant names it. `env` values may be `secret("name")` references (`secret()` is exported by `@niwa-labs/core`)
   and `secrets` lists secrets given as variables of their own names; values are resolved from
@@ -37,7 +40,7 @@ exit is a result, not an error. A call that could not start a command, because t
 box could be had, is a `ProcRefusal`: nothing ran.
 
 Entries: `@niwa-labs/proc` (the plugin `proc()`), `@niwa-labs/proc/records` (action references, record type,
-`fileTarget()`), which needs only core and zod.
+`fileTarget()`), which needs core, the box schemas of the sandbox and zod.
 `@niwa-labs/proc/flow` is the script helper `runCheck(key, { cmd, cwd, timeout?, env?, report? })`: it runs a
 check with `proc.run` (with `proc.exec` when `env` holds a secret reference), passes on a zero exit, and reads the
 report a command prints last (`json`, `lcov` totals, `junit` suite counts). It imports nothing.

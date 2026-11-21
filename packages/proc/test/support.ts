@@ -6,8 +6,8 @@ import { join } from "node:path";
 
 import type { Action, ActionContext, ArtifactRef, ArtifactStore, RecordType } from "@niwa-labs/core";
 import type { PluginApi } from "@niwa-labs/plugin";
-import { SandboxUnavailable } from "@niwa-labs/sandbox";
-import type { BoxPolicy, BoxSpec, Sandbox } from "@niwa-labs/sandbox";
+import { SandboxUnavailable, sandbox as sandboxHost } from "@niwa-labs/sandbox";
+import type { BoxPolicy, BoxSpec, Sandbox, SandboxHost } from "@niwa-labs/sandbox";
 import { createNiwa, tempHome } from "@niwa-labs/testing";
 
 import { proc } from "../src/index.ts";
@@ -66,14 +66,28 @@ export const absentSandbox: Sandbox = {
   },
 };
 
+/**
+ * The module's options, with the sandbox a test gives as an adapter, and the host's sandbox to put
+ * it in (`boxes`, the catalog alone when absent).
+ */
+export type TestProcOptions = Omit<ProcOptions, "sandbox"> & { readonly sandbox?: Sandbox; readonly boxes?: SandboxHost };
+
+/** The options of the module from a test's: its adapter in the host's sandbox. */
+export function procOptions(options: TestProcOptions): ProcOptions {
+  const { sandbox, boxes, ...rest } = options;
+  if (sandbox === undefined) return { ...rest, ...(boxes === undefined ? {} : { sandbox: boxes }) };
+  const host = boxes ?? sandboxHost();
+  return { ...rest, sandbox: { ...host, adapter: sandbox, names: host.names, install: host.install, plan: host.plan } };
+}
+
 /** A host with the proc module over a fresh home. */
-export async function procHost(options: ProcOptions = {}, at?: string) {
+export async function procHost(options: TestProcOptions = {}, at?: string) {
   const home =
     at === undefined
       ? await tempHome()
       : { path: at, cleanup: async () => rmSync(at, { recursive: true, force: true }) };
   const niwa = createNiwa({ home: home.path });
-  niwa.use(proc(options));
+  niwa.use(proc(procOptions(options)));
   await niwa.serve();
   return {
     niwa,
@@ -123,7 +137,7 @@ export function alive(pid: number): boolean {
  * The actions of the proc module, called as the core calls them in a step: with a context of the
  * test's own, so a signal can be given and the records the action writes are kept.
  */
-export async function procActions(options: ProcOptions = {}) {
+export async function procActions(options: TestProcOptions = {}) {
   const home = await tempHome();
   const niwa = createNiwa({ home: home.path });
   const actions = new Map<string, Action<any, any>>();
@@ -133,11 +147,12 @@ export async function procActions(options: ProcOptions = {}) {
     home: () => home.path,
     secrets: niwa.secrets,
     artifacts: niwa.artifacts,
+    rights: () => "unlimited",
     action: (found: Action<any, any>) => {
       actions.set(found.name, found);
     },
   } as unknown as PluginApi;
-  proc(options).setup(api);
+  proc(procOptions(options)).setup(api);
   const context = (signal?: AbortSignal): ActionContext =>
     ({
       operationId: "op-test",

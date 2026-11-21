@@ -3,7 +3,7 @@
 import { CatchableError } from "@niwa-labs/core";
 
 /** Why a call was refused before a command started. */
-export type ProcRefusalCode = "bad-cwd" | "no-sandbox" | "not-started";
+export type ProcRefusalCode = "bad-cwd" | "no-sandbox" | "box-refused" | "not-started";
 
 /** A refusal of the module: the caller's to catch, since nothing ran. */
 export class ProcRefusal extends CatchableError {

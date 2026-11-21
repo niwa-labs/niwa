@@ -8,8 +8,10 @@
 //   2. a run reaches no network
 //   3. a run cannot read the owner token of the host, though the host's home holds it
 //   4. a run cannot write a shared temp area, and the temp files of a command that follows TMPDIR still work
-//   5. the box a run names is nono's policy: its cwd to write, and neither a temp area nor the home to read
-//   6. a run's HOME is its own, inside its cwd, and a toolchain under the user's home runs only when given
+//   5. the box a run names carries nono's policy: its cwd to write, and neither a temp area nor the home to read
+//   6. a run's HOME is the user's own, which it cannot write, and a program on the PATH under the user's
+//      home runs from the toolchains, and not when the call replaces them
+// and for srt, whose reads are open: a run cannot read the places of an installation it did not take.
 
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -17,14 +19,12 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
-import { nono } from "@niwa-labs/sandbox";
+import { nono, sandbox as sandboxHost, srt } from "@niwa-labs/sandbox";
 import { live } from "@niwa-labs/testing";
 
 import { procRun } from "../src/index.ts";
 import { dirIn, outputOf, procHost } from "./support.ts";
 
-// srt is not among them: it cannot keep what a run promises (its own temp directory is writable and
-// every read is open unless named), so proc.run refuses it.
 for (const sandbox of [nono()]) {
   const present = live && (await sandbox.available());
   describe(`proc.run in ${sandbox.name}`, () => {
@@ -36,11 +36,12 @@ for (const sandbox of [nono()]) {
         const cwd = realpathSync(dirIn(host.home, "work"));
         const inside = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", "echo x > in.txt"], cwd, timeout: 20_000 });
         expect(inside.exit).toBe(0);
-        // The box it names is the one nono applies: its own directory to write, and no temp area or home to read.
-        expect(inside.box.write).toEqual([cwd]);
-        expect(inside.box.read).toContain(cwd);
+        // The box it names carries the policy nono applies: its own directory to write, and no temp area or home to read.
+        expect(inside.box.policy.write).toContain(cwd);
+        const read = "only" in inside.box.policy.read ? inside.box.policy.read.only : [];
+        expect(read).toContain(cwd);
         for (const place of [realpathSync(tmpdir()), homedir(), realpathSync(host.home)]) {
-          expect(inside.box.read.some((path) => place === path || place.startsWith(`${path}/`))).toBe(false);
+          expect(read.some((path) => place === path || place.startsWith(`${path}/`))).toBe(false);
         }
         expect(readFileSync(join(cwd, "in.txt"), "utf8")).toBe("x\n");
 
@@ -78,35 +79,36 @@ for (const sandbox of [nono()]) {
       }
     }, 60_000);
 
-    test.skipIf(!present)("has a home of its own, and runs a program of a toolchain it is given under the user's home", async () => {
+    test.skipIf(!present)("has the user's home, which it cannot write, and runs a program on the PATH from the toolchains", async () => {
       const tools = realpathSync(mkdtempSync(join(homedir(), ".niwa-proc-tools-")));
       writeFileSync(join(tools, "niwa-hello"), "#!/bin/sh\necho hello from the toolchain\n", { mode: 0o755 });
-      const given = await procHost({ sandbox, toolchains: [tools] }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
-      const bare = await procHost({ sandbox, toolchains: [] }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
+      const saved = process.env["PATH"];
+      process.env["PATH"] = `${tools}:/usr/bin:/bin`;
+      const host = await procHost({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
       try {
-        const cwd = realpathSync(dirIn(given.home, "work"));
+        const cwd = realpathSync(dirIn(host.home, "work"));
         const env = { PATH: `${tools}:/usr/bin:/bin` };
-        const own = await given.niwa.call(procRun, {
-          cmd: ["/bin/sh", "-c", 'echo "$HOME"; touch "$HOME/.toolrc" && echo wrote; niwa-hello'],
+        const own = await host.niwa.call(procRun, {
+          cmd: ["/bin/sh", "-c", 'echo "$HOME"; touch "$HOME/.niwa-proc-probe" 2>/dev/null && echo wrote || echo kept; niwa-hello'],
           cwd,
           timeout: 20_000,
           env,
         });
-        const [home, wrote, hello] = outputOf(given, own.output).trim().split("\n");
+        const [home, wrote, hello] = outputOf(host, own.output).trim().split("\n");
         expect(own.exit).toBe(0);
-        expect(home?.startsWith(`${cwd}/`)).toBe(true);
-        expect([wrote, hello]).toEqual(["wrote", "hello from the toolchain"]);
-        expect(own.box.read).toContain(tools);
+        expect(home).toBe(homedir());
+        expect([wrote, hello]).toEqual(["kept", "hello from the toolchain"]);
+        expect(own.box.paths).toContainEqual({ path: tools, mode: "read", from: "toolchains" });
 
-        // Not given the toolchain, the same program is closed to it.
-        const other = realpathSync(dirIn(bare.home, "work"));
-        const closed = await bare.niwa.call(procRun, { cmd: ["/bin/sh", "-c", "niwa-hello"], cwd: other, timeout: 20_000, env });
+        // With the toolchains replaced, the same program is closed to it.
+        const closed = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", "niwa-hello"], cwd, timeout: 20_000, env, box: { only: [] } });
         expect(closed.exit).not.toBe(0);
-        expect(outputOf(bare, closed.output)).not.toContain("hello from the toolchain");
+        expect(outputOf(host, closed.output)).not.toContain("hello from the toolchain");
       } finally {
-        await given.stop();
-        await bare.stop();
+        process.env["PATH"] = saved;
+        await host.stop();
         rmSync(tools, { recursive: true, force: true });
+        rmSync(join(homedir(), ".niwa-proc-probe"), { force: true });
       }
     }, 60_000);
 
@@ -129,3 +131,23 @@ for (const sandbox of [nono()]) {
     }, 60_000);
   });
 }
+
+const srtPresent = live && (await srt().available());
+
+test.skipIf(!srtPresent)("in srt, whose reads are open, a run cannot read the places of an installation it did not take", async () => {
+  const codexHome = realpathSync(mkdtempSync(join(homedir(), ".niwa-proc-codex-")));
+  writeFileSync(join(codexHome, "auth.json"), "codex-sign-in\n", { mode: 0o600 });
+  const boxes = sandboxHost();
+  boxes.install("codex-luna", { write: [codexHome] });
+  const host = await procHost({ sandbox: srt(), boxes }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
+  try {
+    const cwd = realpathSync(dirIn(host.home, "work"));
+    const result = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", `cat ${join(codexHome, "auth.json")}`], cwd, timeout: 20_000 });
+    expect(result.exit).not.toBe(0);
+    expect(outputOf(host, result.output)).not.toContain("codex-sign-in");
+    expect(result.box.closed).toContainEqual({ path: codexHome, from: "harness:codex-luna" });
+  } finally {
+    await host.stop();
+    rmSync(codexHome, { recursive: true, force: true });
+  }
+}, 60_000);
