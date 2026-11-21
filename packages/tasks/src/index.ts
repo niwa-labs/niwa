@@ -24,7 +24,8 @@ import { z } from "zod";
 
 import { IdIndex, action, seq } from "@niwa-labs/core";
 import type { Action, ActionContext, Address, Caller, JournalReader } from "@niwa-labs/core";
-import { bindingOf, plugin } from "@niwa-labs/plugin";
+import { bindingOf, COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
+import { fileURLToPath } from "node:url";
 import type { CallerBinding, MessagesOptions, Plugin } from "@niwa-labs/plugin";
 import { birthOf, issuedIds, messageSendRef } from "@niwa-labs/messages/records";
 import type { MessageBody } from "@niwa-labs/messages/records";
@@ -93,6 +94,8 @@ export function tasks(opts: TasksOptions = {}): Plugin {
   const waiting = new Map<string, Set<() => void>>();
 
   return plugin("tasks", (api) => {
+    // The page of this plugin in the cockpit: a client module, offered by the path of its source.
+    api.offer(COCKPIT_MODULE, { id: "tasks", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     const journal = () => api.journal?.();
     const facts = taskFacts(journal);
     const ids = taskIds(journal);
