@@ -19,6 +19,7 @@ import type { BoxManifest } from "@niwa-labs/sandbox";
 import type { HarnessBinding } from "../index.ts";
 import { promptFromText } from "../control.ts";
 import type { LifeEvent } from "../control.ts";
+import type { SessionRecord } from "../reading.ts";
 
 /** What the check saw. */
 export interface ProfileConformanceResult {
@@ -38,6 +39,14 @@ export interface ProfileConformanceOptions {
 }
 
 const WORD = "PONG";
+
+/** Checks that the reading side saw the complete reply, separately from the prompt and tools. */
+export async function hasProfileReply(records: AsyncIterable<SessionRecord>): Promise<boolean> {
+  for await (const record of records) {
+    if (record.kind === "assistant" && !record.incomplete && record.text.trim() === WORD) return true;
+  }
+  return false;
+}
 
 /** Runs one installation's session in a nono box with only its own profile. */
 export async function profileConformance(binding: HarnessBinding, options: ProfileConformanceOptions): Promise<ProfileConformanceResult> {
@@ -69,13 +78,11 @@ export async function profileConformance(binding: HarnessBinding, options: Profi
     if (ended) await watcher;
     let answered = false;
     for (let attempt = 0; attempt < 20 && !answered; attempt += 1) {
-      const records: unknown[] = [];
       try {
-        for await (const record of reading.read(session)) records.push(record);
+        answered = await hasProfileReply(reading.read(session));
       } catch {
         // The log may not be written yet.
       }
-      answered = JSON.stringify(records).includes(WORD);
       if (!answered) await Bun.sleep(250);
     }
     return { ended, answered, box: boxManifest(plan, admitted.rules, admitted.manifest) };
