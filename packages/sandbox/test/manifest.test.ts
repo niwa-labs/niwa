@@ -8,6 +8,8 @@
 //   4. nono's flags are the spec's write, net and sockets; an empty net is a blocked net
 //   5. nono drops a denyRead it never granted, and refuses one it would have to carve out of a granted place
 //   6. a sandbox that is not available stops the session before it starts
+//   7. nono's manifest carries the profile it is run with: the default one without the temp areas;
+//      its own writes are the spec's and nothing else
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
@@ -113,6 +115,20 @@ test("srt on Linux refuses a socket it would silently leave closed", () => {
   expect(() => srt({ platform: "linux" }).manifest(sockets)).toThrow(SandboxUnsupported);
   expect(srt({ platform: "linux" }).manifest(boxSpec({ cwd: "/x" })).settings.network.allowUnixSockets).toEqual([]);
   expect(srt({ platform: "darwin" }).manifest(sockets).settings.network.allowUnixSockets).toEqual(["~/.niwa/host.sock"]);
+});
+
+test("nono is run with the default profile less the temp areas, which each platform names in its own group", () => {
+  const mac = nono({ platform: "darwin" }).manifest(boxSpec({ cwd: "/x" })).profile;
+  expect(mac.extends).toBe("default");
+  expect(mac.groups.exclude).toEqual(["system_write_macos"]);
+  expect(mac.filesystem.write).toEqual(["/dev"]);
+  const linux = nono({ platform: "linux" }).manifest(boxSpec({ cwd: "/x" })).profile;
+  expect(linux.groups.exclude).toEqual(["system_write_linux"]);
+  expect(linux.filesystem.write_file).toEqual(expect.arrayContaining(["/dev/null", "/dev/tty"]));
+  // No place of the temp areas is granted back.
+  for (const profile of [mac, linux]) {
+    for (const path of [...profile.filesystem.write, ...profile.filesystem.write_file]) expect(path).not.toMatch(/tmp|var\/folders/);
+  }
 });
 
 test("a working directory under the home directory is expanded once, and the paths read from it follow", () => {

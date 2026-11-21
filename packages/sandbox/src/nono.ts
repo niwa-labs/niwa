@@ -6,12 +6,15 @@
  * allow-list in nono, so a `denyRead` entry needs no flag: what was never granted is already closed.
  * Carving a hole out of a granted directory cannot be said, so a `denyRead` that overlaps a place the
  * box may read or write is refused rather than weakened. So is one that a place nono grants on its own
- * (the system directories, the temp areas) covers: nono is asked, and a read it would allow is not
- * left to look closed. nono runs with a `HOME` and PATH of its own, the host's; the spec's environment is set on the command inside.
+ * (the system directories) covers: nono is asked, and a read it would allow is not left to look closed.
+ * nono runs with a `HOME` and PATH of its own, the host's; the spec's environment is set on the command inside.
+ *
+ * Writing is held to `write` exactly. nono's default profile also lets a process write the shared
+ * temp areas, so every run is given a profile of the host's that is the default one without them.
  */
 
 import { realpathSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
@@ -59,6 +62,36 @@ function launcherEnv(): Readonly<Record<string, string>> {
  */
 const TRUSTED_DIRECTORY = "/usr/share";
 
+/**
+ * The profile nono runs with: its default, less what lets a process write outside the spec. The
+ * default profile grants the shared temp areas and the devices in one group; the devices a process
+ * needs to run (the null device, the terminal, the descriptors it inherited) are granted again, the
+ * rest of that group is not.
+ */
+export interface NonoProfile {
+  readonly meta: { readonly name: string };
+  readonly extends: "default";
+  readonly groups: { readonly exclude: readonly string[] };
+  readonly filesystem: { readonly write: readonly string[]; readonly write_file: readonly string[] };
+}
+
+/** The group of the default profile that holds the temp areas, as each platform spells it, and what of it is kept. */
+function profileFor(platform: NodeJS.Platform): NonoProfile {
+  const meta = { name: "niwa-box" } as const;
+  if (platform === "darwin") {
+    return { meta, extends: "default", groups: { exclude: ["system_write_macos"] }, filesystem: { write: ["/dev"], write_file: [] } };
+  }
+  return {
+    meta,
+    extends: "default",
+    groups: { exclude: ["system_write_linux"] },
+    filesystem: {
+      write: ["/dev/fd", "/dev/pts", "/proc/self/fd"],
+      write_file: ["/dev/null", "/dev/zero", "/dev/full", "/dev/tty", "/dev/stdout", "/dev/stderr"],
+    },
+  };
+}
+
 /** Would nono let the box read this path, by what it grants without being asked? `undefined` when it cannot say. */
 function readable(binary: string, path: string): boolean | undefined {
   const asked = Bun.spawnSync([binary, "why", "--json", "--op", "read", "--path", path], {
@@ -79,6 +112,8 @@ function readable(binary: string, path: string): boolean | undefined {
 
 export interface NonoManifest extends SandboxManifest {
   readonly sandbox: "nono";
+  /** The profile file nono is run with, put before these flags at launch. */
+  readonly profile: NonoProfile;
   /** The flags between `nono run` and the program. */
   readonly flags: readonly string[];
 }
@@ -86,10 +121,13 @@ export interface NonoManifest extends SandboxManifest {
 export interface NonoOptions {
   /** The nono binary. Default: `nono` found on PATH. */
   readonly binary?: string;
+  /** The platform nono runs on. Default: this one. */
+  readonly platform?: NodeJS.Platform;
 }
 
 export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
   const binary = options.binary ?? Bun.which("nono") ?? undefined;
+  const platform = options.platform ?? process.platform;
   let probed: Promise<boolean> | undefined;
   /** What nono answered for a path, so each is asked once. */
   const memo = new Map<string, boolean | undefined>();
@@ -120,6 +158,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
       sandbox: "nono",
       cwd: spec.cwd,
       env: spec.env,
+      profile: profileFor(platform),
       flags: [
         "--silent",
         "--read", spec.cwd,
@@ -131,10 +170,22 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     };
   };
 
-  /** The wrapper's own command, up to the one it runs. */
-  const wrapped = (flags: readonly string[]) => {
+  /**
+   * The wrapper's own command, up to the one it runs, and the clean-up of the profile file it names.
+   * The file is the host's: written to a directory made for it, readable by this user only.
+   */
+  const wrapped = async (config: NonoManifest) => {
     if (!binary) throw new SandboxUnavailable("nono", "the nono binary is not on PATH");
-    return [binary, "run", ...flags, "--"];
+    const dir = await mkdtemp(join(tmpdir(), "niwa-nono-"));
+    const cleanup = () => rm(dir, { recursive: true, force: true });
+    try {
+      const path = join(dir, "profile.json");
+      await writeFile(path, JSON.stringify(config.profile), { mode: 0o600 });
+      return { command: [binary, "run", "--profile", path, ...config.flags, "--"], cleanup };
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
   };
 
   return {
@@ -145,10 +196,13 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
       probed ??= (async () => {
         if (!binary) return false;
         const dir = await mkdtemp(join(tmpdir(), "niwa-nono-probe-"));
+        let cleanup: (() => Promise<void>) | undefined;
         try {
-          const config = manifest(boxSpec({ cwd: dir }));
-          return await probe("nono", wrapped(config.flags), dir, launcherEnv(), TRUSTED_DIRECTORY);
+          const wrapper = await wrapped(manifest(boxSpec({ cwd: dir })));
+          cleanup = wrapper.cleanup;
+          return await probe("nono", wrapper.command, dir, launcherEnv(), TRUSTED_DIRECTORY);
         } finally {
+          await cleanup?.();
           await rm(dir, { recursive: true, force: true });
         }
       })();
@@ -156,7 +210,13 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     },
     async launch(spec, argv, options) {
       const config = manifest(spec);
-      return spawnBox("nono", wrapped(config.flags), { cwd: config.cwd, env: config.env, argv }, launcherEnv(), TRUSTED_DIRECTORY, async () => {}, options);
+      const wrapper = await wrapped(config);
+      try {
+        return spawnBox("nono", wrapper.command, { cwd: config.cwd, env: config.env, argv }, launcherEnv(), TRUSTED_DIRECTORY, wrapper.cleanup, options);
+      } catch (error) {
+        await wrapper.cleanup();
+        throw error;
+      }
     },
   };
 }

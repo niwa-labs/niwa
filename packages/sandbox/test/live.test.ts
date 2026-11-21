@@ -10,12 +10,14 @@
 //   4. a relative `write` is read from the cwd, where the wrapper runs
 //   5. a path with pattern characters names itself and not its neighbours
 //   6. a detached box leads its own process group, and a group signal ends what it started
+//   7. nono lets a process write no temp area, only what `write` lists
+//      and the devices it needs
 //
 // Only the public API is used: "@niwa-labs/sandbox".
 
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -46,8 +48,7 @@ for (const sandbox of [srt(), nono()]) {
   describe(sandbox.name, () => {
     test.skipIf(!present)("writes only inside `write`", async () => {
       const inside = await realpath(await tempDir("box-in"));
-      // Not under tmpdir: nono leaves the temp area writable on its own.
-      const outside = await realpath(await mkdtemp(join(homedir(), ".niwa-box-out-")));
+      const outside = await realpath(await mkdtemp(join(tmpdir(), "niwa-box-out-")));
       try {
         const spec = boxSpec({ cwd: inside, write: [inside], env: { PATH: "/usr/bin:/bin", HOME: homedir() } });
         const ok = await run(sandbox, spec, `echo x > ${inside}/a`);
@@ -59,6 +60,25 @@ for (const sandbox of [srt(), nono()]) {
       } finally {
         await rm(inside, { recursive: true, force: true });
         await rm(outside, { recursive: true, force: true });
+      }
+    });
+
+    test.skipIf(!present || sandbox.name !== "nono")("writes no temp area, and still has the devices it needs", async () => {
+      const cwd = await realpath(await tempDir("box-temp"));
+      const name = `niwa-box-temp-${process.pid}-${Date.now()}`;
+      const shared = [join("/tmp", name), join(await realpath(tmpdir()), name)];
+      try {
+        const spec = boxSpec({ cwd, write: [cwd], env: { PATH: "/usr/bin:/bin", HOME: homedir() } });
+        for (const path of shared) {
+          expect((await run(sandbox, spec, `echo x > '${path}'`)).code).not.toBe(0);
+          expect(await Bun.file(path).exists()).toBe(false);
+        }
+        const devices = await run(sandbox, spec, "echo x > /dev/null && echo x > /dev/stderr && echo ok");
+        expect(devices.code).toBe(0);
+        expect(devices.stdout.trim()).toBe("ok");
+      } finally {
+        for (const path of shared) await rm(path, { force: true });
+        await rm(cwd, { recursive: true, force: true });
       }
     });
 
@@ -92,8 +112,7 @@ for (const sandbox of [srt(), nono()]) {
     });
 
     test.skipIf(!present)("a relative `write` is read from the cwd", async () => {
-      // Not under tmpdir: nono leaves the temp area writable on its own.
-      const cwd = await realpath(await mkdtemp(join(homedir(), ".niwa-box-rel-")));
+      const cwd = await realpath(await tempDir("box-rel"));
       try {
         await mkdir(join(cwd, "out"));
         const spec = boxSpec({ cwd, write: ["out"], env: { PATH: "/usr/bin:/bin", HOME: homedir() } });

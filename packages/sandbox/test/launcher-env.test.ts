@@ -122,3 +122,23 @@ test("the values of the command's environment are in no command line while the b
     await box.exited;
   }
 });
+
+test("nono is given its profile as a file only the host can read, and the file is gone once the box has ended", async () => {
+  const dir = await tempDir("nono-profile-file");
+  const path = join(dir, "wrapper");
+  const seen = join(dir, "profile-path");
+  // Writes down the file named after `--profile` and what it holds, then runs what follows `--`.
+  await writeFile(
+    path,
+    `#!/bin/sh\nwhile [ "$1" != "--profile" ]; do shift; done\nprintf %s "$2" > '${seen}'\ncat "$2" > '${seen}-content'\n(stat -c %a "$2" || stat -f %Lp "$2") > '${seen}-mode' 2>/dev/null\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n`,
+  );
+  await chmod(path, 0o755);
+  const sandbox = nono({ binary: path });
+  const spec = boxSpec({ cwd: dir, env: { PATH: "/usr/bin:/bin" } });
+  const result = await ran(sandbox, spec, ["/usr/bin/true"]);
+  expect(result.code).toBe(0);
+  const profile = await readFile(seen, "utf8");
+  expect(JSON.parse(await readFile(`${seen}-content`, "utf8"))).toEqual(JSON.parse(JSON.stringify(sandbox.manifest(spec).profile)));
+  expect((await readFile(`${seen}-mode`, "utf8")).trim()).toBe("600");
+  expect(await Bun.file(profile).exists()).toBe(false);
+});

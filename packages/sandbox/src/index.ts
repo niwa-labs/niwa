@@ -13,7 +13,7 @@ export type { LaunchedBox, Sandbox, SandboxClass, SandboxManifest, SandboxName }
 export { srt } from "./srt.ts";
 export type { SrtManifest, SrtOptions, SrtSettings } from "./srt.ts";
 export { nono } from "./nono.ts";
-export type { NonoManifest, NonoOptions } from "./nono.ts";
+export type { NonoManifest, NonoOptions, NonoProfile } from "./nono.ts";
 export {
   LIVE_PROCESS_REFUSAL,
   homePath,
