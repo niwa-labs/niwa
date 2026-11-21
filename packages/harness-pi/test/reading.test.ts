@@ -313,7 +313,7 @@ test("compaction entries come back as compactions with their summary", async () 
   expect(records[0]).toMatchObject({ kind: "compaction", summary: "so far" });
 });
 
-test("reasoning and an empty answer are kept whole, not dropped", async () => {
+test("reasoning is a thinking record, and an empty answer is kept whole, not dropped", async () => {
   const message = (id: string, content: unknown) =>
     `${JSON.stringify({
       type: "message",
@@ -329,7 +329,8 @@ test("reasoning and an empty answer are kept whole, not dropped", async () => {
       message("a2", []),
   );
   const records = await all(reading().read(idOf("quiet")));
-  expect(records.map((r) => r.kind)).toEqual(["unknown", "assistant", "unknown"]);
+  expect(records.map((r) => r.kind)).toEqual(["thinking", "assistant", "unknown"]);
+  expect(records[0]).toMatchObject({ kind: "thinking", text: "hmm", redacted: false });
 });
 
 test("a call without an id or a name is kept whole", async () => {
@@ -476,13 +477,15 @@ test("every entry type and every message role of pi's file is mapped on purpose:
     header("blocks") + entry({ ...ENTRY_FIXTURES.message, message: { ...MESSAGE_FIXTURES.assistant, content: blocks } }),
   );
   const records = await all(reading().read(idOf("blocks")));
-  expect(records.map((record) => record.kind)).toEqual(["unknown", "assistant", "tool-call", "unknown"]);
-  expect(records[0]).toMatchObject({ raw: blocks[0] });
+  expect(records.map((record) => record.kind)).toEqual(["thinking", "assistant", "tool-call", "unknown"]);
+  expect(records[0]).toMatchObject({ text: "hm", redacted: false });
+  // The signature of the protocol stays in the record pi wrote, which is still there to be asked for.
+  expect(await reading().raw(idOf("blocks"), records[0]!.locator)).toMatchObject({ type: "message" });
   expect(records[3]).toMatchObject({ raw: blocks[3] });
 
   // A line pi really wrote.
   writeFileSync(sessionFile("real"), header("real") + `${REAL_MESSAGE_LINES.assistantThinkingText}\n`);
-  expect((await all(reading().read(idOf("real")))).map((record) => record.kind)).toEqual(["unknown", "assistant"]);
+  expect((await all(reading().read(idOf("real")))).map((record) => record.kind)).toEqual(["thinking", "assistant"]);
 
   // A line that is none of pi's entries stays whole under unknown, as before.
   expect(await kindsOf("alien", entry({ type: "hologram", id: "z" }))).toEqual(["unknown"]);

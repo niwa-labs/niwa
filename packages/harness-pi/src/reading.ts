@@ -144,6 +144,7 @@ type Draft =
       readonly ok?: boolean;
       readonly at?: number;
     }
+  | { readonly kind: "thinking"; readonly text: string; readonly redacted: boolean; readonly at?: number }
   | { readonly kind: "compaction"; readonly summary: string; readonly at?: number }
   | { readonly kind: "nested"; readonly child: SessionId; readonly at?: number }
   | { readonly kind: "unknown"; readonly raw: unknown; readonly at?: number };
@@ -556,10 +557,10 @@ function draftOfBlock(block: AssistantBlock, model: string | undefined, at: numb
         ? { kind: "tool-call", callId: block.id, name: block.name, input: block.arguments, at }
         : // A call that cannot be paired is kept whole.
           { kind: "unknown", raw: block, at };
-    // The model's reasoning has no common kind: it is kept whole. So is a block that is not in the
-    // snapshot, which carries what it came as.
+    // The model's reasoning keeps its words, or says it was sealed; the signature stays in `raw`.
+    // A block that is not in the snapshot carries what it came as.
     case "thinking":
-      return { kind: "unknown", raw: block, at };
+      return { kind: "thinking", text: block.thinking, redacted: block.redacted === true, at };
     case "unrecognized":
       return { kind: "unknown", raw: block.raw, at };
     default:
@@ -620,6 +621,8 @@ function recordsOfLine(drafts: Draft[], incomplete: boolean): Unlocated[] {
           ...atField(draft.at),
           ...base,
         };
+      case "thinking":
+        return { kind: "thinking", text: draft.text, redacted: draft.redacted, ...atField(draft.at), ...base };
       case "compaction":
         return {
           kind: "compaction",
