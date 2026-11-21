@@ -140,6 +140,8 @@ export interface ScriptTypeQuery<R> {
   readonly types: readonly [R];
   readonly filter?: ScriptFilter<ScriptRecordData<R>>;
   readonly from?: number;
+  /** A wait looks at every stream: a query that names one is for a read, not a wait. */
+  readonly stream?: undefined;
 }
 
 /**
@@ -176,6 +178,22 @@ export interface ScriptStoredRecord<D = any> {
 }
 
 /**
+ * Whether a list of record types is known to name only referenced types: a tuple of at least one reference. A list that
+ * may be empty (a record type list built at run time) selects every type when it is, and one that holds a name
+ * written as text has no data type to give.
+ */
+export type ScriptRefsOnly<T extends readonly unknown[]> = T extends readonly [] ? false : number extends T["length"] ? false : T[number] extends ScriptRecordRef<any> ? true : false;
+
+/** The filter of a read of a list of record types: by the data of the references when every one is, else by any field. */
+export type ScriptTypesFilter<T extends readonly unknown[]> = ScriptRefsOnly<T> extends true ? ScriptFilter<ScriptRecordData<T[number]>> : Record<string, unknown>;
+
+/** A record of one referenced type, with its data typed by it; spread over a union of references, one record type each. */
+export type ScriptRecordOf<R> = R extends unknown ? ScriptStoredRecord<ScriptRecordData<R>> : never;
+
+/** The records a read of a list of record types answers with: typed by the references when every type is one, else of data of unknown shape. */
+export type ScriptTypesRecords<T extends readonly unknown[]> = ScriptRefsOnly<T> extends true ? ScriptRecordOf<T[number]> : ScriptStoredRecord<unknown>;
+
+/**
  * What a script is given. The globals are declared in a script with
  * `declare const wait: ScriptApi["wait"]` and so on: a declaration for the whole project would
  * put names like `sleep` and `log` in front of every module. The answers are `any`: they are
@@ -206,30 +224,33 @@ export interface ScriptApi {
    * Start a session in a harness and ask it. `visible` names the actions the session sees besides the one that answers.
    * With a zod `schema` the answer is that value, parsed and typed as the schema says; without one it is `{ answer }`, the text.
    */
-  agent<S extends import("zod").z.ZodType>(
+  agent<S extends import("zod").z.ZodObject | import("zod").z.ZodRecord>(
     prompt: string,
     opts: AgentCallOptions & { schema: S; worktree: NonNullable<AgentCallOptions["worktree"]> },
   ): Promise<import("zod").z.output<S> & { worktree?: AgentWorktree }>;
-  agent(prompt: string, opts: AgentCallOptions & { worktree: NonNullable<AgentCallOptions["worktree"]> }): Promise<{ answer: string; worktree?: AgentWorktree }>;
-  agent<S extends import("zod").z.ZodType>(prompt: string, opts: AgentCallOptions & { schema: S }): Promise<import("zod").z.output<S>>;
-  agent(prompt: string, opts?: AgentCallOptions): Promise<{ answer: string }>;
+  agent(prompt: string, opts: AgentCallOptions & { schema?: undefined; worktree: NonNullable<AgentCallOptions["worktree"]> }): Promise<{ answer: string; worktree?: AgentWorktree }>;
+  agent<S extends import("zod").z.ZodType>(prompt: string, opts: AgentCallOptions & { schema: S; worktree?: undefined }): Promise<import("zod").z.output<S>>;
+  agent(prompt: string, opts?: AgentCallOptions & { schema?: undefined; worktree?: undefined }): Promise<{ answer: string }>;
   /**
    * The first record of a type whose data holds every field of `filter`, written after `from` — a
    * position an earlier wait or read answered — or after the wait began: its data and its position.
    * Without a `timeout` it waits for ever; the wait survives a restart of the host.
    */
-  wait<R extends ScriptRecordRef<any>>(type: R, opts?: { filter?: ScriptFilter<ScriptRecordData<R>>; from?: number; label?: string }): Promise<ScriptWaited<ScriptRecordData<R>>>;
-  /** The same, or `{ timedOut: true }` at the end of the timeout. */
   wait<R extends ScriptRecordRef<any>>(
     type: R,
-    opts: { filter?: ScriptFilter<ScriptRecordData<R>>; from?: number; timeout: Duration; label?: string },
+    opts?: { filter?: ScriptFilter<ScriptRecordData<R>>; from?: number; label?: string; timeout?: undefined },
+  ): Promise<ScriptWaited<ScriptRecordData<R>>>;
+  /** The same, or `{ timedOut: true }` at the end of the timeout: options that may hold a `timeout` give both. */
+  wait<R extends ScriptRecordRef<any>>(
+    type: R,
+    opts: { filter?: ScriptFilter<ScriptRecordData<R>>; from?: number; label?: string; timeout?: Duration },
   ): Promise<ScriptWaited<ScriptRecordData<R>> | TimedOut>;
   /** The first record that answers a query of one referenced type, as a plugin's query builder gives it: after `from` (the option, else the query's). */
-  wait<R extends ScriptRecordRef<any>>(query: ScriptTypeQuery<R>, opts?: { from?: number; label?: string }): Promise<ScriptWaited<ScriptRecordData<R>>>;
-  wait<R extends ScriptRecordRef<any>>(query: ScriptTypeQuery<R>, opts: { from?: number; timeout: Duration; label?: string }): Promise<ScriptWaited<ScriptRecordData<R>> | TimedOut>;
+  wait<R extends ScriptRecordRef<any>>(query: ScriptTypeQuery<R>, opts?: { from?: number; label?: string; timeout?: undefined }): Promise<ScriptWaited<ScriptRecordData<R>>>;
+  wait<R extends ScriptRecordRef<any>>(query: ScriptTypeQuery<R>, opts: { from?: number; label?: string; timeout?: Duration }): Promise<ScriptWaited<ScriptRecordData<R>> | TimedOut>;
   /** A type named as text: the data is of any shape. */
-  wait(type: string, opts?: { filter?: Record<string, unknown>; from?: number; label?: string }): Promise<ScriptWaited>;
-  wait(type: string, opts: { filter?: Record<string, unknown>; from?: number; timeout: Duration; label?: string }): Promise<ScriptWaited | TimedOut>;
+  wait(type: string, opts?: { filter?: Record<string, unknown>; from?: number; label?: string; timeout?: undefined }): Promise<ScriptWaited>;
+  wait(type: string, opts: { filter?: Record<string, unknown>; from?: number; label?: string; timeout?: Duration }): Promise<ScriptWaited | TimedOut>;
   /** Sleep. The wake-up moment is recorded on the first pass: a replay does not sleep from the start. */
   sleep(duration: Duration, opts?: CallOptions): Promise<void>;
   /**
@@ -260,16 +281,23 @@ export interface ScriptApi {
       query?: ScriptReadOptions & { filter?: ScriptFilter<ScriptRecordData<R>> },
       opts?: CallOptions,
     ): Promise<{ records: Array<ScriptStoredRecord<ScriptRecordData<R>>>; next: number }>;
-    /** The records of the referenced types, each with its data typed by its type. */
-    records<R extends ScriptRecordRef<any>>(
-      query: ScriptReadOptions & { types: readonly R[]; filter?: ScriptFilter<ScriptRecordData<R>> },
+    /**
+     * The records of a list of types: names as text, families written `prefix.*` or references. A list of references written
+     * out (`[Ping, Pong]`, or the list a plugin's query builder gives) types the filter and the data of each record by its
+     * type; any other list, one that may be empty or has a name as text, takes a filter on any field and gives data of unknown shape.
+     */
+    records<const T extends ReadonlyArray<string | ScriptRecordRef<any>> = readonly []>(
+      query?: ScriptReadOptions & { types?: T; filter?: ScriptTypesFilter<T> },
       opts?: CallOptions,
-    ): Promise<{ records: Array<R extends unknown ? ScriptStoredRecord<ScriptRecordData<R>> : never>; next: number }>;
-    /** The records of types named as text, or of any type: the data is of any shape. */
-    records(query?: ScriptRecordQuery & { limit?: number; tail?: number }, opts?: CallOptions): Promise<{ records: ScriptStoredRecord[]; next: number }>;
+    ): Promise<{ records: Array<ScriptTypesRecords<T>>; next: number }>;
   };
   /** Open a scope: a group of branches that never outlive it. */
-  scope<T>(name: string, opts: ScopeOptions | undefined, fn: (s: Scope) => Promise<T>): Promise<T>;
+  scope<T>(name: string, opts: (ScopeOptions & { deadline?: undefined }) | undefined, fn: (s: Scope) => Promise<T>): Promise<T>;
+  /** With a deadline that fails, the scope gives its value or throws `DeadlineExceeded`. */
+  scope<T>(name: string, opts: ScopeOptions & { deadline: Duration; onDeadline: "fail" }, fn: (s: Scope) => Promise<T>): Promise<T>;
+  /** With a deadline that may skip (the default), the scope past it gives undefined. */
+  scope<T>(name: string, opts: ScopeOptions | undefined, fn: (s: Scope) => Promise<T>): Promise<T | undefined>;
+  scope<T>(name: string, fn: (s: Scope) => Promise<T>): Promise<T>;
   /** Branches at once, by the index of a list or the keys of an object; a branch that fails cancels the others. */
   parallel<T>(branches: Array<() => T | Promise<T>>, opts?: { concurrency?: number }): Promise<Awaited<T>[]>;
   parallel<B extends Record<string, () => unknown>>(branches: B, opts?: { concurrency?: number }): Promise<{ [K in keyof B]: Awaited<ReturnType<B[K]>> }>;
@@ -280,6 +308,16 @@ export interface ScriptApi {
   moveOnAfter<T>(name: string, duration: Duration, fn: () => Promise<T>): Promise<T | undefined>;
   /** The block for at most the duration: past it, `DeadlineExceeded` is thrown. */
   failAfter<T>(name: string, duration: Duration, fn: () => Promise<T>): Promise<T>;
+  /** Stages one after another; each is given what the one before gave, awaited, and the call gives all of them. From two to four stages. */
+  pipeline<A, B>(stages: [() => A, (previous: Awaited<A>) => B]): Promise<[Awaited<A>, Awaited<B>]>;
+  pipeline<A, B, C>(stages: [() => A, (previous: Awaited<A>) => B, (previous: Awaited<B>) => C]): Promise<[Awaited<A>, Awaited<B>, Awaited<C>]>;
+  pipeline<A, B, C, D>(
+    stages: [() => A, (previous: Awaited<A>) => B, (previous: Awaited<B>) => C, (previous: Awaited<C>) => D],
+  ): Promise<[Awaited<A>, Awaited<B>, Awaited<C>, Awaited<D>]>;
+  /** Enter a phase the script declares in `workflow({ phases })`: the steps after it belong to it. */
+  phase(title: string): void;
+  /** A line of the run's output. */
+  log(text: string): void;
   /** The clock of the host, recorded: a replay reads the same moment. */
   now(opts?: CallOptions): Promise<number>;
   /** A random number, recorded: a replay reads the same one. */

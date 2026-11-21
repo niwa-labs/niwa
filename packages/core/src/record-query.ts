@@ -120,6 +120,8 @@ export interface RecordQuery<D = unknown> {
  */
 export interface TypeQuery<T> extends RecordQuery<T> {
   readonly types: readonly [RecordType<T>];
+  /** A query of one type looks at every stream, so a script's wait takes it as it takes a type: one that names a stream is a `RecordQuery`, for a read. */
+  readonly stream?: undefined;
 }
 
 /** A query of one declared type and a filter on its data: `queryOf(TaskDone, { task })`. */

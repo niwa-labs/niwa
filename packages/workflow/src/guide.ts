@@ -58,6 +58,7 @@ Calling actions:
   repository, or { worktree: { repo, base, description } }; the base is the repository's current branch when absent. When the
   call ends with the worktree clean and no new commit, it is removed; otherwise the answer carries
   worktree: { id, path, branch, changed: true } and the branch stays for you, the agent or the owner to merge: niwa never merges.
+  With a worktree the answer is an object, so a schema is a z.object (or z.record); any other schema is an error of the check.
 - agent(prompt, { schema }) with a zod schema gives a typed answer. z is a global (zod, no import): write the schema
   with z.object({ ... }), pass it, and the call gives the answer already parsed, typed as z.infer<typeof Schema>.
   Without schema the call gives { answer }, the text. The schema goes to the host as JSON Schema and is part of the

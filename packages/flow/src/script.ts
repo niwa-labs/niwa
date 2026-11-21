@@ -74,8 +74,8 @@ export const harnessOf = (seat: Seat): string => (typeof seat === "string" ? sea
 /** Whose model a seat is: what it says, else its harness. */
 export const vendorOf = (seat: Seat): string => (typeof seat === "string" ? seat : (seat.vendor ?? seat.harness));
 
-/** The options of an `agent()` call of a seat: no label, which would name one call of the whole run. */
-export function agentOptions(seat: Seat): AgentCallOptions {
+/** The options of an `agent()` call of a seat: no label, which would name one call of the whole run, and no worktree. */
+export function agentOptions(seat: Seat): Omit<AgentCallOptions, "worktree"> {
   if (typeof seat === "string") return { harness: seat };
   const { vendor: _vendor, label: _label, ...options } = seat;
   return options;

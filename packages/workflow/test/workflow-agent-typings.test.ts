@@ -119,12 +119,15 @@ test("the options block follows the harness: its own kind's block is typed, anot
     '{ harness: "codex", claude: { advisor: false } }',
     '{ harness: "claude-work", codex: {} }',
     '{ harness: "mcode-work", claude: {} }',
-    '{ harness: "codex", model: "gpt-5", schema: z.object({ ok: z.boolean() }), claude: { advisor: false } }',
   ]) {
     const errors = await errorsOf([`  await agent("a", ${call});`]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ line: 2, code: "TS2769" });
   }
+  // With a schema the call has more overloads to fail, and each says where: the call is refused, at that line.
+  const schemed = await errorsOf(['  await agent("a", { harness: "codex", model: "gpt-5", schema: z.object({ ok: z.boolean() }), claude: { advisor: false } });']);
+  expect(schemed.length).toBeGreaterThan(0);
+  for (const error of schemed) expect(error).toMatchObject({ line: 2, code: "TS2769" });
   // A field the own block does not have, or a value of the wrong type.
   expect(await errorsOf(['  await agent("a", { harness: "claude-work", claude: { advisor: "no" } });'])).toHaveLength(1);
   expect(await errorsOf(['  await agent("a", { harness: "claude-work", claude: { speed: 1 } });'])).toHaveLength(1);
