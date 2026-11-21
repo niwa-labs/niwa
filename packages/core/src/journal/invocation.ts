@@ -189,6 +189,14 @@ interface RunContext {
   failure: AppendFailure | undefined;
   /** True while this run has not written "running": it is a wake of a waiting invocation. */
   quiet: boolean;
+  /** The steps that are being run right now, by key: a second call under a key joins the first. */
+  readonly flights: Map<StepKey, Flight>;
+}
+
+/** One step that is being run: which call it is, and what it will come to. */
+interface Flight {
+  readonly call: string;
+  readonly done: Promise<StepResult<any>>;
 }
 
 /**
@@ -235,6 +243,7 @@ export async function runInvocation(deps: RunnerDeps, inv: InvocationSpec): Prom
     abandoned: false,
     failure: undefined,
     quiet: inv.woken === true && latestState(deps.journal, inv.id) === "waiting",
+    flights: new Map(),
   };
   const step = makeStep(ctx);
   if (!ctx.quiet) writeState(ctx, "running");
@@ -537,6 +546,36 @@ async function runStep<I, O, In = I>(
   opts: StepOptions | undefined,
 ): Promise<StepResult<O>> {
   const key = nextKey(ctx, opts);
+  const parsed = action.input.safeParse(input);
+  const call = `${action.name}\n${stableJson(parsed.success ? parsed.data : input)}`;
+  // A step is admitted once per key. Two calls under one key that run at the same time would both
+  // find the journal empty and both enter the action: the second waits for the first. The same
+  // call gets the answer of the first; another call is judged by what the first recorded, as if it
+  // had come after it.
+  for (let flying = ctx.flights.get(key); flying !== undefined; flying = ctx.flights.get(key)) {
+    if (flying.call === call) return flying.done;
+    await flying.done.then(
+      () => undefined,
+      () => undefined,
+    );
+  }
+  const done = runStepOnce(ctx, action, input, opts, key);
+  ctx.flights.set(key, { call, done });
+  try {
+    return await done;
+  } finally {
+    if (ctx.flights.get(key)?.done === done) ctx.flights.delete(key);
+  }
+}
+
+/** One step that was admitted under its key: the checks and the call of `runStep`. */
+async function runStepOnce<I, O, In = I>(
+  ctx: RunContext,
+  action: Action<I, O, In>,
+  input: NoInfer<In>,
+  opts: StepOptions | undefined,
+  key: StepKey,
+): Promise<StepResult<O>> {
   // The call is made as the principal the step names, or as the handler.
   const as = opts?.as;
   const caller = callerAs(ctx, as);
