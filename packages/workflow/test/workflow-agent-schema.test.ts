@@ -10,7 +10,7 @@
 //      takes the recorded answer, and another prompt asks again.
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
@@ -331,7 +331,8 @@ test("a recomputed conversation gets fresh authority after restart and ignores a
   const gate = new Promise<void>(resolve => { release = resolve; });
   let asking = false;
   control.beforeAsk = async () => { asking = true; await gate; };
-  await host.call(RESUME, { run, from: "label:open" });
+  const attempts = await Promise.allSettled([host.call(RESUME, { run, from: "label:open" }), host.call(RESUME, { run, from: "label:open" })]);
+  expect(attempts.filter(result => result.status === "fulfilled")).toHaveLength(1);
   await eventually(() => asking);
   await host.emit(RunFinished, RunFinished.schema.parse(finished.data));
   expect((await host.call(actionName("workflow.inspect"), { run }) as { status: RunStatus }).status.state).toBe("running");
@@ -348,6 +349,10 @@ test("a recomputed conversation gets fresh authority after restart and ignores a
   await host.call(RESUME, { run, from: "label:turn" });
   await eventually(async () => (await host.records.read()).some(row =>
     JSON.stringify(row.data).includes("recompute from the step that opened the conversation")));
+  expect(control.asked).toHaveLength(2);
+  const expanded = (await readFile(file, "utf8")).replace('"session.end"', '"session.end", "niwa.records.read"');
+  await writeFile(file, expanded);
+  await expect(host.call(actionName("workflow.revise"), { run, file })).rejects.toThrow("niwa.records.read");
   expect(control.asked).toHaveLength(2);
 }, 30_000);
 

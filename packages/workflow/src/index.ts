@@ -521,6 +521,11 @@ export function workflow(opts: WorkflowOptions = {}) {
      * the resume, so the old invocation is ended and the new one starts on a clean run.
      */
     const guardResumable = async (run: string, ctx: ActionContext): Promise<void> => {
+      const requested = journal().find({ type: RunRequested.name, field: "run", equals: run }).at(-1);
+      const started = journal().find({ type: RunStarted.name, field: "run", equals: run }).at(-1);
+      if (requested !== undefined && (started === undefined || started.seq < requested.seq)) {
+        throw new RunRefusal("run-is-going", "the requested execution has not started yet");
+      }
       const latest = latestInvocationOf(journal(), run);
       if (latest === undefined) return;
       if (latest.state === "done") return;
@@ -564,7 +569,10 @@ export function workflow(opts: WorkflowOptions = {}) {
     };
 
     /** A revision keeps its original authority ceiling and receives a fresh, independently closable identity. */
-    const requestAgain = async (ctx: ActionContext, request: ReturnType<typeof requestedOf> & { from?: string }) => {
+    const requestAgain = async (ctx: ActionContext, request: ReturnType<typeof requestedOf> & { from?: string }, previous: string) => changeControl(request.run, async () => {
+      if ((latestRequest(request.run)?.execution ?? request.run) !== previous) {
+        throw new RunRefusal("run-is-going", "another execution has already been requested for this run");
+      }
       const initial = journal().find({ type: AccessGranted.name, field: "principal.id", equals: request.run })
         .map(row => AccessGranted.schema.parse(row.data)).find(data => data.principal.kind === "run");
       const parent = initial?.parent === undefined ? ctx.caller : callerOf(initial.parent.principal);
@@ -582,9 +590,10 @@ export function workflow(opts: WorkflowOptions = {}) {
         if ("refused" in current) throw new UsesRefused(current.refused);
         rules = grant([...specsOf(current.rules), intrinsic]);
       }
+      await guardResumable(request.run, ctx);
       if (rules !== undefined) api.issueToken("run", execution, { grant: rules, parent });
       await ctx.emit(RunRequested, { ...request, execution, ...(policy === undefined ? {} : { allow: policy }) });
-    };
+    });
 
     api.action(
       action(workflowStart, {
@@ -968,18 +977,18 @@ export function workflow(opts: WorkflowOptions = {}) {
           // The run may only be started again when the invocation that is going has ended. A run
           // that is still going would have two invocations writing over the same children of
           // the run, so the resume is refused instead.
-          await guardResumable(run, ctx);
+          const previous = latestRequest(run)?.execution ?? run;
           // The script is the file the run was started with: an edit to it makes the resume a
           // revision, and the answer says what the new start takes from the earlier ones and what runs.
           const hash = readScript(facts.file)?.hash;
           const edited = hash !== undefined && facts.hash !== undefined && hash !== facts.hash;
           const requested = { ...requestedOf(run, facts, facts.file, hash), ...(input.from === undefined ? {} : { from: input.from }) };
           if (!edited) {
-            await requestAgain(ctx, requested);
+            await requestAgain(ctx, requested, previous);
             return { run, finished: false };
           }
           const revision = await revisionOf(journal(), api.artifacts, facts, actionNameOf, boxFor(facts.box), facts.file, run, input.from);
-          await requestAgain(ctx, requested);
+          await requestAgain(ctx, requested, previous);
           return { run, finished: false, revision };
         },
       }),
@@ -997,10 +1006,10 @@ export function workflow(opts: WorkflowOptions = {}) {
           const facts = known(run);
           mayAct(ctx.caller, ownerOfRun(journal(), run), `revise the run "${run}"`);
           // The run may only be started again when the invocation that is going has ended.
-          await guardResumable(run, ctx);
+          const previous = latestRequest(run)?.execution ?? run;
           const file = resolveFile(opts.root, input.file);
           const revision = await revisionOf(journal(), api.artifacts, facts, actionNameOf, boxFor(facts.box), file, run, input.from);
-          await requestAgain(ctx, { ...requestedOf(run, facts, file, readScript(file)?.hash), ...(input.from === undefined ? {} : { from: input.from }) });
+          await requestAgain(ctx, { ...requestedOf(run, facts, file, readScript(file)?.hash), ...(input.from === undefined ? {} : { from: input.from }) }, previous);
           return { run, finished: false, revision };
         },
       }),
