@@ -90,7 +90,7 @@ test("intercept order: the adjust changes the input, the guard sees the changed 
     const seen: StoredRecord[] = [];
     const watcher = await connectAsOwner(homePath);
     const watch = (async () => {
-      for await (const record of watcher.records.since(seq(0))) {
+      for await (const record of watcher.records.since()) {
         seen.push(record);
       }
     })().catch(() => {});

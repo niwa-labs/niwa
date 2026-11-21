@@ -44,7 +44,7 @@ async function readJournal(
 ): Promise<StoredRecord[]> {
   const records: StoredRecord[] = [];
   const reading = (async () => {
-    for await (const record of client.records.since(FROM_START)) {
+    for await (const record of client.records.since()) {
       records.push(record);
     }
   })().catch(() => {});
@@ -93,6 +93,7 @@ test("declared values: a declared action is described with its schemas, an undec
       "niwa.invocation.move",
       "niwa.invocation.resolve",
       "niwa.records.read",
+      "niwa.records.search",
       "niwa.trace",
       "plugin.install",
     ]);

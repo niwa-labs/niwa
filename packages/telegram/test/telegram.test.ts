@@ -165,7 +165,7 @@ async function recordsOf(home: string, settleMs = 500): Promise<StoredRecord[]> 
   const client = await connectAsOwner(home);
   const records: StoredRecord[] = [];
   const reading = (async () => {
-    for await (const record of client.records.since(seq(0))) {
+    for await (const record of client.records.since()) {
       records.push(record);
     }
   })().catch(() => undefined);

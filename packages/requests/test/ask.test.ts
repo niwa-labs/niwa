@@ -164,7 +164,7 @@ test("run lasts for the subject's grant and survives a restart", async () => {
   // Any input passes now, without a question; another action still asks.
   await call(first.subject, "probe.run", "b");
   expect(await first.open()).toEqual([]);
-  const rows = await first.host.records.read(seq(0), { types: [CORE_TYPES.accessAnswered] });
+  const rows = await first.host.records.read({ types: [CORE_TYPES.accessAnswered] });
   expect(rows.map((row) => (row.data as { scope: string }).scope)).toEqual(["run"]);
 
   // The same home, the same token: the answer in force is a record, so it is still in force.
@@ -243,7 +243,7 @@ test("the decision of an allowed ask records the scope that let it through", asy
   const pending = call(s.subject, "probe.run", "a");
   await s.answer("once");
   await pending;
-  const rows = await s.host.records.read(seq(0), { types: [CORE_TYPES.accessDecided] });
+  const rows = await s.host.records.read({ types: [CORE_TYPES.accessDecided] });
   expect(rows.map((row) => row.data)).toContainEqual(
     expect.objectContaining({ name: "probe.run", outcome: "allowed", answered: "once", rule: "call:probe.run" }),
   );

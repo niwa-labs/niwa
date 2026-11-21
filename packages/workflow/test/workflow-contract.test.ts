@@ -43,7 +43,7 @@ async function scriptIn(home: string, name: string, lines: readonly string[]): P
 }
 
 const ofType = (records: readonly StoredRecord[], type: string): StoredRecord[] => records.filter((row) => row.type === type);
-const recordsOf = async (host: Host): Promise<StoredRecord[]> => host.records.read(seq(0));
+const recordsOf = async (host: Host): Promise<StoredRecord[]> => host.records.read();
 
 /** The status of a run once it is paused with a reason that says this. */
 async function untilPaused(host: Host, run: string, reason: string): Promise<RunStatus> {

@@ -113,7 +113,7 @@ async function serve(control: FakeControl, home: string): Promise<Host> {
 
 /** The records of one type the host holds. */
 async function recordsOf(niwa: Host, type: RecordTypeName): Promise<StoredRecord[]> {
-  return niwa.records.read(seq(0), { type });
+  return niwa.records.read({ types: [type] });
 }
 
 /** A message to the session of the fake. */

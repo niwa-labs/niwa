@@ -58,7 +58,7 @@ async function scriptIn(home: string, name: string, lines: readonly string[]): P
 }
 
 const recordsOf = async (host: Host, type: string): Promise<StoredRecord[]> =>
-  (await host.records.read(seq(0))).filter((row) => row.type === type);
+  (await host.records.read()).filter((row) => row.type === type);
 
 const Double = (output: string, body: string): string[] => [
   'import { factor } from "./factor.ts";',
@@ -372,7 +372,7 @@ test("a broken workflow keeps its installation, starts no run from it, and runs 
   // The ping is committed and handled, and no run was born from the installation of the broken workflow.
   await host.emit(Ping, { id: "while-broken" });
   await eventually(async () => {
-    const rows = await host.records.read(seq(0));
+    const rows = await host.records.read();
     const admitted = rows.filter((row) => row.type === "niwa.invocation.admitted" && String((row.data as { handler: string }).handler).endsWith(`workflow.on:${installed.id}`));
     const done = new Set(rows.filter((row) => row.type === "niwa.invocation.state" && (row.data as { state: string }).state === "done").map((row) => (row.data as { invocation: string }).invocation));
     return admitted.length === 1 && admitted.every((row) => done.has((row.data as { invocation: string }).invocation));

@@ -138,7 +138,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       await runFinishes(api, started.run, RUN_DEADLINE_MS);
       const elapsedMs = Date.now() - startedAt;
 
-      const records = await api.records.read(seq(0));
+      const records = await api.records.read();
       const finished = must(recordsOf(records, "workflow.run.finished")[0], "record of the finished run");
       const runFinished = RunFinishedData.parse(finished.data);
       expect(runFinished.run).toBe(started.run);
@@ -245,7 +245,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
         .parse(await api.call(WORKFLOW_WAIT, { run: started.run, timeoutMs: RUN_DEADLINE_MS }));
       expect(waited.state).toBe("paused");
       expect(waited.reason).toContain("the script is broken");
-      const pausedRecords = await api.records.read(seq(0));
+      const pausedRecords = await api.records.read();
 
       // The pause is a request the owner sees.
       const open = OpenOutput.parse(await api.call(REQUEST_OPEN, {}));
@@ -262,7 +262,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       await api.call(RESOLVE, { invocation: openPauses[0]?.invocation, choice: "retry" });
 
       await runFinishes(api, started.run, RUN_DEADLINE_MS);
-      const after = await api.records.read(seq(0));
+      const after = await api.records.read();
 
       // The retry did not ask the agents again: the same number of sessions, and the same
       // number of sends to the sessions.

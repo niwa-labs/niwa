@@ -112,7 +112,7 @@ async function served(withSessions = false): Promise<{ host: Host; home: string;
 }
 
 const ofType = async (host: Host, type: string): Promise<StoredRecord[]> =>
-  (await host.records.read(seq(0))).filter((row) => row.type === type);
+  (await host.records.read()).filter((row) => row.type === type);
 
 /** The refusal a call ended with. */
 async function refusalOf(call: Promise<unknown>): Promise<string> {

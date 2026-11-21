@@ -122,7 +122,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       // The task was created by the asker, through the MCP server of niwa.
       await until(
         async () => {
-          const records = await api!.records.read(seq(0));
+          const records = await api!.records.read();
           return recordsOf(records, "task.created").some((record) => {
             const data = record.data as { id?: string; description?: string } | undefined;
             return data?.description === AGENT_TASK_DESCRIPTION;
@@ -132,7 +132,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
         "the task was not created",
       );
 
-      const records = await api.records.read(seq(0));
+      const records = await api.records.read();
       const created = must(
         recordsOf(records, "task.created").find((record) => {
           const data = record.data as { id?: string; description?: string } | undefined;
@@ -147,7 +147,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       // The task ends with the answer of the session.
       await until(
         async () => {
-          const now = await api!.records.read(seq(0));
+          const now = await api!.records.read();
           return recordsOf(now, "task.done").some((record) => {
             const data = record.data as { task?: string } | undefined;
             return data?.task === taskId;
@@ -156,7 +156,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
         AGENT_TURN_DEADLINE_MS,
         "the task did not end",
       );
-      const after = await api.records.read(seq(0));
+      const after = await api.records.read();
       const done = must(
         recordsOf(after, "task.done").find((record) => {
           const data = record.data as { task?: string } | undefined;

@@ -111,7 +111,7 @@ test("the owner's token is made at the first start, kept for the owner only, and
     expect(made?.length).toBeLessThanOrEqual(4);
     expect(statSync(`${home.path}/owner.token`).mode & 0o777).toBe(0o600);
     expect(statSync(`${home.path}/host.key`).mode & 0o777).toBe(0o600);
-    const issued = await first.records.read(seq(0), { types: [CORE_TYPES.accessIssued] });
+    const issued = await first.records.read({ types: [CORE_TYPES.accessIssued] });
     expect(issued).toHaveLength(1);
     // The journal keeps the HMAC of the token, never the token.
     const data = issued[0]?.data as { mac: string; principal: unknown };
@@ -125,7 +125,7 @@ test("the owner's token is made at the first start, kept for the owner only, and
     await second.serve();
     // The same token is still the owner's: no second one was made.
     expect(readOwnerToken(home.path)).toBe(made as Token);
-    expect(await second.records.read(seq(0), { types: [CORE_TYPES.accessIssued] })).toHaveLength(1);
+    expect(await second.records.read({ types: [CORE_TYPES.accessIssued] })).toHaveLength(1);
     await second.close();
   } finally {
     await home.cleanup();
@@ -186,7 +186,7 @@ test("a closed record type is also written by a subject whose grant has an emit 
     await narrow.emit(Closed, { n: 6 });
     // A rule that asks is, for now, a refusal with the reason "ask"; and the refusal is a decision record.
     await expect(asking.emit(Closed, { n: 7 })).rejects.toThrow("ask");
-    const decided = await host.records.read(seq(0), { types: [CORE_TYPES.accessDecided] });
+    const decided = await host.records.read({ types: [CORE_TYPES.accessDecided] });
     const verdicts = decided.map((row) => row.data as { verb: string; name: string; outcome: string });
     expect(verdicts.filter((row) => row.verb === "emit" && row.name === "doors.closed").map((row) => row.outcome)).toEqual([
       "allowed",

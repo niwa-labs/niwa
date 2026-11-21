@@ -51,7 +51,7 @@ test("a call outside an invocation: every record it writes hangs on the record b
   try {
     // 1. The call is made directly: outside any invocation.
     const written = await niwa.call(three, {});
-    const records = await niwa.records.read(seq(0), { type: Fact });
+    const records = await niwa.records.read({ types: [Fact] });
     expect(records.map((record) => record.data)).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
 
     const first = records[0];
@@ -98,7 +98,7 @@ test("two calls outside an invocation are two chains: the second call starts its
     await niwa.call(three, {});
     await niwa.call(three, {});
 
-    const records = await niwa.records.read(seq(0), { type: Fact });
+    const records = await niwa.records.read({ types: [Fact] });
     expect(records).toHaveLength(6);
 
     // Each call has its own root, and the trace down from one root does not reach the

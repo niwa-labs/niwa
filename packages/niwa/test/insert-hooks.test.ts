@@ -68,7 +68,7 @@ test("insert: a nested session is linked to its parent, and a session opened by 
     const observer = await connectAsOwner(home.path);
     const seen: StoredRecord[] = [];
     const watching = (async () => {
-      for await (const record of observer.records.since(seq(0))) seen.push(record);
+      for await (const record of observer.records.since()) seen.push(record);
     })().catch(() => {});
 
     // The owner opened a session by hand: it is registered at once, with its exact id.

@@ -40,7 +40,7 @@ interface Firing {
 async function readFirings(home: string): Promise<Firing[]> {
   const client = await connectAsOwner(home);
   try {
-    const records = await client.records.read(seq(0));
+    const records = await client.records.read();
     return records
       .filter((record) => record.type === "timer.fired")
       .map((record) => {

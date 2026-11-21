@@ -29,7 +29,7 @@ import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 
 import type { NiwaApi } from "@niwa-labs/client";
-import type { StoredRecord } from "@niwa-labs/core";
+import type { RecordQuery, StoredRecord } from "@niwa-labs/core";
 import { connect } from "@niwa-labs/client";
 import { seq } from "@niwa-labs/core";
 import { eventually, spawnHost, tempHome, connectAsOwner } from "@niwa-labs/testing";
@@ -43,10 +43,10 @@ const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/client-host.ts", import.me
 const NoteData = z.object({ n: z.number() });
 
 /** Read a subscription into a list until it is closed. */
-function collect(client: NiwaApi, filter?: { type: typeof Note }): { records: StoredRecord[]; done: Promise<void> } {
+function collect(client: NiwaApi, query?: RecordQuery): { records: StoredRecord[]; done: Promise<void> } {
   const records: StoredRecord[] = [];
   const done = (async () => {
-    for await (const record of client.records.since(seq(0), filter)) records.push(record);
+    for await (const record of client.records.since(query)) records.push(record);
   })().catch(() => {});
   return { records, done };
 }
@@ -75,7 +75,7 @@ test("client: the action is called, the records arrive with no gap and no duplic
     //    what it receives. The subscription keeps its position, so it survives
     //    the restart of the host below.
     const clientB = await connectAsOwner(homePath);
-    const { records: collected, done: subscription } = collect(clientB, { type: Note });
+    const { records: collected, done: subscription } = collect(clientB, { types: [Note] });
     // An unfiltered subscriber from the start sees the whole journal, core records included.
     const clientU = await connectAsOwner(homePath);
     const { records: everything, done: everythingDone } = collect(clientU);
@@ -171,7 +171,7 @@ test("slow consumer: the subscription holds off a full queue and still delivers 
 
     const reader = await connectAsOwner(home.path);
     const received: StoredRecord[] = [];
-    for await (const record of reader.records.since(seq(0), { type: Note })) {
+    for await (const record of reader.records.since({ types: [Note] })) {
       received.push(record);
       // The first record is held for a while: the queue behind it fills and the connection is dropped.
       if (received.length === 1) await new Promise((resolve) => setTimeout(resolve, 500));

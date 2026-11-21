@@ -37,7 +37,7 @@ test("a firing has the common id, the hash of its timer and its due, and timer.l
     await niwa.serve();
     await clock.advance(3 * DAY_MS);
 
-    const firings = (await niwa.records.read(seq(0))).filter((row) => row.type === "timer.fired");
+    const firings = (await niwa.records.read()).filter((row) => row.type === "timer.fired");
     expect(firings).toHaveLength(3);
     for (const row of firings) {
       const data = row.data as { timer: string; due: number };

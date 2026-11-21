@@ -147,7 +147,7 @@ export function followFeed(
   onFeed: (entries: FeedEntry[]) => void,
   onEnd: (error?: unknown) => void,
 ): { stop(): void } {
-  const iterator = api.records.since(seq(0))[Symbol.asyncIterator]();
+  const iterator = api.records.since()[Symbol.asyncIterator]();
   const relevant: StoredRecord[] = [];
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;

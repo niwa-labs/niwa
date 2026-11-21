@@ -291,7 +291,7 @@ async function route(context: Context, request: Request): Promise<Response> {
       const lastEventId = path === "/api/events" ? request.headers.get("last-event-id") : null;
       const after = position(lastEventId ?? url.searchParams.get("after") ?? "0");
       if (after === undefined) return text(400, "invalid journal cursor");
-      if (path === "/api/history") return json(200, await api.records.read(after, { limit: 128 }));
+      if (path === "/api/history") return json(200, await api.records.read({ from: after, limit: 128 }));
       return journalEvents(api, after, streams);
     }
     case "/events":
@@ -452,7 +452,7 @@ const SSE_TYPE = "text/event-stream; charset=utf-8";
 
 /** Each SSE id is a committed journal position. Reconnecting resumes after it. */
 function journalEvents(api: NiwaApi, after: ReturnType<typeof seq>, streams: Set<() => void>): Response {
-  const iterator = api.records.since(after)[Symbol.asyncIterator]();
+  const iterator = api.records.since({ from: after })[Symbol.asyncIterator]();
   const encoder = new TextEncoder();
   let end = (_close = true): void => undefined;
   let closed = false;

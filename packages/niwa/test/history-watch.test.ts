@@ -65,7 +65,7 @@ test("history.watch writes that it saw the session, its progress, its pause and 
 
   expect(await call("history.watch", { session: ID })).toEqual({ watching: true });
   expect(await call("history.watch", { session: ID })).toEqual({ watching: true });
-  const read = () => niwa.records.read(seq(0));
+  const read = () => niwa.records.read();
   for (let waited = 0; !typesOf(await read()).includes("history.session.ended") && waited < 5_000; waited += 20) await Bun.sleep(20);
   const written = await read();
   expect(typesOf(written)).toEqual(["history.session.seen", "session.progress", "history.session.paused", "history.session.ended"]);
@@ -90,14 +90,14 @@ test("a watch that was on when the host stopped goes on after a restart, from it
   };
   const first = await serve({ pollMs: 10, pauseMs: 30, endMs: 60_000 });
   await first.call("history.watch" as ActionName, { session: ID });
-  for (let waited = 0; !typesOf(await first.records.read(seq(0))).includes("history.session.paused") && waited < 5_000; waited += 20) await Bun.sleep(20);
+  for (let waited = 0; !typesOf(await first.records.read()).includes("history.session.paused") && waited < 5_000; waited += 20) await Bun.sleep(20);
   await first.close();
 
   records.push(checklist(2, 2, 2));
   const second = await serve({ pollMs: 10, pauseMs: 30, endMs: 100 });
   open.unshift(() => second.close());
-  for (let waited = 0; !typesOf(await second.records.read(seq(0))).includes("history.session.ended") && waited < 5_000; waited += 20) await Bun.sleep(20);
-  const progress = (await second.records.read(seq(0))).filter((record) => record.type === "session.progress").map((record) => record.data);
+  for (let waited = 0; !typesOf(await second.records.read()).includes("history.session.ended") && waited < 5_000; waited += 20) await Bun.sleep(20);
+  const progress = (await second.records.read()).filter((record) => record.type === "session.progress").map((record) => record.data);
   expect(progress).toEqual([
     { session: ID, done: 1, total: 2 },
     { session: ID, done: 2, total: 2 },

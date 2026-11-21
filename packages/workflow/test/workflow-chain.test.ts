@@ -41,7 +41,7 @@ async function scriptIn(home: string, name: string, lines: readonly string[]): P
 }
 
 const finished = async (host: Host): Promise<StoredRecord[]> =>
-  (await host.records.read(seq(0))).filter((row) => row.type === "workflow.run.finished");
+  (await host.records.read()).filter((row) => row.type === "workflow.run.finished");
 
 test("a script installed on a wf.* type starts on what another script emits", async () => {
   const { host, home } = await served();

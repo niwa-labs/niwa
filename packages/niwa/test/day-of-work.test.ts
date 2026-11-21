@@ -95,7 +95,7 @@ async function untilRunEnds(
   run: string,
   deadlineMs: number,
 ): Promise<StoredRecord[]> {
-  const records = () => api.records.read(seq(0));
+  const records = () => api.records.read();
   try {
     await runFinishes(api, run, deadlineMs);
   } catch (error) {

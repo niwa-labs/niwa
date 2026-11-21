@@ -12,7 +12,7 @@ const MAX_SOURCE_BYTES = 1024 * 1024;
 
 /** Only return the exact bytes witnessed by the workflow handler when this run started. */
 export async function runSource(api: NiwaApi, position: number): Promise<string | undefined> {
-  const [record] = await api.records.read(seq(position - 1), { limit: 1 });
+  const [record] = await api.records.read({ from: seq(position - 1), limit: 1 });
   if (record?.seq !== position || record.type !== "workflow.run.started" ||
       record.actor.kind !== "handler" || !record.actor.handler.startsWith("workflow/")) return;
   const data = Script.safeParse(record.data);

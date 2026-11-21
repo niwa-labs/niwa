@@ -113,6 +113,12 @@ export interface RecordQuery<D = unknown> {
   readonly from?: Seq | number;
 }
 
+/** A read of the history: a query, and at most how many of the first records that answer it. */
+export interface RecordReadQuery<D = unknown> extends RecordQuery<D> {
+  /** At most this many records, a positive integer. Every record committed now when absent. */
+  readonly limit?: number;
+}
+
 /** A query with its types as names: what the journal and the wire take. */
 export interface ResolvedQuery {
   readonly types?: readonly RecordTypeName[];

@@ -30,7 +30,7 @@ async function serving(home: string, plugins: Plugin[]): Promise<Host> {
 }
 
 const recordsOf = (niwa: Host, type?: string): Promise<StoredRecord[]> =>
-  niwa.records.read(seq(0)).then((rows) => (type === undefined ? rows : rows.filter((row) => row.type === type)));
+  niwa.records.read().then((rows) => (type === undefined ? rows : rows.filter((row) => row.type === type)));
 
 const statesOf = async (niwa: Host): Promise<Array<{ invocation: string; state: string }>> =>
   (await recordsOf(niwa, CORE_TYPES.invocationState)).map((row) => row.data as { invocation: string; state: string });

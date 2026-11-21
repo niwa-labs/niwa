@@ -100,7 +100,7 @@ test("a long wait blocks nothing: the ten jobs are handled while the first invoc
     clients.push(observer);
     const seen: StoredRecord[] = [];
     const watch = (async () => {
-      for await (const record of observer.records.since(FROM_START)) {
+      for await (const record of observer.records.since()) {
         seen.push(record);
       }
     })().catch(() => {});

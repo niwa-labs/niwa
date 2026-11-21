@@ -126,7 +126,7 @@ test("Workflow revision: unchanged calls are reused, and a changed input under a
     const watcher = await connectAsOwner(homePath);
     const records: StoredRecord[] = [];
     const watch = (async () => {
-      for await (const record of watcher.records.since(0 as never)) {
+      for await (const record of watcher.records.since()) {
         records.push(record);
       }
     })().catch(() => undefined);
@@ -228,7 +228,7 @@ test("Workflow resume: an edited script is a revision, and the changed key is sh
     const watcher = await connectAsOwner(homePath);
     const records: StoredRecord[] = [];
     const watch = (async () => {
-      for await (const record of watcher.records.since(0 as never)) {
+      for await (const record of watcher.records.since()) {
         records.push(record);
       }
     })().catch(() => undefined);

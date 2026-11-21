@@ -36,7 +36,7 @@ async function hostOn(path: string, clock: TestClock): Promise<Host> {
   return niwa;
 }
 
-const recordsOf = async (niwa: Host): Promise<StoredRecord[]> => niwa.records.read(seq(0));
+const recordsOf = async (niwa: Host): Promise<StoredRecord[]> => niwa.records.read();
 const ofType = (records: readonly StoredRecord[], type: string): StoredRecord[] =>
   records.filter((row) => row.type === type);
 

@@ -85,7 +85,7 @@ test("a Claude Code hook installed here reports to the host with no niwa on the 
     const [code, stderr] = await Promise.all([hook.exited, new Response(hook.stderr).text()]);
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
 
-    const written = (await niwa.records.read(seq(0))).filter((record) => record.type === "insert.opened-by-hand");
+    const written = (await niwa.records.read()).filter((record) => record.type === "insert.opened-by-hand");
     expect(written.map((record) => record.data)).toEqual([
       { session: { harness: "claude-code", native: "hand-opened-abc" }, cwd: "/tmp/work" },
     ]);
@@ -106,7 +106,7 @@ test("a pi insert given the reporter of this package reports to the host with no
     const insert = new PiInsert({ report: cliReporter(home.path) });
     await insert.onSessionStart({ reason: "startup" }, { id: "sess-1", cwd: "/tmp/work" });
 
-    const written = (await niwa.records.read(seq(0))).filter((record) => record.type === "insert.opened-by-hand");
+    const written = (await niwa.records.read()).filter((record) => record.type === "insert.opened-by-hand");
     expect(written.map((record) => record.data)).toMatchObject([{ session: piSession("sess-1"), cwd: "/tmp/work" }]);
   } finally {
     await niwa.close().catch(() => {});

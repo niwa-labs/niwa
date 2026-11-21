@@ -64,7 +64,7 @@ function asked(requestId = "tool-1"): PermissionAskedEvent {
 /** The records of one type, as the journal holds them. */
 async function recordsOf(client: Awaited<ReturnType<typeof connect>>, type: string): Promise<StoredRecord[]> {
   const found: StoredRecord[] = [];
-  const stream = client.records.since(seq(0), { type: type as never }) as AsyncGenerator<StoredRecord>;
+  const stream = client.records.since({ types: [type as never] }) as AsyncGenerator<StoredRecord>;
   for (;;) {
     const next = await Promise.race([stream.next(), Bun.sleep(500).then(() => "timed out" as const)]);
     if (next === "timed out" || next.done === true) break;

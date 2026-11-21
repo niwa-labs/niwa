@@ -136,10 +136,10 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
     const relevant = new Set<string>(TOOL_RECORDS);
     // Where to follow from: the last such record that exists now. The baseline is read after it,
     // so a record that lands in between is only read twice, and the second read changes nothing.
-    const past = await api.records.read(seq(0), { types: TOOL_RECORDS });
+    const past = await api.records.read({ types: TOOL_RECORDS });
     const from = past.at(-1)?.seq ?? seq(0);
     lastShown ??= fingerprintOf(await shownTools(api));
-    const live = api.records.since(from)[Symbol.asyncIterator]();
+    const live = api.records.since({ from: from })[Symbol.asyncIterator]();
     watching = live;
     if (closed) return void live.return?.();
     for (let next = await live.next(); !next.done; next = await live.next()) {

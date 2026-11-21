@@ -98,7 +98,7 @@ test("replacing a plugin: the waiting invocation finishes on the old code, a new
     observer = await connectAsOwner(homePath);
     const seen: StoredRecord[] = [];
     subscription = (async () => {
-      for await (const record of observer.records.since(seq(0))) {
+      for await (const record of observer.records.since()) {
         seen.push(record);
       }
     })().catch(() => {});
@@ -199,7 +199,7 @@ test("replacing a plugin: the waiting invocation finishes on the old code, a new
     const reread = await connectAsOwner(homePath);
     const all: StoredRecord[] = [];
     const reader = (async () => {
-      for await (const record of reread.records.since(seq(0))) {
+      for await (const record of reread.records.since()) {
         all.push(record);
       }
     })().catch(() => {});

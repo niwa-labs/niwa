@@ -77,7 +77,7 @@ test("inspect shows the declared phases with their states and steps, and links p
     expect(found.phases[0]?.steps.map((step) => [step.label, step.phase])).toEqual([["sample-0", "sample"], ["sample-1", "sample"]]);
     expect(found.phases[2]?.steps).toEqual([]);
 
-    const started = (await host.records.read(seq(0))).filter((row) => row.type === SessionStarted.name).map((row) => SessionStarted.schema.parse(row.data));
+    const started = (await host.records.read()).filter((row) => row.type === SessionStarted.name).map((row) => SessionStarted.schema.parse(row.data));
     const sessionFor = (prompt: string) => {
       const session = asked.get(prompt);
       return session === undefined ? undefined : started.find((record) => record.session === sessionRef(session))?.id;

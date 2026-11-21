@@ -177,7 +177,7 @@ test("the schema reaches the session as JSON Schema, and the call gives the pars
   });
 
   // The schema is recorded with the step, as part of its input.
-  const records = await host.records.read(seq(0));
+  const records = await host.records.read();
   const intent = records.find((row: StoredRecord) => {
     const data = row.data as { action?: string; key?: string };
     return data.action === "session.start.fake-harness" && data.key === "label:review";
@@ -200,7 +200,7 @@ test("an answer that does not pass the schema is not returned: the step fails an
   const paused = await statusOf(host, runInvalid);
   expect(paused.state).toBe("paused");
   // The refusal is what the failed step says, in the journal.
-  const records = await host.records.read(seq(0));
+  const records = await host.records.read();
   expect(JSON.stringify(records.map((row) => row.data))).toContain("does not pass its schema");
   expect(control.asked).toHaveLength(1);
 }, 30_000);
@@ -216,7 +216,7 @@ test("a schema that JSON Schema cannot say fails in the script, before anything 
   const runUnsayable = ((await host.call(START, { file })) as { run: string }).run;
   const status = await statusOf(host, runUnsayable);
   expect(status.state).toBe("paused");
-  expect(JSON.stringify((await host.records.read(seq(0))).map((row) => row.data))).toContain("Date cannot be represented");
+  expect(JSON.stringify((await host.records.read()).map((row) => row.data))).toContain("Date cannot be represented");
   expect(control.asked).toHaveLength(0);
 }, 30_000);
 
@@ -236,8 +236,8 @@ test("a replay gives the recorded value without asking again, and another schema
   // The session would now answer otherwise; the replay does not ask it.
   control.reply = { verdict: "approve", notes: [] };
   await host.call(RESUME, { run: runReplay });
-  await eventually(async () => (await host.records.read(seq(0))).filter((row) => row.type === "workflow.run.finished").length === 2, 20_000, "the replay should finish");
-  const finished = (await host.records.read(seq(0))).filter((row) => row.type === "workflow.run.finished");
+  await eventually(async () => (await host.records.read()).filter((row) => row.type === "workflow.run.finished").length === 2, 20_000, "the replay should finish");
+  const finished = (await host.records.read()).filter((row) => row.type === "workflow.run.finished");
   expect(finished[1]?.data).toMatchObject({ outcome: { result: { verdict: "changes", notes: ["x"] } } });
   expect(control.asked).toHaveLength(1);
 
@@ -245,11 +245,11 @@ test("a replay gives the recorded value without asking again, and another schema
   await writeFile(file, lines('z.object({ verdict: z.string(), notes: z.array(z.string()), more: z.number().optional() })').join("\n"));
   await host.call(RESUME, { run: runReplay });
   await eventually(
-    async () => (await host.records.read(seq(0))).some((row) => row.type === "workflow.run.paused"),
+    async () => (await host.records.read()).some((row) => row.type === "workflow.run.paused"),
     20_000,
     "the changed schema should be shown",
   );
-  const paused = (await host.records.read(seq(0))).filter((row) => row.type === "workflow.run.paused");
+  const paused = (await host.records.read()).filter((row) => row.type === "workflow.run.paused");
   expect(JSON.stringify(paused.map((row) => row.data))).toContain("label:review");
   expect(control.asked).toHaveLength(1);
 }, 30_000);

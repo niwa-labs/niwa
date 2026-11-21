@@ -156,7 +156,7 @@ test("niwa log shows a short subject: the request by its id, the invocation by i
   let lines: string[] = [];
   let created: string | undefined;
   await eventually(async () => {
-    const rows = await host.records.read(seq(0));
+    const rows = await host.records.read();
     lines = rows.map((one) => logLine(one, 200));
     // The record itself, not another that names its type (the position of a subscription to it).
     const row = rows.find((one) => one.type === "request.created");

@@ -180,11 +180,11 @@ test("a question to the owner and a sleep are human and timer time, and the run 
   const owner = await connectAsOwner(home);
   try {
     const { run } = await host.call(workflowStart, { file });
-    const asked = async () => (await host.records.read(seq(0))).find((row) => row.type === RequestCreated.name);
+    const asked = async () => (await host.records.read()).find((row) => row.type === RequestCreated.name);
     await eventually(async () => (await asked()) !== undefined, 10_000, "the owner should be asked");
     await clock.advance(5_000);
     await owner.call(requestAnswer, { id: RequestCreated.schema.parse((await asked())?.data).id, answer: { ids: ["yes"] } });
-    await eventually(async () => (await host.records.read(seq(0))).some((row) => row.type === "timer.sleep.requested"), 10_000, "the run should sleep");
+    await eventually(async () => (await host.records.read()).some((row) => row.type === "timer.sleep.requested"), 10_000, "the run should sleep");
     await clock.advance(60_000);
     await settled(host, run, "finished");
   } finally {
@@ -214,7 +214,7 @@ test("the fold over a journal of many runs, timed", async () => {
   const { run } = await host.call(workflowStart, { file });
   await settled(host, run, "finished");
   // The records of the run, copied with other ids: each copy is one more run the fold reads.
-  const template = (await host.records.read(seq(0))).map((row) => JSON.stringify({ ...row, seq: undefined, at: undefined }));
+  const template = (await host.records.read()).map((row) => JSON.stringify({ ...row, seq: undefined, at: undefined }));
   const copies = await tempHome();
   homes.push(copies);
   const journal = openJournal(copies.path);

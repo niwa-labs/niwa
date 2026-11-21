@@ -1,5 +1,6 @@
-// The filters of `niwa.records.read`, and the read that waits for a record: what the CLI's log and
-// an MCP client both ask. The action is called as a client calls it, over the wire.
+// The query of `niwa.records.read`, the filters of `niwa.records.search`, and the read that waits for
+// a record: what the CLI's log and an MCP client both ask. The actions are called as a client calls
+// them, over the wire.
 
 import { expect, test } from "bun:test";
 
@@ -11,6 +12,7 @@ import { tempHome, connectAsOwner } from "@niwa-labs/testing";
 import { z } from "zod";
 
 const READ = actionName("niwa.records.read");
+const SEARCH = actionName("niwa.records.search");
 
 const Ping = record("filter.ping", z.object({ n: z.number(), run: z.string().optional() }), { open: true });
 const Pong = record("filter.pong", z.object({ text: z.string() }), { open: true });
@@ -29,9 +31,11 @@ async function hosted() {
   await niwa.serve();
   const client = await connectAsOwner(home.path);
   const read = async (input: Record<string, unknown>): Promise<Read> => (await client.call(READ, input)) as Read;
+  const search = async (input: Record<string, unknown>): Promise<Read> => (await client.call(SEARCH, input)) as Read;
   return {
     niwa,
     read,
+    search,
     close: async () => {
       await client.close().catch(() => {});
       await niwa.close();
@@ -72,19 +76,19 @@ test("a filter narrows by type pattern, actor, subject and text, and the filters
     await h.niwa.emit(Bare, undefined);
 
     const types = (found: Read): string[] => found.records.map((row) => String(row.type));
-    expect(types(await h.read({ filter: { types: ["filter.p*"] } }))).toEqual(["filter.ping", "filter.ping", "filter.pong"]);
+    expect(types(await h.search({ filter: { types: ["filter.p*"] } }))).toEqual(["filter.ping", "filter.ping", "filter.pong"]);
     // A pattern that begins with ! leaves its types out; with nothing else named, everything else stays.
-    const without = types(await h.read({ filter: { types: ["!filter.*"] } }));
+    const without = types(await h.search({ filter: { types: ["!filter.*"] } }));
     expect(without.some((type) => type.startsWith("filter."))).toBe(false);
     expect(without.length).toBeGreaterThan(0);
-    expect(types(await h.read({ filter: { types: ["filter.*", "!filter.noise", "!filter.pong", "!filter.bare"] } }))).toEqual(["filter.ping", "filter.ping"]);
+    expect(types(await h.search({ filter: { types: ["filter.*", "!filter.noise", "!filter.pong", "!filter.bare"] } }))).toEqual(["filter.ping", "filter.ping"]);
 
     // A subject is found by the field of the data that names it, and an id may be a prefix.
-    expect((await h.read({ filter: { run: "run_bbbb" } })).records.map((row) => (row.data as { n: number }).n)).toEqual([2]);
-    expect(types(await h.read({ filter: { grep: "hello world" } }))).toEqual(["filter.pong"]);
-    expect(types(await h.read({ filter: { actor: "host" } })).length).toBeGreaterThan(0);
-    expect((await h.read({ filter: { actor: "nobody" } })).records).toEqual([]);
-    expect(types(await h.read({ filter: { types: ["filter.*"], grep: "noise" } }))).toEqual(["filter.noise"]);
+    expect((await h.search({ filter: { run: "run_bbbb" } })).records.map((row) => (row.data as { n: number }).n)).toEqual([2]);
+    expect(types(await h.search({ filter: { grep: "hello world" } }))).toEqual(["filter.pong"]);
+    expect(types(await h.search({ filter: { actor: "host" } })).length).toBeGreaterThan(0);
+    expect((await h.search({ filter: { actor: "nobody" } })).records).toEqual([]);
+    expect(types(await h.search({ filter: { types: ["filter.*"], grep: "noise" } }))).toEqual(["filter.noise"]);
   } finally {
     await h.close();
   }
@@ -96,12 +100,12 @@ test("until, a span of time and a tail pick records from the end or the middle",
     const rows: StoredRecord[] = [];
     for (let n = 1; n <= 5; n += 1) rows.push(await h.niwa.emit(Ping, { n }));
     const numbers = (found: Read) => found.records.map((row) => (row.data as { n: number }).n);
-    expect(numbers(await h.read({ tail: 2, filter: { types: ["filter.*"] } }))).toEqual([4, 5]);
-    expect(numbers(await h.read({ filter: { types: ["filter.*"], until: rows[2]?.seq } }))).toEqual([1, 2, 3]);
-    const until = await h.read({ filter: { types: ["filter.*"], until: rows[2]?.seq } });
+    expect(numbers(await h.search({ tail: 2, filter: { types: ["filter.*"] } }))).toEqual([4, 5]);
+    expect(numbers(await h.search({ filter: { types: ["filter.*"], until: rows[2]?.seq } }))).toEqual([1, 2, 3]);
+    const until = await h.search({ filter: { types: ["filter.*"], until: rows[2]?.seq } });
     expect(until.next).toBe(rows[2]?.seq ?? -1);
-    expect(numbers(await h.read({ filter: { types: ["filter.*"], after: (rows[4]?.at ?? 0) + 1 } }))).toEqual([]);
-    expect(numbers(await h.read({ filter: { types: ["filter.*"], before: (rows[0]?.at ?? 0) + 3_600_000 } }))).toEqual([1, 2, 3, 4, 5]);
+    expect(numbers(await h.search({ filter: { types: ["filter.*"], after: (rows[4]?.at ?? 0) + 1 } }))).toEqual([]);
+    expect(numbers(await h.search({ filter: { types: ["filter.*"], before: (rows[0]?.at ?? 0) + 3_600_000 } }))).toEqual([1, 2, 3, 4, 5]);
   } finally {
     await h.close();
   }
@@ -112,11 +116,11 @@ test("a read with waitMs waits for a record and returns at once when one is writ
   try {
     const last = (await h.read({ from: 0 })).next;
     const started = Date.now();
-    const empty = await h.read({ from: last, waitMs: 150, filter: { types: ["filter.*"] } });
+    const empty = await h.search({ from: last, waitMs: 150, filter: { types: ["filter.*"] } });
     expect(empty.records).toEqual([]);
     expect(Date.now() - started).toBeGreaterThanOrEqual(140);
 
-    const waiting = h.read({ from: last, waitMs: 20_000, filter: { types: ["filter.ping"] } });
+    const waiting = h.search({ from: last, waitMs: 20_000, filter: { types: ["filter.ping"] } });
     await Bun.sleep(100);
     // A record the filter does not want does not end the wait.
     await h.niwa.emit(Noise, { text: "not wanted" });

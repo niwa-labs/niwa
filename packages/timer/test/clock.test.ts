@@ -40,7 +40,7 @@ async function firingsOf(records: readonly StoredRecord[]): Promise<Array<{ due:
 
 /** The records of the journal of a host, from the beginning. */
 async function readAll(host: ReturnType<typeof createNiwa>): Promise<StoredRecord[]> {
-  return host.records.read(seq(0));
+  return host.records.read();
 }
 
 test("a host with a test clock reads the time of that clock", async () => {

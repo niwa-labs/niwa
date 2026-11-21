@@ -146,7 +146,7 @@ test.skipIf(!(live && Bun.which("codex")))(
       const firstTurn = must(started.receipt?.turn, "the number of the first turn");
       expect(started.receipt?.status).toBe("started");
       await until(async () => {
-        const records = await client.records.read(seq(0));
+        const records = await client.records.read();
         return recordsOf(records, "session.turn-ended").some((entry) => {
           const parsed = TurnEnded.safeParse(entry.data);
           return parsed.success && parsed.data.session === started.ref && parsed.data.turn === firstTurn;
@@ -167,7 +167,7 @@ test.skipIf(!(live && Bun.which("codex")))(
       // The session is busy: the long turn has started.
       const longTurn = must(running.receipt.turn, "the number of the long turn");
       await until(async () => {
-        const records = await client.records.read(seq(0));
+        const records = await client.records.read();
         return recordsOf(records, "session.turn-started").some((entry) => {
           const parsed = TurnStarted.safeParse(entry.data);
           return parsed.success && parsed.data.session === started.ref && parsed.data.turn === longTurn;
@@ -192,14 +192,14 @@ test.skipIf(!(live && Bun.which("codex")))(
       expect(queuedTurn).toBeGreaterThan(runningTurn);
 
       await until(async () => {
-        const records = await client.records.read(seq(0));
+        const records = await client.records.read();
         return recordsOf(records, "session.turn-ended").some((entry) => {
           const parsed = TurnEnded.safeParse(entry.data);
           return parsed.success && parsed.data.session === started.ref && parsed.data.turn === runningTurn;
         });
       }, TURN_DEADLINE_MS, `the turn ${String(runningTurn)} of "${started.session}" to end`);
 
-      const afterFirstTurn = await client.records.read(seq(0));
+      const afterFirstTurn = await client.records.read();
       const firstEnd = must(
         recordsOf(afterFirstTurn, "session.turn-ended").find((entry) => {
           const parsed = TurnEnded.safeParse(entry.data);
@@ -211,14 +211,14 @@ test.skipIf(!(live && Bun.which("codex")))(
       // The queued message begins a turn of its own: the turn it waits for begins after the
       // turn that was running has ended.
       await until(async () => {
-        const records = await client.records.read(seq(0));
+        const records = await client.records.read();
         return recordsOf(records, "session.turn-started").some((entry) => {
           const parsed = TurnStarted.safeParse(entry.data);
           return parsed.success && parsed.data.session === started.ref && parsed.data.turn === queuedTurn;
         });
       }, TURN_DEADLINE_MS, `the queued message to be delivered`);
 
-      const afterDelivery = await client.records.read(seq(0));
+      const afterDelivery = await client.records.read();
       const secondStart = must(
         recordsOf(afterDelivery, "session.turn-started").find((entry) => {
           const parsed = TurnStarted.safeParse(entry.data);
@@ -235,7 +235,7 @@ test.skipIf(!(live && Bun.which("codex")))(
 
       // The session is idle again: a message to an idle session starts a turn.
       await until(async () => {
-        const records = await client.records.read(seq(0));
+        const records = await client.records.read();
         return recordsOf(records, "session.turn-ended").some((entry) => {
           const parsed = TurnEnded.safeParse(entry.data);
           return parsed.success && parsed.data.session === started.ref && parsed.data.turn === queuedTurn;

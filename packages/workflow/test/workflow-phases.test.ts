@@ -106,7 +106,7 @@ test("check: phases with a repeated or empty title, or not written as a literal,
 
 /** The records of a type the host wrote. */
 async function recordsOf(host: Host, type: string): Promise<StoredRecord[]> {
-  return (await host.records.read(seq(0))).filter((row) => row.type === type);
+  return (await host.records.read()).filter((row) => row.type === type);
 }
 
 test("phases at the top go one after another: each entry is a record of its own, and each step is in the phase it began in", async () => {

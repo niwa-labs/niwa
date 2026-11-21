@@ -66,7 +66,7 @@ async function scriptIn(home: string, name: string, lines: readonly string[]): P
 }
 
 const ofType = (records: readonly StoredRecord[], type: string): StoredRecord[] => records.filter((row) => row.type === type);
-const recordsOf = (host: Host): Promise<StoredRecord[]> => host.records.read(seq(0));
+const recordsOf = (host: Host): Promise<StoredRecord[]> => host.records.read();
 const finished = async (host: Host): Promise<StoredRecord[]> => ofType(await recordsOf(host), "workflow.run.finished");
 
 /** How many runs wait for a record now. */

@@ -73,7 +73,7 @@ async function untilAnswered(
 ): Promise<z.infer<typeof Answer>> {
   const until = Date.now() + deadlineMs;
   for (;;) {
-    const records = await api.records.read(seq(0));
+    const records = await api.records.read();
     const answered = recordsOf(records, ANSWERED).find((entry) => {
       const parsed = Answer.safeParse(entry.data);
       return parsed.success && parsed.data.session === session;
@@ -106,7 +106,7 @@ async function untilAnsweredOrPaused(
 ): Promise<z.infer<typeof Answer>> {
   const until = Date.now() + deadlineMs;
   for (;;) {
-    const records = await api.records.read(seq(0));
+    const records = await api.records.read();
     const answered = recordsOf(records, ANSWERED).find((entry) => {
       const parsed = Answer.safeParse(entry.data);
       return parsed.success && parsed.data.session === session;
@@ -171,7 +171,7 @@ test.skipIf(!(live && Bun.which("codex") && Bun.which("mcode")))(
 
       // A schema no answer can satisfy: the ask fails, and it does not come back as a value.
       // A failed step pauses the invocation that asked, so the failure is a paused invocation.
-      const pausedBefore = pausedCount(await api.records.read(seq(0)));
+      const pausedBefore = pausedCount(await api.records.read());
       const refused = await askOf(api, CODEX_HARNESS, CODEX_MODEL, "impossible", home.path, pausedBefore);
       expect(refused.answer.value).toBeUndefined();
       expect(refused.answer.error).toBeDefined();
@@ -215,7 +215,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       const value = z.object({ answer: z.number().int() }).parse(valid.answer.value);
       expect(value.answer).toBe(42);
 
-      const records = await client.records.read(seq(0));
+      const records = await client.records.read();
       const created = must(
         recordsOf(records, "request.created").find((entry) => {
           const data = entry.data as { to?: { kind?: string; harness?: string } } | undefined;
@@ -252,7 +252,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       const second = await stuck;
       void client.call(actionName("schema.ask"), { session: second.session, schema: "impossible" }).catch(() => undefined);
       await Bun.sleep(90_000);
-      const after = await client.records.read(seq(0));
+      const after = await client.records.read();
       const answers = recordsOf(after, ANSWERED).filter((entry) => {
         const parsed = Answer.safeParse(entry.data);
         return parsed.success && parsed.data.session === second.ref;

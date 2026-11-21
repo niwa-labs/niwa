@@ -50,7 +50,7 @@ async function recordsOf(
   expected: number,
 ): Promise<StoredRecord[]> {
   const found: StoredRecord[] = [];
-  const stream = client.records.since(seq(0), { type: type as never }) as AsyncGenerator<StoredRecord>;
+  const stream = client.records.since({ types: [type as never] }) as AsyncGenerator<StoredRecord>;
   for (let index = 0; index < expected; index += 1) {
     const next = await Promise.race([stream.next(), Bun.sleep(500).then(() => "timed out" as const)]);
     if (next === "timed out" || next.done === true) break;

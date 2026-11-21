@@ -93,7 +93,7 @@ test("a subscriber's position survives a restart", async () => {
     await eventually(() => seen.length === 2);
     await Bun.sleep(100);
     expect(seen.map((one) => one.n)).toEqual([1, 2]);
-    expect((await again.records.read(seq(0))).length).toBeGreaterThan(0);
+    expect((await again.records.read()).length).toBeGreaterThan(0);
     await again.close();
   } finally {
     await home.cleanup();

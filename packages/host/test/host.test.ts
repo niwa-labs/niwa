@@ -53,7 +53,7 @@ async function withHost(run: (host: Host, home: string) => Promise<void>): Promi
 
 async function collect(host: Host, kind: string, count: number): Promise<StoredRecord[]> {
   const found: StoredRecord[] = [];
-  for await (const rec of host.records.since(seq(0))) {
+  for await (const rec of host.records.since()) {
     if (rec.type === kind) found.push(rec);
     if (found.length === count) break;
   }

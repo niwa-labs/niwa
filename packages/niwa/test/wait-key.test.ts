@@ -76,7 +76,7 @@ function build(home: string, keyed: boolean) {
 async function settled(niwa: ReturnType<typeof createNiwa>, done: number): Promise<number[]> {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    const finished = (await niwa.records.read(seq(0))).filter((r) => r.type === Done.name).map((r) => (r.data as { n: number }).n);
+    const finished = (await niwa.records.read()).filter((r) => r.type === Done.name).map((r) => (r.data as { n: number }).n);
     if (finished.length >= done) return finished;
     if (Date.now() > deadline) throw new Error(`only ${String(finished.length)} of ${String(done)} finished`);
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -86,7 +86,7 @@ async function settled(niwa: ReturnType<typeof createNiwa>, done: number): Promi
 async function parked(niwa: ReturnType<typeof createNiwa>, count: number): Promise<void> {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    const records = await niwa.records.read(seq(0));
+    const records = await niwa.records.read();
     const latest = new Map<string, string>();
     for (const r of records) {
       if (r.type !== "niwa.invocation.state") continue;
@@ -235,7 +235,7 @@ function buildParallel(home: string) {
 async function paired(niwa: ReturnType<typeof createNiwa>): Promise<string[]> {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    const pair = (await niwa.records.read(seq(0))).find((r) => r.type === Pair.name);
+    const pair = (await niwa.records.read()).find((r) => r.type === Pair.name);
     if (pair !== undefined) return (pair.data as { ids: string[] }).ids;
     if (Date.now() > deadline) throw new Error("the parallel waits were not both answered");
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -332,7 +332,7 @@ test("request.ask names its request id as the key: one answer among many open as
     await niwa.serve();
     client = await connectAsOwner(home.path);
     for (let n = 0; n < count; n += 1) await niwa.emit(Asked, { n });
-    const created = async () => (await niwa.records.read(seq(0))).filter((r) => r.type === RequestCreated.name);
+    const created = async () => (await niwa.records.read()).filter((r) => r.type === RequestCreated.name);
     await eventually(async () => (await created()).length === count, 20_000, "the asks were not all opened");
     await parked(niwa, count);
     await quiet();
@@ -348,14 +348,14 @@ test("request.ask names its request id as the key: one answer among many open as
     expect(id).toBeDefined();
     await client.call(REQUEST_ANSWER, { id, answer: { text: "7" } });
     await eventually(
-      async () => (await niwa.records.read(seq(0))).some((r) => r.type === Reply.name),
+      async () => (await niwa.records.read()).some((r) => r.type === Reply.name),
       20_000,
       "the asker did not go on",
     );
     await quiet();
-    const replies = (await niwa.records.read(seq(0))).filter((r) => r.type === Reply.name);
+    const replies = (await niwa.records.read()).filter((r) => r.type === Reply.name);
     expect(replies.map((r) => r.data)).toEqual([{ n: 7 }]);
-    expect((await niwa.records.read(seq(0))).filter((r) => r.type === RequestAnswered.name)).toHaveLength(1);
+    expect((await niwa.records.read()).filter((r) => r.type === RequestAnswered.name)).toHaveLength(1);
     // One run for the asker that was answered; the other twenty-nine were not woken at all.
     expect(state.runs).toBe(count + 1);
   } finally {

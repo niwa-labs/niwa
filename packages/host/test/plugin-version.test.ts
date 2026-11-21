@@ -95,7 +95,7 @@ test("a restart onto changed code pauses unfinished work; only the explicit move
     await first.serve();
     await first.emit(Start, { n: 1 });
     await eventually(
-      async () => statesOf(await first.records.read(seq(0))).at(-1)?.state === "waiting",
+      async () => statesOf(await first.records.read()).at(-1)?.state === "waiting",
       10_000,
       "the invocation does not wait",
     );
@@ -107,20 +107,20 @@ test("a restart onto changed code pauses unfinished work; only the explicit move
     await second.serve();
     try {
       await eventually(
-        async () => statesOf(await second.records.read(seq(0))).at(-1)?.state === "paused",
+        async () => statesOf(await second.records.read()).at(-1)?.state === "paused",
         10_000,
         "the invocation is not paused",
       );
-      const paused = statesOf(await second.records.read(seq(0))).at(-1);
+      const paused = statesOf(await second.records.read()).at(-1);
       expect(paused?.reason).toContain("plugin version unavailable");
       expect(paused?.choices).toEqual(["cancel"]);
 
       // The answer arrives, and the restart has still not moved anything.
       await second.emit(Answer, { n: 1 });
       await new Promise((resolve) => setTimeout(resolve, 300));
-      expect(await second.records.read(seq(0), { type: Done })).toHaveLength(0);
+      expect(await second.records.read({ types: [Done] })).toHaveLength(0);
 
-      const admitted = (await second.records.read(seq(0))).find((r) => r.type === "niwa.invocation.admitted");
+      const admitted = (await second.records.read()).find((r) => r.type === "niwa.invocation.admitted");
       const invocation = (admitted?.data as { invocation: string }).invocation;
       const moved = await second.call<{ invocation: string }, { from: string; to: string }>(
         MOVE_ACTION,
@@ -130,13 +130,13 @@ test("a restart onto changed code pauses unfinished work; only the explicit move
       expect(moved.from).not.toBe(moved.to);
 
       await eventually(
-        async () => (await second.records.read(seq(0), { type: Done })).length === 1,
+        async () => (await second.records.read({ types: [Done] })).length === 1,
         10_000,
         "the moved invocation did not finish",
       );
-      const [done] = await second.records.read(seq(0), { type: Done });
+      const [done] = await second.records.read({ types: [Done] });
       expect(done?.data).toEqual({ n: 1, by: "new" });
-      expect(statesOf(await second.records.read(seq(0))).at(-1)?.state).toBe("done");
+      expect(statesOf(await second.records.read()).at(-1)?.state).toBe("done");
       await expect(second.call(MOVE_ACTION, { invocation })).rejects.toThrow("done");
     } finally {
       await second.close();

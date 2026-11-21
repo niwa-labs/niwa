@@ -31,7 +31,7 @@ async function hosted(setup: Parameters<typeof plugin>[1]) {
   await niwa.serve();
   const seen: StoredRecord[] = [];
   const watching = (async () => {
-    for await (const rec of niwa.records.since(seq(0))) seen.push(rec);
+    for await (const rec of niwa.records.since()) seen.push(rec);
   })();
   return {
     niwa,
@@ -201,7 +201,7 @@ test("the answer to a paused invocation is written by the caller who gave it", a
     try {
       await client.call("niwa.invocation.resolve" as never, { invocation, choice: "cancel" } as never);
       const resolved: StoredRecord[] = [];
-      for await (const rec of client.records.since(seq(0), { type: "niwa.invocation.resolved" as never })) {
+      for await (const rec of client.records.since({ types: ["niwa.invocation.resolved" as never] })) {
         resolved.push(rec);
         break;
       }
@@ -240,12 +240,12 @@ test("a wake of a call waiting inside an action asks no guard again and writes n
   try {
     await h.niwa.emit(Start, {});
     await eventually(() => h.states().at(-1)?.state === "waiting", 10_000, "the call waits");
-    const before = (await h.niwa.records.read(seq(0))).filter((r) => r.stream.startsWith("invocation:")).length;
+    const before = (await h.niwa.records.read()).filter((r) => r.stream.startsWith("invocation:")).length;
 
     await h.niwa.emit(Reply, { ok: false });
     await eventually(() => ran.length === 2, 10_000, "the wake does not enter the call again");
     await new Promise((resolve) => setTimeout(resolve, 200));
-    expect((await h.niwa.records.read(seq(0))).filter((r) => r.stream.startsWith("invocation:"))).toHaveLength(before);
+    expect((await h.niwa.records.read()).filter((r) => r.stream.startsWith("invocation:"))).toHaveLength(before);
     expect(guards).toBe(1);
 
     await h.niwa.emit(Reply, { ok: true });
@@ -284,7 +284,7 @@ test("a waiting call whose adjust now decides otherwise is decided again, and a 
     await eventually(() => h.states().at(-1)?.state === "waiting", 10_000, "the call waits");
     await h.niwa.emit(Reply, { ok: false });
     await eventually(() => h.states().at(-1)?.state === "paused", 10_000, "the denial pauses it");
-    const decisions = (await h.niwa.records.read(seq(0))).filter((r) => r.type === CORE_TYPES.stepDecision);
+    const decisions = (await h.niwa.records.read()).filter((r) => r.type === CORE_TYPES.stepDecision);
     expect(decisions.map((r) => (r.data as { denied: boolean; reason?: string }).reason)).toEqual([undefined, "changed"]);
   } finally {
     await h.close();
@@ -329,7 +329,7 @@ test("a re-decision that matches the latest recorded one is not recorded again",
     await h.niwa.emit(Reply, { ok: false });
     await eventually(() => entered.count === 3, 10_000, "the second wake");
     await new Promise((resolve) => setTimeout(resolve, 200));
-    const decisions = (await h.niwa.records.read(seq(0))).filter((r) => r.type === CORE_TYPES.stepDecision);
+    const decisions = (await h.niwa.records.read()).filter((r) => r.type === CORE_TYPES.stepDecision);
     expect(decisions.map((r) => (r.data as { final: { text: string } }).final.text)).toEqual(["a", "b"]);
   } finally {
     await h.close();
@@ -356,7 +356,7 @@ test("a guard that denies a waiting call on the same final input records the den
     await eventually(() => h.states().at(-1)?.state === "waiting", 10_000, "the call waits");
     await h.niwa.emit(Reply, { ok: false });
     await eventually(() => h.states().at(-1)?.state === "paused", 10_000, "the denial pauses it");
-    const decisions = (await h.niwa.records.read(seq(0))).filter((r) => r.type === CORE_TYPES.stepDecision);
+    const decisions = (await h.niwa.records.read()).filter((r) => r.type === CORE_TYPES.stepDecision);
     expect(decisions.map((r) => (r.data as { denied: boolean }).denied)).toEqual([false, true]);
   } finally {
     await h.close();
@@ -393,7 +393,7 @@ for (const op of ["get", "set", "update", "take", "emit"] as const) {
       await eventually(() => h.states().at(-1)?.state === "waiting", 10_000, "the call waits");
       await h.niwa.emit(Reply, { ok: false });
       await eventually(() => h.states().map((s) => s.state).join() === "running,waiting,running,waiting", 10_000, "the wake");
-      const written = (await h.niwa.records.read(seq(0))).filter((r) =>
+      const written = (await h.niwa.records.read()).filter((r) =>
         [STATE_TYPE, CORE_TYPES.stateRead, CORE_TYPES.stateChanged, Note.name].includes(r.type),
       );
       const first = written.findIndex((r) => r.type !== STATE_TYPE && r.seq > written[1]!.seq);
@@ -431,12 +431,12 @@ test("a plain wake of a call that emitted before finds its record and writes not
   try {
     await h.niwa.emit(Start, {});
     await eventually(() => h.states().at(-1)?.state === "waiting", 10_000, "the call waits");
-    const before = (await h.niwa.records.read(seq(0))).length;
+    const before = (await h.niwa.records.read()).length;
     await h.niwa.emit(Reply, { ok: false });
     await eventually(() => entered.count === 2, 10_000, "the wake");
     await new Promise((resolve) => setTimeout(resolve, 200));
     // Only the reply itself is new.
-    expect(await h.niwa.records.read(seq(0))).toHaveLength(before + 1);
+    expect(await h.niwa.records.read()).toHaveLength(before + 1);
   } finally {
     await h.close();
   }

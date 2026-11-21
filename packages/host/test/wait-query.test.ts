@@ -32,7 +32,7 @@ test("a wait answers with the data and the position, and the next wait from that
   try {
     await niwa.serve();
     await niwa.emit(Start, { n: 1 });
-    await eventually(async () => (await niwa.records.read(seq(0))).some((row) => row.type === "niwa.invocation.state" && (row.data as { state: string }).state === "waiting"));
+    await eventually(async () => (await niwa.records.read()).some((row) => row.type === "niwa.invocation.state" && (row.data as { state: string }).state === "waiting"));
     // Two answers in a row, and one for another start between them: the second wait finds the
     // second answer, which was committed before it began.
     const a = await niwa.emit(Answer, { to: { n: 1 }, text: "a" });
@@ -92,7 +92,7 @@ test("a record of another schema version does not answer a wait, and the answer 
     first.use(waiter({ answer: Answer, declare: true }));
     await first.serve();
     await first.emit(Start, { n: 1 });
-    await eventually(async () => (await first.records.read(seq(0))).some((row) => row.type === "niwa.invocation.state" && (row.data as { state: string }).state === "waiting"));
+    await eventually(async () => (await first.records.read()).some((row) => row.type === "niwa.invocation.state" && (row.data as { state: string }).state === "waiting"));
     await first.close();
 
     const newer = createNiwa({ home: home.path });

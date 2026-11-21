@@ -49,7 +49,7 @@ test("causes: a record written in a handler has the waking record as its cause, 
     const watcher = await connectAsOwner(homePath);
     const seen: StoredRecord[] = [];
     const watch = (async () => {
-      for await (const record of watcher.records.since(FROM_START)) {
+      for await (const record of watcher.records.since()) {
         seen.push(record);
       }
     })().catch(() => {});

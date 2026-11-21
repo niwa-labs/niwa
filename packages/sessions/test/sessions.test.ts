@@ -551,7 +551,7 @@ test("belong: the catalog lists the belonging with its source, and saying it twi
     // Saying the same thing again is one fact, not two: nothing new is written.
     const again = await client.call("session.belong" as ActionName, { session, to, source: "explicit" });
     expect(again).toMatchObject({ known: true });
-    const written = await client.records.read(seq(0), { type: SessionBelongs.name });
+    const written = await client.records.read({ types: [SessionBelongs.name] });
     expect(written).toHaveLength(1);
     // The actor is the caller: the one who said it, not the host.
     expect(written[0]?.actor).toMatchObject({ kind: "client" });
@@ -585,7 +585,7 @@ test("belong: identical calls made at once write one record", async () => {
       host.call("session.belong" as ActionName, input),
       host.call("session.belong" as ActionName, input),
     ]);
-    expect(await host.records.read(seq(0), { type: SessionBelongs.name })).toHaveLength(1);
+    expect(await host.records.read({ types: [SessionBelongs.name] })).toHaveLength(1);
   } finally {
     await host.close();
     await home.cleanup();

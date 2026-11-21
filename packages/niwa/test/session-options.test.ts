@@ -125,7 +125,7 @@ async function serve(
   await niwa.serve();
   const records: StoredRecord[] = [];
   void (async () => {
-    for await (const record of niwa.records.since(seq(0))) records.push(record);
+    for await (const record of niwa.records.since()) records.push(record);
   })();
   let stopped = false;
   const stop = async (): Promise<void> => {

@@ -55,7 +55,7 @@ async function messageRecords(
   expected: number,
 ): Promise<StoredRecord[]> {
   const found: StoredRecord[] = [];
-  const stream = host.records.since(seq(0), { type }) as AsyncGenerator<StoredRecord>;
+  const stream = host.records.since({ types: [type] }) as AsyncGenerator<StoredRecord>;
   for (let index = 0; index < expected; index += 1) {
     const next = await Promise.race([
       stream.next(),

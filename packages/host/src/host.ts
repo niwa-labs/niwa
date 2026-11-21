@@ -53,7 +53,9 @@ import {
   readFiltered,
   targetName,
   holds,
+  matchesQuery,
   overlaps,
+  resolveQuery,
   selectsType,
 } from "@niwa-labs/core";
 import type {
@@ -90,11 +92,9 @@ import type {
   PluginName,
   PluginVersion,
   Principal,
-  RecordFilter,
   RecordId,
   RecordType,
   RecordTypeName,
-  ReadOptions,
   Seq,
   StreamId,
   Timestamp,
@@ -103,6 +103,9 @@ import type {
   Token,
   TracedRecord,
   Verb,
+  RecordReadQuery,
+  RecordQuery,
+  ResolvedQuery,
   WaitEntry,
   WaitKey,
   WaitQuery,
@@ -140,6 +143,7 @@ import {
   RECORDS_READ_ACTION,
   CATALOG_ACTION,
   CatalogOutput,
+  RECORDS_SEARCH_ACTION,
   STATUS_ACTION,
   STOP_ACTION,
   StatusOutput,
@@ -149,6 +153,7 @@ import {
   RecordList,
   RecordsOutput,
   RecordsReadInput,
+  RecordsSearchInput,
   TracedRecordsOutput,
 } from "@niwa-labs/client";
 import { AccessControl } from "./access-control.ts";
@@ -402,15 +407,11 @@ class Feed {
   private wake: (() => void) | undefined;
   private closed = false;
 
-  constructor(
-    private readonly type: RecordTypeName | undefined,
-    private readonly stream: StreamId | undefined,
-  ) {}
+  constructor(private readonly query: ResolvedQuery) {}
 
   push(record: StoredRecord): void {
     if (this.closed) return;
-    if (this.type !== undefined && record.type !== this.type) return;
-    if (this.stream !== undefined && record.stream !== this.stream) return;
+    if (!matchesQuery({ ...this.query, from: undefined }, record)) return;
     this.queue.push(record);
     this.notify();
   }
@@ -664,6 +665,7 @@ class Niwa implements Host {
   /** The actions the host registers for itself: observation and the description. */
   private readonly readers = [
     this.recordsReadAction(),
+    this.recordsSearchAction(),
     this.traceAction(),
     this.causesAction(),
     this.describeAction(),
@@ -1049,46 +1051,68 @@ class Niwa implements Host {
   private recordsReadAction(): AnyAction {
     return action(RECORDS_READ_ACTION, {
       description:
-        "The records of the journal after a position, in commit order, up to the ones committed now.",
+        "The records of the journal after a position that answer a record query: types as exact names or prefix.* families, equality on paths of the data, a stream. In commit order, up to the ones committed now.",
       input: RecordsReadInput,
       output: RecordsOutput,
       // A read writes nothing: it may be made again.
       recovery: "repeat",
-      run: async (input: z.infer<typeof RecordsReadInput>) => {
-        const from = seq(input.from ?? 0);
-        const deadline = Date.now() + (input.waitMs ?? 0);
-        for (;;) {
-          const found = this.readFound(from, input);
-          const left = deadline - Date.now();
-          if (found.records.length > 0 || left <= 0) return found;
-          // Nothing yet: wait for a commit and look again. The wait is registered in the step that
-          // looked, so a record committed in between is not missed.
-          await this.untilCommit(left);
-        }
-      },
+      run: async (input: z.infer<typeof RecordsReadInput>) =>
+        this.untilFound(input.waitMs, () => this.readQuery(input)),
     });
   }
 
-  /** What a read asks for, answered: the records that are committed now, and where the next read goes on. */
-  private readFound(from: Seq, input: z.infer<typeof RecordsReadInput>): Found {
-    const journal = this.requireJournal();
-    const types = input.types?.map((type) => recordTypeName(type));
-    const stream = input.stream === undefined ? undefined : streamId(input.stream);
-    if (input.filter === undefined && input.tail === undefined) {
-      const records = this.readHistory(from, {
-        ...(types === undefined ? {} : { types }),
-        ...(stream === undefined ? {} : { stream }),
-        ...(input.limit === undefined ? {} : { limit: input.limit }),
-      });
-      const full = input.limit !== undefined && records.length === input.limit;
-      return { records, next: full ? seq(records[records.length - 1]?.seq ?? from) : seq(Math.max(journal.last(), from)) };
-    }
-    const filter = { ...input.filter, types: [...(input.types ?? []), ...(input.filter?.types ?? [])] };
-    return readFiltered(journal, from, filter, {
-      ...(input.limit === undefined ? {} : { limit: input.limit }),
-      ...(input.tail === undefined ? {} : { tail: input.tail }),
-      ...(stream === undefined ? {} : { stream }),
+  /**
+   * The action the host registers for itself: search the records as a person looks for them — by
+   * who wrote them, what they are about, a text, a span of time. It is not a record query: what it
+   * finds may depend on the journal around a record (a run is all it grew into).
+   */
+  private recordsSearchAction(): AnyAction {
+    return action(RECORDS_SEARCH_ACTION, {
+      description:
+        "Search the records of the journal after a position: type patterns, an actor, a run, session, request or task, a text in the data, a span of time or of positions.",
+      input: RecordsSearchInput,
+      output: RecordsOutput,
+      recovery: "repeat",
+      run: async (input: z.infer<typeof RecordsSearchInput>) =>
+        this.untilFound(input.waitMs, () =>
+          readFiltered(this.requireJournal(), seq(input.from ?? 0), input.filter ?? {}, {
+            ...(input.limit === undefined ? {} : { limit: input.limit }),
+            ...(input.tail === undefined ? {} : { tail: input.tail }),
+            ...(input.stream === undefined ? {} : { stream: streamId(input.stream) }),
+          }),
+        ),
     });
+  }
+
+  /** Read until something is found or the time is over: a read with nothing waits for a commit and looks again. */
+  private async untilFound(waitMs: number | undefined, read: () => Found): Promise<Found> {
+    const deadline = Date.now() + (waitMs ?? 0);
+    for (;;) {
+      const found = read();
+      const left = deadline - Date.now();
+      if (found.records.length > 0 || left <= 0) return found;
+      // The wait is registered in the step that looked, so a record committed in between is not missed.
+      await this.untilCommit(left);
+    }
+  }
+
+  /** What a read asks for, answered: the records that answer its query now, and where the next read goes on. */
+  private readQuery(input: z.infer<typeof RecordsReadInput>): Found {
+    const journal = this.requireJournal();
+    const from = seq(input.from ?? 0);
+    const query = resolveQuery({
+      from,
+      ...(input.types === undefined ? {} : { types: input.types }),
+      ...(input.filter === undefined ? {} : { filter: input.filter }),
+      ...(input.stream === undefined ? {} : { stream: input.stream }),
+    });
+    const end = journal.last();
+    if (input.tail !== undefined) {
+      return { records: journal.query(query).slice(-input.tail), next: seq(Math.max(end, from)) };
+    }
+    const records = journal.query(query, input.limit);
+    const full = input.limit !== undefined && records.length === input.limit;
+    return { records, next: full ? seq(records[records.length - 1]?.seq ?? from) : seq(Math.max(end, from)) };
   }
 
   /** Wait until a record is committed, or the time is over. */
@@ -2331,31 +2355,23 @@ class Niwa implements Host {
   }
 
   readonly records = {
-    since: (from: Seq, filter?: RecordFilter): AsyncIterable<StoredRecord> =>
-      this.subscribe(from, {
-        type: filterType(filter),
-        stream: filterStream(filter),
-      }),
-    read: async (from: Seq, opts?: ReadOptions): Promise<StoredRecord[]> =>
-      this.readHistory(from, opts),
+    since: (query?: RecordQuery<any>): AsyncIterable<StoredRecord> => this.subscribe(resolveQuery(query)),
+    read: async (query?: RecordReadQuery<any>): Promise<StoredRecord[]> => this.readHistory(resolveQuery(query), query?.limit),
   };
 
   /**
-   * The history after a position, read once.
+   * The history that answers a query, read once.
    *
    * The read is a plain question to the journal: the records that are committed now, in commit
    * order, and nothing that comes later. It ends by itself, so a reader never has to guess when
    * the history is read.
    */
-  private readHistory(from: Seq, opts?: ReadOptions): StoredRecord[] {
+  private readHistory(query: ResolvedQuery, limit?: number): StoredRecord[] {
     const journal = this.requireJournal();
-    const types = filterTypes(opts);
-    const stream = opts?.stream;
-    const limit = opts?.limit;
     if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
       throw new TypeError(`the limit of a read must be a positive integer, got ${String(limit)}`);
     }
-    return journal.since(from, types, limit, stream);
+    return journal.query(query, limit);
   }
 
   /**
@@ -2363,22 +2379,16 @@ class Niwa implements Host {
    * registered in the same step that reads the history, so nothing is committed in between.
    */
   private async *subscribe(
-    from: Seq,
-    filter: SubscriptionFilter,
+    query: ResolvedQuery,
     owner?: Set<Feed>,
   ): AsyncGenerator<StoredRecord, void, undefined> {
     const journal = this.requireJournal();
-    const feed = new Feed(filter.type, filter.stream);
+    const feed = new Feed(query);
     this.feeds.add(feed);
     owner?.add(feed);
     try {
-      let cursor = from;
-      for (const record of journal.since(
-        from,
-        filter.type === undefined ? undefined : [filter.type],
-        undefined,
-        filter.stream,
-      )) {
+      let cursor = query.from ?? seq(0);
+      for (const record of journal.query(query)) {
         cursor = record.seq;
         yield record;
       }
@@ -2798,19 +2808,14 @@ class Niwa implements Host {
         return;
       }
       case "read": {
-        const { from, type, types, stream, limit } = message;
+        const { query, limit } = message;
         return reply(connection, message.id, async () => {
           await this.authorize(caller, "call", RECORDS_READ_ACTION);
-          return this.readHistory(from, {
-            ...(type === undefined ? {} : { type }),
-            ...(types === undefined ? {} : { types }),
-            ...(stream === undefined ? {} : { stream }),
-            ...(limit === undefined ? {} : { limit }),
-          });
+          return this.readHistory(resolveQuery(query), limit);
         });
       }
       case "since": {
-        const { id, from, type, stream } = message;
+        const { id, query } = message;
         // The subscription is a read of the same journal: it is held to the same grant, and a
         // refusal is the first answer, before any record.
         try {
@@ -2821,11 +2826,7 @@ class Niwa implements Host {
         }
         connection.send({ id, ok: true, value: null });
         try {
-          for await (const record of this.subscribe(
-            from,
-            { type, stream },
-            connection.feeds,
-          )) {
+          for await (const record of this.subscribe(resolveQuery(query), connection.feeds)) {
             if (!connection.isOpen) break;
             connection.send({ id, record });
           }
@@ -2877,36 +2878,6 @@ function expandHome(home: string): string {
   if (home === "~") return homedir();
   if (home.startsWith("~/")) return `${homedir()}${home.slice(1)}`;
   return home;
-}
-
-/** The type a filter selects, as a name. */
-function filterType(filter: RecordFilter | undefined): RecordTypeName | undefined {
-  const type = filter?.type;
-  return typeof type === "string" || type === undefined ? type : type.name;
-}
-
-/** The stream a filter selects. */
-function filterStream(filter: RecordFilter | undefined): StreamId | undefined {
-  return filter?.stream;
-}
-
-/** What a subscription watches: a type, a stream, or both. */
-interface SubscriptionFilter {
-  readonly type: RecordTypeName | undefined;
-  readonly stream: StreamId | undefined;
-}
-
-/**
- * The types a read selects, as names.
- *
- * A read may name one type or several: the list wins when it is there, because it is the
- * wider of the two.
- */
-function filterTypes(opts: ReadOptions | undefined): RecordTypeName[] | undefined {
-  const many = opts?.types?.map((type) => (typeof type === "string" ? type : type.name));
-  if (many !== undefined) return many.length === 0 ? undefined : many;
-  const one = filterType(opts);
-  return one === undefined ? undefined : [one];
 }
 
 /** The device and inode of the socket file on a path; undefined when there is none. */

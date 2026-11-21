@@ -247,7 +247,7 @@ async function serve(
   await niwa.serve();
   const records: StoredRecord[] = [];
   void (async () => {
-    for await (const record of niwa.records.since(seq(0))) records.push(record);
+    for await (const record of niwa.records.since()) records.push(record);
   })();
   let stopped = false;
   const stop = async (): Promise<void> => {
@@ -1403,10 +1403,10 @@ test("ans-1: listing the tools of the niwa MCP server writes nothing to the jour
   // With and without an open question, a list of tools is a read.
   await pair.client.listTools();
   const quiet = async (): Promise<void> => {
-    const before = await niwa.records.read(seq(0));
+    const before = await niwa.records.read();
     await pair.client.listTools();
     await pair.client.listTools();
-    const after = await niwa.records.read(seq(0));
+    const after = await niwa.records.read();
     expect(after.map((record) => record.id)).toEqual(before.map((record) => record.id));
   };
   await quiet();

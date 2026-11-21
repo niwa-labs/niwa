@@ -40,7 +40,7 @@ async function served(): Promise<{ host: Host; home: string }> {
 }
 
 const recordsOf = (host: Host, type: string): Promise<StoredRecord[]> =>
-  host.records.read(seq(0)).then((all) => all.filter((row) => row.type === type));
+  host.records.read().then((all) => all.filter((row) => row.type === type));
 
 /** One question of every kind, as a request records it. */
 const KINDS = {

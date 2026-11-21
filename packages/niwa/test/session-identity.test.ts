@@ -197,7 +197,7 @@ for (const scenario of CASES) {
     await niwa.serve();
     const records: StoredRecord[] = [];
     void (async () => {
-      for await (const record of niwa.records.since(seq(0))) records.push(record);
+      for await (const record of niwa.records.since()) records.push(record);
     })().catch(() => {});
     cleanups.push(async () => {
       await writeFile(fake.stop, "");

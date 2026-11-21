@@ -496,7 +496,7 @@ async function stack(script: readonly Step[], niwaMcp?: { command: string; args:
   await niwa.serve();
   const records: StoredRecord[] = [];
   void (async () => {
-    for await (const record of niwa.records.since(seq(0))) records.push(record);
+    for await (const record of niwa.records.since()) records.push(record);
   })();
   closers.push(async () => {
     await niwa.close();

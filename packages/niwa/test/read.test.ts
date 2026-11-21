@@ -57,7 +57,7 @@ test("the host reads the history after a position, in commit order", async () =>
     await h.niwa.emit(Other, { text: "between" });
     const second = await h.niwa.emit(Note, { n: 2 });
 
-    const read = await h.niwa.records.read(seq(0));
+    const read = await h.niwa.records.read();
     expect(read.map((record) => record.id)).toContain(first.id);
     expect(read.map((record) => record.id)).toContain(second.id);
 
@@ -67,7 +67,7 @@ test("the host reads the history after a position, in commit order", async () =>
     }
 
     // Only the records after the position: the read from the last one is empty.
-    const after = await h.niwa.records.read(second.seq);
+    const after = await h.niwa.records.read({ from: second.seq });
     expect(after).toEqual([]);
   } finally {
     await h.close();
@@ -78,13 +78,13 @@ test("the read ends: a record written after it is not in the answer", async () =
   const h = await hosted();
   try {
     await h.niwa.emit(Note, { n: 1 });
-    const read = await h.niwa.records.read(seq(0));
+    const read = await h.niwa.records.read();
     expect(read.length).toBeGreaterThan(0);
 
     // The answer was made before this one: it is not in it, and a second read sees it.
     const later = await h.niwa.emit(Note, { n: 2 });
     expect(read.map((record) => record.id)).not.toContain(later.id);
-    const second = await h.niwa.records.read(seq(0));
+    const second = await h.niwa.records.read();
     expect(second.map((record) => record.id)).toContain(later.id);
   } finally {
     await h.close();
@@ -98,18 +98,18 @@ test("the read filters by type and honours the limit", async () => {
     await h.niwa.emit(Other, { text: "other" });
     await h.niwa.emit(Note, { n: 2 });
 
-    const notes = await h.niwa.records.read(seq(0), { type: Note });
+    const notes = await h.niwa.records.read({ types: [Note] });
     expect(notes.every((record) => record.type === Note.name)).toBe(true);
     expect(notes.length).toBe(2);
 
-    const others = await h.niwa.records.read(seq(0), { type: Other });
+    const others = await h.niwa.records.read({ types: [Other] });
     expect(others.every((record) => record.type === Other.name)).toBe(true);
     expect(others.length).toBe(1);
 
-    const limited = await h.niwa.records.read(seq(0), { limit: 2 });
+    const limited = await h.niwa.records.read({ limit: 2 });
     expect(limited.length).toBe(2);
 
-    const limitedNotes = await h.niwa.records.read(seq(0), { type: Note, limit: 1 });
+    const limitedNotes = await h.niwa.records.read({ types: [Note], limit: 1 });
     expect(limitedNotes.length).toBe(1);
   } finally {
     await h.close();
@@ -122,18 +122,18 @@ test("a client reads the same history over the wire", async () => {
     const written = await h.client.emit(Note, { n: 7 });
     await h.client.emit(Other, { text: "other" });
 
-    const read: StoredRecord[] = await h.client.records.read(seq(0));
+    const read: StoredRecord[] = await h.client.records.read();
     expect(read.map((record) => record.id)).toContain(written.id);
 
-    const notes = await h.client.records.read(seq(0), { type: Note.name });
+    const notes = await h.client.records.read({ types: [Note.name] });
     expect(notes.every((record) => record.type === Note.name)).toBe(true);
     expect(notes.map((record) => record.id)).toEqual([written.id]);
 
-    const limited = await h.client.records.read(seq(0), { limit: 1 });
+    const limited = await h.client.records.read({ limit: 1 });
     expect(limited.length).toBe(1);
 
     // The position is a position: nothing before it is in the answer.
-    const after = await h.client.records.read(written.seq);
+    const after = await h.client.records.read({ from: written.seq });
     expect(after.map((record) => record.id)).not.toContain(written.id);
   } finally {
     await h.close();
@@ -192,10 +192,10 @@ test("a limit that is not a positive integer is refused, on the host and over th
   const h = await hosted();
   try {
     await h.niwa.emit(Note, { n: 1 });
-    await expect(h.niwa.records.read(seq(0), { limit: 0 })).rejects.toThrow();
-    await expect(h.niwa.records.read(seq(0), { limit: -1 })).rejects.toThrow();
-    await expect(h.niwa.records.read(seq(0), { limit: 1.5 })).rejects.toThrow();
-    await expect(h.client.records.read(seq(0), { limit: 0 })).rejects.toThrow();
+    await expect(h.niwa.records.read({ limit: 0 })).rejects.toThrow();
+    await expect(h.niwa.records.read({ limit: -1 })).rejects.toThrow();
+    await expect(h.niwa.records.read({ limit: 1.5 })).rejects.toThrow();
+    await expect(h.client.records.read({ limit: 0 })).rejects.toThrow();
   } finally {
     await h.close();
   }

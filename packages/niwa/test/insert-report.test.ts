@@ -47,7 +47,7 @@ test("the command writes the record of the event through the host, and a refused
     expect(sent).toEqual({ output: "", code: 0 });
 
     const client = await connectAsOwner(home.path);
-    const stream = client.records.since(seq(0), { type: "insert.compacted" as never }) as AsyncGenerator<StoredRecord>;
+    const stream = client.records.since({ types: ["insert.compacted" as never] }) as AsyncGenerator<StoredRecord>;
     const first = await stream.next();
     expect(first.value?.data).toEqual({ session: { harness: "pi", native: "s1" }, summary: "so far" });
     await stream.return(undefined);

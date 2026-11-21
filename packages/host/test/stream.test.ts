@@ -52,7 +52,7 @@ test("a subscription by stream sees that stream only, over history and live", as
 
     const seen: StoredRecord[] = [];
     const collecting = (async () => {
-      for await (const record of h.client.records.since(seq(0), { stream })) {
+      for await (const record of h.client.records.since({ stream })) {
         seen.push(record);
         if (seen.length >= 4) break;
       }
@@ -76,7 +76,7 @@ test("a subscription by stream sees that stream only, over history and live", as
       expect(seen[index]!.seq).toBeGreaterThan(seen[index - 1]!.seq);
     }
     // What the journal holds of that stream is what was seen: nothing was lost.
-    const truth = await h.niwa.records.read(seq(0), { stream });
+    const truth = await h.niwa.records.read({ stream });
     expect(seen.map((record) => record.id)).toEqual(truth.map((record) => record.id));
   } finally {
     await h.close();
@@ -91,7 +91,7 @@ test("the host filters its own subscription by stream too", async () => {
     await h.niwa.emit(Note, { n: 2 });
 
     const seen: StoredRecord[] = [];
-    for await (const record of h.niwa.records.since(seq(0), { stream: note.stream })) {
+    for await (const record of h.niwa.records.since({ stream: note.stream })) {
       seen.push(record);
       if (seen.length >= 2) break;
     }
@@ -110,19 +110,16 @@ test("the read over the wire carries the stream and the types", async () => {
     const second = await h.client.emit(Note, { n: 2 });
 
     // The stream of the wire's read op: the records of that stream only.
-    const ofStream = await h.client.records.read(seq(0), { stream: note.stream });
+    const ofStream = await h.client.records.read({ stream: note.stream });
     expect(ofStream.every((record) => record.stream === note.stream)).toBe(true);
     expect(ofStream.map((record) => record.id)).toEqual([note.id, second.id]);
 
     // The types of the wire's read op: several types at once.
-    const ofTypes = await h.client.records.read(seq(0), { types: [Note.name, Other.name] });
+    const ofTypes = await h.client.records.read({ types: [Note.name, Other.name] });
     expect(ofTypes.map((record) => record.type)).toEqual([Note.name, Other.name, Note.name]);
 
     // The stream and the types together.
-    const both = await h.client.records.read(seq(0), {
-      types: [Note.name],
-      stream: note.stream,
-    });
+    const both = await h.client.records.read({ types: [Note.name], stream: note.stream });
     expect(both.map((record) => record.id)).toEqual([note.id, second.id]);
   } finally {
     await h.close();
@@ -137,10 +134,7 @@ test("a type and a stream together: both must match, in history and live", async
 
     const seen: StoredRecord[] = [];
     const collecting = (async () => {
-      for await (const record of h.client.records.since(seq(0), {
-        type: Note,
-        stream: note.stream,
-      })) {
+      for await (const record of h.client.records.since({ types: [Note], stream: note.stream })) {
         seen.push(record);
       }
     })();
@@ -151,7 +145,7 @@ test("a type and a stream together: both must match, in history and live", async
     expect(seen.map((record) => record.id)).toEqual([note.id, live.id]);
 
     // A type of one stream with the stream of another matches nothing.
-    const none = await h.niwa.records.read(seq(0), { type: Other, stream: note.stream });
+    const none = await h.niwa.records.read({ types: [Other], stream: note.stream });
     expect(none).toEqual([]);
     void collecting;
   } finally {

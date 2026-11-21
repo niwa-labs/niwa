@@ -117,7 +117,7 @@ test("state: concurrent updates are not lost, and a batch taken before a crash i
     clients.push(client, watcher);
     const seen: StoredRecord[] = [];
     const watch = (async () => {
-      for await (const record of watcher.records.since(FROM_START)) {
+      for await (const record of watcher.records.since()) {
         seen.push(record);
       }
     })().catch(() => undefined);
@@ -196,7 +196,7 @@ test("state: concurrent updates are not lost, and a batch taken before a crash i
     clients.push(observer);
     const history: StoredRecord[] = [];
     const observe = (async () => {
-      for await (const record of observer.records.since(FROM_START)) {
+      for await (const record of observer.records.since()) {
         history.push(record);
       }
     })().catch(() => undefined);

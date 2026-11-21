@@ -151,7 +151,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       expect(String(outcome.outcome.result ?? "").toLowerCase()).toContain("ok");
 
       // The journal tells the whole story.
-      const records = await api.records.read(seq(0));
+      const records = await api.records.read();
       const taskCreated = must(
         recordsOf(records, "task.created")[0],
         "the record of the task that was created",
@@ -247,7 +247,7 @@ test.skipIf(!(live && Bun.which("mcode") && Bun.which("claude")))(
       const answerMs = Date.now() - answeredAt;
 
       // The task was created by the MCP client of the asker's session, not by the test.
-      const records = await api.records.read(seq(0));
+      const records = await api.records.read();
       const created = must(
         recordsOf(records, "task.created").find((record) => {
           const data = record.data as { id?: string; description?: string } | undefined;

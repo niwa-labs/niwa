@@ -46,7 +46,7 @@ async function scriptIn(home: string, lines: readonly string[]): Promise<string>
 }
 
 const ofType = async (host: Host, type: string): Promise<StoredRecord[]> =>
-  (await host.records.read(seq(0))).filter((row) => row.type === type);
+  (await host.records.read()).filter((row) => row.type === type);
 
 test("a script emits the wf.* records it declares and asks the owner with nothing in uses and no emits in the composition", async () => {
   const { host, caller, home } = await served();

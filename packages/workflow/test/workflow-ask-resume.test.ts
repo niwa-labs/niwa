@@ -37,7 +37,7 @@ async function hostOn(path: string, clock: TestClock): Promise<Host> {
   return niwa;
 }
 
-const recordsOf = async (niwa: Host): Promise<StoredRecord[]> => niwa.records.read(seq(0));
+const recordsOf = async (niwa: Host): Promise<StoredRecord[]> => niwa.records.read();
 const count = async (niwa: Host, type: string): Promise<number> => (await recordsOf(niwa)).filter((row) => row.type === type).length;
 const Finished = z.object({ outcome: z.object({ result: z.unknown() }) });
 const results = async (niwa: Host): Promise<unknown[]> =>

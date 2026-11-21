@@ -51,7 +51,7 @@ async function stop(host: Host): Promise<void> {
   hosts.splice(hosts.indexOf(host), 1);
 }
 
-const ofType = async (host: Host, type: string): Promise<StoredRecord[]> => (await host.records.read(seq(0))).filter((row) => row.type === type);
+const ofType = async (host: Host, type: string): Promise<StoredRecord[]> => (await host.records.read()).filter((row) => row.type === type);
 
 /** Wait until the built-ins stand as asked: one installation of the built-in, or none. */
 async function settled(host: Host, installed: number): Promise<void> {

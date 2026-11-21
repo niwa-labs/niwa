@@ -1,7 +1,7 @@
 /**
  * log.ts — `niwa log`: the journal as a person reads a log, like `journalctl` or `kubectl logs`.
  *
- * Every filter is one of the filters of `niwa.records.read`, so what the CLI shows and what an
+ * Every filter is one of the filters of `niwa.records.search`, so what the CLI shows and what an
  * MCP client or a script reads for the same filter are the same records. Following is a read that
  * waits for a commit, again and again; nothing in the CLI watches the journal itself.
  *
@@ -12,7 +12,7 @@
 
 import { z } from "zod";
 
-import { RECORDS_READ_ACTION, storedRecordSchema } from "@niwa-labs/client";
+import { RECORDS_READ_ACTION, RECORDS_SEARCH_ACTION, storedRecordSchema } from "@niwa-labs/client";
 import type { RecordFilterInput, Seq, StoredRecord } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
 import { seq, resolveId } from "@niwa-labs/core";
@@ -42,7 +42,7 @@ const SessionStarted = z.object({ session: z.string(), id: z.string() });
  * The records of a session name it by its pair; a line names it by its id, and `--session` takes it.
  */
 async function sessionIdsOf(api: NiwaApi): Promise<Map<string, string>> {
-  const found = Read.parse(await api.call(RECORDS_READ_ACTION, { from: 0, filter: { types: ["session.started"] } }));
+  const found = Read.parse(await api.call(RECORDS_READ_ACTION, { from: 0, types: ["session.started"] }));
   const ids = new Map<string, string>();
   for (const record of found.records) {
     const started = SessionStarted.safeParse(record.data);
@@ -61,7 +61,7 @@ function sessionFilterOf(text: string, ids: ReadonlyMap<string, string>): string
 }
 
 /** The records that say what niwa did rather than what happened: shown with `--all`. */
-const NOISE = ["!session.activity", "!niwa.step.decision", "!niwa.step.intent"];
+const NOISE = ["!session.activity", "!niwa.step.decision", "!niwa.step.intent", "!niwa.subscription.position"];
 
 /** The number of records a bare `niwa log` shows. */
 const DEFAULT_TAIL = 20;
@@ -165,7 +165,7 @@ export async function log(
   if (options.filter.session !== undefined) options.filter.session = sessionFilterOf(options.filter.session, sessions);
   const read = async (from: Seq, extra: { tail?: number; limit?: number; waitMs?: number }) =>
     Read.parse(
-      await api.call(RECORDS_READ_ACTION, {
+      await api.call(RECORDS_SEARCH_ACTION, {
         from,
         filter: options.filter,
         ...(options.stream === undefined ? {} : { stream: options.stream }),

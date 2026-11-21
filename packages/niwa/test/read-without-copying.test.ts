@@ -287,7 +287,7 @@ async function checkKind(kind: Kind): Promise<void> {
     expect(listed.sessions.length).toBeGreaterThan(0);
 
     // None of them was started by niwa: this journal is new and holds no session.started record.
-    const started = await host.records.read(seq(0), { type: SessionStarted });
+    const started = await host.records.read({ types: [SessionStarted] });
     const startedRefs = new Set(
       started.map((record) => StartedData.safeParse(record.data).data?.session ?? ""),
     );

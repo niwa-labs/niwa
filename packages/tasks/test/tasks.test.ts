@@ -207,7 +207,7 @@ async function recordsOf(
   type: RecordTypeName,
 ): Promise<StoredRecord[]> {
   const found: StoredRecord[] = [];
-  const stream = client.records.since(seq(0), { type }) as AsyncGenerator<StoredRecord>;
+  const stream = client.records.since({ types: [type] }) as AsyncGenerator<StoredRecord>;
   for (let index = 0; index < 10; index += 1) {
     const next = await Promise.race([
       stream.next(),
@@ -355,7 +355,7 @@ async function sentTo(
 ): Promise<Array<{ task?: string; body: { type: string; text: string; data?: unknown } }>> {
   const client = await connectAsOwner(home);
   try {
-    const records = await client.records.read(seq(0), { type: MessageSent.name });
+    const records = await client.records.read({ types: [MessageSent.name] });
     return records
       .map(
         (record) =>

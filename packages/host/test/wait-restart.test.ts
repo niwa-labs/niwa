@@ -96,7 +96,7 @@ test("waiting survives a restart: the question is asked once and the answer stil
     clients.push(client, watcher);
     const seen: StoredRecord[] = [];
     const watch = (async () => {
-      for await (const record of watcher.records.since(FROM_START)) {
+      for await (const record of watcher.records.since()) {
         seen.push(record);
       }
     })().catch(() => {});
@@ -136,7 +136,7 @@ test("waiting survives a restart: the question is asked once and the answer stil
     clients.push(observer);
     const history: StoredRecord[] = [];
     const observe = (async () => {
-      for await (const record of observer.records.since(FROM_START)) {
+      for await (const record of observer.records.since()) {
         history.push(record);
       }
     })().catch(() => {});

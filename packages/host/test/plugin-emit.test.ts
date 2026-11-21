@@ -31,7 +31,7 @@ test("a plugin emits its own type as the host, and is refused another plugin's t
     expect(written?.cause).toBeNull();
     await expect(api?.emit(Theirs, { n: 1 })).rejects.toThrow("emit-test.theirs");
     const seen: StoredRecord[] = [];
-    for await (const found of niwa.records.since(seq(0))) {
+    for await (const found of niwa.records.since()) {
       seen.push(found);
       if (found.type === Mine.name) break;
     }

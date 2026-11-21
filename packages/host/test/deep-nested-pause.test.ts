@@ -54,7 +54,7 @@ async function open(niwa: ReturnType<typeof createNiwa>): Promise<StoredRecord[]
   await niwa.serve();
   const records: StoredRecord[] = [];
   void (async () => {
-    for await (const stored of niwa.records.since(seq(0))) records.push(stored);
+    for await (const stored of niwa.records.since()) records.push(stored);
   })();
   return records;
 }

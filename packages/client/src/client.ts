@@ -12,7 +12,7 @@ import type { z } from "zod";
 
 import { expandHome } from "./home.ts";
 import { channelName, frameFor } from "./live.ts";
-import { targetName } from "@niwa-labs/core";
+import { resolveQuery, seq, targetName } from "@niwa-labs/core";
 import type {
   ActionTarget,
   CallOptions,
@@ -22,8 +22,9 @@ import type {
   Description,
   EmitOptions,
   LiveFrame,
-  ReadOptions,
-  RecordFilter,
+  RecordReadQuery,
+  RecordQuery,
+  ResolvedQuery,
   RecordId,
   RecordType,
   RecordTypeName,
@@ -90,11 +91,14 @@ function parseList<S extends z.ZodType>(schema: S, value: unknown, what: string)
   return value.map((entry) => parseReturned(schema, entry, what));
 }
 
-/** The type a filter selects, as a name. */
-function filterType(filter: RecordFilter | undefined): RecordTypeName | undefined {
-  const type = filter?.type;
-  if (type === undefined) return undefined;
-  return typeof type === "string" ? type : type.name;
+/** A query as the wire carries it: plain lists. */
+function onWire(query: ResolvedQuery): { types?: string[]; filter?: Record<string, never>; stream?: string; from?: number } {
+  return {
+    ...(query.types === undefined ? {} : { types: [...query.types] }),
+    ...(query.filter === undefined ? {} : { filter: query.filter as Record<string, never> }),
+    ...(query.stream === undefined ? {} : { stream: query.stream }),
+    ...(query.from === undefined ? {} : { from: query.from }),
+  };
 }
 
 interface PendingCall {
@@ -213,17 +217,11 @@ class WireConnection {
     });
   }
 
-  /** Subscribe to the records written after a position. */
-  subscribe(from: Seq, type: RecordTypeName | undefined, stream: StreamId | undefined): void {
+  /** Subscribe to the records that answer a query: the history after its position, then the live ones. */
+  subscribe(query: ResolvedQuery): void {
     const id = this.nextId++;
     this.subscriptionIds.add(id);
-    this.send({
-      id,
-      op: "since",
-      from,
-      ...(type === undefined ? {} : { type }),
-      ...(stream === undefined ? {} : { stream }),
-    });
+    this.send({ id, op: "since", query: onWire(query) });
   }
 
   /** Subscribe to the live frames of a channel. */
@@ -336,11 +334,8 @@ interface SubscriptionOptions {
   readonly home: string;
   readonly client: ClientId;
   readonly token: Token | undefined;
-  /** The position the consumer asked for; the cursor starts here. */
-  readonly from: Seq;
-  readonly type: RecordTypeName | undefined;
-  /** The stream the consumer asked for; every stream when absent. */
-  readonly stream: StreamId | undefined;
+  /** The records the consumer asked for; the cursor starts at the query's position. */
+  readonly query: ResolvedQuery;
   /** Called once when the subscription is over (closed or failed). */
   readonly onDone: () => void;
 }
@@ -367,7 +362,7 @@ class RecordSubscription {
 
   constructor(options: SubscriptionOptions) {
     this.options = options;
-    this.cursor = options.from;
+    this.cursor = options.query.from ?? seq(0);
     this.stopPromise = new Promise<void>((resolve) => {
       this.resolveStop = resolve;
     });
@@ -437,7 +432,8 @@ class RecordSubscription {
       if (connection !== null) {
         this.connection = connection;
         try {
-          connection.subscribe(this.cursor, this.options.type, this.options.stream);
+          // A reconnect asks for the same query from where the stream got to: no gap, no duplicate.
+          connection.subscribe({ ...this.options.query, from: this.cursor });
           await connection.done;
         } catch {
           // The write failed: the socket is gone; the next round reconnects.
@@ -702,10 +698,7 @@ class LiveSubscription {
 }
 
 class Client implements NiwaApi {
-  readonly records: {
-    since(from: Seq, filter?: RecordFilter): AsyncIterable<StoredRecord>;
-    read(from: Seq, opts?: ReadOptions): Promise<StoredRecord[]>;
-  };
+  readonly records: NiwaApi["records"];
 
   readonly live: {
     send(channel: string, frame: LiveFrame): Promise<void>;
@@ -726,15 +719,13 @@ class Client implements NiwaApi {
     this.token = token;
     this.link = Promise.resolve(connection);
     this.records = {
-      since: (from: Seq, filter?: RecordFilter): AsyncIterable<StoredRecord> => {
+      since: (query?: RecordQuery<any>): AsyncIterable<StoredRecord> => {
         if (this.isClosed) throw new HostError(CLOSED_MESSAGE);
         const subscription = new RecordSubscription({
           home: this.home,
           client: this.client,
           token: this.token,
-          from,
-          type: filterType(filter),
-          stream: filter?.stream,
+          query: resolveQuery(query),
           onDone: () => {
             this.subscriptions.delete(subscription);
           },
@@ -742,17 +733,13 @@ class Client implements NiwaApi {
         this.subscriptions.add(subscription);
         return subscription.iterate();
       },
-      read: async (from: Seq, opts?: ReadOptions): Promise<StoredRecord[]> => {
-        const type = filterType(opts);
-        const types = opts?.types?.map((entry) => (typeof entry === "string" ? entry : entry.name));
+      read: async (query?: RecordReadQuery<any>): Promise<StoredRecord[]> => {
+        const resolved = resolveQuery(query);
         const value = await this.request((id) => ({
           id,
           op: "read",
-          from,
-          ...(type === undefined ? {} : { type }),
-          ...(types === undefined ? {} : { types }),
-          ...(opts?.stream === undefined ? {} : { stream: opts.stream }),
-          ...(opts?.limit === undefined ? {} : { limit: opts.limit }),
+          query: onWire(resolved),
+          ...(query?.limit === undefined ? {} : { limit: query.limit }),
         }));
         return parseList(storedRecordSchema, value, "the records it was asked for");
       },

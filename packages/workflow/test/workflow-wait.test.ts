@@ -110,7 +110,7 @@ test("a read filtered by run gives everything about that run: its records, its s
   const started = Date.now();
   while ((await statusOf(host, runMine, 300)).requests.length === 0 && Date.now() - started < 20_000) continue;
 
-  const read = (await host.call(actionName("niwa.records.read"), { filter: { run: runMine } })) as { records: Array<{ type: string; data: { run?: string } }> };
+  const read = (await host.call(actionName("niwa.records.search"), { filter: { run: runMine } })) as { records: Array<{ type: string; data: { run?: string } }> };
   const types = read.records.map((row) => String(row.type));
   expect(types).toContain("workflow.run.requested");
   expect(types).toContain("request.created");

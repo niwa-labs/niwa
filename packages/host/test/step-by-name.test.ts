@@ -67,7 +67,7 @@ const caller = plugin("sbn", (api) => {
 });
 
 async function recordsOf(niwa: Host, type: RecordTypeName): Promise<StoredRecord[]> {
-  return niwa.records.read(seq(0), { type });
+  return niwa.records.read({ types: [type] });
 }
 
 async function run(mode: "found" | "missing" | "outcome", then: (niwa: Host) => Promise<void>) {

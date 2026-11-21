@@ -67,7 +67,7 @@ test("Workflow resume: the finished calls are not repeated and the result is com
     const early = await connectAsOwner(homePath);
     const outcomes: StoredRecord[] = [];
     const reading = (async () => {
-      for await (const record of early.records.since(0 as never)) outcomes.push(record);
+      for await (const record of early.records.since()) outcomes.push(record);
     })().catch(() => undefined);
     gate(homePath, "crash.gate.crash.one").open();
     await eventually(
@@ -98,7 +98,7 @@ test("Workflow resume: the finished calls are not repeated and the result is com
     const watcher = await connectAsOwner(homePath);
     const records: StoredRecord[] = [];
     const watch = (async () => {
-      for await (const record of watcher.records.since(0 as never)) {
+      for await (const record of watcher.records.since()) {
         records.push(record);
       }
     })().catch(() => undefined);

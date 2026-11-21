@@ -162,7 +162,7 @@ test("a registered version is known from its registration, and what is rebuilt i
     "}, async () => 1);",
   ]);
   const registered = await host.call(workflowRegister, { file });
-  const journal = journalOf(await host.records.read(seq(0)));
+  const journal = journalOf(await host.records.read());
 
   const version = versionOf(file);
   expect(version).toBe(registered.version);

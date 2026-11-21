@@ -70,7 +70,7 @@ async function serve(control: SessionControl, home?: string): Promise<{ niwa: Ho
     await stop();
     await fresh?.cleanup();
   });
-  return { niwa, home: path, stop, records: () => niwa.records.read(seq(0)) };
+  return { niwa, home: path, stop, records: () => niwa.records.read() };
 }
 
 const call = <O>(niwa: Host, name: string, input: unknown): Promise<O> => niwa.call(name as ActionName, input) as Promise<O>;

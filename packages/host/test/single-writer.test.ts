@@ -45,7 +45,7 @@ async function readJournal(
 ): Promise<StoredRecord[]> {
   const records: StoredRecord[] = [];
   const reading = (async () => {
-    for await (const record of client.records.since(FROM_START)) {
+    for await (const record of client.records.since()) {
       records.push(record);
     }
   })().catch(() => {});

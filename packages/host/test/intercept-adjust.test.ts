@@ -50,7 +50,7 @@ async function hosted(setup: Parameters<typeof plugin>[1]) {
   await niwa.serve();
   const written: StoredRecord[] = [];
   const watching = (async () => {
-    for await (const rec of niwa.records.since(seq(0))) written.push(rec);
+    for await (const rec of niwa.records.since()) written.push(rec);
   })().catch(() => undefined);
   return {
     niwa,

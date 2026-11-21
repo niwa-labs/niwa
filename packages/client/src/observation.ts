@@ -11,12 +11,15 @@
 
 import { z } from "zod";
 
-import { actionName, JsonSchemaValue, RecordFilterInput } from "@niwa-labs/core";
+import { actionName, DataFilterSchema, JsonSchemaValue, RecordFilterInput, TypeSelectorSchema } from "@niwa-labs/core";
 import { descriptionSchema, storedRecordSchema, tracedRecordSchema } from "./wire.ts";
 import type { ActionName } from "@niwa-labs/core";
 
 /** The action that reads the records of the journal. */
 export const RECORDS_READ_ACTION: ActionName = actionName("niwa.records.read");
+
+/** The action that searches the records of the journal as a person does. */
+export const RECORDS_SEARCH_ACTION: ActionName = actionName("niwa.records.search");
 
 /** The action that walks down from a record: what grew from it. */
 export const TRACE_ACTION: ActionName = actionName("niwa.trace");
@@ -70,19 +73,39 @@ export const StatusOutput = z.object({
   ),
 });
 
-/** What a read of the history asks for. */
-export const RecordsReadInput = z.object({
+/** What a read of the history asks for: a record query, and how much of what answers it. */
+export const RecordsReadInput = z.strictObject({
   /** The position to read after; 0 is the start of the journal. */
   from: z.number().int().nonnegative().optional(),
-  /** The record types to read; every type when absent. */
-  types: z.array(z.string().min(1)).optional(),
+  /** The record types to read, as exact names or families written `prefix.*`; every type when absent. */
+  types: z.array(TypeSelectorSchema).optional(),
+  /** Equality on fields of the data, by field name or dotted path. */
+  filter: DataFilterSchema.optional(),
   /** The stream to read; every stream when absent. */
+  stream: z.string().min(1).optional(),
+  /** At most this many records: the first ones. */
+  limit: z.number().int().positive().optional(),
+  /** The last this many records that answer, not the first. */
+  tail: z.number().int().positive().optional(),
+  /** When no record answers, wait up to this long, in milliseconds, for one to be committed. */
+  waitMs: z.number().int().positive().optional(),
+});
+
+/**
+ * What a search of the history asks for: what a person looks for, not a record query. Type
+ * patterns, an actor, a subject (a run with everything it grew into, a session, a request, a
+ * task), a text in the data, a span of time or of positions.
+ */
+export const RecordsSearchInput = z.strictObject({
+  /** The position to search after; 0 is the start of the journal. */
+  from: z.number().int().nonnegative().optional(),
+  /** The stream to search; every stream when absent. */
   stream: z.string().min(1).optional(),
   /** At most this many records: the first ones. */
   limit: z.number().int().positive().optional(),
   /** The last this many records that match, not the first. */
   tail: z.number().int().positive().optional(),
-  /** Narrow the read: type patterns, an actor, a subject, a text, a span of time or of positions. */
+  /** What the records are about. */
   filter: RecordFilterInput.optional(),
   /** When no record matches, wait up to this long, in milliseconds, for one to be committed. */
   waitMs: z.number().int().positive().optional(),

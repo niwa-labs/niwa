@@ -96,7 +96,7 @@ test("an intercept that needs a call to the outside makes it a step: after a cra
     const watcher = await connectAsOwner(homePath);
     const intents: string[] = [];
     try {
-      const records = await watcher.records.read(seq(0), { type: "niwa.step.intent" as never });
+      const records = await watcher.records.read({ types: ["niwa.step.intent" as never] });
       for (const record of records) {
         const data = record.data as { key?: string; action?: string };
         if (data.action === "look" && typeof data.key === "string") intents.push(data.key);

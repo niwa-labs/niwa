@@ -30,7 +30,7 @@ test("subscribing to a scheduled trigger schedules the timer, and its handler is
     expect(listed.timers.map((one) => one.name).sort()).toEqual(["digest", "other"]);
     await clock.advance(15 * MINUTE_MS);
     await eventually(() => fired.length >= 3);
-    const firings = (await niwa.records.read(seq(0))).filter((row) => row.type === "timer.fired");
+    const firings = (await niwa.records.read()).filter((row) => row.type === "timer.fired");
     expect(firings.some((row) => (row.data as { timer: string }).timer === "other")).toBe(true);
     expect(new Set(fired)).toEqual(new Set(["digest"]));
   } finally {

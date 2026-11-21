@@ -66,7 +66,7 @@ test("repeated write: the same id with the same content returns the existing rec
     const seen: StoredRecord[] = [];
     const watcher = await connectAsOwner(homePath);
     const watch = (async () => {
-      for await (const record of watcher.records.since(FROM_START)) {
+      for await (const record of watcher.records.since()) {
         seen.push(record);
       }
     })().catch(() => {});

@@ -287,5 +287,5 @@ test("a binary that says too much is stopped at the cap", async () => {
 
 /** The records of the proposals that were written. */
 async function recordsOf(niwa: ReturnType<typeof createNiwa>): Promise<StoredRecord[]> {
-  return niwa.records.read(seq(0), { type: HarnessProposed.name });
+  return niwa.records.read({ types: [HarnessProposed.name] });
 }

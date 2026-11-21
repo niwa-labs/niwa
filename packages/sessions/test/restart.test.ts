@@ -57,9 +57,7 @@ function call(client: NiwaApi, name: string, input: unknown): Promise<unknown> {
 
 /** The types of the signs of life the journal holds, in the order they were written. */
 async function lifeTypes(client: NiwaApi): Promise<string[]> {
-  const records = await client.records.read(seq(0), {
-    types: [SessionStarted, SessionTurnStarted, SessionTurnEnded],
-  });
+  const records = await client.records.read({ types: [SessionStarted, SessionTurnStarted, SessionTurnEnded] });
   return records.map((record) => String(record.type));
 }
 

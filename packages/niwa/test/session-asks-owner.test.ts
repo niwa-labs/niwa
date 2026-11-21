@@ -106,7 +106,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       // The owner is asked first: the request reaches the owner and waits there.
       await until(
         async () => {
-          const records = await api!.records.read(seq(0));
+          const records = await api!.records.read();
           const created = recordsOf(records, "request.created").find((record) => {
             const data = record.data as { question?: string } | undefined;
             return data?.question === "ownerask.choice";
@@ -137,7 +137,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       // The scenario finishes: the owner answered, and the session answered the niwa way.
       await until(
         async () => {
-          const records = await api!.records.read(seq(0));
+          const records = await api!.records.read();
           return recordsOf(records, "ownerask.answered").length > 0;
         },
         DEADLINE_MS,
@@ -145,7 +145,7 @@ test.skipIf(!(live && Bun.which("mcode")))(
       );
       const elapsedMs = Date.now() - startedAt;
 
-      const records = await api.records.read(seq(0));
+      const records = await api.records.read();
       const answered = must(recordsOf(records, "ownerask.answered")[0], "record of the outcome");
       const outcome = AnsweredData.parse(answered.data);
       expect(outcome.error).toBeUndefined();

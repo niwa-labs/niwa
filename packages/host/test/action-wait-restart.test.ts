@@ -50,7 +50,7 @@ test("a do-not-repeat action that waits inside itself keeps waiting across a res
     clients.push(watcher);
     const seen: StoredRecord[] = [];
     void (async () => {
-      for await (const record of watcher.records.since(seq(0))) seen.push(record);
+      for await (const record of watcher.records.since()) seen.push(record);
     })().catch(() => {});
 
     await client.emit(Start, { n: 1 });
@@ -65,7 +65,7 @@ test("a do-not-repeat action that waits inside itself keeps waiting across a res
     clients.push(observer);
     const history: StoredRecord[] = [];
     void (async () => {
-      for await (const record of observer.records.since(seq(0))) history.push(record);
+      for await (const record of observer.records.since()) history.push(record);
     })().catch(() => {});
 
     // The restarted host takes the step up again as waiting: a second "waiting" after the crash,

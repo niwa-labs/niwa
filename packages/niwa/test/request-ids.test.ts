@@ -56,7 +56,7 @@ interface Listed {
 
 const listOf = async (client: NiwaApi, filter: Record<string, unknown> = {}): Promise<Listed> => (await client.call(actionName("request.list"), filter)) as Listed;
 
-const createdOf = async (host: Host): Promise<StoredRecord[]> => (await host.records.read(seq(0))).filter((one) => one.type === RequestCreated.name);
+const createdOf = async (host: Host): Promise<StoredRecord[]> => (await host.records.read()).filter((one) => one.type === RequestCreated.name);
 
 const dataId = (one: StoredRecord): string => (one.data as { id: string }).id;
 
@@ -106,8 +106,8 @@ test("a step that asks is told the id of its request together with the answer", 
   const [created] = await createdOf(host);
   const id = dataId(created as StoredRecord);
   await client.call(REQUEST_ANSWER, { id, answer: pick("next") });
-  await eventually(async () => (await host.records.read(seq(0))).some((one) => one.type === Told.name), 10_000, "told");
-  const told = (await host.records.read(seq(0))).find((one) => one.type === Told.name);
+  await eventually(async () => (await host.records.read()).some((one) => one.type === Told.name), 10_000, "told");
+  const told = (await host.records.read()).find((one) => one.type === Told.name);
   expect(told?.data).toEqual({ id, answer: pick("next") });
 });
 
@@ -133,7 +133,7 @@ test("a host that serves again finds the request it asked: the same id, and no s
   const second = await serve(first.home);
   expect((await listOf(second.owner)).items.map((item) => item.id)).toEqual([id]);
   await second.owner.call(REQUEST_ANSWER, { id, answer: pick("main") });
-  await eventually(async () => (await second.host.records.read(seq(0))).some((one) => one.type === Answered.name), 10_000, "the work goes on");
+  await eventually(async () => (await second.host.records.read()).some((one) => one.type === Answered.name), 10_000, "the work goes on");
   // The replayed ask found its request again: nothing was written twice.
   expect(await createdOf(second.host)).toHaveLength(1);
 });

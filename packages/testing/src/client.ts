@@ -29,7 +29,7 @@ export async function watch(home: string): Promise<{ seen: StoredRecord[]; stop:
   const observer = await connectAsOwner(home, "watcher");
   const seen: StoredRecord[] = [];
   const subscription = (async () => {
-    for await (const record of observer.records.since(seq(0))) seen.push(record);
+    for await (const record of observer.records.since()) seen.push(record);
   })().catch(() => {});
   return {
     seen,

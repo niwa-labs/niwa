@@ -544,21 +544,6 @@ export type GuardFn<I> = (
 
 export type InvocationState = "admitted" | "running" | "waiting" | "done" | "paused";
 
-/** Subscription filter for observation. */
-export interface RecordFilter {
-  type?: RecordType<any> | RecordTypeName;
-  /** The stream to observe; every stream when absent. */
-  stream?: StreamId;
-}
-
-/** What a one-shot read of the history asks for. */
-export interface ReadOptions extends RecordFilter {
-  /** The record types to read; every type when absent. */
-  types?: readonly (RecordType<any> | RecordTypeName)[];
-  /** At most this many records, a positive integer. Every record that is committed when absent. */
-  limit?: number;
-}
-
 /** A record in a trace: the record, and how far down from the start it is. */
 export interface TracedRecord extends StoredRecord {
   /** 0 for the record the trace started from, 1 for what it grew into, and so on. */

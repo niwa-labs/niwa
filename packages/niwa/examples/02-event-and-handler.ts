@@ -61,7 +61,7 @@ export default plugin("ci", (api) => {
 //
 //   import { TaskCreated } from "@niwa-labs/tasks";
 //   const failed = await niwa.emit(BuildFailed, { repo, branch, log });
-//   for await (const rec of niwa.records.since(failed.seq, { type: TaskCreated })) {
+//   for await (const rec of niwa.records.since({ from: failed.seq, types: [TaskCreated] })) {
 //     console.log("the handler created", rec.data);
 //     break;                 // `since` never ends by itself: stop it when you have the answer
 //   }

@@ -47,11 +47,11 @@ async function served() {
 
 test("the owner reads over the wire", async () => {
   const { owner, fact } = await served();
-  expect((await owner.records.read(seq(0), { type: Fact })).map((one) => one.id)).toEqual([fact.id]);
+  expect((await owner.records.read({ types: [Fact] })).map((one) => one.id)).toEqual([fact.id]);
   expect((await owner.trace(fact.id)).map((one) => one.id)).toContain(fact.id);
   expect(await owner.causes(fact.id)).toBeDefined();
   const seen = [];
-  for await (const one of owner.records.since(seq(0), { type: Fact })) {
+  for await (const one of owner.records.since({ types: [Fact] })) {
     seen.push(one.id);
     break;
   }
@@ -61,23 +61,23 @@ test("the owner reads over the wire", async () => {
 test("a subject whose grant does not let it call the reads is refused them over the wire", async () => {
   const { fact, as } = await served();
   const none = await as("none", ["task.*"]);
-  await expect(none.records.read(seq(0), { type: Fact })).rejects.toThrow("is not in the grant");
+  await expect(none.records.read({ types: [Fact] })).rejects.toThrow("is not in the grant");
   await expect(none.trace(fact.id)).rejects.toThrow("is not in the grant");
   await expect(none.causes(fact.id)).rejects.toThrow("is not in the grant");
 
   const subscriber = await as("subscriber", ["task.*"]);
-  const stream = subscriber.records.since(seq(0), { type: Fact })[Symbol.asyncIterator]();
+  const stream = subscriber.records.since({ types: [Fact] })[Symbol.asyncIterator]();
   await expect(stream.next()).rejects.toThrow("is not in the grant");
 });
 
 test("a subject whose grant lets it call the reads gets them over the wire", async () => {
   const { fact, as } = await served();
   const reader = await as("reader", ["niwa.records.read", "niwa.trace", "niwa.causes"]);
-  expect((await reader.records.read(seq(0), { type: Fact })).map((one) => one.id)).toEqual([fact.id]);
+  expect((await reader.records.read({ types: [Fact] })).map((one) => one.id)).toEqual([fact.id]);
   expect((await reader.trace(fact.id)).map((one) => one.id)).toContain(fact.id);
   expect(await reader.causes(fact.id)).toBeDefined();
   const seen = [];
-  for await (const one of reader.records.since(seq(0), { type: Fact })) {
+  for await (const one of reader.records.since({ types: [Fact] })) {
     seen.push(one.id);
     break;
   }

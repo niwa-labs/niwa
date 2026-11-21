@@ -17,6 +17,7 @@ import {
   grantId,
   ValidationError,
   JsonSchemaValue,
+  RecordQuerySchema,
   recordId,
   recordTypeName,
   seq,
@@ -152,17 +153,13 @@ export const clientMessageSchema = z.discriminatedUnion("op", [
   z.strictObject({
     id: requestIdSchema,
     op: z.literal("since"),
-    from: seqSchema,
-    type: recordTypeNameSchema.optional(),
-    stream: streamIdSchema.optional(),
+    /** The records wanted, history then live: the same query a read takes. */
+    query: RecordQuerySchema,
   }),
   z.strictObject({
     id: requestIdSchema,
     op: z.literal("read"),
-    from: seqSchema,
-    type: recordTypeNameSchema.optional(),
-    types: z.array(recordTypeNameSchema).optional(),
-    stream: streamIdSchema.optional(),
+    query: RecordQuerySchema,
     limit: z.number().int().positive().optional(),
   }),
   z.strictObject({ id: requestIdSchema, op: z.literal("describe") }),

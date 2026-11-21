@@ -65,7 +65,7 @@ async function stepsOf(
   client: Awaited<ReturnType<typeof connect>>,
   type: typeof INTENT_TYPE,
 ): Promise<StoredRecord[]> {
-  return client.records.read(seq(0), { type });
+  return client.records.read({ types: [type] });
 }
 
 test("an action that calls another action as a step: the answer comes back and the call is recorded", async () => {
@@ -86,11 +86,11 @@ test("an action that calls another action as a step: the answer comes back and t
     await client.emit(Start, { n: 7 });
 
     await eventually(
-      async () => (await client.records.read(seq(0), { type: Answered.name })).length === 1,
+      async () => (await client.records.read({ types: [Answered.name] })).length === 1,
       15_000,
       "the handler should have written the answer",
     );
-    const answers = await client.records.read(seq(0), { type: Answered.name });
+    const answers = await client.records.read({ types: [Answered.name] });
     expect(answers[0]?.data).toEqual({ n: 7 });
 
     // The nested call is a step of the same invocation: its key belongs to the step that
@@ -135,7 +135,7 @@ test("a crash after the nested call's outcome: the nested call is not made again
     // the answer the handler writes comes after it.
     await eventually(
       async () =>
-        (await client.records.read(seq(0), { type: OUTCOME_TYPE })).some(
+        (await client.records.read({ types: [OUTCOME_TYPE] })).some(
           (record) => keyOf(record) === "1.step-1",
         ),
       15_000,
@@ -191,7 +191,7 @@ test("a nested call that is cut off and says do-not-repeat: the step is unknown 
     );
     await eventually(
       async () =>
-        (await client.records.read(seq(0), { type: INTENT_TYPE })).some(
+        (await client.records.read({ types: [INTENT_TYPE] })).some(
           (record) => keyOf(record) === "1.step-1",
         ),
       15_000,

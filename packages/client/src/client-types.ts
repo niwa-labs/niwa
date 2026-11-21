@@ -1,5 +1,5 @@
 // The API a client holds: the shape the host and a connected client share.
-import type { ActionTarget, CallOptions, Description, EmitOptions, LiveFrame, ReadOptions, RecordFilter, RecordId, RecordType, Seq, StoredRecord, TracedRecord } from "@niwa-labs/core";
+import type { ActionTarget, CallOptions, Description, EmitOptions, LiveFrame, RecordReadQuery, RecordId, RecordQuery, RecordType, StoredRecord, TracedRecord } from "@niwa-labs/core";
 
 /** The API shared by the host and a client. */
 export interface NiwaApi {
@@ -39,8 +39,11 @@ export interface NiwaApi {
   /** What a record depends on: up through its cause and its links. */
   causes(id: RecordId): Promise<StoredRecord[]>;
   records: {
-    /** Records with seq > from, history then live, no gap, no duplicate. Never ends by itself. */
-    since(from: Seq, filter?: RecordFilter): AsyncIterable<StoredRecord>;
+    /**
+     * The records that answer a query, history then live, no gap, no duplicate: the same records a
+     * read of the query gives, and then the ones committed later. Never ends by itself.
+     */
+    since(query?: RecordQuery<any>): AsyncIterable<StoredRecord>;
     /**
      * The history after a position, read once: the records that are committed now, and nothing
      * that comes later.
@@ -48,7 +51,7 @@ export interface NiwaApi {
      * Unlike `since`, this read ends: it answers with the records that exist at the moment it is
      * made, so a reader never waits for a stream that has no end.
      */
-    read(from: Seq, opts?: ReadOptions): Promise<StoredRecord[]>;
+    read(query?: RecordReadQuery<any>): Promise<StoredRecord[]>;
   };
   close(): Promise<void>;
 }

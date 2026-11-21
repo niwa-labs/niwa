@@ -243,7 +243,7 @@ test("catching up: the items are handled exactly once and in order, and a restar
     clients.push(reader);
     const before: StoredRecord[] = [];
     const readBefore = (async () => {
-      for await (const record of reader.records.since(FROM_START)) {
+      for await (const record of reader.records.since()) {
         before.push(record);
       }
     })().catch(() => {});
@@ -281,7 +281,7 @@ test("catching up: the items are handled exactly once and in order, and a restar
     clients.push(observer);
     const seen: StoredRecord[] = [];
     const watch = (async () => {
-      for await (const record of observer.records.since(FROM_START)) {
+      for await (const record of observer.records.since()) {
         seen.push(record);
       }
     })().catch(() => {});
@@ -342,7 +342,7 @@ test("catching up: the items are handled exactly once and in order, and a restar
     clients.push(afterRestart);
     const again: StoredRecord[] = [];
     const watchAgain = (async () => {
-      for await (const record of afterRestart.records.since(FROM_START)) {
+      for await (const record of afterRestart.records.since()) {
         again.push(record);
       }
     })().catch(() => {});

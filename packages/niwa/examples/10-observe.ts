@@ -24,8 +24,8 @@ const render = (rec: StoredRecord) => console.log(rec.seq, rec.type, rec.actor);
 const position = seq(0);
 
 // The last message that came in, and the last task that ended: ids are taken from the records.
-const [message] = (await niwa.records.read(position, { types: [MessageReceived] })).slice(-1);
-const [result] = (await niwa.records.read(position, { types: [TaskDone] })).slice(-1);
+const [message] = (await niwa.records.read({ from: position, types: [MessageReceived] })).slice(-1);
+const [result] = (await niwa.records.read({ from: position, types: [TaskDone] })).slice(-1);
 if (message === undefined || result === undefined) throw new Error("nothing has happened yet");
 const messageId = message.id;
 const resultId = result.id;
@@ -46,16 +46,16 @@ for (const rec of await niwa.causes(resultId)) console.log(rec.type);
 
 // Read the history after a position. This read ends: it answers with the
 // records that are committed now, and nothing that comes later.
-for (const rec of await niwa.records.read(position)) render(rec);
+for (const rec of await niwa.records.read({ from: position })) render(rec);
 
 // Narrow it down.
-for (const rec of await niwa.records.read(position, { types: [TaskDone] })) render(rec);
+for (const rec of await niwa.records.read({ from: position, types: [TaskDone] })) render(rec);
 
 // Follow everything from where you stopped. The position is a journal position,
 // so nothing is missed across a restart, and there is no gap between history and live.
 // This one never ends by itself: it is history and then live, so a script that
 // only wants to print the journal must stop it itself.
-for await (const rec of niwa.records.since(position)) render(rec);
+for await (const rec of niwa.records.since({ from: position })) render(rec);
 
 // Is a turn running right now, in any session of any harness?
 // A session whose state cannot be known right now is reported as "unknown".

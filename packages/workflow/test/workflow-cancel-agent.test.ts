@@ -77,7 +77,7 @@ afterEach(async () => {
   for (const home of homes.splice(0)) await home.cleanup();
 });
 
-const recordsOf = async (niwa: Host): Promise<StoredRecord[]> => niwa.records.read(seq(0));
+const recordsOf = async (niwa: Host): Promise<StoredRecord[]> => niwa.records.read();
 
 /** Cancel a run in the middle of an agent turn, and see what is left for the owner. */
 async function cancelledMidTurn(structuredOutput: boolean): Promise<void> {

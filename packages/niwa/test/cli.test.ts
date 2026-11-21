@@ -410,7 +410,7 @@ async function recordsOf(home: string, settleMs: number): Promise<StoredRecord[]
   const reader = await connectAsOwner(home);
   const records: StoredRecord[] = [];
   const reading = (async () => {
-    for await (const stored of reader.records.since(seq(0))) records.push(stored);
+    for await (const stored of reader.records.since()) records.push(stored);
   })().catch(() => undefined);
   await Bun.sleep(settleMs);
   await reader.close().catch(() => undefined);

@@ -45,7 +45,7 @@ async function scriptIn(home: string, name: string, lines: readonly string[]): P
   return file;
 }
 
-const ofType = async (host: Host, type: string): Promise<StoredRecord[]> => (await host.records.read(seq(0))).filter((row) => row.type === type);
+const ofType = async (host: Host, type: string): Promise<StoredRecord[]> => (await host.records.read()).filter((row) => row.type === type);
 
 const Blocked = [
   'const Blocked = record("blocked", z.object({ repo: z.string(), pr: z.number().int(), reasons: z.array(z.string()) }));',

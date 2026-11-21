@@ -138,7 +138,7 @@ function passthrough(name: "srt" | "nono", host: () => Host, journalAtLaunch: st
     available: async () => true,
     manifest: (spec) => ({ sandbox: name, cwd: spec.cwd, env: spec.env }),
     async launch(spec, argv): Promise<LaunchedBox> {
-      const held = await host().records.read(seq(0), { types: [SessionBoxManifest.name] });
+      const held = await host().records.read({ types: [SessionBoxManifest.name] });
       journalAtLaunch.push(held.map((row) => String(row.type)));
       const child = Bun.spawn([...argv], { cwd: spec.cwd, env: { ...spec.env }, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
       return { pid: child.pid, stdin: child.stdin, stdout: child.stdout, stderr: child.stderr, exited: child.exited, kill: () => child.kill() };
@@ -415,7 +415,7 @@ test("mcode takes no tool flag: a grant with tool rules refuses the start by nam
   cleanups.push(() => control.dispose());
   undo.push(onSpawn((event) => spawns.push(event)));
   const host = await served([{ instance: instance("mcode-fake"), control }]);
-  const issued = async () => (await host.records.read(seq(0), { types: [CORE_TYPES.accessIssued] })).length;
+  const issued = async () => (await host.records.read({ types: [CORE_TYPES.accessIssued] })).length;
   const before = await issued();
 
   await expect(host.call(START, { harness: "mcode-fake", prompt: "go", cwd: dir, visible: { actions: ["tool:read"] } })).rejects.toThrow("tool flag");
@@ -461,7 +461,7 @@ test("a grant with write and net starts the process in a box whose manifest is r
   expect(spawns.map((event) => event.sandbox)).toEqual(["srt"]);
   expect(journalAtLaunch).toEqual([["session.box.manifest"]]);
 
-  const rows = await host.records.read(seq(0), { types: [SessionBoxManifest.name, SessionMarked.name] });
+  const rows = await host.records.read({ types: [SessionBoxManifest.name, SessionMarked.name] });
   expect(rows.map((row) => String(row.type))).toEqual(["session.box.manifest", "session.marked"]);
   const data = SessionBoxManifest.schema.parse(rows[0]?.data);
   const marked = SessionMarked.schema.parse(rows[1]?.data);
@@ -490,7 +490,7 @@ test("a box that is not available stops the start: nothing is spawned, no token 
   undo.push(onSpawn((event) => spawns.push(event)));
   const host = await served([{ instance: instance("rec"), control }]);
   undo.push(useSandbox("srt", unavailable("srt")));
-  const issued = async () => (await host.records.read(seq(0), { types: [CORE_TYPES.accessIssued] })).length;
+  const issued = async () => (await host.records.read({ types: [CORE_TYPES.accessIssued] })).length;
   const before = await issued();
 
   const error = await host.call(START, { harness: "rec", prompt: "go", visible: { actions: ["net:example.com"] } }).then(
@@ -501,7 +501,7 @@ test("a box that is not available stops the start: nothing is spawned, no token 
   expect(control.starts).toEqual([]);
   expect(spawns).toEqual([]);
   expect(await issued()).toBe(before);
-  expect(await host.records.read(seq(0), { types: [SessionMarked.name, SessionBoxManifest.name] })).toHaveLength(0);
+  expect(await host.records.read({ types: [SessionMarked.name, SessionBoxManifest.name] })).toHaveLength(0);
 
   // Tools alone need no box: the same host starts such a session.
   await host.call(START, { harness: "rec", prompt: "go", visible: { actions: ["tool:Read"] } });
@@ -568,7 +568,7 @@ test("an unboxed session resumes unboxed, with its own tools and its own token",
   const id = resumed?.env?.["NIWA_ID"];
   expect(id).toBeDefined();
   expect(id).not.toBe(first.starts[0]?.env?.["NIWA_ID"]);
-  expect(await host.records.read(seq(0), { types: [SessionBoxManifest.name] })).toHaveLength(0);
+  expect(await host.records.read({ types: [SessionBoxManifest.name] })).toHaveLength(0);
 });
 
 test("a resume of a running session carries only its token, and the grant survives the next restart", async () => {
@@ -637,7 +637,7 @@ test("codex resumed after a restart is born again with the tool flags, the box m
   const withoutToken = (made: BoxRecord | undefined) =>
     Object.fromEntries(Object.entries(made?.spec.env ?? {}).filter(([name]) => name !== "NIWA_ID"));
   expect({ ...manifests[1]?.spec, env: withoutToken(manifests[1]) }).toEqual({ ...manifests[0]?.spec, env: withoutToken(manifests[0]) });
-  const rows = (await restartedHost.records.read(seq(0), { types: [SessionBoxManifest.name] })).map((row) => SessionBoxManifest.schema.parse(row.data));
+  const rows = (await restartedHost.records.read({ types: [SessionBoxManifest.name] })).map((row) => SessionBoxManifest.schema.parse(row.data));
   expect(rows).toHaveLength(2);
   expect({ ...rows[1], mark: "" }).toEqual({ ...rows[0], mark: "" });
   expect(rows[1]?.mark).not.toBe(rows[0]?.mark);

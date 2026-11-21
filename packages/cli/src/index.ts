@@ -73,7 +73,7 @@ export interface CliResult {
  * are actions like any other: `niwa records.read`, `niwa trace` and `niwa causes` are commands
  * because the host declares them, not because the CLI knows them.
  *
- * `log` is the one that is about the CLI: it is `niwa.records.read` shown the way a person reads a log,
+ * `log` is the one that is about the CLI: it is `niwa.records.search` shown the way a person reads a log,
  * and followed by reading again.
  */
 const BUILTIN = ["serve", "help", "log"] as const;

@@ -141,11 +141,11 @@ test("W2b: workflow.start refuses a script that fails its check, with the errors
   expect(refused).toBeInstanceOf(Error);
   expect((refused as Error).message).toContain(`${bad}:2:`);
   expect((refused as Error).message).toContain("the script was not run");
-  expect(ofType(await host.records.read(seq(0)), "workflow.run.requested")).toHaveLength(0);
+  expect(ofType(await host.records.read(), "workflow.run.requested")).toHaveLength(0);
 
   const good = await scriptIn(home, "good.ts", ["export default workflow({ output: z.number() }, async () => {", "  return 1;", "});"]);
   await host.call(workflowStart, { file: good });
-  await eventually(async () => ofType(await host.records.read(seq(0)), "workflow.run.finished").length === 1, 20_000);
+  await eventually(async () => ofType(await host.records.read(), "workflow.run.finished").length === 1, 20_000);
 }, 30_000);
 
 test("the hash of the script is pinned at the start and decides what a resume is", async () => {
@@ -155,9 +155,9 @@ test("the hash of the script is pinned at the start and decides what a resume is
   await writeFile(file, text);
   const { run } = await host.call(workflowStart, { file });
   const finished = async (count: number): Promise<boolean> =>
-    ofType(await host.records.read(seq(0)), "workflow.run.finished").length === count;
+    ofType(await host.records.read(), "workflow.run.finished").length === count;
   await eventually(() => finished(1), 20_000);
-  const records = await host.records.read(seq(0));
+  const records = await host.records.read();
   expect(ofType(records, "workflow.run.requested")[0]?.data).toMatchObject({ hash: sha256(text) });
   expect(ofType(records, "workflow.run.started")[0]?.data).toMatchObject({ hash: sha256(text) });
 
@@ -165,15 +165,15 @@ test("the hash of the script is pinned at the start and decides what a resume is
   await writeFile(file, text);
   const replay = await host.call(workflowResume, { run });
   expect(replay).toEqual({ run, finished: false });
-  await eventually(async () => ofType(await host.records.read(seq(0)), "workflow.run.started").length === 2, 20_000);
+  await eventually(async () => ofType(await host.records.read(), "workflow.run.started").length === 2, 20_000);
   await eventually(() => finished(2), 20_000);
 
   // One byte changed: a revision.
   await writeFile(file, `${text}// edited\n`);
   const revised = await host.call(workflowResume, { run });
   expect(revised.revision).toBeDefined();
-  await eventually(async () => ofType(await host.records.read(seq(0)), "workflow.run.started").length === 3, 20_000);
-  const starts = ofType(await host.records.read(seq(0)), "workflow.run.started");
+  await eventually(async () => ofType(await host.records.read(), "workflow.run.started").length === 3, 20_000);
+  const starts = ofType(await host.records.read(), "workflow.run.started");
   expect(starts[2]?.data).toMatchObject({ hash: sha256(`${text}// edited\n`) });
 }, 30_000);
 

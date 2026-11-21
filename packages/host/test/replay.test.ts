@@ -56,7 +56,7 @@ async function lastStateAfterRetry(
   await niwa.serve();
   const seen: StoredRecord[] = [];
   const watching = (async () => {
-    for await (const rec of niwa.records.since(seq(0))) seen.push(rec);
+    for await (const rec of niwa.records.since()) seen.push(rec);
   })();
   const states = () =>
     seen
