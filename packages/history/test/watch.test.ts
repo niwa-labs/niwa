@@ -118,3 +118,22 @@ test("a read that fails is not a quiet one: the watch neither pauses nor ends wh
   }
   expect(events).toEqual([{ kind: "progress", done: 1, total: 1 }]);
 });
+
+test("a read that finishes after the watch was stopped says nothing", async () => {
+  const records: SessionRecord[] = [checklist(1, 1, 2)];
+  const controller = new AbortController();
+  const slow: SessionReading = {
+    ...growing(records),
+    async *read(id, from) {
+      await Bun.sleep(20);
+      yield* growing(records).read(id, from);
+    },
+  };
+  const events: WatchEvent[] = [];
+  const watching = (async () => {
+    for await (const event of watchSession(slow, ID, { signal: controller.signal, timing: { pollMs: 10, pauseMs: 30, endMs: 60 } })) events.push(event);
+  })();
+  controller.abort();
+  await watching;
+  expect(events).toEqual([]);
+});

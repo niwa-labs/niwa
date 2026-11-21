@@ -103,7 +103,12 @@ export async function* watchSession(reading: SessionReading, id: SessionId, opti
       // The file may be moving under the harness: the next read tries again.
       failed = true;
     }
-    for (const each of said) yield { kind: "progress", ...each };
+    // A read that finished after the stop belongs to a watch that is over: it says nothing.
+    for (const each of said) {
+      if (options.signal.aborted) return;
+      yield { kind: "progress", ...each };
+    }
+    if (options.signal.aborted) return;
     const now = clock.now();
     if (options.alive !== undefined && !grew && !options.alive()) {
       yield { kind: "ended", certainty: "guessed", why: "process-gone" };
