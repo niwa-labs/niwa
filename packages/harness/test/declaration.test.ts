@@ -134,6 +134,25 @@ test("the control conformance suite fails an installation that claims more than 
   expect(report.results.find((r) => r.name.startsWith("capabilities:"))).toMatchObject({ passed: false, detail: "control.structuredOutput" });
 });
 
+test("the control conformance suite does not put a question to a side that answers through submit-answer", async () => {
+  const asked: string[] = [];
+  const answering = {
+    start: async () => ({ session: { harness: harnessId("probe-1"), native: "s1" } }),
+    ask: async () => {
+      asked.push("ask");
+      throw new Error("this side has no ask of its own");
+    },
+    life: async function* () {},
+    state: async () => "idle",
+  } as unknown as SessionControl;
+  const claims = sidesOf(DECLARED);
+  // `ask` is declared, `structuredOutput` is not: the question goes to the session as a request.
+  expect(claims.control).toMatchObject({ ask: true, structuredOutput: false });
+  const report = await controlConformance("probe", { instance: instance(claims), control: answering, declared: DECLARED })();
+  expect(asked).toEqual([]);
+  expect(report.results.filter((result) => result.name.startsWith("ask"))).toEqual([]);
+});
+
 test("a tool mode or a launch choice alone is a control side the kind must have code for", () => {
   const onlyNested = { ...DECLARED, reading: NO_READING, control: { ...NO_CONTROL, tools: { niwaOnly: ADMITTED, allow: UNSUPPORTED } } };
   expect(sidesOf(onlyNested).control).toBeDefined();

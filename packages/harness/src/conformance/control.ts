@@ -167,7 +167,10 @@ export function controlConformance(
       }
       signs.push(...wait.seen);
     }
-    if (supports(instance, "control", "ask")) {
+    // A side that answers by schema through `submit-answer` has no `ask` of its own to put a question to: its
+    // `ask` is the one that returns a value, which only a side with structured output has.
+    const asksItself = supports(instance, "control", "ask") && supports(instance, "control", "structuredOutput");
+    if (asksItself) {
       const wait = nextTurnEnd(control, session);
       const answer = await attempt("ask: an answer comes back", check, () =>
         control.ask(session, { schema: z.string(), prompt: promptFromText("answer with a word") }),
@@ -180,7 +183,7 @@ export function controlConformance(
       }
       signs.push(...wait.seen);
     }
-    if (supports(instance, "control", "send") && supports(instance, "control", "ask")) {
+    if (supports(instance, "control", "send") && asksItself) {
       // A question to a busy session waits behind what runs, like a send: the message begins a
       // turn, and the question comes straight after it, while that turn may still be running.
       const wait = nextTurnEnd(control, session);
