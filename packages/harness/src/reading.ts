@@ -285,6 +285,41 @@ export interface SessionReading {
   coverage(id: SessionId, from?: Locator): Promise<Coverage>;
 }
 
+/**
+ * The stretches of a message's text that sit in a tag a harness wraps its own insertions in: `tags`
+ * names each tag and who puts it there. A stretch takes in the whitespace that follows it, so what
+ * is left of the message reads as the person wrote it. An unlisted tag is the person's own.
+ */
+export function insertedRanges(text: string, tags: Readonly<Record<string, InsertionOrigin>>): InsertedRange[] {
+  const names = Object.keys(tags);
+  if (names.length === 0) return [];
+  const block = new RegExp(`<(${names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b[^>]*>[\\s\\S]*?</\\1>\\s*`, "g");
+  return [...text.matchAll(block)].map((match) => ({
+    from: match.index,
+    to: match.index + match[0].length,
+    origin: tags[match[1]!]!,
+  }));
+}
+
+/**
+ * The images among the blocks of a message or a tool result, taken out: `image` says of a block
+ * whether it is an image, and its media type when it knows it. What is left is the blocks that are
+ * not images, in order, and each image is a mark whose `at` is how many of those stand before it.
+ */
+export function takeImages<T>(
+  blocks: readonly T[],
+  image: (block: T) => { readonly mime?: string | undefined } | undefined,
+): { readonly rest: T[]; readonly images: ImageMark[] } {
+  const rest: T[] = [];
+  const images: ImageMark[] = [];
+  for (const block of blocks) {
+    const found = image(block);
+    if (found === undefined) rest.push(block);
+    else images.push({ at: rest.length, ...(found.mime === undefined ? {} : { mime: found.mime }) });
+  }
+  return { rest, images };
+}
+
 /** About how long a title made from a message is. */
 export const TITLE_LENGTH = 60;
 

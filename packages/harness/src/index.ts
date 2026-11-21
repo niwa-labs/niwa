@@ -262,8 +262,10 @@ export {
   TitleCache,
   failedCoverage,
   firstMessageTitle,
+  insertedRanges,
   sameSession,
   sessionId,
+  takeImages,
   titleFromText,
   unavailableCoverage,
 } from "./reading.ts";

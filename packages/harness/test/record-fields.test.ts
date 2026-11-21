@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { SessionRecordSchema, ToolCallRecordSchema, UserRecordSchema } from "@niwa-labs/harness";
+import { SessionRecordSchema, ToolCallRecordSchema, UserRecordSchema, insertedRanges, takeImages } from "@niwa-labs/harness";
 
 const base = { locator: "l1", incomplete: false };
 
@@ -38,4 +38,20 @@ test("the first record of a read that started over says so", () => {
   const record = SessionRecordSchema.parse({ kind: "assistant", text: "hi", reanchored: true, ...base });
   expect(record.reanchored).toBe(true);
   expect(SessionRecordSchema.safeParse({ kind: "assistant", text: "hi", reanchored: false, ...base }).success).toBe(false);
+});
+
+test("the ranges of inserted tags take the whitespace after them and leave a tag nobody listed", () => {
+  const text = "<system-reminder>r</system-reminder>\n\nFix <user-card>x</user-card> now <hook>h</hook>";
+  expect(insertedRanges(text, { "system-reminder": "harness", hook: "hook" })).toEqual([
+    { from: 0, to: 38, origin: "harness" },
+    { from: 71, to: 85, origin: "hook" },
+  ]);
+  expect(insertedRanges("a <b>c</b>", {})).toEqual([]);
+});
+
+test("images are taken out of a list of blocks and each says how many blocks stand before it", () => {
+  const blocks = [{ t: "img", m: "image/png" }, { t: "a" }, { t: "img" }, { t: "b" }, { t: "img", m: "image/gif" }];
+  const { rest, images } = takeImages(blocks, (block) => (block.t === "img" ? { mime: block.m } : undefined));
+  expect(rest).toEqual([{ t: "a" }, { t: "b" }]);
+  expect(images).toEqual([{ at: 0, mime: "image/png" }, { at: 1 }, { at: 2, mime: "image/gif" }]);
 });
