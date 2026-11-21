@@ -1277,3 +1277,25 @@ test("a session that lost its process is resumed in the directory it is resumed 
   expect(await control.state(id)).toBe("idle");
 });
 
+test("an agent that dies on its own takes the MCP servers it was given with it", async () => {
+  control = await fakeControl();
+  const { session: id } = await control.start({
+    prompt: promptFromText(""),
+    cwd: dir,
+    servers: [{ name: "niwa", command: "bun", args: ["bin/niwa.ts", "mcp"], env: {} }],
+  });
+  const servers = (await sessionRequestsOf())[0]?.["mcpServers"] as Array<{ env: Array<{ name: string; value: string }> }>;
+  const mark = servers[0]?.env.find((entry) => entry.name === "NIWA_MCP_OWNER")?.value ?? "";
+  const server = Bun.spawn(["sleep", "300"], {
+    env: { ...process.env, NIWA_MCP_OWNER: mark },
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  try {
+    await control.send(id, "die");
+    await Promise.race([server.exited, Bun.sleep(5_000)]);
+    expect(server.exitCode !== null || server.signalCode !== null).toBe(true);
+  } finally {
+    server.kill();
+  }
+});
+

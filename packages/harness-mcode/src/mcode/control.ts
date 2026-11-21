@@ -1033,14 +1033,17 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     child.once("close", (code: number | null) => {
       owned.delete(session);
       sessions.delete(session.nativeId);
-      // Whatever the agent started may outlive it; the group is the unit of cleanup.
+      // Whatever the agent started may outlive it; the group is the unit of cleanup, and the MCP
+      // servers it was given, which are in no group of its own, go by their mark.
       signalGroup(session, "SIGKILL");
+      void stopMarked(session.mark);
       session.end(
         `${binary} exited with code ${String(code)}${stderr.trim() === "" ? "" : `: ${stderr.trim()}`}`,
       );
     });
     child.once("error", (error: Error) => {
       owned.delete(session);
+      void stopMarked(session.mark);
       session.end(`${binary} could not be run: ${error.message}`);
     });
 
