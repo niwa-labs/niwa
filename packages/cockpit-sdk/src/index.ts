@@ -67,6 +67,7 @@ export {
   defineProjection,
   recordList,
   type Projection,
+  type RecordFeed,
   type RecordStream,
   type RecordStreamOptions,
   type StreamState,

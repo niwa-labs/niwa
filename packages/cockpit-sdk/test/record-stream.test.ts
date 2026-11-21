@@ -37,14 +37,34 @@ describe("the record stream", () => {
     expect(stream.store.getState().status).toBe("idle");
   });
 
-  test("a failure that retrying cannot fix leaves the stream failed", async () => {
-    const { client, fail } = scriptedClient();
+  test("a failure that retrying cannot fix leaves the stream failed until it is started again", async () => {
+    const { client, fail, opened } = scriptedClient();
     const stream = createRecordStream(client);
     stream.start();
     await settle();
     fail(new Error("log in again"));
     await settle();
     expect(stream.store.getState()).toMatchObject({ status: "failed", error: "log in again" });
+    stream.start();
+    await settle();
+    expect(stream.store.getState().status).toBe("live");
+    expect(opened).toEqual([0, 0]);
+    stream.stop();
+  });
+
+  test("a burst from the feed is one update of the store", async () => {
+    const { client, push } = scriptedClient();
+    const stream = createRecordStream(client);
+    stream.start();
+    await settle();
+    let updates = 0;
+    const unsubscribe = stream.store.subscribe(() => (updates += 1));
+    push(rec(1), rec(2), rec(3), rec(4), rec(5));
+    await settle();
+    expect(stream.store.getState().seq).toBe(5);
+    expect(updates).toBe(1);
+    unsubscribe();
+    stream.stop();
   });
 
   test("a projection folds only new matching records and keeps its state otherwise", () => {
@@ -56,6 +76,16 @@ describe("the record stream", () => {
     stream.ingest([rec(3, "task.closed")]);
     expect(stream.project(counter)).toBe(first);
     stream.ingest([rec(4, "run.step.done"), rec(5, "run.finished")]);
+    expect(stream.project(counter)).toEqual({ n: 3 });
+  });
+
+  test("older records are merged in order and projections fold again from the start", () => {
+    const stream = createRecordStream(scriptedClient().client);
+    stream.ingest([rec(5, "run.started"), rec(6, "run.step.done")]);
+    expect(stream.project(counter)).toEqual({ n: 2 });
+    stream.ingest([rec(2, "run.started"), rec(3, "task.opened"), rec(5, "run.started")]);
+    expect(stream.store.getState().records.map((r) => Number(r.seq))).toEqual([2, 3, 5, 6]);
+    expect(stream.store.getState().seq).toBe(6);
     expect(stream.project(counter)).toEqual({ n: 3 });
   });
 

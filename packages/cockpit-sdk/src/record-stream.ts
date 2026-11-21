@@ -63,15 +63,29 @@ export function recordList(match: RecordMatch, limit = 500): Projection<readonly
   });
 }
 
-export interface RecordStream {
+/**
+ * The stream as modules see it: they read and subscribe, the cockpit alone opens, stops and
+ * feeds it.
+ */
+export interface RecordFeed {
+  readonly store: Pick<StoreApi<StreamState>, "getState" | "getInitialState" | "subscribe">;
+  /**
+   * The current state of a projection, folded up to the newest record. The fold is cached by
+   * the projection object, so define projections once, at module scope, not inside a render.
+   */
+  project<S>(projection: Projection<S>): S;
+}
+
+export interface RecordStream extends RecordFeed {
   readonly store: StoreApi<StreamState>;
-  /** Open the feed after the given position. Starting a started stream does nothing. */
+  /** Open the feed after the given position. Starting a started stream does nothing; a failed one starts again. */
   start(after?: number): void;
   stop(): void;
-  /** Add records read some other way, such as a history page; known positions are skipped. */
+  /**
+   * Add records read some other way, such as a page of history. Records older than those held
+   * are merged in order and every projection is folded again from the start.
+   */
   ingest(records: readonly StoredRecord[]): void;
-  /** The current state of a projection, folded up to the newest record. */
-  project<S>(projection: Projection<S>): S;
 }
 
 export type RecordStreamOptions = {
@@ -79,7 +93,7 @@ export type RecordStreamOptions = {
   retain?: number | undefined;
 };
 
-type Folded = { seq: number; state: unknown };
+type Folded = { generation: number; seq: number; state: unknown };
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -108,40 +122,67 @@ export function createRecordStream(client: HostClient, options: RecordStreamOpti
   const store = createStore<StreamState>(() => ({ status: "idle", seq: 0, records: [], error: undefined }));
   const folded = new WeakMap<Projection<unknown>, Folded>();
   let abort: AbortController | undefined;
+  // Bumped when older records are merged in: every cached fold is then stale.
+  let generation = 0;
+
+  function keep(all: readonly StoredRecord[]): readonly StoredRecord[] {
+    return all.length > retain ? all.slice(all.length - retain) : all;
+  }
 
   function append(incoming: readonly StoredRecord[]): void {
     const { records, seq } = store.getState();
     const fresh = incoming.filter((r) => r.seq > seq).sort((a, b) => a.seq - b.seq);
     if (fresh.length === 0) return;
-    const all = records.concat(fresh);
-    store.setState({
-      records: all.length > retain ? all.slice(all.length - retain) : all,
-      seq: fresh[fresh.length - 1]!.seq,
-    });
+    store.setState({ records: keep(records.concat(fresh)), seq: fresh[fresh.length - 1]!.seq });
+  }
+
+  function ingest(incoming: readonly StoredRecord[]): void {
+    const { records, seq } = store.getState();
+    const oldest = records[0]?.seq ?? seq + 1;
+    const known = new Set(records.map((r) => r.seq));
+    const older = incoming.filter((r) => r.seq < oldest && !known.has(r.seq));
+    if (older.length > 0) {
+      const merged = new Map<number, StoredRecord>();
+      for (const r of [...older, ...records]) merged.set(r.seq, r);
+      const all = [...merged.values()].sort((a, b) => a.seq - b.seq);
+      generation += 1;
+      store.setState({ records: keep(all), seq: Math.max(seq, all[all.length - 1]!.seq) });
+    }
+    append(incoming.filter((r) => r.seq >= oldest && !known.has(r.seq)));
   }
 
   async function follow(after: number, signal: AbortSignal): Promise<void> {
     try {
-      // Records come one by one; those that arrive in the same task are committed together.
+      // Records come one by one; those that arrive before the next task are committed together,
+      // so a burst from the feed is one update of the store.
       let batch: StoredRecord[] = [];
-      let flush: Promise<void> | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const flush = (): void => {
+        timer = undefined;
+        const taken = batch;
+        batch = [];
+        if (!signal.aborted) append(taken);
+      };
       const feed = {
         signal,
         onOpen: () => store.setState({ status: "live", error: undefined }),
         onRetry: (error: unknown) => store.setState({ status: "retrying", error: describe(error) }),
       };
-      for await (const record of client.records.since(after, feed)) {
-        batch.push(record);
-        flush ??= Promise.resolve().then(() => {
-          const taken = batch;
-          batch = [];
-          flush = undefined;
-          if (!signal.aborted) append(taken);
-        });
+      try {
+        for await (const record of client.records.since(after, feed)) {
+          batch.push(record);
+          timer ??= setTimeout(flush, 0);
+        }
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          flush();
+        }
       }
-      await flush;
     } catch (error) {
       if (signal.aborted) return;
+      // Let a later start open the feed again.
+      if (abort?.signal === signal) abort = undefined;
       store.setState({ status: "failed", error: describe(error) });
     }
   }
@@ -159,14 +200,15 @@ export function createRecordStream(client: HostClient, options: RecordStreamOpti
       abort = undefined;
       store.setState({ status: "idle" });
     },
-    ingest: append,
+    ingest,
     project<S>(projection: Projection<S>): S {
       const { records } = store.getState();
       const key = projection as Projection<unknown>;
-      const cached = folded.get(key) ?? { seq: -1, state: projection.initial };
+      const previous = folded.get(key);
+      const cached = previous?.generation === generation ? previous : { generation, seq: -1, state: projection.initial };
       const from = firstAfter(records, cached.seq);
       if (from >= records.length) {
-        if (!folded.has(key)) folded.set(key, cached);
+        if (previous !== cached) folded.set(key, cached);
         return cached.state as S;
       }
       const matching = records.slice(from).filter((r) => matchRecord(projection.match, r));
@@ -175,7 +217,7 @@ export function createRecordStream(client: HostClient, options: RecordStreamOpti
         if (projection.reduceMany !== undefined) state = projection.reduceMany(state, matching);
         else for (const r of matching) state = projection.reduce!(state, r);
       }
-      folded.set(key, { seq: records[records.length - 1]!.seq, state });
+      folded.set(key, { generation, seq: records[records.length - 1]!.seq, state });
       return state;
     },
   };

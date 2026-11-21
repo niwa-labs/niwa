@@ -11,9 +11,14 @@
 import { serverEvents, textChunks } from "./sse.ts";
 import type { StoredRecord } from "./records.ts";
 
-/** The part of a Standard Schema that carries its types. */
+type ValidationResult = { readonly value?: unknown; readonly issues?: ReadonlyArray<{ readonly message: string }> | undefined };
+
+/** The part of a Standard Schema the cockpit uses: its types, and its validation when present. */
 export type TypedSchema<In, Out> = {
-  readonly "~standard": { readonly types?: { readonly input: In; readonly output: Out } | undefined };
+  readonly "~standard": {
+    readonly types?: { readonly input: In; readonly output: Out } | undefined;
+    readonly validate?: ((value: unknown) => ValidationResult | Promise<ValidationResult>) | undefined;
+  };
 };
 
 /** An action reference: its name and the schemas of its input and output. */
@@ -129,7 +134,15 @@ export function httpHostClient(options: HttpHostClientOptions = {}): HostClient 
       },
       name,
     );
-    return response.json();
+    const body: unknown = await response.json();
+    // A result is what the output schema makes of the wire value: dates, defaults, brands.
+    const validate = typeof action === "string" ? undefined : action.output["~standard"].validate;
+    if (validate === undefined) return body;
+    const result = await validate(body);
+    if (result.issues !== undefined) {
+      throw new HostCallError(502, `the result of ${name} does not fit its schema: ${result.issues.map((i) => i.message).join("; ")}`, name);
+    }
+    return result.value;
   }
 
   async function read(after: number, opts?: CallOptions): Promise<StoredRecord[]> {
@@ -153,6 +166,7 @@ export function httpHostClient(options: HttpHostClientOptions = {}): HostClient 
         });
         if (response.body === null) throw new HostCallError(502, "the record feed has no body");
         opts?.onOpen?.();
+        attempt = 0;
         for await (const event of serverEvents(textChunks(response.body))) {
           const record: unknown = JSON.parse(event.data);
           if (!isRecord(record)) continue;

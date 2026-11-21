@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 
 import { HostCallError, httpHostClient, type StoredRecord } from "../src/index.ts";
 import { rec } from "./fixtures.ts";
@@ -37,6 +38,19 @@ describe("calls", () => {
     const error = await client.call("run.stop", { run: "run-1" }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(HostCallError);
     expect(error).toMatchObject({ status: 409, message: "the run is not running", action: "run.stop" });
+  });
+
+  test("a call by reference answers with what the output schema makes of the result", async () => {
+    const ref = {
+      name: "run.get",
+      input: z.object({ run: z.string() }),
+      output: z.object({ started: z.iso.datetime().transform((s) => new Date(s)) }),
+    };
+    const good = httpHostClient({ fetch: fakeFetch(() => Response.json({ started: "2026-11-21T10:00:00Z" })).fetch });
+    const out = await good.call(ref, { run: "run-1" });
+    expect(out.started).toBeInstanceOf(Date);
+    const bad = httpHostClient({ fetch: fakeFetch(() => Response.json({ started: 42 })).fetch });
+    expect(bad.call(ref, { run: "run-1" })).rejects.toMatchObject({ status: 502, action: "run.get" });
   });
 
   test("a history read must be a list of records", async () => {
