@@ -213,6 +213,18 @@ interface Asking {
 /** How many answered requests are remembered, to answer an announcement that was already on its way. */
 const SETTLED_LIMIT = 32;
 
+/**
+ * What a session's process was launched with. A process that replaces it is launched with the
+ * same: what a resume does not name again stays what it was.
+ */
+interface Launch {
+  readonly env: Readonly<Record<string, string>> | undefined;
+  readonly box: BoxRequest | undefined;
+  readonly servers: readonly McpServerSpec[] | undefined;
+  readonly tools: ToolsMode | undefined;
+  readonly visible: VisibleActions | undefined;
+}
+
 /** A watcher gets events, then `undefined` once when the child is gone. */
 type Watcher = (event: LifeEvent | undefined) => void;
 
@@ -246,6 +258,8 @@ class LiveSession {
   ended = false;
   /** The surface (servers, allow-list, deny-list) the process was given, as JSON; a resume compares it. */
   surface = "{}";
+  /** What the process was launched with. */
+  launch: Launch = { env: undefined, box: undefined, servers: undefined, tools: undefined, visible: undefined };
   cwd: string | undefined;
   failure: string | undefined;
   stderrTail = "";
@@ -1068,6 +1082,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       session.cwd = cwd;
       session.reverse = startOptions.reverse;
       session.surface = JSON.stringify(surface);
+      session.launch = { env: startOptions.env, box: startOptions.box, servers: startOptions.servers, tools: startOptions.tools, visible: startOptions.visible };
       try {
         const created = await call(session, "session/create", {
           ...wire(cwd),
@@ -1105,8 +1120,15 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     },
 
     async resume(id: SessionId, resumeOptions?: ResumeOptions): Promise<void> {
-      const surface = surfaceOf(resumeOptions?.servers, resumeOptions?.tools, resumeOptions?.visible);
       const text = resumeOptions?.prompt === undefined ? "" : promptText(resumeOptions.prompt);
+      const named = surfaceOf(resumeOptions?.servers, resumeOptions?.tools, resumeOptions?.visible);
+      let launch: Launch = {
+        env: resumeOptions?.env,
+        box: resumeOptions?.box,
+        servers: resumeOptions?.servers,
+        tools: resumeOptions?.tools,
+        visible: resumeOptions?.visible,
+      };
 
       // A held session continues in its own child: a second child would be a second writer.
       const held = sessions.get(id.native);
@@ -1117,8 +1139,17 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         if (resumeOptions?.reverse !== undefined) held.reverse = resumeOptions.reverse;
         // What the process was born with is what it keeps: a surface that is the same changes
         // nothing, and one that differs is given to a new process, which takes the session on
-        // again. That cannot be done under a running turn.
-        const changed = Object.keys(surface).length > 0 && JSON.stringify(surface) !== held.surface;
+        // again. That cannot be done under a running turn. What the resume does not name stays as it
+        // was: the new process gets the box, the environment and the restrictions of the old one.
+        launch = {
+          env: resumeOptions?.env ?? held.launch.env,
+          box: held.launch.box,
+          servers: resumeOptions?.servers ?? held.launch.servers,
+          tools: resumeOptions?.tools ?? held.launch.tools,
+          visible: resumeOptions?.visible ?? held.launch.visible,
+        };
+        const surface = surfaceOf(launch.servers, launch.tools, launch.visible);
+        const changed = Object.keys(named).length > 0 && JSON.stringify(surface) !== held.surface;
         if (!changed) {
           if (text === "") return;
           // The prompt of a resume waits behind a running turn, as a send does; it is not an error.
@@ -1135,13 +1166,14 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         sessions.delete(id.native);
         await stopSession(held);
       }
+      const surface = surfaceOf(launch.servers, launch.tools, launch.visible);
 
       // The session is resumed in the directory it ran in; one the database does not know is
       // resumed where this process is, and the CLI says whether it has it.
       const cwd = (home === undefined ? undefined : directoryOf(home, id.native)) ?? held?.cwd ?? process.cwd();
       let session: LiveSession;
       try {
-        session = await spawnSession(cwd, resumeOptions ?? {});
+        session = await spawnSession(cwd, launch);
       } catch (error) {
         for (const watcher of carried) watcher(undefined);
         throw error;
@@ -1149,6 +1181,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       session.cwd = cwd;
       session.reverse = resumeOptions?.reverse ?? held?.reverse;
       session.surface = JSON.stringify(surface);
+      session.launch = launch;
       try {
         const resumed = await call(session, "session/resume", { sessionId: id.native, ...wire(cwd), ...surface });
         if (!resumed.ok) throw unavailable("resume", resumed.error ?? "the CLI did not resume the session");
@@ -1171,7 +1204,8 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         session.nativeId = id.native;
         const asked = resumeOptions?.model ?? options.model;
         const reported = modelRefOf(asRecord(asRecord(resumed.result)["session"])["model"]);
-        session.selection = selectionOf(asked, options.effort, reported);
+        // A process that replaces a held one keeps the model and the effort of the session it replaces.
+        session.selection = held !== undefined && resumeOptions?.model === undefined ? held.selection : selectionOf(asked, options.effort, reported);
         reportModel(session, asked, reported);
         sessions.set(id.native, session);
         await subscribe(session);

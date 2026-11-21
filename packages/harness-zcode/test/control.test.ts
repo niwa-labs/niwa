@@ -647,12 +647,58 @@ test("a resume of a held session with the same surface changes nothing; with ano
   const resumed = await requestsOf("session/resume");
   expect(resumed).toHaveLength(1);
   expect(resumed[0]).toMatchObject({ sessionId: session.native, toolAllowlist: ["Read"] });
-  expect(resumed[0]?.["toolDenylist"]).toBeUndefined();
+  // What the resume did not name is what the session had: the deny-list stays.
+  expect(resumed[0]?.["toolDenylist"]).toEqual(["Bash"]);
   expect(await c.state(session)).toBe("idle");
   // Under a running turn the surface cannot change.
   await c.send(session, "slow");
   await expect(c.resume(session, { tools: { allow: [] } })).rejects.toMatchObject({ code: "Unavailable" });
   expect(spawned).toHaveLength(2);
+});
+
+test("a process that replaces a held one keeps its box, environment, tool restrictions, model and effort", async () => {
+  const records: BoxRecord[] = [];
+  const restore = useSandbox("nono", plainNono());
+  const forget = onBoxManifest((record) => void records.push(record));
+  try {
+    const c = control();
+    const niwa = { name: "niwa", command: "niwa", args: [], env: {}, tools: ["session_send"] };
+    const { session } = await c.start({
+      prompt: promptFromText(""),
+      cwd: dir,
+      env: { NIWA_ID: "k3f9" },
+      box: { sandbox: "nono", spec: { cwd: dir, write: [dir], env: {} } },
+      servers: [niwa],
+      tools: { allow: ["Read"] },
+      visible: { actions: [], disabledTools: ["Bash"] },
+      model: "builtin:p/GLM-5.3",
+      effort: "high",
+    });
+    // Only the servers change: the process is replaced.
+    await c.resume(session, { servers: [niwa, { name: "extra", command: "extra", args: [], env: {} }] });
+    expect(spawned).toHaveLength(2);
+    // The new process is boxed as the old one was, with its environment and grants.
+    expect(records).toHaveLength(2);
+    expect(records[1]?.spec.write.map(String)).toEqual(records[0]?.spec.write.map(String));
+    expect(Object.entries(records[1]?.spec.env ?? {})).toContainEqual(["NIWA_ID", "k3f9"]);
+    expect((await logOf("env.log"))[1]).toMatchObject({ id: "k3f9" });
+    // Its restrictions are the old ones, with the new server.
+    const [resumed] = await requestsOf("session/resume");
+    expect(resumed).toMatchObject({ toolAllowlist: ["Read", "mcp__niwa__session_send"], toolDenylist: ["Bash"] });
+    expect((resumed?.["mcpServers"] as Array<{ name: string }>).map((server) => server.name)).toEqual(["niwa", "extra"]);
+    // And it runs the model the old one did.
+    const ended = turnsEnded(c, session);
+    await c.send(session, "go");
+    await ended;
+    expect((await requestsOf("session/send")).at(-1)?.["modelSelection"]).toEqual({
+      providerId: "builtin:p",
+      modelId: "GLM-5.3",
+      options: { reasoningLevel: "high" },
+    });
+  } finally {
+    forget();
+    restore();
+  }
 });
 
 test("the ZCode fields of a server go through to its mcpServers entry, and are absent by default", async () => {
