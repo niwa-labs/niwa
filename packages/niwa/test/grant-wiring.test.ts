@@ -37,6 +37,7 @@ import {
   nono,
   onBoxManifest,
   onSpawn,
+  spawnAgent,
   srt,
   useSandbox,
 } from "@niwa-labs/sandbox";
@@ -476,13 +477,47 @@ test("a grant with write and net starts the process in a box whose manifest is r
   expect(String(data.spec.cwd)).toBe(dir);
   expect(data.spec.sockets.map(String)).toEqual([`${await realpath(host.homePath)}/niwa.sock`]);
   const made = manifests[0]!;
-  expect(data.spec).toEqual({ ...made.spec, env: Object.fromEntries(Object.entries(made.spec.env).filter(([name]) => name !== "NIWA_ID")) });
-  expect(data.manifest.env).toEqual(data.spec.env);
+  const { env: madeEnv, ...madeSpec } = made.spec;
+  expect(data.spec).toEqual(madeSpec);
+  expect(data.env.map(String)).toEqual(Object.keys(made.manifest.env));
+  expect(data.env).toEqual(expect.arrayContaining(Object.keys(madeEnv)));
 
   // The journal keeps no token: the session's own is in the process's environment, not in the record.
   const token = made.spec.env["NIWA_ID" as keyof typeof made.spec.env];
   expect(token).toBeDefined();
   expect(JSON.stringify(rows)).not.toContain(token as string);
+});
+
+/** A control side that starts its process with a provider key in its environment, as a harness that is given one does. */
+class Keyed extends Recording {
+  static readonly KEY = "sk-provider-key-that-is-never-written";
+  override async start(options: StartOptions) {
+    const child = await spawnAgent({
+      harness: "keyed",
+      program: "/usr/bin/true",
+      args: [],
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      env: { ...options.env, PROVIDER_API_KEY: Keyed.KEY },
+      ...(options.box === undefined ? {} : { box: options.box }),
+    });
+    await new Promise((done) => child.once("exit", done));
+    return await super.start(options);
+  }
+}
+
+test("the manifest of a box keeps the names of the process's environment, never a value of it", async () => {
+  const dir = await workdir();
+  const host = await served([{ instance: instance("keyed"), control: new Keyed() }]);
+  undo.push(useSandbox("srt", passthrough("srt", () => host)));
+  await host.call(START, { harness: "keyed", prompt: "", cwd: dir, visible: { actions: [`write:${dir}/*`] } });
+
+  const rows = await host.records.read({ types: [SessionBoxManifest.name] });
+  expect(rows).toHaveLength(1);
+  expect(JSON.stringify(rows)).not.toContain(Keyed.KEY);
+  const data = SessionBoxManifest.schema.parse(rows[0]?.data);
+  expect(data.env).toEqual(expect.arrayContaining(["PROVIDER_API_KEY", "NIWA_ID", "HOME", "PATH"]));
+  expect("env" in data.spec).toBe(false);
+  expect("env" in data.manifest).toBe(false);
 });
 
 test("a box that is not available stops the start: nothing is spawned, no token or mark is made", async () => {

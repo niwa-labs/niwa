@@ -23,7 +23,7 @@ import {
   ToolsModeSchema,
   VariantNameSchema,
 } from "@niwa-labs/harness";
-import { BoxSpecSchema } from "@niwa-labs/sandbox";
+import { BoxSpecSchema, EnvNameSchema } from "@niwa-labs/sandbox";
 
 import { NiwaSessionIdSchema, SessionRefSchema } from "./identity.ts";
 import type { DeliveryReceipt } from "@niwa-labs/harness";
@@ -284,8 +284,9 @@ export const SessionMarked = record(
  *
  * The mark is the one the session was started with, and `session.marked` pairs it with the
  * session once the harness has named it. The spec is the one the sandbox was given, with what
- * the harness needs inside the box added. The token of the session is in neither: the journal
- * keeps no token, so `NIWA_ID` is left out of the environments.
+ * the harness needs inside the box added. The environment of the process is kept by its names
+ * only: its values hold the session's token and the keys a harness is given for its provider,
+ * and the journal keeps neither.
  */
 export const SessionBoxManifest = record(
   "session.box.manifest",
@@ -296,13 +297,14 @@ export const SessionBoxManifest = record(
     harness: z.string().min(1),
     /** The sandbox the process runs in. */
     sandbox: z.enum(["srt", "nono"]),
-    /** What the process may reach. */
-    spec: BoxSpecSchema,
-    /** The full configuration the sandbox is given for the spec: its settings or its flags. */
+    /** What the process may reach, but its environment: that is `env`. */
+    spec: BoxSpecSchema.omit({ env: true }),
+    /** The names of the variables the process is started with, as the sandbox sets them. */
+    env: z.array(EnvNameSchema),
+    /** The rest of the configuration the sandbox is given for the spec: its settings or its flags. */
     manifest: z.looseObject({
       sandbox: z.string().min(1),
       cwd: z.string().min(1),
-      env: z.record(z.string(), z.string()),
     }),
   }),
 );

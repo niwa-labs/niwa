@@ -87,7 +87,7 @@ import type {
   SessionReading,
   VisibleActions,
 } from "@niwa-labs/harness";
-import { BoxSpecSchema, onBoxManifest, requireBox } from "@niwa-labs/sandbox";
+import { EnvNameSchema, onBoxManifest, requireBox } from "@niwa-labs/sandbox";
 import type { BoxRecord, BoxSandboxName } from "@niwa-labs/sandbox";
 import { RequestCreated, requestOpen } from "@niwa-labs/requests/records";
 
@@ -1511,16 +1511,20 @@ function callsOf(input: VisibleActionsInput | undefined): VisibleActionsInput | 
   return { ...input, actions: input.actions.filter((spec) => !isLaunchRule(spec)) };
 }
 
-/** The record of a box, without the session's token: the journal keeps no token, only its MAC. */
+/**
+ * The record of a box, with the names of its environment and none of the values: they hold the
+ * session's token, of which the journal keeps only the MAC, and the keys of the provider.
+ */
 function manifestRecord(made: BoxRecord, mark: string): BoxManifest {
-  const withoutToken = (env: Readonly<Record<string, string>>) =>
-    Object.fromEntries(Object.entries(env).filter(([name]) => name !== TOKEN_ENV));
+  const { env: _specEnv, ...spec } = made.spec;
+  const { env, ...manifest } = made.manifest;
   return {
     mark,
     harness: made.harness,
     sandbox: made.sandbox,
-    spec: BoxSpecSchema.parse({ ...made.spec, env: withoutToken(made.spec.env) }),
-    manifest: { ...made.manifest, env: withoutToken(made.manifest.env) },
+    spec,
+    env: Object.keys(env).map((name) => EnvNameSchema.parse(name)),
+    manifest,
   };
 }
 
