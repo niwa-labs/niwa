@@ -26,7 +26,7 @@ export type StreamStatus =
 
 export type StreamState = {
   status: StreamStatus;
-  /** The position of the last record received; the stream resumes after it. */
+  /** The position of the newest record held. */
   seq: number;
   /** The records received, oldest first, at most `retain` of them. */
   records: readonly StoredRecord[];
@@ -78,12 +78,19 @@ export interface RecordFeed {
 
 export interface RecordStream extends RecordFeed {
   readonly store: StoreApi<StreamState>;
-  /** Open the feed after the given position. Starting a started stream does nothing; a failed one starts again. */
+  /**
+   * Open the feed after the given position. Starting a started stream does nothing; a stopped or
+   * failed one starts again after the position it was last started at or the feed last reached,
+   * whichever is later. Without a position, a stream that was never started follows what it
+   * holds: the records ingested before are taken to be everything up to their newest.
+   */
   start(after?: number): void;
   stop(): void;
   /**
-   * Add records read some other way, such as a page of history. Records older than those held
-   * are merged in order and every projection is folded again from the start.
+   * Add records read some other way, such as a page of history. They are merged by position
+   * with what is held, whatever their order and however often they come; records older than the
+   * newest held change what projections have seen, so every projection is folded again. Ingesting
+   * does not move the position the live feed resumes from: only the feed itself does.
    */
   ingest(records: readonly StoredRecord[]): void;
 }
@@ -124,30 +131,37 @@ export function createRecordStream(client: HostClient, options: RecordStreamOpti
   let abort: AbortController | undefined;
   // Bumped when older records are merged in: every cached fold is then stale.
   let generation = 0;
+  // Where the live feed resumes: what it was started at, then what it delivered. Not the newest
+  // position held, which records read some other way can push ahead of records the feed owes.
+  let cursor: number | undefined;
 
   function keep(all: readonly StoredRecord[]): readonly StoredRecord[] {
     return all.length > retain ? all.slice(all.length - retain) : all;
   }
 
-  function append(incoming: readonly StoredRecord[]): void {
-    const { records, seq } = store.getState();
-    const fresh = incoming.filter((r) => r.seq > seq).sort((a, b) => a.seq - b.seq);
-    if (fresh.length === 0) return;
-    store.setState({ records: keep(records.concat(fresh)), seq: fresh[fresh.length - 1]!.seq });
+  /** The records by position, once each, oldest first. */
+  function byPosition(incoming: readonly StoredRecord[]): StoredRecord[] {
+    const once = new Map<number, StoredRecord>();
+    for (const r of incoming) if (!once.has(r.seq)) once.set(r.seq, r);
+    return [...once.values()].sort((a, b) => a.seq - b.seq);
   }
 
-  function ingest(incoming: readonly StoredRecord[]): void {
+  function merge(incoming: readonly StoredRecord[]): void {
     const { records, seq } = store.getState();
-    const known = new Set(records.map((r) => r.seq));
-    const unknown = incoming.filter((r) => !known.has(r.seq));
+    const fresh = byPosition(incoming);
     // Records after the newest held simply extend the stream.
-    if (unknown.every((r) => r.seq > seq)) return append(unknown);
-    const merged = new Map<number, StoredRecord>();
-    for (const r of [...records, ...unknown]) merged.set(r.seq, r);
-    const all = keep([...merged.values()].sort((a, b) => a.seq - b.seq));
+    if (fresh.length > 0 && fresh[0]!.seq > seq) {
+      store.setState({ records: keep(records.concat(fresh)), seq: fresh[fresh.length - 1]!.seq });
+      return;
+    }
+    const known = new Set(records.map((r) => r.seq));
+    const unknown = fresh.filter((r) => !known.has(r.seq));
+    if (unknown.length === 0) return;
+    const all = keep(byPosition([...records, ...unknown]));
     // Records that land before the newest one change what every projection has seen, unless
     // the retention limit drops them again at once.
-    if (all.some((r) => r.seq <= seq && !known.has(r.seq))) generation += 1;
+    const held = new Set(all.map((r) => r.seq));
+    if (unknown.some((r) => r.seq <= seq && held.has(r.seq))) generation += 1;
     store.setState({ records: all, seq: Math.max(seq, all[all.length - 1]?.seq ?? seq) });
   }
 
@@ -161,7 +175,10 @@ export function createRecordStream(client: HostClient, options: RecordStreamOpti
         timer = undefined;
         const taken = batch;
         batch = [];
-        if (!signal.aborted) append(taken);
+        if (signal.aborted || taken.length === 0) return;
+        merge(taken);
+        // The feed has delivered everything up to its newest record: resume after that.
+        cursor = taken.reduce((newest, r) => Math.max(newest, r.seq), cursor ?? after);
       };
       const feed = {
         signal,
@@ -189,18 +206,19 @@ export function createRecordStream(client: HostClient, options: RecordStreamOpti
 
   return {
     store,
-    start(after = store.getState().seq) {
+    start(after) {
       if (abort !== undefined) return;
+      cursor = after ?? cursor ?? store.getState().seq;
       abort = new AbortController();
       store.setState({ status: "connecting", error: undefined });
-      void follow(after, abort.signal);
+      void follow(cursor, abort.signal);
     },
     stop() {
       abort?.abort();
       abort = undefined;
       store.setState({ status: "idle" });
     },
-    ingest,
+    ingest: merge,
     project<S>(projection: Projection<S>): S {
       const { records } = store.getState();
       const key = projection as Projection<unknown>;

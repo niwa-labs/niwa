@@ -124,4 +124,67 @@ describe("the record stream", () => {
   test("a projection needs a reducer", () => {
     expect(() => defineProjection({ match: {}, initial: 0 })).toThrow("reduce");
   });
+
+  test("history read while the feed is open does not make the feed skip the records in between", async () => {
+    const { client, push } = scriptedClient();
+    const stream = createRecordStream(client);
+    stream.start(9);
+    await settle();
+    stream.ingest([rec(12)]);
+    push(rec(10), rec(11), rec(12), rec(13));
+    await settle();
+    expect(stream.store.getState().records.map((r) => Number(r.seq))).toEqual([10, 11, 12, 13]);
+    expect(stream.store.getState().seq).toBe(13);
+    stream.stop();
+  });
+
+  test("a record that fills a gap is folded into the projections that match it", async () => {
+    const { client, push } = scriptedClient();
+    const stream = createRecordStream(client);
+    stream.start(0);
+    await settle();
+    stream.ingest([rec(3, "run.started")]);
+    expect(stream.project(counter)).toEqual({ n: 1 });
+    push(rec(1, "run.started"), rec(2, "run.started"), rec(3, "run.started"));
+    await settle();
+    expect(stream.project(counter)).toEqual({ n: 3 });
+    stream.stop();
+  });
+
+  test("a position comes once, in a batch and across sources", async () => {
+    const stream = createRecordStream(scriptedClient().client);
+    stream.ingest([rec(5), rec(5), rec(6)]);
+    expect(stream.store.getState().records.map((r) => Number(r.seq))).toEqual([5, 6]);
+    stream.ingest([rec(6), rec(4), rec(4)]);
+    expect(stream.store.getState().records.map((r) => Number(r.seq))).toEqual([4, 5, 6]);
+  });
+
+  test("a feed that failed before its first record resumes after the position it was started at", async () => {
+    const { client, fail, opened } = scriptedClient();
+    const stream = createRecordStream(client);
+    stream.start(20_000);
+    await settle();
+    fail(new Error("the feed broke"));
+    await settle();
+    stream.start();
+    await settle();
+    expect(opened).toEqual([20_000, 20_000]);
+    stream.stop();
+  });
+
+  test("a restarted feed resumes after what it delivered, not after what was read another way", async () => {
+    const { client, push, fail, opened } = scriptedClient();
+    const stream = createRecordStream(client);
+    stream.start(0);
+    await settle();
+    stream.ingest([rec(40)]);
+    push(rec(1), rec(2));
+    await settle();
+    fail(new Error("the feed broke"));
+    await settle();
+    stream.start();
+    await settle();
+    expect(opened).toEqual([0, 2]);
+    stream.stop();
+  });
 });
