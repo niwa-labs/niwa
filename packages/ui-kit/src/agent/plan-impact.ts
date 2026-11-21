@@ -3,8 +3,9 @@
  * owner sees it before confirming.
  *
  * Recomputing from a step keeps every result before it and runs that step and everything after
- * it again — except steps with an outside effect that already happened, which are never
- * repeated. Stopping a phase or a step stops what runs inside it; within the plan, the steps
+ * it again. A step with an outside effect that already happened is among them: nothing here knows
+ * whether the host will repeat that effect, so the explanation warns that it may, and a caller that
+ * does know passes its own explanation to the plan. Stopping a phase or a step stops what runs inside it; within the plan, the steps
  * after it that have not started will not start.
  */
 
@@ -14,7 +15,7 @@ export type PlanStep = {
   id: string;
   title: string;
   state: WorkState;
-  /** The step acts outside the run (a push, a message, a payment); once done it is never repeated. */
+  /** The step acts outside the run (a push, a message, a payment); running it again may repeat the effect. */
   effect?: boolean | undefined;
 };
 
@@ -29,12 +30,12 @@ export type PlanPhase<S extends PlanStep = PlanStep> = {
 export type PlanTarget = { phase: string; step?: string | undefined };
 
 export type RecomputeImpact = {
-  /** The steps that will run again. */
+  /** The steps that will run again, those that already acted outside included. */
   rerun: number;
   /** The steps before the target whose results are kept. */
   kept: number;
-  /** The steps from the target on that already acted outside the run and are not repeated. */
-  effectsKept: number;
+  /** Of those, the steps that already acted outside the run and may act again. */
+  effectsRepeated: number;
 };
 
 export type StopImpact = {
@@ -65,16 +66,16 @@ const RAN: ReadonlySet<WorkState> = new Set(["done", "failed", "stopped", "reuse
 export function recomputeImpact(phases: readonly PlanPhase[], target: PlanTarget): RecomputeImpact {
   const flat = flatten(phases);
   const start = startOf(flat, target);
-  if (start < 0) return { rerun: 0, kept: 0, effectsKept: 0 };
+  if (start < 0) return { rerun: 0, kept: 0, effectsRepeated: 0 };
   let rerun = 0;
-  let effectsKept = 0;
+  let effectsRepeated = 0;
   for (const f of flat.slice(start)) {
     if (f.step.state === "skipped") continue;
-    if (f.step.effect === true && RAN.has(f.step.state) && f.step.state !== "failed") effectsKept += 1;
-    else rerun += 1;
+    rerun += 1;
+    if (f.step.effect === true && RAN.has(f.step.state) && f.step.state !== "failed") effectsRepeated += 1;
   }
   const kept = flat.slice(0, start).filter((f) => f.step.state !== "skipped").length;
-  return { rerun, kept, effectsKept };
+  return { rerun, kept, effectsRepeated };
 }
 
 export function stopImpact(phases: readonly PlanPhase[], target: PlanTarget): StopImpact {
@@ -107,8 +108,8 @@ export function describeRecompute(phases: readonly PlanPhase[], target: PlanTarg
   const parts = [`Recompute from “${targetTitle(phases, target)}”: ${steps(impact.rerun)} run again`];
   if (impact.kept > 0) parts.push(`${impact.kept} earlier kept`);
   let text = parts.join(", ") + ".";
-  if (impact.effectsKept > 0) {
-    text += ` ${impact.effectsKept === 1 ? "1 step that acted outside is" : `${impact.effectsKept} steps that acted outside are`} not repeated.`;
+  if (impact.effectsRepeated > 0) {
+    text += ` ${impact.effectsRepeated === 1 ? "1 step that already acted outside may" : `${impact.effectsRepeated} steps that already acted outside may`} act again.`;
   }
   return text;
 }
