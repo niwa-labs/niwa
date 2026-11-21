@@ -12,3 +12,9 @@ export const Unheard = record("never.sent", z.object({ id: z.string() }));
 
 /** The pings sent to one address: a query builder, as a plugin's records entry gives one. */
 export const pingsTo = (id: string) => queryOf(Ping, { "to.id": id });
+/** The pings of one id at a version the host does not write, made by a function declaration. */
+export function aheadOf(id: string) {
+  return queryOf(PingAhead, { id });
+}
+/** One record of a type no plugin of the host declares, as a builder gives it. */
+export const unheardOf = (id: string) => queryOf(Unheard, { id });

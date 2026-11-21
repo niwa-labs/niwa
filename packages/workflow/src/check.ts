@@ -624,25 +624,61 @@ interface Referenced {
   column: number;
 }
 
+/** How many calls deep the check follows a query builder to the type it names. */
+const BUILDER_DEPTH = 4;
+
+/** What a function gives back: the body of an arrow written as an expression, or what its own `return`s give. */
+function returnedBy(ts: typeof Ts, declaration: Ts.Declaration | undefined): Ts.Expression[] {
+  const fn =
+    declaration !== undefined && ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined
+      ? bare(ts, declaration.initializer)
+      : declaration;
+  if (fn === undefined || !(ts.isFunctionDeclaration(fn) || ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) || fn.body === undefined) return [];
+  if (!ts.isBlock(fn.body)) return [fn.body];
+  const found: Ts.Expression[] = [];
+  const visit = (node: Ts.Node): void => {
+    if (ts.isReturnStatement(node)) {
+      if (node.expression !== undefined) found.push(node.expression);
+    } else if (!ts.isFunctionLike(node) && !ts.isClassLike(node)) ts.forEachChild(node, visit);
+  };
+  ts.forEachChild(fn.body, visit);
+  return found;
+}
+
 /**
  * The type a reference names: the reference is followed through its import to where it is made, `record("name",
- * schema, { version })` with the name and the version written as literals. A reference made any other way, and a
- * record of the script itself (made by its own `record`), name nothing the check can follow: the host refuses
- * a reference it does not know when the script runs.
+ * schema, { version })` with the name and the version written as literals. A query a builder gives (`taskDone(id)`) is
+ * followed into the builder to the `queryOf(Type, filter)` it returns, and from there to the type. A reference made
+ * any other way, and a record of the script itself (made by its own `record`), name nothing the check can follow: the
+ * host refuses a reference it does not know when the script runs.
  */
-function referencedType(ts: typeof Ts, checker: Ts.TypeChecker, expression: Ts.Expression): { name: string; version: number } | undefined {
+function referencedType(ts: typeof Ts, checker: Ts.TypeChecker, expression: Ts.Expression, depth = 0): { name: string; version: number } | undefined {
   const resolved = (node: Ts.Node): Ts.Symbol | undefined => {
     const symbol = checker.getSymbolAtLocation(node);
     return symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
   };
   const inner = bare(ts, expression);
+  if (ts.isCallExpression(inner)) {
+    if (depth >= BUILDER_DEPTH) return undefined;
+    const callee = ts.isPropertyAccessExpression(inner.expression) ? inner.expression.name : inner.expression;
+    if (ts.isIdentifier(callee) && callee.text === "queryOf") {
+      const [type] = inner.arguments;
+      return type === undefined ? undefined : referencedType(ts, checker, type, depth + 1);
+    }
+    // A builder names one type: every `return` of it must lead to the same one.
+    const types = returnedBy(ts, resolved(callee)?.valueDeclaration).map((returned) => referencedType(ts, checker, returned, depth + 1));
+    const [first] = types;
+    return first !== undefined && types.every((one) => one?.name === first.name && one.version === first.version) ? first : undefined;
+  }
   if (!ts.isIdentifier(inner) && !ts.isPropertyAccessExpression(inner)) return undefined;
   const declaration = resolved(inner)?.valueDeclaration;
   if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) return undefined;
   const made = bare(ts, declaration.initializer);
   if (!ts.isCallExpression(made)) return undefined;
   const callee = ts.isPropertyAccessExpression(made.expression) ? made.expression.name : made.expression;
-  if (!ts.isIdentifier(callee) || callee.text !== "record") return undefined;
+  if (!ts.isIdentifier(callee)) return undefined;
+  // A query a builder gave, kept in a constant: followed as the call it was made by.
+  if (callee.text !== "record") return referencedType(ts, checker, made, depth + 1);
   if ((resolved(callee)?.declarations ?? []).some((one) => one.getSourceFile().fileName === TYPING_FILE)) return undefined;
   const name = textOf(ts, made.arguments[0]);
   if (name === undefined) return undefined;

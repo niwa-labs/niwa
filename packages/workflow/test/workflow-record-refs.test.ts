@@ -229,6 +229,28 @@ test("the check follows a reference to the type it names: a type the host does n
   expect(await errorsOf(host, await scriptIn(home, "fine.js", js('{ "to.id": "owner" }')))).toEqual([]);
 }, 60_000);
 
+test("the check follows a query a builder gives to its type, as the host does when the script runs", async () => {
+  const { host, home } = await served();
+  const file = await scriptIn(home, "built-refused.ts", [
+    importing("aheadOf, unheardOf"),
+    'export default workflow({ uses: ["niwa.records.read"] }, async () => {',
+    '  await wait(unheardOf("a"), { timeout: "1m" });',
+    '  await wait(aheadOf("a"));',
+    '  await read.records(unheardOf("a"));',
+    '  await read.records(aheadOf("a"));',
+    '  const kept = unheardOf("b");',
+    "  await wait(kept);",
+    "});",
+  ]);
+  expect(await errorsOf(host, file)).toEqual([
+    { line: 3, code: "wait", message: 'wait unheardOf("a"): the host knows no record type "never.sent", so the wait would never end' },
+    { line: 4, code: "wait", message: 'wait aheadOf("a"): the script names version 2 of "ping.sent", and the host writes version 1' },
+    { line: 5, code: "read", message: 'read unheardOf("a"): the host knows no record type "never.sent"' },
+    { line: 6, code: "read", message: 'read aheadOf("a"): the script names version 2 of "ping.sent", and the host writes version 1' },
+    { line: 8, code: "wait", message: 'wait kept: the host knows no record type "never.sent", so the wait would never end' },
+  ]);
+}, 60_000);
+
 test("a script that imports a package is not given the errors the package has under the options of the script", async () => {
   const { host, home } = await served();
   const file = await scriptIn(home, "imports.js", [importing("Ping"), "export default workflow({}, async () => {", "  void Ping;", "});"]);
