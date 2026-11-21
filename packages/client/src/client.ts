@@ -8,11 +8,9 @@
  * drop, so the consumer sees no gap and no duplicate.
  */
 
-import { homedir } from "node:os";
-import { join } from "node:path";
-
 import type { z } from "zod";
 
+import { expandHome } from "./home.ts";
 import { channelName, frameFor } from "./live.ts";
 import { targetName } from "@niwa-labs/core";
 import type {
@@ -76,13 +74,6 @@ const CLOSED_MESSAGE = "the connection to the niwa host is closed";
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new HostError(String(error));
-}
-
-/** `~` at the start of a home is the user's home directory — the same rule the host uses. */
-function expandHome(home: string): string {
-  if (home === "~") return homedir();
-  if (home.startsWith("~/")) return join(homedir(), home.slice(2));
-  return home;
 }
 
 type ClientMessageInput = z.input<typeof clientMessageSchema>;

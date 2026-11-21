@@ -7,8 +7,9 @@
  */
 
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+
+import { expandHome } from "./home.ts";
 
 /** The row of the one writer of the journal: the part of `journal.ts`'s table this probe reads. */
 interface WriterRow {
@@ -36,13 +37,6 @@ function isProcessAlive(pid: number): boolean {
   } catch (error) {
     return errorCode(error) !== "ESRCH";
   }
-}
-
-/** A leading `~` is the home of the user, as in the host. */
-function expandHome(home: string): string {
-  if (home === "~") return homedir();
-  if (home.startsWith("~/")) return join(homedir(), home.slice(2));
-  return home;
 }
 
 /**

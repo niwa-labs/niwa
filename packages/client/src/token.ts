@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 
 import { OWNER_TOKEN_FILE, TOKEN_ENV } from "@niwa-labs/core";
+import { expandHome } from "./home.ts";
 import type { Token } from "@niwa-labs/core";
 
 /** A token is 1 to 4 letters or digits. */
@@ -31,7 +32,7 @@ export function tokenOf(home: string, env: Readonly<Record<string, string | unde
 
 /** The token of the owner of this home, when the host has made one. */
 export function readOwnerToken(home: string): Token | undefined {
-  const path = `${home}/${OWNER_TOKEN_FILE}`;
+  const path = `${expandHome(home)}/${OWNER_TOKEN_FILE}`;
   if (!existsSync(path)) return undefined;
   return token(readFileSync(path, "utf8").trim());
 }
