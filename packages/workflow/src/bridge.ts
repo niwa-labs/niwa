@@ -173,6 +173,15 @@ const Authorized = z.object({
   denied: z.object({ grant: z.string(), missing: z.string(), record: z.string().optional() }).optional(),
 });
 
+/** What a read of records answers, as far as the versions of its records go. */
+const ReadAnswer = z.looseObject({ records: z.array(z.looseObject({ type: z.string(), schema: z.number() })) });
+
+/** The answer of a read without the records of a type named at a version that are of another version. */
+function ofVersions(read: unknown, versions: Readonly<Record<string, number>>): unknown {
+  const answer = ReadAnswer.parse(read);
+  return { ...answer, records: answer.records.filter((row) => versions[row.type] === undefined || versions[row.type] === row.schema) };
+}
+
 /** The type of an emit: one the script declares in `emits`, and no other. */
 function emitType(deps: BridgeDeps, name: string): RecordType<unknown> {
   const type = deps.emits.get(name);
@@ -443,6 +452,19 @@ export function bridge(deps: BridgeDeps): Bridge {
     return takeOrRun(key, recorded, { key, action: WAIT_NAME, input: jsonOf(asked) }, lineage, () => waiting(key, request, lineage));
   };
 
+  /**
+   * A type a script names by reference is the one the host knows: the same name at the same version. A reference the
+   * host does not know, or to a version it does not write, is refused, so a wait for it does not wait for ever.
+   */
+  const referenced = (name: string, version: number | undefined): void => {
+    if (version === undefined) return;
+    const known = deps.recordType(name);
+    if (known === undefined) throw new Error(`the script names the record type "${name}", which the host does not know`);
+    if (known.version !== version) {
+      throw new Error(`the script names version ${String(version)} of the record type "${name}", and the host knows version ${String(known.version)}`);
+    }
+  };
+
   const waiting = async (key: string, request: Extract<ScriptRequest, { op: "wait" }>, lineage: Lineage): Promise<unknown> => {
     // A wait reads the journal: it is held to the same right as a read of records, and a read is never asked.
     await authorized(key, "call", RECORDS_READ, { read: true });
@@ -517,6 +539,7 @@ export function bridge(deps: BridgeDeps): Bridge {
           ...(request.reason === undefined ? {} : { reason: request.reason }),
         });
       case "wait":
+        referenced(request.type, request.version);
         return wait(key, request, lineage);
       case "sleep":
         return sleep(key, request.ms, lineage);
@@ -536,9 +559,14 @@ export function bridge(deps: BridgeDeps): Bridge {
       case "read-state":
         await authorized(key, "call", RECORDS_READ, { read: true });
         return guarded(() => step(own.state, { plugin: request.plugin }, { key }));
-      case "read-records":
+      case "read-records": {
+        const versions = request.versions ?? {};
+        for (const [name, version] of Object.entries(versions)) referenced(name, version);
         // The records, and where the next read or wait goes on: a wait from `next` misses nothing.
-        return act(key, RECORDS_READ, RECORDS_READ, request.query, lineage, { read: true });
+        const read = await act(key, RECORDS_READ, RECORDS_READ, request.query, lineage, { read: true });
+        // A type named by reference is read at its version: a record of another version is another shape.
+        return Object.keys(versions).length === 0 ? read : ofVersions(read, versions);
+      }
       case "now":
         return clock(key, lineage);
       case "random":

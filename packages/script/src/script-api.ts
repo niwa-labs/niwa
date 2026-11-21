@@ -98,14 +98,74 @@ export interface ScriptWaited<D = any> {
 }
 
 /**
- * Which records a script reads or waits for: the types as exact names or families written
- * `prefix.*`, equality on paths of the data, a stream, and the position to look after.
+ * A record type a plugin declares, as a script imports it from the plugin's records entry
+ * (`import { TaskDone } from "@niwa-labs/tasks/records"`): a wait or a read that names it gives the
+ * data its schema gives. The host refuses one it does not know, or of a version it does not write.
+ */
+export interface ScriptRecordRef<D = unknown> {
+  readonly kind: "record";
+  readonly name: string;
+  readonly version: number;
+  readonly schema: { readonly _zod: { readonly output: D } };
+}
+
+/** The data of the records of a referenced type. */
+export type ScriptRecordData<R> = R extends { readonly schema: { readonly _zod: { readonly output: infer D } } } ? D : unknown;
+
+/** The dotted paths into data: a field, or a field of a field, four levels deep at most. */
+export type ScriptDataPath<D, Depth extends unknown[] = []> = Depth["length"] extends 4
+  ? never
+  : D extends readonly unknown[]
+    ? never
+    : D extends object
+      ? { [K in keyof D & string]-?: K | `${K}.${ScriptDataPath<NonNullable<D[K]>, [...Depth, 0]>}` }[keyof D & string]
+      : never;
+
+/** The value at a dotted path into data. */
+export type ScriptDataAt<D, P extends string> = D extends unknown
+  ? P extends keyof D
+    ? D[P]
+    : P extends `${infer Head}.${infer Rest}`
+      ? Head extends keyof D
+        ? ScriptDataAt<NonNullable<D[Head]>, Rest>
+        : never
+      : never
+  : never;
+
+/** The filter of a wait or a read of a referenced type: values for fields of its data, by field name or dotted path. */
+export type ScriptFilter<D> = unknown extends D ? Record<string, unknown> : { [P in ScriptDataPath<D>]?: ScriptDataAt<D, P> };
+
+/**
+ * Which records a script reads or waits for: the types as exact names, families written `prefix.*`
+ * or references, equality on paths of the data, a stream, and the position to look after.
  */
 export interface ScriptRecordQuery {
   from?: number;
-  types?: string[];
+  types?: Array<string | ScriptRecordRef<any>>;
   filter?: Record<string, unknown>;
   stream?: string;
+}
+
+/** Where a read starts, what stream it reads, and how much. */
+export interface ScriptReadOptions {
+  from?: number;
+  stream?: string;
+  limit?: number;
+  tail?: number;
+}
+
+/** A record a read answers with: as the journal keeps it, with its data. */
+export interface ScriptStoredRecord<D = any> {
+  id: string;
+  seq: number;
+  stream: string;
+  type: string;
+  schema: number;
+  data: D;
+  cause: string | null;
+  root: string;
+  at: number;
+  actor: { kind: string };
 }
 
 /**
@@ -151,8 +211,14 @@ export interface ScriptApi {
    * position an earlier wait or read answered — or after the wait began: its data and its position.
    * Without a `timeout` it waits for ever; the wait survives a restart of the host.
    */
-  wait(type: string, opts?: { filter?: Record<string, unknown>; from?: number; label?: string }): Promise<ScriptWaited>;
+  wait<R extends ScriptRecordRef<any>>(type: R, opts?: { filter?: ScriptFilter<ScriptRecordData<R>>; from?: number; label?: string }): Promise<ScriptWaited<ScriptRecordData<R>>>;
   /** The same, or `{ timedOut: true }` at the end of the timeout. */
+  wait<R extends ScriptRecordRef<any>>(
+    type: R,
+    opts: { filter?: ScriptFilter<ScriptRecordData<R>>; from?: number; timeout: Duration; label?: string },
+  ): Promise<ScriptWaited<ScriptRecordData<R>> | TimedOut>;
+  /** A type named as text: the data is of any shape. */
+  wait(type: string, opts?: { filter?: Record<string, unknown>; from?: number; label?: string }): Promise<ScriptWaited>;
   wait(type: string, opts: { filter?: Record<string, unknown>; from?: number; timeout: Duration; label?: string }): Promise<ScriptWaited | TimedOut>;
   /** Sleep. The wake-up moment is recorded on the first pass: a replay does not sleep from the start. */
   sleep(duration: Duration, opts?: CallOptions): Promise<void>;
@@ -176,10 +242,21 @@ export interface ScriptApi {
     /** The state of a plugin, as it was when the script read it. */
     state(plugin: string, opts?: CallOptions): Promise<any>;
     /**
-     * The records that answer a query, and the position to read on from: `{ records, next }`. A wait
-     * from `next` misses nothing written after the read.
+     * The records of a referenced type that answer a query, and the position to read on from:
+     * `{ records, next }`. A wait from `next` misses nothing written after the read.
      */
-    records(query?: ScriptRecordQuery & { limit?: number; tail?: number }, opts?: CallOptions): Promise<{ records: any[]; next: number }>;
+    records<R extends ScriptRecordRef<any>>(
+      type: R,
+      query?: ScriptReadOptions & { filter?: ScriptFilter<ScriptRecordData<R>> },
+      opts?: CallOptions,
+    ): Promise<{ records: Array<ScriptStoredRecord<ScriptRecordData<R>>>; next: number }>;
+    /** The records of the referenced types, each with its data typed by its type. */
+    records<R extends ScriptRecordRef<any>>(
+      query: ScriptReadOptions & { types: R[]; filter?: ScriptFilter<ScriptRecordData<R>> },
+      opts?: CallOptions,
+    ): Promise<{ records: Array<R extends unknown ? ScriptStoredRecord<ScriptRecordData<R>> : never>; next: number }>;
+    /** The records of types named as text, or of any type: the data is of any shape. */
+    records(query?: ScriptRecordQuery & { limit?: number; tail?: number }, opts?: CallOptions): Promise<{ records: ScriptStoredRecord[]; next: number }>;
   };
   /** Open a scope: a group of branches that never outlive it. */
   scope<T>(name: string, opts: ScopeOptions | undefined, fn: (s: Scope) => Promise<T>): Promise<T>;

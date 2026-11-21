@@ -156,7 +156,7 @@ test("emit takes data of the record's schema, and wait and read.records give dat
   expect((await errorsOf(host, wrong)).map(({ line, code }) => ({ line, code }))).toEqual([
     { line: 3, code: "TS2322" },
     { line: 6, code: "TS2339" },
-    { line: 7, code: "TS2345" },
+    { line: 7, code: "TS2769" },
     { line: 8, code: "TS2339" },
   ]);
 }, 60_000);

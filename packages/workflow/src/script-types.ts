@@ -317,10 +317,21 @@ type NiwaAt<D, P extends string> = D extends unknown
   : never;
 /** The filter of a wait: values for fields of the data, by field name or dotted path. Data of any shape takes any field. */
 type NiwaFilter<D> = unknown extends D ? Record<string, unknown> : { [P in NiwaPath<D>]?: NiwaAt<D, P> };
+/**
+ * A record type a plugin declares, imported from its records entry (\`import { TaskDone } from "@niwa-labs/tasks/records"\`):
+ * a wait or a read that names it gives the data its schema gives.
+ */
+type NiwaRecordRef<D = unknown> = { readonly kind: "record"; readonly name: string; readonly version: number; readonly schema: { readonly _zod: { readonly output: D } } };
+/** The data of the records of a referenced type. */
+type NiwaDataOf<R> = R extends { readonly schema: { readonly _zod: { readonly output: infer D } } } ? D : unknown;
 /** The first record of the type whose data holds every field of the filter, written after \`from\` or after the wait began: its data and its position. Without a timeout it waits for ever. */
 declare function wait<T extends keyof NiwaRecords>(type: T, opts?: { filter?: NiwaFilter<NiwaRecords[T]>; from?: number; label?: string }): Promise<{ data: NiwaRecords[T]; at: number }>;
 /** The same, or { timedOut: true } at the end of the timeout. */
 declare function wait<T extends keyof NiwaRecords>(type: T, opts: { filter?: NiwaFilter<NiwaRecords[T]>; from?: number; timeout: NiwaDuration; label?: string }): Promise<{ data: NiwaRecords[T]; at: number } | { timedOut: true }>;
+/** The first record of the referenced type whose data holds every field of the filter, written after \`from\` or after the wait began: its data, typed by the type, and its position. */
+declare function wait<R extends NiwaRecordRef<any>>(type: R, opts?: { filter?: NiwaFilter<NiwaDataOf<R>>; from?: number; label?: string }): Promise<{ data: NiwaDataOf<R>; at: number }>;
+/** The same, or { timedOut: true } at the end of the timeout. */
+declare function wait<R extends NiwaRecordRef<any>>(type: R, opts: { filter?: NiwaFilter<NiwaDataOf<R>>; from?: number; timeout: NiwaDuration; label?: string }): Promise<{ data: NiwaDataOf<R>; at: number } | { timedOut: true }>;
 /** A record as the journal keeps it. */
 type NiwaStoredRecord<T extends string, D> = { id: string; seq: number; stream: string; type: T; schema: number; data: D; cause: string | null; root: string; at: number; actor: { kind: string } };
 /** Where a read of the journal starts, what stream it reads, and how much. */
@@ -331,8 +342,12 @@ declare const read: {
   state(plugin: string, opts?: NiwaCallOptions): Promise<any>;
   /** The records of the types named whose data holds the filter, each with its data typed by its type. */
   records<T extends keyof NiwaRecords & string>(query: NiwaReadQuery & { types: T[]; filter?: NiwaFilter<NiwaRecords[T]> }, opts?: NiwaCallOptions): Promise<NiwaRead<{ [K in T]: NiwaStoredRecord<K, NiwaRecords[K]> }[T]>>;
-  /** The records of any types, names or families written prefix.*: the data is of any shape. */
-  records(query?: NiwaReadQuery & { types?: string[]; filter?: Record<string, unknown> }, opts?: NiwaCallOptions): Promise<NiwaRead<NiwaStoredRecord<string, unknown>>>;
+  /** The records of a referenced type whose data holds the filter, with their data typed by the type. */
+  records<R extends NiwaRecordRef<any>>(type: R, query?: NiwaReadQuery & { filter?: NiwaFilter<NiwaDataOf<R>> }, opts?: NiwaCallOptions): Promise<NiwaRead<NiwaStoredRecord<string, NiwaDataOf<R>>>>;
+  /** The records of the referenced types whose data holds the filter, each with its data typed by its type. */
+  records<R extends NiwaRecordRef<any>>(query: NiwaReadQuery & { types: R[]; filter?: NiwaFilter<NiwaDataOf<R>> }, opts?: NiwaCallOptions): Promise<NiwaRead<R extends unknown ? NiwaStoredRecord<string, NiwaDataOf<R>> : never>>;
+  /** The records of any types, names, families written prefix.* or references: the data is of any shape. */
+  records(query?: NiwaReadQuery & { types?: Array<string | NiwaRecordRef<any>>; filter?: Record<string, unknown> }, opts?: NiwaCallOptions): Promise<NiwaRead<NiwaStoredRecord<string, unknown>>>;
 };`;
 
 /** The typing of what a script reads of the journal: the data of each record type of the catalogue, and `wait` and `read` typed by it. */

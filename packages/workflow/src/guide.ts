@@ -90,7 +90,8 @@ Registered workflows:
 
 Scripts niwa starts by itself:
 - on lists the records that start the script: a type, or a type with a filter written as a literal,
-  on: ["task.done", { type: "message.sent", filter: { "to.id": "owner" } }]. The filter is equality on fields of
+  on: ["task.done", { type: "message.sent", filter: { "to.id": "owner" } }]. The header is read as text, so a
+  type is named there as text, never by an imported reference; references are for wait and read.records. The filter is equality on fields of
   the data of the record (a dotted path goes into nested data), as the filter of wait is; the check refuses a path
   no record of the type holds, and a literal its field cannot hold. The function gets the record as its argument,
   typed as NiwaTrigger: { id, type, data }, narrowed to the types on lists. A script with on has no input. The record gives its author no rights.
@@ -106,6 +107,13 @@ Time and the outside:
   position an earlier wait or read gave) or after the wait began, whose data holds every field of the filter (a
   field, or a dotted path), and its position; or { timedOut: true }. A wait from at misses nothing written after
   the record. There is no waitAny.
+- A type is its name as text, or the type itself imported from the records entry of the plugin that declares it:
+  import { TaskDone } from "@niwa-labs/tasks/records"; then wait(TaskDone, { filter: { task: task.id }, from }) and
+  read.records(TaskDone, { filter, from, limit }) give data typed by its schema, and read.records({ types: [TaskDone,
+  TaskUpdated] }) data typed by each. The import is resolved from the folder of the script, so the plugin's package
+  must be found from there; a registered copy and a boxed run find packages in the node_modules niwa runs with.
+  The host waits for and reads the type at the version it writes, and refuses a type it does not know and a
+  reference to another version of it.
 - sleep(ms | "5m") records its wake-up moment: a replay does not sleep from the start.
 - ask.choice(text, options, opts), ask.multi, ask.confirm(text, opts), ask.text(text, opts) and ask.form(text, zodObject, opts) ask the owner and give a typed value (the id picked, the ids, a boolean, a string, what the schema parses); opts is { timeout, label }. A cancel or no answer in time throws an error named AskCancelled or AskExpired, which the script may catch (it is never a false answer); uncaught, the run waits for a revision or a cancel, since a retry would get the same error.
 - const Blocked = record("blocked", z.object({ pr: z.number() })) declares a record; workflow({ name, emits: [Blocked] }) lists it,

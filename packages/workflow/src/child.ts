@@ -302,17 +302,52 @@ function group(path: readonly string[]): unknown {
 }
 globals.niwa = group([]);
 
-globals.wait = (type: string, opts: { filter?: Record<string, unknown>; from?: number; timeout?: Duration; label?: string } = {}): Promise<unknown> =>
-  request(
+/** A record type a plugin declares, as a script imports it from the plugin's records entry: its name and version. */
+interface RecordRef {
+  readonly kind: "record";
+  readonly name: string;
+  readonly version: number;
+}
+
+const isRecordRef = (value: unknown): value is RecordRef =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { kind?: unknown }).kind === "record" &&
+  typeof (value as { name?: unknown }).name === "string" &&
+  typeof (value as { version?: unknown }).version === "number";
+
+/**
+ * The name of a type a wait or a read names, and the version a reference holds: the host waits for and
+ * reads the type it knows, and refuses a reference to a version it does not write.
+ */
+function typeNamed(type: unknown, call: string): { name: string; version?: number } {
+  if (typeof type === "string") return { name: type };
+  if (isRecordRef(type)) return { name: type.name, version: type.version };
+  if (isDeclaredRecord(type)) {
+    throw new TypeError(`${call}: "${type.name}" is a record a script writes: name its type as text, "wf.<name>.${type.name}"`);
+  }
+  throw new TypeError(`${call}: a type is a name, or a record type imported from the records entry of a plugin`);
+}
+
+globals.wait = (type: unknown, opts: { filter?: Record<string, unknown>; from?: number; timeout?: Duration; label?: string } = {}): Promise<unknown> => {
+  let named: { name: string; version?: number };
+  try {
+    named = typeNamed(type, "wait(type)");
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return request(
     {
       op: "wait",
-      type,
+      type: named.name,
+      ...(named.version === undefined ? {} : { version: named.version }),
       ...(opts.filter === undefined ? {} : { filter: opts.filter }),
       ...(opts.from === undefined ? {} : { from: opts.from }),
       ...(opts.timeout === undefined ? {} : { timeoutMs: durationMs(opts.timeout) }),
     },
     opts.label,
   );
+};
 
 globals.sleep = (duration: Duration, opts: CallOptions = {}): Promise<unknown> =>
   request({ op: "sleep", ms: durationMs(duration) }, opts.label);
@@ -373,10 +408,35 @@ globals.emit = async (declared: unknown, data: unknown, opts: CallOptions = {}):
   return request({ op: "emit", record: declared.name, data: parsed ?? null }, opts.label);
 };
 
+/**
+ * The query of a read with its types as names, and the versions its references hold: `read.records(Type, query)`
+ * is `read.records({ ...query, types: [Type] })`.
+ */
+function readQuery(first: unknown, second: unknown): { query: Record<string, unknown>; versions: Record<string, number> } {
+  const given = (isRecordRef(first) ? { ...(second as Record<string, unknown> | undefined), types: [first] } : (first ?? {})) as Record<string, unknown>;
+  if (!Array.isArray(given.types)) return { query: given, versions: {} };
+  const versions: Record<string, number> = {};
+  const types = given.types.map((type: unknown) => {
+    const named = typeNamed(type, "read.records({ types })");
+    if (named.version !== undefined) versions[named.name] = named.version;
+    return named.name;
+  });
+  return { query: { ...given, types }, versions };
+}
+
 globals.read = {
   state: (plugin: string, opts: CallOptions = {}): Promise<unknown> => request({ op: "read-state", plugin }, opts.label),
-  records: (query: Record<string, unknown> = {}, opts: CallOptions = {}): Promise<unknown> =>
-    request({ op: "read-records", query }, opts.label),
+  records: (first: unknown, second?: unknown, third?: CallOptions): Promise<unknown> => {
+    const opts = (isRecordRef(first) ? third : (second as CallOptions | undefined)) ?? {};
+    let read: ReturnType<typeof readQuery>;
+    try {
+      read = readQuery(first, second);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const versions = Object.keys(read.versions).length === 0 ? {} : { versions: read.versions };
+    return request({ op: "read-records", query: read.query, ...versions }, opts.label);
+  },
 };
 
 globals.now = (opts: CallOptions = {}): Promise<unknown> => request({ op: "now" }, opts.label);

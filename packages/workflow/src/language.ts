@@ -143,6 +143,8 @@ export const ScriptRequest = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("wait"),
     type: z.string().min(1),
+    /** The version a reference to the type holds: the host refuses one it does not write. */
+    version: z.number().int().positive().optional(),
     filter: z.record(z.string(), z.unknown()).optional(),
     /** The position to look after: what an earlier wait or read answered. */
     from: z.number().int().nonnegative().optional(),
@@ -157,7 +159,8 @@ export const ScriptRequest = z.discriminatedUnion("op", [
   /** `emit()`: a record the script declares in `emits`, by its short name; the host writes it under `wf.<name>.`. */
   z.object({ op: z.literal("emit"), record: z.string().min(1), data: z.unknown() }),
   z.object({ op: z.literal("read-state"), plugin: z.string().min(1) }),
-  z.object({ op: z.literal("read-records"), query: z.record(z.string(), z.unknown()) }),
+  /** `read.records()`: the query, and the version each type named by reference holds, so the host refuses one it does not write. */
+  z.object({ op: z.literal("read-records"), query: z.record(z.string(), z.unknown()), versions: z.record(z.string(), z.number().int().positive()).optional() }),
   z.object({ op: z.literal("now") }),
   z.object({ op: z.literal("random") }),
   /**
