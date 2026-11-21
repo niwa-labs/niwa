@@ -171,9 +171,10 @@ export function withoutHandler(source: Plugin, handler: string): Plugin {
     // Read when asked: the version of the source is final only once its setup has run, and it is
     // the setup of this plugin that runs it (below).
     get version() {
-      // The pair is written as JSON: whatever the handler is called, one pair has one text, so
-      // "a" then "b" never meets a single handler named "a-without-b".
-      return pluginVersion(JSON.stringify([source.version, "without", handler]));
+      // The pair is hashed from its JSON text: whatever the handler is called, one pair has one text,
+      // so "a" then "b" never meets a single handler named "a-without-b", and the version stays the
+      // same length however many handlers were taken away one after another.
+      return hashOfCode([JSON.stringify([source.version, "without", handler])]);
     },
     setup(api) {
       let removed = false;

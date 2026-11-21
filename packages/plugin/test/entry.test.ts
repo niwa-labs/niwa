@@ -40,3 +40,11 @@ test("removing handlers one after another never meets removing one handler of a 
   expect(withoutHandler(withoutHandler(source, "b"), "a").version).not.toBe(stepwise.version);
   expect(withoutHandler(source, "a").version).not.toBe(source.version);
 });
+
+test("the version of a plugin without handlers does not grow with the removals", () => {
+  const source = plugin("many-steps", () => undefined, { version: "1" });
+  let stepwise = source;
+  for (let index = 0; index < 18; index += 1) stepwise = withoutHandler(stepwise, `h${String(index)}`);
+  expect(stepwise.version.length).toBeLessThan(64);
+  expect(stepwise.version).not.toBe(withoutHandler(source, "h0").version);
+});
