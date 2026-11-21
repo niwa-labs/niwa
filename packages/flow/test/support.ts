@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { createNiwa, connect, eventually, ownerTokenOf, plugin, requests, stubAction, tempHome, timers, workflow } from "@niwa-labs/testing";
-import type { Host } from "@niwa-labs/testing";
+import type { Host, TestClock } from "@niwa-labs/testing";
 
 /** What an agent call reaches a stub with. */
 export interface AgentCall {
@@ -51,6 +51,8 @@ export type Extra = Parameters<Host["use"]>[number];
 
 /** What a test host has besides the stub agents: the packages a script finds by name, and more plugins. */
 export interface FlowHostOptions {
+  /** The clock of the host, when the test moves it by hand. */
+  clock?: TestClock;
   packages?: readonly string[];
   plugins?: (home: string) => Extra[];
 }
@@ -79,7 +81,7 @@ export async function flowHost(agents: Record<string, Reply>, opts: FlowHostOpti
       }),
     ] as const;
   });
-  const host = createNiwa({ home });
+  const host = createNiwa({ home, ...(opts.clock === undefined ? {} : { clock: opts.clock }) });
   host.use(
     requests(),
     timers([]),
