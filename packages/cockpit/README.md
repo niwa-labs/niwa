@@ -36,10 +36,18 @@ modules makes zod check the plain way instead of compiling its checks.
 
 ## From the host's side
 
-The entry (`@niwa-labs/cockpit`) imports no React. `cockpitApp()` finds the built app in `dist`,
-builds it when it is missing or older than its sources, and answers the folder and the import map
-that `serveWeb` takes as `app`.
+The entry (`@niwa-labs/cockpit`) imports no React. `cockpitApp()` answers the folder of the built app
+and the import map that `serveWeb` takes as `app`.
+
+- A checkout builds the app from its sources into `dist/builds/<id>`, where the id is a hash of
+  the content of everything the build reads: the package's own sources, the SDK, the kit and the
+  `src/cockpit` folder of each plugin, which the stylesheet scans for classes. A state of the sources
+  that has a build is not built again. A folder is never changed after it is complete, so a server
+  keeps its files while the sources change and another server starts; old folders are left to be
+  deleted by hand.
+- An installed package has no sources. It serves `dist/app`, which packing builds (`prepack`) and
+  ships, and needs neither Vite nor the plugins of its build.
 
 ```sh
-bun run build   # in this package: writes dist/
+bun run build   # in this package: writes dist/app, the app that packing ships
 ```

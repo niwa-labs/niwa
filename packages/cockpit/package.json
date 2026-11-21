@@ -5,8 +5,14 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "files": [
+    "src/index.ts",
+    "src/shared-modules.ts",
+    "dist/app"
+  ],
   "scripts": {
-    "build": "vite build"
+    "build": "bun scripts/build.ts",
+    "prepack": "bun scripts/build.ts"
   },
   "dependencies": {
     "@niwa-labs/client": "workspace:*",

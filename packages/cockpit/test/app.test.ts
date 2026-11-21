@@ -2,7 +2,7 @@
 // start order: who is looking, the catalogue, the modules loaded and set up, and only then the router.
 
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,7 +10,7 @@ import { definePlugin, HostCallError } from "@niwa-labs/cockpit-sdk";
 import { createMemoryHistory } from "@tanstack/react-router";
 
 import { bootCockpit, DEFAULT_BACKLOG, startFailure } from "../src/boot.tsx";
-import { BUILD_SOURCES, importsOf, isStale, SHARED_MODULES } from "../src/index.ts";
+import { ARTIFACT, BUILD_SOURCES, cockpitApp, fingerprint, importsOf, PACKAGE_ROOT, SHARED_MODULES } from "../src/index.ts";
 import { parseSearch, stringifySearch } from "../src/router.tsx";
 import { entryName } from "../src/shared-modules.ts";
 import { fetching, json, module } from "./support.ts";
@@ -52,19 +52,115 @@ test("the import map names each shared module by the entry that serves it", () =
   expect(importsOf(root)).toBeUndefined();
 });
 
-test("a build older than its sources is stale", () => {
-  const root = folder();
+/** A builder that makes the smallest app that names every shared module, and counts its builds. */
+function fakeBuilder(): { builder: (outDir: string) => Promise<void>; built: string[] } {
+  const built: string[] = [];
+  return {
+    built,
+    builder: async (outDir) => {
+      built.push(outDir);
+      mkdirSync(join(outDir, "assets"), { recursive: true });
+      writeFileSync(join(outDir, "index.html"), `<html>${String(built.length)}</html>`);
+      writeFileSync(join(outDir, "assets", "app.js"), `// build ${String(built.length)}`);
+      manifestOf(
+        outDir,
+        Object.fromEntries(SHARED_MODULES.map((one) => [one.name, { file: `assets/${entryName(one.name)}-${String(built.length)}.js`, name: entryName(one.name), isEntry: true }])),
+      );
+    },
+  };
+}
+
+test("the name of a state of the sources follows their content, not when they were written", () => {
   const source = folder();
   writeFileSync(join(source, "page.tsx"), "export {}");
-  manifestOf(root, {});
-  const built = join(root, ".vite", "manifest.json");
-  utimesSync(join(source, "page.tsx"), new Date(2026, 0, 1), new Date(2026, 0, 1));
-  utimesSync(source, new Date(2026, 0, 1), new Date(2026, 0, 1));
-  utimesSync(built, new Date(2026, 0, 2), new Date(2026, 0, 2));
-  expect(isStale(root, [source])).toBe(false);
-  utimesSync(join(source, "page.tsx"), new Date(2026, 0, 3), new Date(2026, 0, 3));
-  expect(isStale(root, [source])).toBe(true);
-  expect(isStale(join(root, "missing"), [source])).toBe(true);
+  const before = fingerprint([source]);
+  utimesSync(join(source, "page.tsx"), new Date(2030, 0, 1), new Date(2030, 0, 1));
+  expect(fingerprint([source])).toBe(before);
+  writeFileSync(join(source, "page.tsx"), "export const a = 1");
+  expect(fingerprint([source])).not.toBe(before);
+  writeFileSync(join(source, "other.tsx"), "");
+  expect(fingerprint([source])).not.toBe(fingerprint([folder()]));
+});
+
+test("the app is also built from every folder its stylesheet scans for the classes of the plugins' pages", () => {
+  const packages = join(PACKAGE_ROOT, "..");
+  const scanned = readdirSync(packages)
+    .map((name) => join(packages, name, "src", "cockpit"))
+    .filter((path) => existsSync(path));
+  expect(scanned.length).toBeGreaterThan(0);
+  const named = BUILD_SOURCES.map((source) => source.replace(/\/+$/, ""));
+  for (const path of scanned) expect(named, path).toContain(path);
+});
+
+test("a checkout builds the app once for a state of its sources, and a change of the sources is a build of its own that leaves the old one alone", async () => {
+  const sources = folder();
+  const builds = folder();
+  writeFileSync(join(sources, "page.tsx"), "export {}");
+  const made = fakeBuilder();
+  const options = { builds, sources: [sources], builder: made.builder };
+
+  const first = await cockpitApp(options);
+  expect(made.built).toHaveLength(1);
+  expect(first.root.startsWith(builds)).toBe(true);
+  expect((await cockpitApp(options)).root).toBe(first.root);
+  expect(made.built).toHaveLength(1);
+
+  // A server that started with the first build keeps its files while the sources change and another server starts.
+  writeFileSync(join(sources, "page.tsx"), "export const changed = true");
+  const second = await cockpitApp(options);
+  expect(made.built).toHaveLength(2);
+  expect(second.root).not.toBe(first.root);
+  expect(second.imports.react).not.toBe(first.imports.react);
+  expect(readFileSync(join(first.root, "assets", "app.js"), "utf8")).toBe("// build 1");
+  expect(importsOf(first.root)).toEqual(first.imports);
+
+  // Nothing is left beside the builds that were made, and a build that is asked for again is a folder of its own.
+  const forced = await cockpitApp({ ...options, rebuild: true });
+  expect(forced.root).not.toBe(second.root);
+  expect(readdirSync(builds)).toHaveLength(3);
+});
+
+test("a build is moved into place only when it is complete", async () => {
+  const sources = folder();
+  const builds = folder();
+  writeFileSync(join(sources, "page.tsx"), "export {}");
+  const incomplete = async (outDir: string) => {
+    manifestOf(outDir, {});
+  };
+  await expect(cockpitApp({ builds, sources: [sources], builder: incomplete })).rejects.toThrow("without every shared module");
+  expect(readdirSync(builds)).toEqual([]);
+  const failing = async () => {
+    throw new Error("the build failed");
+  };
+  await expect(cockpitApp({ builds, sources: [sources], builder: failing })).rejects.toThrow("the build failed");
+  expect(readdirSync(builds)).toEqual([]);
+});
+
+test("an installed package serves the app it was packed with, and builds nothing", async () => {
+  const installed = folder();
+  const artifact = join(installed, "dist", "app");
+  await fakeBuilder().builder(artifact);
+  expect(existsSync(join(installed, "vite.config.ts"))).toBe(false);
+  const never = async () => {
+    throw new Error("an installed package has nothing to build from");
+  };
+  const app = await cockpitApp({ packageRoot: installed, builder: never });
+  expect(app.root).toBe(artifact);
+  expect(Object.keys(app.imports).sort()).toEqual(SHARED_MODULES.map((one) => one.name).sort());
+
+  // A package packed without the app says so.
+  await expect(cockpitApp({ packageRoot: folder(), builder: never })).rejects.toThrow("was not built");
+});
+
+test("packing builds the app and ships it, with the entry that serves it and nothing that builds it", () => {
+  const manifest = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")) as { files: string[]; scripts: Record<string, string> };
+  expect(manifest.scripts.prepack).toBe(manifest.scripts.build);
+  expect(manifest.files).toContain("dist/app");
+  expect(manifest.files).toContain("src/index.ts");
+  expect(manifest.files).not.toContain("vite.config.ts");
+  // The app is built where the package ships it from.
+  expect(readFileSync(join(PACKAGE_ROOT, "scripts", "build.ts"), "utf8")).toContain("outDir: ARTIFACT");
+  expect(ARTIFACT).toBe(join(PACKAGE_ROOT, "dist", "app"));
 });
 
 test("a login that is missing is said in words, any other failure with its reason", () => {

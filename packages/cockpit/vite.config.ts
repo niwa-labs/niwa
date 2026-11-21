@@ -52,7 +52,7 @@ export default defineConfig({
   plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss(), sharedModules(), noEval()],
   resolve: { dedupe: ["react", "react-dom", "@tanstack/react-query", "zod"] },
   build: {
-    outDir: "dist",
+    outDir: "dist/app",
     emptyOutDir: true,
     manifest: true,
     sourcemap: false,
