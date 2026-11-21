@@ -603,6 +603,8 @@ class Niwa implements Host {
     this.home = expandHome(opts.home);
     this.takeover = opts.takeover === true;
     this.clock = opts.clock ?? realClock();
+    // The actions of the host are registered before any plugin is: a host with none still has them.
+    this.rebuild();
   }
 
   // --- plugins ---------------------------------------------------------------
