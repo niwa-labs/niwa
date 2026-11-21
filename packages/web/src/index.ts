@@ -121,7 +121,7 @@ export interface OwnerAction {
 /** How a page calls: the checks some actions carry, and the shape of the body. The grant decides the rest. */
 interface Calls {
   readonly hooks: ReadonlyMap<string, OwnerAction>;
-  readonly body: z.ZodType<{ action: string; input: Record<string, unknown> }>;
+  readonly body: z.ZodType<{ action: string; input?: unknown }>;
 }
 
 /** What a route needs beyond the request: the host, the login, the open streams and what the surface serves. */
@@ -276,7 +276,7 @@ async function route(context: Context, request: Request): Promise<Response> {
             if (!(schema instanceof z.ZodObject)) return text(502, "invalid cockpit action schema");
             const parsed = schema.strict().safeParse(input);
             if (!parsed.success) return text(400, "invalid cockpit action input");
-            const refusal = hooked.refuse?.(input);
+            const refusal = hooked.refuse?.(parsed.data);
             if (refusal !== undefined) return text(400, refusal);
             const called = await api.call(ref.name, parsed.data);
             // What the host answered has passed the output schema there: it goes on as it is, not through the schema
@@ -412,7 +412,8 @@ function callsOf(hooks: readonly OwnerAction[]): Calls {
     hooks: new Map(hooks.map((entry) => [String(entry.ref.name), entry] as const)),
     body: z.object({
       action: z.string().min(1).refine(isActionName, "that is not an action name"),
-      input: z.record(z.string(), z.unknown()),
+      // Any JSON value: what shape an action takes is its schema's matter, and the host holds it to that.
+      input: z.unknown(),
     }),
   };
 }

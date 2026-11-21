@@ -5,6 +5,7 @@
 //   3. the viewer says who is looking and which actions the grant lets through; the info lists the same actions
 //   4. a name that is no action name is a bad request, and an action nobody declared is the host's refusal
 //   5. the journal feed starts after a position the page chooses, from the end the info names
+//   6. the input of a call is any JSON value: its shape is the action's schema to judge
 
 import { afterEach, expect, test } from "bun:test";
 
@@ -35,6 +36,7 @@ const demo = plugin("demo", (api) => {
   api.action(action("demo.next", { description: "Counts.", input: Empty, output: Next, recovery: "repeat", effect: "read", run: () => 1 }));
   api.action(action("demo.when", { description: "Dates.", input: Empty, output: When, recovery: "repeat", effect: "read", run: () => ({ at: new Date("2026-11-21T10:00:00Z") }) }));
   api.action(action("demo.read", { description: "Reads.", input: Empty, output: Ok, recovery: "repeat", effect: "read", run: () => ({ ok: true }) }));
+  api.action(action("demo.echo", { description: "Echoes a text.", input: z.string(), output: z.string(), recovery: "repeat", effect: "read", run: (text: string) => text }));
   api.action(action("demo.write", { description: "Writes.", input: Empty, output: Ok, recovery: "do-not-repeat", effect: "write", run: () => ({ ok: true }) }));
 });
 
@@ -57,7 +59,7 @@ async function served(home: string, speaksFor?: "owner", ownerActions?: NonNulla
   return web;
 }
 
-const call = (web: WebServer, action: string, input: Record<string, unknown> = {}): Promise<Response> =>
+const call = (web: WebServer, action: string, input: unknown = {}): Promise<Response> =>
   webFetch(`${web.url}/api/call`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, input }) });
 
 /** The default grant: what a client that has no token of its own may do. */
@@ -75,6 +77,15 @@ test("a page that speaks for the owner calls an action no list ever named", asyn
   const answer = await call(web, "demo.write");
   expect(answer.status).toBe(200);
   expect(await answer.json()).toEqual({ ok: true });
+});
+
+test("a call carries any JSON value as its input, and the action's schema decides whether it fits", async () => {
+  const web = await served(await hosted(), "owner");
+  const echoed = await call(web, "demo.echo", "hello");
+  expect(echoed.status).toBe(200);
+  expect(await echoed.json()).toBe("hello");
+  // A value the schema refuses is the host's refusal of the call, not a malformed request.
+  expect((await call(web, "demo.echo", { text: "hello" })).status).toBe(409);
 });
 
 test("a plain client's call is allowed by a rule of its grant and refused with 403 without one", async () => {
