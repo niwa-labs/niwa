@@ -23,7 +23,8 @@ import type { Trigger } from "@niwa-labs/plugin";
 import { MessageSent, render } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
 
-import { TaskRefusal, decide, stateOf } from "./owner.ts";
+import type { TaskLedger } from "./ledger.ts";
+import { TaskRefusal, decide } from "./owner.ts";
 import { TaskDone } from "./records.ts";
 import type { TaskOutcome } from "./records.ts";
 
@@ -75,7 +76,7 @@ export function forExecutor(message: Message): boolean {
  * rule and the same record the actions "task.finish" and "task.fail" use.
  */
 export function executorHandler(
-  facts: () => readonly unknown[],
+  ledger: TaskLedger,
 ): (message: Message, step: Step) => Promise<void> {
   return async (message, step) => {
     if (!forExecutor(message)) return;
@@ -87,7 +88,7 @@ export function executorHandler(
     const address = { kind: "agent" as const, id: `${EXECUTOR_PREFIX}${harness}` };
 
     // A task that cannot be ended by this executor is refused before any work is done.
-    const before = stateOf(facts(), task);
+    const before = ledger.state(task);
     if (before?.status === "done") return;
     decide(before, { kind: "finish", task, by: address });
     const declared = before?.contract.result;
@@ -106,7 +107,7 @@ export function executorHandler(
       schema: declared ?? RESULT_SCHEMA,
     });
 
-    const state = stateOf(facts(), task);
+    const state = ledger.state(task);
     if (state?.status === "done") return; // the end already stands: the same fact, written once
     const outcome = outcomeOf(value, declared !== undefined);
     decide(state, { kind: "finish", task, by: address, outcome });

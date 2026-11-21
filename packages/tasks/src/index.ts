@@ -16,7 +16,7 @@
  * report, the Result or the Failure when the task is done. Both go from the responsible party
  * to the address of the contract.
  *
- * The state of a task is folded from the journal (`owner.ts`). The actions are values: a
+ * The state of a task is folded from the journal (`owner.ts`, `ledger.ts`). The actions are values: a
  * responsible party holds the one it needs and calls it as a step of its own invocation.
  *
  * Who asks is who the caller is: a client asks as the address it is bound to, and only the host
@@ -25,7 +25,7 @@
 
 import { z } from "zod";
 
-import { IdIndex, action, seq } from "@niwa-labs/core";
+import { IdIndex, action } from "@niwa-labs/core";
 import type { Action, ActionContext, Address, Caller, JournalReader } from "@niwa-labs/core";
 import { bindingOf, COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,9 @@ import type { CallerBinding, MessagesOptions, Plugin } from "@niwa-labs/plugin";
 import { birthOf, issuedIds, messageSendRef } from "@niwa-labs/messages/records";
 import type { MessageBody } from "@niwa-labs/messages/records";
 
-import { TaskRefusal, decide, fold, sameAddress, stateOf } from "./owner.ts";
+import { taskLedger } from "./ledger.ts";
+import type { TaskLedger } from "./ledger.ts";
+import { TaskRefusal, decide, sameAddress } from "./owner.ts";
 import type { TaskState } from "./owner.ts";
 import {
   CreateInput,
@@ -53,20 +55,6 @@ import {
 import type { TaskEntity } from "./actions.ts";
 import { TaskContract, TaskCreated, TaskDone, TaskId, TaskOutcome, TaskUpdated } from "./records.ts";
 import { ExecutorAssignment, executorHandler } from "./executor.ts";
-
-/** The facts of the tasks module: the records that say what happened to a task. */
-export type TaskFacts = () => readonly unknown[];
-
-/** The facts of the tasks, read from the journal of a plugin. */
-export function taskFacts(journal: () => JournalReader | undefined): TaskFacts {
-  return () => {
-    const reader = journal();
-    if (reader === undefined) return [];
-    return reader
-      .since(seq(0), [TaskCreated.name, TaskUpdated.name, TaskDone.name])
-      .map((record) => record.data);
-  };
-}
 
 /** The ids of tasks: a task is born in the record that creates it. */
 export function taskIds(journal: () => JournalReader | undefined): IdIndex<"task"> {
@@ -100,10 +88,10 @@ export function tasks(opts: TasksOptions = {}): Plugin {
     // The page of this plugin in the cockpit: a client module, offered by the path of its source.
     api.offer(COCKPIT_MODULE, { id: "tasks", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     const journal = () => api.journal?.();
-    const facts = taskFacts(journal);
+    const ledger = taskLedger(journal);
     const ids = taskIds(journal);
-    const written = taskActions(facts, ids, bind);
-    const result = taskResult(facts, {
+    const written = taskActions(ledger, ids, bind);
+    const result = taskResult(ledger, {
       watch(task) {
         let wake = () => {};
         const woken = new Promise<void>((resolve) => (wake = resolve));
@@ -113,7 +101,7 @@ export function tasks(opts: TasksOptions = {}): Plugin {
         return { woken, stop: () => set.delete(wake) };
       },
     });
-    const reads = taskReads(facts, ids, bind);
+    const reads = taskReads(ledger, ids, bind);
 
     api.declare(TaskCreated, TaskUpdated, TaskDone);
 
@@ -145,11 +133,11 @@ export function tasks(opts: TasksOptions = {}): Plugin {
     // An assignment for an executor is work to do: the executor starts a session, asks it for
     // the result and ends the task with what the session said.
     // Each task is worked on by its own session, for as long as it takes.
-    api.on(ExecutorAssignment, { concurrency: Number.POSITIVE_INFINITY }, executorHandler(facts));
+    api.on(ExecutorAssignment, { concurrency: Number.POSITIVE_INFINITY }, executorHandler(ledger));
 
     // The updates go where the task says to report: from the responsible party to that address.
     api.on(TaskUpdated, async (data, step) => {
-      const contract = stateOf(facts(), data.task)?.contract;
+      const contract = ledger.state(data.task)?.contract;
       if (contract === undefined) return;
       await step(messageSendRef, {
         from: contract.responsible,
@@ -168,7 +156,7 @@ export function tasks(opts: TasksOptions = {}): Plugin {
       TaskDone,
       { id: "task.done.report" },
       async (data, step) => {
-        const contract = stateOf(facts(), data.task)?.contract;
+        const contract = ledger.state(data.task)?.contract;
         if (contract === undefined) return;
         await step(messageSendRef, {
           from: contract.responsible,
@@ -192,8 +180,8 @@ export function tasks(opts: TasksOptions = {}): Plugin {
   });
 }
 
-/** The actions that write facts, made from the facts and the binding of callers to addresses. */
-export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: CallerBinding): TaskActions {
+/** The actions that write facts, made from the ledger and the binding of callers to addresses. */
+export function taskActions(ledger: TaskLedger, ids: IdIndex<"task">, bind: CallerBinding): TaskActions {
   /** The address the caller speaks as; a caller that is bound to none speaks for nobody. */
   const speaksAs = (caller: Caller): Address => {
     const address = bind(caller);
@@ -230,7 +218,7 @@ export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: Caller
     world: "niwa",
     async run(input, ctx) {
       const contract: TaskContract = { ...input, askedBy: askedBy(ctx.caller, input.askedBy), id: ids.issue(birthOf(ctx)) };
-      decide(stateOf(facts(), contract.id), { kind: "create", contract });
+      decide(ledger.state(contract.id), { kind: "create", contract });
       await ctx.emit(TaskCreated, contract);
       return { id: contract.id };
     },
@@ -243,7 +231,7 @@ export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: Caller
     effect: "record",
     world: "niwa",
     async run(input, ctx) {
-      decide(stateOf(facts(), input.task), {
+      decide(ledger.state(input.task), {
         kind: "report",
         task: input.task,
         by: speaksAs(ctx.caller),
@@ -259,7 +247,7 @@ export function taskActions(facts: TaskFacts, ids: IdIndex<"task">, bind: Caller
     task: TaskId,
     outcome: TaskOutcome,
   ): Promise<z.infer<typeof OutcomeOutput>> => {
-    decide(stateOf(facts(), task), { kind: "finish", task, by: speaksAs(ctx.caller), outcome });
+    decide(ledger.state(task), { kind: "finish", task, by: speaksAs(ctx.caller), outcome });
     await ctx.emit(TaskDone, { task, outcome });
     return { task, outcome };
   };
@@ -290,13 +278,13 @@ function entityOf(state: TaskState): TaskEntity {
 }
 
 /** The actions that read tasks: the list, one task, and the open tasks of the caller that declared a result schema. */
-function taskReads(facts: TaskFacts, ids: IdIndex<"task">, bind: CallerBinding) {
+function taskReads(ledger: TaskLedger, ids: IdIndex<"task">, bind: CallerBinding) {
   const list = action(taskList, {
     recovery: "repeat",
     effect: "read",
     world: "niwa",
     run: async (input) => ({
-      items: [...fold(facts()).values()]
+      items: [...ledger.states().values()]
         .filter((state) => input.status === undefined || state.status === input.status)
         .map((state) => ({
           id: state.contract.id,
@@ -314,7 +302,7 @@ function taskReads(facts: TaskFacts, ids: IdIndex<"task">, bind: CallerBinding) 
     world: "niwa",
     run: async (input) => {
       const id = ids.require(input.id);
-      const state = stateOf(facts(), id);
+      const state = ledger.state(id);
       if (state === undefined) throw new TaskRefusal("unknown", `the task "${id}" does not exist`);
       return entityOf(state);
     },
@@ -328,7 +316,7 @@ function taskReads(facts: TaskFacts, ids: IdIndex<"task">, bind: CallerBinding) 
       const me = bind(ctx.caller);
       if (me === undefined) return { tasks: [] };
       return {
-        tasks: [...fold(facts()).values()].flatMap((state) =>
+        tasks: [...ledger.states().values()].flatMap((state) =>
           state.status === "open" && state.contract.result !== undefined && sameAddress(state.contract.responsible, me)
             ? [{ task: state.contract.id, description: state.contract.description, result: state.contract.result }]
             : [],
@@ -347,7 +335,7 @@ interface Watcher {
 }
 
 /** The action that gives the result of a task, and waits for it when the task is not done. */
-function taskResult(facts: TaskFacts, watcher: Watcher) {
+function taskResult(ledger: TaskLedger, watcher: Watcher) {
   return action(taskResultRef, {
     // The result is read from the journal: it may be asked again.
     recovery: "repeat",
@@ -357,7 +345,7 @@ function taskResult(facts: TaskFacts, watcher: Watcher) {
       for (;;) {
         const watch = watcher.watch(input.task);
         try {
-          const state = stateOf(facts(), input.task);
+          const state = ledger.state(input.task);
           if (state === undefined) {
             throw new TaskRefusal("unknown", `the task "${input.task}" does not exist`);
           }
@@ -420,6 +408,8 @@ export {
 export { TaskCreated, TaskDone, TaskId, TaskUpdated, TASK_TYPES } from "./records.ts";
 export type { TaskContract, TaskKind, TaskOutcome } from "./records.ts";
 export { TaskRefusal, decide, fold, sameAddress, stateOf } from "./owner.ts";
-export type { Command, TaskState } from "./owner.ts";
+export type { Command, TaskRefusalCode, TaskState } from "./owner.ts";
+export { taskLedger } from "./ledger.ts";
+export type { TaskLedger } from "./ledger.ts";
 export { ExecutorAssignment, executor, executorHandler } from "./executor.ts";
 export type { Strategy, TaskAnswer } from "./strategy.ts";

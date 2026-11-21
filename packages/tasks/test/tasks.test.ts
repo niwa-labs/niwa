@@ -25,13 +25,12 @@ import {
   TaskCreated,
   TaskDone,
   TaskId,
-  stateOf,
   taskActions,
   taskCreate,
-  taskFacts,
   taskFail,
   taskFinish,
   taskIds,
+  taskLedger,
   taskReport,
   taskResult,
   tasks,
@@ -95,10 +94,10 @@ const bind: CallerBinding = (caller: Caller) =>
 function strategyPlugin(fake: Strategy) {
   return plugin("fake-strategy", (api) => {
     api.declare(Work);
-    const facts = taskFacts(() => api.journal?.());
-    const acts = taskActions(facts, taskIds(() => api.journal?.()), bind);
+    const ledger = taskLedger(() => api.journal?.());
+    const acts = taskActions(ledger, taskIds(() => api.journal?.()), bind);
     api.on(Work, async (work, step) => {
-      const contract = stateOf(facts(), work.task)?.contract;
+      const contract = ledger.state(work.task)?.contract;
       if (contract === undefined || !(await fake.accept(contract))) return;
       const answer = await fake.answer(contract);
       if (answer.status === "result") await step(acts.finish, { task: work.task, result: answer.result });
