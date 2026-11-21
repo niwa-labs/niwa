@@ -32,4 +32,4 @@ export {
   messagesOf,
 } from "./records.ts";
 export { MessageKind, messageGetRef, messageListRef, messageReceiveRef, messageSendRef } from "./actions.ts";
-export { render } from "./render.ts";
+export { contentText, render } from "./render.ts";

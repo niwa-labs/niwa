@@ -61,7 +61,7 @@ export {
   messageIds,
   messagesOf,
 } from "./records.ts";
-export { render } from "./render.ts";
+export { contentText, render } from "./render.ts";
 export { MessageKind, messageGetRef, messageListRef, messageReceiveRef, messageSendRef } from "./actions.ts";
 
 /** The name of the action that sends a message. */

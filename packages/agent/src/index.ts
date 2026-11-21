@@ -25,7 +25,7 @@ import type { ActionContext, Address, Caller, JournalReader, Step, StoredRecord 
 import { AGENT, BUILTIN_WORKFLOW, bindingOf, plugin, trigger } from "@niwa-labs/plugin";
 import type { AgentOffer, CallerBinding, MessagesOptions, Plugin, PluginApi } from "@niwa-labs/plugin";
 import { HistorySessionEnded, HistorySessionPaused, historySignal, historyWatch, historyUnwatch } from "@niwa-labs/history/records";
-import { MessageReceived, MessageSent, messageSendRef } from "@niwa-labs/messages/records";
+import { MessageReceived, MessageSent, contentText, messageSendRef } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
 import { REQUEST_TYPES, fold as foldRequests } from "@niwa-labs/requests/records";
 import {
@@ -276,7 +276,9 @@ export function agents(options: AgentOptions = {}): AgentPlugin {
           turn: message.id,
           kind: task === undefined ? "message" : "fact",
           author: message.from,
-          text: message.body.text,
+          // A message carries whole: the contract of an assignment is in it, not only its text. A fact about a
+          // task is its words; the head of the turn says which task it is about.
+          text: task === undefined ? contentText(message) : message.body.text,
           ...(task === undefined ? {} : { source: { kind: "task" as const, task } }),
         });
       });

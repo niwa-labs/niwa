@@ -23,6 +23,19 @@ export function render(message: Message): string {
     `To: ${addressText(message.to)}`,
     `Kind: ${message.body.type}`,
   ];
+  lines.push(contentText(message));
+  return lines.join("\n");
+}
+
+/**
+ * The text of what a message carries, without who it is from and to: the task it belongs to, then
+ * the body with whatever else the body holds.
+ *
+ * A reader that is told the sender and the receiver some other way (a turn in an inbox says who it
+ * is from) reads this and no more. A message with no task and nothing but a text is that text.
+ */
+export function contentText(message: Message): string {
+  const lines: string[] = [];
   if (message.task !== undefined) lines.push(`Task: ${message.task}`);
   lines.push(bodyText(message.body));
   return lines.join("\n");
