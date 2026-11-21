@@ -39,7 +39,7 @@ function suiteScript(file: string): void {
     file,
     [
       "export default workflow({",
-      '  uses: ["workflow.start", "workflow.builtin.promote"],',
+      '  uses: ["workflow.start", "workflow.builtin.promote", "workflow.list"],',
       "  input: z.object({ workflow: z.string(), version: z.string(), expected: z.string() }),",
       "  output: z.string(),",
       "}, async ({ workflow: id, version, expected }) => {",
@@ -52,8 +52,9 @@ function suiteScript(file: string): void {
   );
 }
 
+/** The entry: an installation of it is held to what it uses, which the module's own handler holds. */
 function script(file: string, text: string): void {
-  writeFileSync(file, `export default workflow({ on: ["gated.go"], output: z.string() }, async () => ${JSON.stringify(text)});\n`);
+  writeFileSync(file, `export default workflow({ on: ["gated.go"], uses: ["workflow.list"], output: z.string() }, async () => ${JSON.stringify(text)});\n`);
 }
 
 async function served(home: string, file: string, suite?: string): Promise<Host> {
@@ -125,6 +126,9 @@ test("a suite of the same plugin starts a candidate by its version and promotes 
   const got = await host.call(workflowGet, { id: entry?.id ?? "" });
   expect(got.versions.map((one) => one.candidate)).toEqual([undefined]);
   await eventually(async () => (await host.call(workflowInstallationList, {})).items.some((one) => one.workflow === entry?.id), 20_000, "the promoted version was not installed");
+  // Installed as the sync installs a built-in: by the module itself, not by the run that promoted it.
+  const made = (await ofType(host, "workflow.subscription.installed")).map((row) => row.data as { workflow?: string; installer?: unknown });
+  expect(made.filter((one) => one.workflow === entry?.id).map((one) => one.installer)).toEqual([undefined]);
   await host.emit(Go, { n: 1 });
   await eventually(async () => (await results(host, entry?.id ?? "")).includes("v1"), 20_000, "the promoted version did not run");
   await host.close();

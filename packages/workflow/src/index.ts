@@ -1582,7 +1582,9 @@ export function workflow(opts: WorkflowOptions = {}) {
 
     /**
      * Candidates of gated built-ins accepted together by the run of a built-in of the same plugin that tried them: one
-     * record with the run, then each workflow installed at its new latest version. A set already accepted writes nothing.
+     * record with the run. The built-ins are then asked for again, so the module's own handler installs each at its new
+     * latest version, as it installs every built-in: not the run, whose grant is not the built-in's. A set already
+     * accepted writes nothing.
      */
     api.action(
       action(workflowBuiltinPromote, {
@@ -1596,6 +1598,7 @@ export function workflow(opts: WorkflowOptions = {}) {
             throw new DeniedError("only a run of a built-in workflow promotes the candidates of its plugin");
           }
           const workflows = workflowsOf(journal());
+          // Every version must be one of the plugin's built-ins, a candidate or accepted already: one that is not refuses the set.
           const named = input.versions.map(({ workflow: id, version }) => {
             const registered = workflows.find((one) => one.id === id);
             const found = registered?.versions.find((one) => one.version === version);
@@ -1604,19 +1607,12 @@ export function workflow(opts: WorkflowOptions = {}) {
             }
             return { registered, found };
           });
-          const fresh = named.filter(({ found }) => found.candidate === true);
           const run = RunId.parse(caller.principal.id);
-          if (fresh.length > 0) {
+          if (named.some(({ found }) => found.candidate === true)) {
             await ctx.emit(BuiltinPromoted, { run, versions: input.versions.map(({ workflow: id, version }) => ({ workflow: id, version })) });
+            await ctx.emit(BuiltinsWanted, { items: wantedBuiltins() });
           }
-          const installations: InstallationId[] = [];
-          for (const { registered } of named) {
-            const now = workflowOf(registered.id);
-            if (now.builtin === undefined) continue;
-            const { installation } = await installBuiltin(ctx, now, now.builtin);
-            if (installation !== undefined) installations.push(InstallationId.parse(installation));
-          }
-          return { run, versions: input.versions, installations };
+          return { run, versions: input.versions };
         },
       }),
     );

@@ -183,9 +183,9 @@ export const workflowPause = actionRef("workflow.pause", {
 
 export const workflowBuiltinPromote = actionRef("workflow.builtin.promote", {
   description:
-    "Accept candidate versions of gated built-ins together: each becomes the latest version of its workflow and is installed at it, and the promotion is recorded with the run that made it. For a run of a built-in of the same plugin, the suite that tried them; a version that is not a candidate of that plugin refuses the whole set.",
+    "Accept candidate versions of gated built-ins together: each becomes the latest version of its workflow, the promotion is recorded with the run that made it, and the workflow module installs each at its new version. For a run of a built-in of the same plugin, the suite that tried them. A version already accepted is left as it is; one that is no version of a built-in of that plugin refuses the whole set.",
   input: z.object({ versions: z.array(z.object({ workflow: WorkflowId, version: WorkflowVersion })).min(1) }),
-  output: z.object({ run: RunId, versions: z.array(z.object({ workflow: WorkflowId, version: WorkflowVersion })), installations: z.array(InstallationId) }),
+  output: z.object({ run: RunId, versions: z.array(z.object({ workflow: WorkflowId, version: WorkflowVersion })) }),
 });
 
 export const workflowContinue = actionRef("workflow.continue", {
