@@ -14,7 +14,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmod, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { CORE_TYPES, actionName, grant, seq } from "@niwa-labs/core";
+import { CORE_TYPES, OptionIdSchema, actionName, grant, seq, TOKEN_ENV } from "@niwa-labs/core";
 import { connect, token } from "@niwa-labs/client";
 import { createNiwa } from "@niwa-labs/host";
 import type { Host } from "@niwa-labs/host";
@@ -26,7 +26,7 @@ import type {
   SessionState,
   StartOptions,
 } from "@niwa-labs/harness";
-import { harnessId, harnessKind, machineId } from "@niwa-labs/harness";
+import { harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
 import type { BoxRecord, LaunchedBox, Sandbox, SandboxName, SpawnEvent } from "@niwa-labs/sandbox";
 import {
   SandboxUnavailable,
@@ -42,8 +42,12 @@ import {
 } from "@niwa-labs/sandbox";
 import { SessionBoxManifest, SessionMarked, sessions, toolsOfGrant } from "@niwa-labs/sessions";
 import type { SessionsOptions } from "@niwa-labs/sessions";
-import { tempDir, tempHome, fakeSdkQuery } from "@niwa-labs/testing";
+import { tempDir, tempHome, fakeSdkQuery, eventually, connectAsOwner, requests, stub, StubFinished } from "@niwa-labs/testing";
 
+import { requestAnswer, requestOpen } from "@niwa-labs/requests/records";
+import { boxRules } from "@niwa-labs/proc";
+import { workflow, workflowCancel, workflowStart } from "@niwa-labs/workflow";
+import { sessionStart, sessionEnd, sessionOpenQuestions } from "@niwa-labs/sessions/records";
 import { ClaudeSdkControl } from "@niwa-labs/harness-claude";
 import { CODEX_FIXED_TOOLS, codexControl, codexToolFlags } from "@niwa-labs/harness-codex";
 import { mcodeControl } from "@niwa-labs/harness-mcode";
@@ -509,3 +513,89 @@ test("codex resumed after a restart is born again with the tool flags, the box m
   expect(rows[1]?.request.items).toContainEqual({ item: { net: "registry.npmjs.org" }, from: "call" });
   expect(rows[1]?.mark).not.toBe(rows[0]?.mark);
 });
+
+
+test.each(["cancel", "finish"])("a run owns its authenticated session helpers through %s", async (termination) => {
+  const home = await tempHome();
+  const cwd = await realpath(await workdir());
+  const file = join(home.path, "helpers.js");
+  await writeFile(file, [
+    'export default workflow({ uses: ["session.start@rec", "session.end", "niwa.records.read", "box.net@example.org"] }, async () => {',
+    '  await call("session.start", { harness: "rec", prompt: "", cwd: ' + JSON.stringify(cwd) + ', tools: "niwa-only", box: { only: [] }, visible: { actions: ["session.start@rec", "session.end", {do:"box.net@example.org",ask:true}] } }, { label: "parent" });',
+    '  await wait("stub.finished", { filter: { id: "stop" } });',
+    '});',
+  ].join("\n"));
+  const stopped: string[] = [];
+  class Running extends Recording {
+    private readonly lives = new Map<string, () => void>();
+    override async *life(id?: SessionId) {
+      if (id !== undefined) await new Promise<void>((done) => this.lives.set(id.native, done));
+    }
+    async close(id: SessionId) {
+      stopped.push(id.native);
+      this.lives.get(id.native)?.();
+    }
+  }
+  const harness = new Running();
+  const host = createNiwa({ home: home.path });
+  host.use(requests(), boxRules(), stub(home.path), sessions({
+    harnesses: [{ instance: instance("rec"), control: harness }],
+    niwaMcp: { command: "niwa", args: ["mcp"] },
+  }), workflow({ triggers: [StubFinished] }));
+  await host.serve();
+  cleanups.push(async () => { await host.close(); await home.cleanup(); });
+  const { run } = await host.call(workflowStart, { file });
+  await eventually(async () => (await host.records.read({ types: [SessionMarked.name] })).length === 1, 15000);
+  const connectSession = async (index: number) => {
+    const value = harness.starts[index]?.env?.[TOKEN_ENV];
+    if (value === undefined) throw new Error("the harness did not receive its token");
+    const client = await connect({ home: home.path, token: token(value) });
+    cleanups.push(() => client.close());
+    return client;
+  };
+  const parent = await connectSession(0);
+  const helper = { harness: "rec", prompt: "", operation: "nested-helper" };
+  const child = await parent.call(sessionStart, helper);
+  expect(await parent.call(sessionStart, helper)).toEqual(child);
+  expect(harness.starts).toHaveLength(2);
+  expect(harness.starts[1]).toMatchObject({ cwd, tools: "niwa-only" });
+  const records = await host.records.read();
+  const births = records.filter((r) => r.type === "session.started").map((r) => r.data);
+  expect(births).toMatchObject([
+    { run, session: "rec s1" },
+    { run, session: child.ref, parentSession: "rec s1", boxAccess: { only: [] } },
+  ]);
+  const childClient = await connectSession(1);
+  await expect(childClient.call(sessionEnd, { session: "rec s1", reason: "try to end parent" })).rejects.toThrow("outside");
+  await expect(childClient.call(sessionStart, { ...helper, operation: "other-dir", cwd: home.path })).rejects.toThrow("working directory");
+  await expect(childClient.call(sessionStart, { ...helper, operation: "other-harness", harness: "admin" })).rejects.toThrow();
+  await expect(childClient.call(sessionStart, { ...helper, operation: "network", box: { allow: [{ net: "example.org" }] } })).rejects.toThrow();
+  await expect(childClient.call(sessionOpenQuestions, { mark: "someone-else" })).rejects.toThrow("another session");
+  const answer = harness.starts[1]?.reverse?.(sessionId(harnessId("rec"), "s2"), {
+    raw: { method: "test/permission", params: {} }, signal: new AbortController().signal,
+    question: { kind: "permission", title: "Permit a helper tool?", subject: { kind: "execute", tool: "Shell", target: "test" },
+      options: [{ id: OptionIdSchema.parse("deny"), label: "Deny", flavor: "reject_once" }] },
+  });
+  let question: string | undefined;
+  await eventually(async () => {
+    const { requests } = await host.call(requestOpen, {});
+    for (const entry of requests) {
+      if (!("kind" in entry) && entry.question === "session.reverse") {
+        expect(entry.to).toEqual({ kind: "owner" });
+        question = entry.id;
+      }
+    }
+    return question !== undefined;
+  });
+  if (question === undefined) throw new Error("the owner did not receive the question");
+  const owner = await connectAsOwner(home.path);
+  cleanups.push(() => owner.close());
+  await owner.call(requestAnswer, { id: question, answer: { ids: ["deny"] } });
+  expect(await answer).toEqual({ ids: [OptionIdSchema.parse("deny")] });
+  if (termination === "cancel") await host.call(workflowCancel, { run });
+  else await host.call(actionName("stub.finish"), { id: "stop" });
+  await eventually(() => stopped.includes("s1") && stopped.includes("s2"));
+  await expect(childClient.call(sessionStart, { ...helper, operation: "after-cancel" })).rejects.toThrow("closed");
+  expect(harness.starts).toHaveLength(2);
+  expect(stopped.sort()).toEqual(["s1", "s2"]);
+}, 60000);

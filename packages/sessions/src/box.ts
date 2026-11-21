@@ -24,7 +24,7 @@ const LAUNCH_VERBS: readonly Verb[] = ["tool"];
 const BOX_RULES = "box.";
 
 /** Is this rule, as it is written, one of the launch: a tool, or how far a box may be widened? */
-export function isLaunchRule(spec: string): boolean {
+export function isLaunchRule(spec: RuleSpec): boolean {
   const parsed = rule(spec);
   return LAUNCH_VERBS.includes(parsed.verb) || (parsed.verb === "call" && parsed.name.startsWith(BOX_RULES));
 }
@@ -35,10 +35,14 @@ export function isLaunchRule(spec: string): boolean {
  * child is not left with every tool by asking for none. A caller that nothing limits has no rules
  * to hand down.
  */
-export function inheritedLaunch(caller: Grant | "unlimited", asked: readonly string[]): RuleSpec[] {
+export function inheritedLaunch(caller: Grant | "unlimited", asked: readonly RuleSpec[]): RuleSpec[] {
   if (caller === "unlimited") return [];
-  const named = new Set(asked.map((spec) => rule(spec).verb));
-  return specsOf({ rules: caller.rules.filter((each) => LAUNCH_VERBS.includes(each.verb) && !named.has(each.verb)) });
+  const named = asked.map(rule);
+  const inheritsTools = !named.some((entry) => entry.verb === "tool");
+  const isBoxRule = (entry: Rule) => entry.verb === "call" && entry.name.startsWith(BOX_RULES);
+  const inheritsBox = !named.some(isBoxRule);
+  const rules = caller.rules.filter((entry) => (inheritsTools && entry.verb === "tool") || (inheritsBox && isBoxRule(entry)));
+  return specsOf({ rules });
 }
 
 function plain(of: Rule): Rule {

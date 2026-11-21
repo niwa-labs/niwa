@@ -268,6 +268,7 @@ export const sessionStart = actionRef("session.start", {
   // Every key that is not a field is the options block of the harness's kind, an object named after it: what
   // is in it is the kind's schema to check, so it is checked once the harness is known.
   input: withBlocks(SessionStartFields),
+  target: (input) => input.harness,
   output: z.object({
     /** The id niwa gave the session: what every session action takes. */
     session: NiwaSessionIdSchema,

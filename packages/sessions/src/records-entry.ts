@@ -20,6 +20,7 @@ export {
   SessionMarked,
   SessionModel,
   SessionStarted,
+  SessionStartReserved,
   SessionTurnEnded,
   SessionTurnStarted,
   SessionUnknownVariant,

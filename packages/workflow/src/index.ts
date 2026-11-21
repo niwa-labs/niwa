@@ -46,7 +46,7 @@ import { scriptOn } from "@niwa-labs/script";
 import { requireBox } from "@niwa-labs/sandbox";
 import type { BoxSandboxName } from "@niwa-labs/sandbox";
 import { requestCancel } from "@niwa-labs/requests/records";
-import { SessionEnded, SessionMarked, sessionEnd, sessionInterrupt } from "@niwa-labs/sessions/records";
+import { SessionEnded, SessionMarked, SessionStarted, SessionStartReserved, sessionEnd, sessionInterrupt } from "@niwa-labs/sessions/records";
 
 import { AskCancelled, AskExpired, bridge } from "./bridge.ts";
 import {
@@ -1811,6 +1811,40 @@ export function workflow(opts: WorkflowOptions = {}) {
         if (settled(status, false)) return status;
       }
     };
+
+    // A session started by an MCP helper has no step in the script's invocation.
+    // The durable ownership record includes these sessions even after a restart.
+    api.on(RunFinished, { id: "end-run-sessions", concurrency: Infinity }, async ({ run }, step) => {
+      const reason = `the run ${run} finished`;
+      const granted = journal().find({ type: AccessGranted.name, field: "principal.id", equals: run })
+        .some((row) => AccessGranted.schema.parse(row.data).principal.kind === "run");
+      if (granted) {
+        await step.outcome(actionName("access.grant.close"), { principal: principalOf("run", run), reason }, { key: "close-grant" });
+      } else {
+        // A trusted ad-hoc run can have no grant of its own to cascade from.
+        for (const row of journal().find({ type: SessionStartReserved.name, field: "run", equals: run })) {
+          const { mark } = SessionStartReserved.schema.parse(row.data);
+          if (mark !== undefined) await step.outcome(actionName("access.grant.close"), {
+            principal: principalOf("session", mark), reason,
+          }, { key: `close:${mark}` });
+        }
+      }
+      for (const row of journal().find({ type: SessionStarted.name, field: "run", equals: run })) {
+        const { session } = SessionStarted.schema.parse(row.data);
+        await step(sessionEnd, { session, reason }, { key: `end:${session}` });
+      }
+    });
+    api.on(SessionStartReserved, { id: "close-late-session-grant", concurrency: Infinity }, async ({ run, mark }, step) => {
+      if (run !== undefined && mark !== undefined && journal().find({ type: RunFinished.name, field: "run", equals: run }).length > 0) {
+        await step.outcome(actionName("access.grant.close"), { principal: principalOf("session", mark), reason: `the run ${run} finished` });
+      }
+    });
+    // The harness can finish naming a session after the run finished.
+    api.on(SessionStarted, { id: "end-late-run-session", concurrency: Infinity }, async ({ run, session }, step) => {
+      if (run !== undefined && journal().find({ type: RunFinished.name, field: "run", equals: run }).length > 0) {
+        await step(sessionEnd, { session, reason: `the run ${run} finished` });
+      }
+    });
 
     // Runs are independent of each other: one that waits for an answer holds no other. A run that calls
     // another workflow requests a run from inside its own: the chain of calls goes as deep as CALL_DEPTH.

@@ -50,6 +50,14 @@ export interface SessionSendOutput {
   receipt: DeliveryReceipt;
 }
 
+const LaunchContext = {
+  run: z.string().min(1).optional(),
+  parentSession: SessionRefSchema.optional(),
+  /** Effective access items, including defaults; the starting point for nested boxes. */
+  boxAccess: BoxAccessSchema.optional(),
+  disabledTools: z.array(z.string()).optional(),
+};
+
 /**
  * A session was started.
  *
@@ -61,6 +69,7 @@ export const SessionStarted = record(
   z.object({
     /** The session that was started: the harness and the id it gave. */
     session: SessionRefSchema,
+    ...LaunchContext,
     /** The id niwa gave it, issued from the starting call. */
     id: NiwaSessionIdSchema,
     /** The working directory it was started in, when it was given one. */
@@ -331,8 +340,11 @@ export const SessionInputSettled = record(
 export const SessionStartReserved = record(
   "session.start.reserved",
   z.object({
+    ...LaunchContext,
+    mark: z.string().optional(),
+    tools: ToolsModeSchema.optional(),
     operation: z.string().min(1),
-    /** The SHA-256 of the start's harness and prompt, so a retry with another body is told apart. */
+    /** The SHA-256 of the starting identity and input, so another caller or request cannot replay it. */
     digest: z.string().min(1),
     /** The directory the session is started in, when it was given one. */
     cwd: z.string().optional(),

@@ -42,14 +42,19 @@ import {
   UnknownId,
   ValidationError,
   accessMine,
+  actionName,
+  callerOf,
+  principalOf,
   action,
   assertNever,
   closedPlacesOf,
   effectPossibleAfter,
   grant,
   owner,
+  narrow,
   rule,
-  ruleText,
+  specOf,
+  stableJson,
   seq,
   specsOf,
   toolNameOf,
@@ -295,6 +300,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
   const followed = new Set<SessionRef>();
   /** The sessions `session.end` ended: their end is written once, by it, not again when their stream closes. */
   const ending = new Set<SessionRef>();
+  const closing = new Map<SessionRef, Promise<void>>();
   // The sessions niwa was asked to interrupt: their next turn end is written as interrupted.
   const interrupting = new Set<SessionRef>();
   // The numbering of each session's turns. A harness counts its turns from 1 in each process: the
@@ -505,9 +511,29 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       });
     });
 
+    // Control of another session lets a caller speak through its grant and box.
+    // A run can direct its own sessions; a helper can direct itself and its descendants.
+    const authorizeControl = (ref: SessionRef, caller: Caller): void => {
+      if (caller.kind !== "client" || caller.principal?.kind === "owner") return;
+      const principal = caller.principal;
+      const own = principal?.kind === "session" ? sessionOfMark(principal.id) : undefined;
+      const run = principal?.kind === "run" ? principal.id : own === undefined ? undefined : startedOf(own)?.run;
+      const target = startedOf(ref);
+      if (run === undefined && target?.run === undefined) return;
+      if (run !== undefined && run === target?.run) {
+        if (principal?.kind === "run") return;
+        const seen = new Set<SessionRef>();
+        for (let next: SessionRef | undefined = ref; next !== undefined && !seen.has(next); next = startedOf(next)?.parentSession) {
+          if (next === own) return;
+          seen.add(next);
+        }
+      }
+      throw new SessionRefusal("foreign-session", "the session is outside the caller's run or its session tree");
+    };
     /** The control side that serves a session, refused before anything is attempted if it cannot. */
-    const controlOf = (input: z.output<typeof SessionRefInput>, ability: ControlAbility) => {
+    const controlOf = (input: z.output<typeof SessionRefInput>, ability: ControlAbility, caller: Caller) => {
       const ref = refOf(input);
+      authorizeControl(ref, caller);
       const id = sessionOf(ref);
       return { ref, id, control: controlFor(bindings, id.harness, ability) };
     };
@@ -841,7 +867,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      * box that cannot be had stops the start with every reason: this runs before a mark, a token
      * or a process exists.
      */
-    const launchFor = async (rules: Grant, cwd: string | undefined, harness: string, request: BoxAccessInput | undefined, caller: Caller): Promise<Launch> => {
+    const launchFor = async (rules: Grant, cwd: string | undefined, harness: string, request: BoxAccessInput | undefined, caller: Caller, defaults: BoxAccessInput | BoxAccess = boxDefault): Promise<Launch> => {
       const tools = toolsOfGrant(rules);
       const adapter = sandboxOf(boxes.adapter ?? "srt");
       await requireSandbox(adapter);
@@ -849,7 +875,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       const plan = boxes.plan({
         cwd: cwd ?? process.cwd(),
         ...(cwd === undefined ? { noProject: "the session names no working directory" } : {}),
-        defaults: boxDefault,
+        defaults,
         request,
         owner: harness,
         writes: [{ path: temp, from: "temp" }],
@@ -902,7 +928,10 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      */
     const grantOfSession = (caller: Caller, requested: VisibleActionsInput | undefined, visible: VisibleActions): Grant => {
       // The answering action is the module's to give, whoever asked for it.
-      const asked = (requested?.actions ?? []).filter((name) => name !== SUBMIT_ANSWER_ACTION);
+      const asked = (requested?.actions ?? []).filter((spec) => {
+        const entry = rule(spec);
+        return entry.verb !== "call" || String(entry.name) !== SUBMIT_ANSWER_ACTION;
+      });
       const narrowed = api.narrow(caller, [...asked, ...inheritedLaunch(api.rights(caller), asked)]);
       if ("refused" in narrowed) {
         throw new SessionRefusal(
@@ -910,7 +939,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           `the caller does not have ${narrowed.refused.join(", ")}: a session it starts cannot see more than it does`,
         );
       }
-      const own = [...visible.actions.filter((name) => !asked.includes(name)), sessionOpenQuestions.name, accessMine];
+      const own = [...visible.actions.filter((name) => name === SUBMIT_ANSWER_ACTION), sessionOpenQuestions.name, accessMine];
       return grant([...specsOf(narrowed.rules), ...own]);
     };
 
@@ -925,6 +954,32 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     };
 
     sessionOfClientMark = sessionOfMark;
+    const ended = (ref: SessionRef): boolean =>
+      (api.journal?.()?.find({ type: SessionEnded.name, field: "session", equals: ref }).length ?? 0) > 0;
+
+
+    const sessionGrantClosed = (mark: string): boolean => (api.journal?.()?.find({
+      type: AccessClosed.name, field: "principal.id", equals: mark,
+    }) ?? []).some((row) => AccessClosed.schema.parse(row.data).principal.kind === "session");
+
+    // A close and the first mark can arrive in either order. The second record
+    // always observes the first, including when a host replays its handlers.
+    api.on(SessionMarked, { id: "check-mark-lifetime", concurrency: Infinity }, async ({ session, mark }, step) => {
+      if (sessionGrantClosed(mark)) {
+        await step(sessionEnd, { session, reason: "its grant was closed" });
+      } else if (ended(session) && startedOf(session)?.run !== undefined) {
+        await step.outcome(actionName("access.grant.close"), { principal: principalOf("session", mark), reason: "the session ended" });
+      }
+    });
+    api.on(SessionEnded, { id: "close-run-session-grants", concurrency: Infinity }, async ({ session }, step) => {
+      if (startedOf(session)?.run === undefined) return;
+      for (const row of api.journal?.()?.find({ type: SessionMarked.name, field: "session", equals: session }) ?? []) {
+        const { mark } = SessionMarked.schema.parse(row.data);
+        if (!sessionGrantClosed(mark)) await step.outcome(actionName("access.grant.close"), {
+          principal: principalOf("session", mark), reason: "the session ended",
+        }, { key: mark });
+      }
+    });
 
     /** The latest `session.started` of a session, from the journal. */
     const startedOf = (ref: SessionRef): z.output<typeof SessionStarted.schema> | undefined =>
@@ -1003,7 +1058,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      * The last reservation of a start under an operation, from the journal: the digest it was made with, the
      * directory, the session its harness named, and whether it failed with nothing sent.
      */
-    const reservationOf = (operation: string): { digest: string; cwd?: string; named?: SessionRef; released: boolean } | undefined => {
+    const reservationOf = (operation: string) => {
       const journal = api.journal?.();
       if (journal === undefined) return undefined;
       const last = journal
@@ -1021,8 +1076,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         });
       const named = after(SessionStartNamed).at(-1)?.session;
       return {
-        digest: last.digest,
-        ...(last.cwd === undefined ? {} : { cwd: last.cwd }),
+        ...last,
         ...(named === undefined ? {} : { named }),
         released: after(SessionStartUnsent).length > 0,
       };
@@ -1081,7 +1135,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      * The grant is the record of the last mark the session was given. The rules the module adds
      * to every session are left out of the request, as they are added again.
      */
-    const lastLaunchOf = (ref: SessionRef): { request: VisibleActionsInput; cwd: string | undefined } | undefined => {
+    const lastLaunchOf = (ref: SessionRef): { request: VisibleActionsInput; cwd: string | undefined; rules: Grant; mark: string; parent?: Caller } | undefined => {
       const journal = api.journal?.();
       if (journal === undefined) return undefined;
       const marks = journal.find({ type: SessionMarked.name, field: "session", equals: ref });
@@ -1094,15 +1148,15 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         .find({ type: AccessGranted.name, field: "principal.id", equals: mark })
         .flatMap((stored) => {
           const parsed = AccessGranted.schema.safeParse(stored.data);
-          return parsed.success && parsed.data.principal.kind === "session" ? [parsed.data.rules] : [];
+          return parsed.success && parsed.data.principal.kind === "session" ? [parsed.data] : [];
         })
         .at(-1);
       if (granted === undefined) return undefined;
-      const own = new Set<string>([sessionOpenQuestions.name, accessMine, SUBMIT_ANSWER_ACTION]);
-      const actions = granted
+      const own = new Set<string>([sessionOpenQuestions.name, accessMine]);
+      const actions = granted.rules
         .map((spec) => rule(spec))
         .filter((each) => each.verb !== "call" || !own.has(each.name))
-        .map((each) => (each.verb === "call" ? ruleText(each).slice("call:".length) : ruleText(each)));
+        .map(specOf);
       const boxed = journal
         .find({ type: SessionBoxManifest.name, field: "mark", equals: mark })
         .flatMap((stored) => {
@@ -1112,7 +1166,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         .at(-1);
       // The directory as the session was started in it, as its harness knows it; the box's own when there is none.
       const started = startedOf(ref)?.cwd;
-      return { request: { actions }, cwd: started === undefined ? boxed : String(started) };
+      return { request: { actions, disabledTools: startedOf(ref)?.disabledTools }, rules: grant(granted.rules), mark,
+        ...(granted.parent === undefined ? {} : { parent: callerOf(granted.parent.principal) }), cwd: started === undefined ? boxed : String(started) };
     };
 
     /**
@@ -1124,8 +1179,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       const session = sessionOfMark(data.principal.id);
       if (session === undefined) return;
       // A harness that cannot interrupt, or a session with no turn, is not a reason to keep it.
-      await step.outcome(sessionInterrupt, { session });
-      await step.emit(SessionEnded, { session, reason: `its grant was closed: ${data.reason}` });
+      await step(sessionEnd, { session, reason: `its grant was closed: ${data.reason}` });
     });
 
     api.action(
@@ -1138,7 +1192,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         run: async (input, ctx) => {
           // The prompt is an input under an operation: a retry with it answers the session it made.
           const operation = input.operation ?? ctx.operationId;
-          const digest = createHash("sha256").update(JSON.stringify(["start", input.harness, input.prompt])).digest("hex");
+          const digest = createHash("sha256").update(stableJson([ctx.caller.kind === "client" ? ctx.caller.principal ?? ctx.caller.id : ctx.caller.kind, input])).digest("hex");
           const conflict = () => new SessionRefusal("operation-conflict", `operation "${operation}" was another input of a session`);
           // A retry while the start runs waits for it: the harness is asked once.
           const running = startsRunning.get(operation);
@@ -1164,12 +1218,17 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
               session: ref,
               id: sessionIds.issue(ctx.operationId),
               cwd: reserved.cwd,
+              run: reserved.run,
+              parentSession: reserved.parentSession,
+              boxAccess: reserved.boxAccess,
+              disabledTools: reserved.disabledTools,
               effort: input.effort,
               mode: input.mode,
-              ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
+              tools: reserved.tools,
               ...(input.box === undefined ? {} : { box: input.box }),
               ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
             });
+            if (reserved.mark !== undefined) await ctx.emit(SessionMarked, { session: ref, mark: reserved.mark });
             await ctx.emit(SessionInputSending, { session: ref, operation, digest });
             const reason = "the start was cut off after its harness named the session, while its prompt was going";
             await ctx.emit(SessionInputSettled, { session: ref, operation, outcome: { status: "possibly-sent", reason } });
@@ -1203,26 +1262,67 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       const blocks = requireOwnBlocks(instance.id, optionsOf(bindings, input.harness), blocksOf(input, SESSION_START_FIELDS));
       // A tool mode the installation cannot hold is refused here too, before any prompt.
       requireTools(instance.id, instance.sides.control?.tools, input.tools);
-      const visible = visibleFor(input.harness, callsOf(input.visible));
+      const principal = ctx.caller.kind === "client" ? ctx.caller.principal : undefined;
+      const parentSession = principal?.kind === "session" ? sessionOfMark(principal.id) : undefined;
+      const parent = parentSession === undefined ? undefined : startedOf(parentSession);
+      if (principal?.kind === "session" && parentSession === undefined && api.journal?.()?.find({
+        type: AccessGranted.name, field: "principal.id", equals: principal.id,
+      }).some((row) => AccessGranted.schema.parse(row.data).parent !== undefined)) {
+        throw new SessionRefusal("unnamed-parent", "the parent session has not been named yet");
+      }
+      if (parent?.run !== undefined && parentSession !== undefined && ended(parentSession)) {
+        throw new SessionRefusal("ended-parent", "the session that asked for a helper has ended");
+      }
+      const run = principal?.kind === "run" ? principal.id : parent?.run;
+      if (parent?.run !== undefined && (input.worktree !== undefined ||
+        (input.cwd !== undefined && (parent.cwd === undefined || realpathSync(input.cwd) !== realpathSync(parent.cwd))))) {
+        throw new SessionRefusal("different-project", "a helper starts in its parent's working directory");
+      }
+      const rights = api.rights(ctx.caller);
+      const inherited = run !== undefined && input.visible?.actions === undefined && rights !== "unlimited"
+        ? specsOf(rights).filter((spec) => ![sessionOpenQuestions.name, accessMine].some((own) => String(rule(spec).name) === own))
+        : undefined;
+      const requested = {
+        actions: input.visible?.actions ?? (run === undefined ? undefined : [...(inherited ?? []), SUBMIT_ANSWER_ACTION]),
+        disabledTools: [...new Set([...(parent?.disabledTools ?? []), ...(input.visible?.disabledTools ?? [])])],
+      };
+      const visible = visibleFor(input.harness, callsOf(requested));
       // Refused before a mark or a token is made: a start that asks for too much, or for a
       // box this machine cannot give, creates nothing.
-      const rules = grantOfSession(ctx.caller, input.visible, visible);
+      const rules = grantOfSession(ctx.caller, requested, visible);
       // A session asked to run in a worktree gets one made by the git module, and runs in it.
       const worktree = input.worktree === undefined ? undefined : await worktreeFor(ctx, input.harness, input.worktree, input.cwd);
-      const cwd = worktree?.path ?? input.cwd;
-      const launch = await launchFor(rules, cwd, input.harness, input.box, ctx.caller);
+      const cwd = worktree?.path ?? input.cwd ?? parent?.cwd;
+      const launch = await launchFor(rules, cwd, input.harness, input.box, ctx.caller, parent?.run !== undefined ? parent.boxAccess : parent?.box?.only === undefined ? undefined : parent.box);
       // The mode asked for, within the allow-list of the grant: what the grant adds is held too.
-      const tools = toolsOfSession(input.tools, launch.tools);
+      const toolRequest = parent?.tools === "niwa-only" ? "niwa-only" :
+        toolsOfSession(input.tools, typeof parent?.tools === "object" ? parent.tools : undefined);
+      const tools = toolsOfSession(toolRequest, launch.tools);
       requireTools(instance.id, instance.sides.control?.tools, tools);
       // The mark is made in the run: a replay returns what the run returned, and the mark
       // is in the journal with the session it names.
       const mark = randomUUID();
-      const token = tokenFor(mark, rules, ctx.caller);
-      const servers = serversOf(visible.actions, mark, token);
+      const context = { run, parentSession, disabledTools: [...visible.disabledTools], boxAccess: { only: launch.plan.request.items.map(({ item }) => item) }, tools: run === undefined && parent === undefined ? input.tools : tools };
       // A harness at its ceiling takes the start once one of its turns ends.
       const slot = await caps.admit(instance.id);
       // Written before the harness is asked: from here on a retry never asks it again.
-      await ctx.emit(SessionStartReserved, { operation, digest, ...(cwd === undefined ? {} : { cwd }) }).catch((error: unknown) => {
+      let token: Token;
+      let servers: readonly McpServerSpec[] | undefined;
+      try {
+        const current = grantOfSession(ctx.caller, requested, visible);
+        if (stableJson(specsOf(current)) !== stableJson(specsOf(rules)) ||
+            launch.plan.rules.some((needed) => heldRule(api.rights(ctx.caller), needed) === undefined) ||
+            (parent?.run !== undefined && parentSession !== undefined && ended(parentSession))) {
+          throw new SessionRefusal("grant-changed", "the parent grant changed while the session was starting");
+        }
+        token = tokenFor(mark, current, ctx.caller);
+        servers = serversOf(visible.actions, mark, token);
+      } catch (error) {
+        slot.release();
+        rmSync(launch.temp, { recursive: true, force: true });
+        throw error;
+      }
+      await ctx.emit(SessionStartReserved, { operation, digest, mark, ...context, ...(cwd === undefined ? {} : { cwd }) }).catch((error: unknown) => {
         slot.release();
         throw error;
       });
@@ -1237,7 +1337,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           visible,
           servers,
           env: { [TOKEN_ENV]: token, ...launchEnv(launch) },
-          reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
+          reverse: reverse.handlerFor(rules, run === undefined ? starterOf(ctx.caller) : owner, ownToolPrefix(visible.actions)),
           ...launchOptions(launch, mark),
           ...(tools === undefined ? {} : { tools }),
           named: async (named) => {
@@ -1262,11 +1362,11 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       await ctx.emit(SessionStarted, {
         session: ref,
         id: issued,
+        ...context,
         cwd,
         effort: input.effort,
         mode: mode ?? input.mode,
         options: Object.keys(blocks).length === 0 ? undefined : blocks,
-        ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
         ...(input.box === undefined ? {} : { box: input.box }),
         ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
       });
@@ -1293,7 +1393,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         effect: "write",
         world: "local",
         run: async (input, ctx) => {
-          const { ref, id, control } = controlOf(input.session, "resume");
+          const { ref, id, control } = controlOf(input.session, "resume", ctx.caller);
           const prompt = input.prompt;
           // A resume with a prompt begins a turn: a harness at its ceiling takes it once one of its turns ends.
           // The slot is taken before anything is decided of the session, which may change while it waits.
@@ -1302,10 +1402,22 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           try {
             // A resume that is given no `visible` takes the grant the session was last launched
             // with: the session is the same, and so are its tools, its box and its rights.
-            const restored = input.visible === undefined ? lastLaunchOf(ref) : undefined;
-            const requested = input.visible ?? restored?.request;
+            const restored = lastLaunchOf(ref);
+            const owned = startedOf(ref);
+            if (owned?.run !== undefined && (ended(ref) || restored === undefined || sessionGrantClosed(restored.mark))) {
+              throw new SessionRefusal("ended-session", "the run-owned session no longer has a live grant");
+            }
+            const issuer = owned?.run === undefined ? ctx.caller : restored?.parent ?? callerOf(principalOf("run", owned.run));
+            const requested = input.visible === undefined ? restored?.request : {
+              ...input.visible, disabledTools: [...new Set([...(owned?.disabledTools ?? []), ...(input.visible.disabledTools ?? [])])],
+            };
             const visible = visibleFor(id.harness, callsOf(requested));
-            const rules = grantOfSession(ctx.caller, requested, visible);
+            let rules = grantOfSession(issuer, requested, visible);
+            if (owned?.run !== undefined && restored !== undefined) {
+              const kept = narrow(restored.rules, specsOf(rules), { irreversible: (name) => api.effectOf(name) === "irreversible" });
+              if ("refused" in kept) throw new SessionRefusal("wider-than-session", "a resumed session cannot widen its grant");
+              rules = kept.rules;
+            }
             // A process that is still running keeps what it was born with: only a process that is
             // gone is launched again, and only then are its tools, box and servers asked for.
             const gone = (await control.state(id)) === "unknown";
@@ -1314,11 +1426,19 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             if (gone) restart(ref);
             // The directory the session was started in: a harness that loads a session by it needs the same one.
             const startedIn = restored?.cwd ?? startedOf(ref)?.cwd;
-            const launch = launches ? await launchFor(rules, startedIn, id.harness, startedOf(ref)?.box, ctx.caller) : undefined;
+            const launch = launches ? await launchFor(rules, startedIn, id.harness, owned?.run === undefined ? owned?.box : owned.boxAccess, issuer, owned?.run === undefined ? undefined : owned.boxAccess) : undefined;
             // A process launched again keeps the tools the session was started with, within its grant.
             const tools = launch === undefined ? undefined : toolsOfSession(startedOf(ref)?.tools, launch.tools);
-            const mark = randomUUID();
-            const token = tokenFor(mark, rules, ctx.caller);
+            // Relaunch the same run-owned principal, including its current grant
+            // and children. A second identity could outlive a later narrowing.
+            const mark = owned?.run !== undefined && restored !== undefined ? restored.mark : randomUUID();
+            if (owned?.run !== undefined && restored !== undefined) {
+              const current = api.rights(callerOf(principalOf("session", mark)));
+              if (sessionGrantClosed(mark) || current === "unlimited" || stableJson(specsOf(current)) !== stableJson(specsOf(restored.rules))) {
+                throw new SessionRefusal("grant-changed", "the session grant changed while it was resuming");
+              }
+            }
+            const token = tokenFor(mark, rules, issuer);
             const servers = launches ? serversOf(visible.actions, mark, token) : undefined;
             // The session is named already: the pairing is written before the harness takes it
             // on, so the server it is given finds the session from its first list of tools.
@@ -1337,7 +1457,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
                 ...(launches && requested !== undefined ? { visible } : {}),
                 ...(servers === undefined ? {} : { servers }),
                 env: { [TOKEN_ENV]: token, ...launchEnv(launch) },
-                reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
+                reverse: reverse.handlerFor(rules, owned?.run === undefined ? starterOf(ctx.caller) : owner, ownToolPrefix(visible.actions)),
                 ...launchOptions(launch, mark),
                 ...(tools === undefined ? {} : { tools }),
               }),
@@ -1361,7 +1481,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         effect: "write",
         world: "local",
         run: async (input, ctx) => {
-          const { ref, id, control } = controlOf(input.session, "send");
+          const { ref, id, control } = controlOf(input.session, "send", ctx.caller);
           // The slot of the harness is taken before anything is written of the send, so a send that waits
           // for one is not taken for possibly sent if the host stops while it waits.
           const sending = async (slot: Slot): Promise<DeliveryReceipt> => {
@@ -1418,9 +1538,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         recovery: "do-not-repeat",
         effect: "write",
         world: "local",
-        run: async (input) => {
+        run: async (input, ctx) => {
           // Refused before anything is attempted: niwa does not emulate an interrupt.
-          const { ref, id, control } = controlOf(input.session, "interrupt");
+          const { ref, id, control } = controlOf(input.session, "interrupt", ctx.caller);
           interrupting.add(ref);
           try {
             await control.interrupt(id);
@@ -1441,20 +1561,33 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         world: "local",
         run: async (input, ctx) => {
           const ref = refOf(input.session);
-          const id = sessionOf(ref);
-          const over = api.journal?.()?.find({ type: SessionEnded.name, field: "session", equals: ref }).length ?? 0;
-          if (over > 0) return { ended: false };
-          const control = bindings.find((binding) => binding.instance.id === id.harness)?.control;
-          // A turn it runs stops where the harness can stop one; a harness that cannot, or a session with no turn, is
-          // not a reason to keep it.
-          if (control !== undefined && instanceOf(bindings, id.harness).sides.control?.interrupt === true && (await control.state(id).catch(() => "unknown")) === "running") {
-            interrupting.add(ref);
-            await control.interrupt(id).catch(() => interrupting.delete(ref));
+          authorizeControl(ref, ctx.caller);
+          const pending = closing.get(ref);
+          if (pending !== undefined) {
+            await pending;
+            return { ended: false };
           }
-          await ctx.emit(SessionEnded, { session: ref, reason: input.reason });
-          // The stream of life the process ends with says nothing more: the end is written.
-          ending.add(ref);
-          await control?.close?.(id);
+          if (ended(ref)) return { ended: false };
+          const close = async () => {
+            const id = sessionOf(ref);
+            const control = bindings.find((binding) => binding.instance.id === id.harness)?.control;
+            ending.add(ref);
+            try {
+              if (control !== undefined && instanceOf(bindings, id.harness).sides.control?.interrupt === true &&
+                  await control.state(id).catch(() => "unknown") === "running") {
+                interrupting.add(ref);
+                await control.interrupt(id).catch(() => interrupting.delete(ref));
+              }
+              await control?.close?.(id);
+              await ctx.emit(SessionEnded, { session: ref, reason: input.reason });
+            } finally {
+              closing.delete(ref);
+              if (!ended(ref)) ending.delete(ref);
+            }
+          };
+          const done = close();
+          closing.set(ref, done);
+          await done;
           return { ended: true };
         },
       }),
@@ -1469,6 +1602,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         run: async (input, ctx) => {
           const journal = api.journal?.();
           if (journal === undefined) return { questions: [] };
+          const principal = ctx.caller.kind === "client" ? ctx.caller.principal : undefined;
+          if (principal?.kind === "session" && principal.id !== input.mark) throw new SessionRefusal("foreign-mark", "the mark belongs to another session");
           const session = sessionOfMark(input.mark);
           if (session === undefined) return { questions: [] };
           // The questions are the requests module's open requests addressed to the session, as
@@ -1495,7 +1630,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         effect: "write",
         world: "local",
         run: async (input, ctx) => {
-          const { ref, id, control } = controlOf(input.session, "ask");
+          const { ref, id, control } = controlOf(input.session, "ask", ctx.caller);
           const schema = z.fromJSONSchema(input.schema);
           const prompt = input.prompt;
           if (supports(instanceOf(bindings, id.harness), "control", "structuredOutput")) {
@@ -1546,7 +1681,7 @@ interface Launch {
 /** What a request asks for besides the niwa actions: its `tool:` rules are for the launch. */
 function callsOf(input: VisibleActionsInput | undefined): VisibleActionsInput | undefined {
   if (input?.actions === undefined) return input;
-  return { ...input, actions: input.actions.filter((spec) => !isLaunchRule(spec)) };
+  return { ...input, actions: input.actions.filter((spec) => rule(spec).verb === "call" && !isLaunchRule(spec)) };
 }
 
 /** The installations the plugin may read from and start sessions on, with their sides. */
@@ -1614,7 +1749,7 @@ async function worktreeFor(ctx: ActionContext, harness: string, option: Worktree
     repo: asked.repo ?? cwd ?? process.cwd(),
     ...(asked.base === undefined ? {} : { base: asked.base }),
     description: asked.description ?? EntityDescription.parse(`a session of ${harness}`.slice(0, DESCRIPTION_MAX)),
-  });
+  }, ctx.caller.kind === "client" && ctx.caller.principal !== undefined ? { as: ctx.caller.principal } : {});
 }
 
 async function listFromSides(

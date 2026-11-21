@@ -1849,6 +1849,11 @@ class Niwa implements Host {
    */
   private issue(principal: Principal, opts: { grant?: Grant; parent?: Caller }): Token {
     const doors = this.requireDoors();
+    if (opts.parent !== undefined) {
+      const parent = this.access.standing(opts.parent);
+      if (parent.kind === "closed") throw new DeniedError(`the parent's grant was closed: ${parent.reason}`);
+      if (parent.kind === "off") throw new DeniedError("all access is switched off");
+    }
     const secret = doors.fresh();
     const id = newRecordId("acc");
     const issued: NewRecord = {

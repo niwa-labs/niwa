@@ -7,13 +7,14 @@
 
 import { z } from "zod";
 
+import { RuleSpecSchema, rule } from "@niwa-labs/core";
 import { NO_VISIBLE_ACTIONS } from "@niwa-labs/harness";
 import type { VisibleActions } from "@niwa-labs/harness";
 
 /** What a caller gives when it starts a session. */
 export const VisibleActionsInputSchema = z.object({
   /** The niwa actions the session sees. */
-  actions: z.array(z.string().min(1)).optional(),
+  actions: z.array(RuleSpecSchema).optional(),
   /** The harness tools that are switched off for the session. */
   disabledTools: z.array(z.string().min(1)).optional(),
 });
@@ -23,5 +24,5 @@ export type VisibleActionsInput = z.output<typeof VisibleActionsInputSchema>;
 /** The visible actions of a session, from what the caller gave. */
 export function visibleActionsOf(input?: VisibleActionsInput): VisibleActions {
   if (input === undefined) return NO_VISIBLE_ACTIONS;
-  return { actions: input.actions ?? [], disabledTools: input.disabledTools ?? [] };
+  return { actions: [...new Set((input.actions ?? []).map((spec) => rule(spec).name))], disabledTools: input.disabledTools ?? [] };
 }

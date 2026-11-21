@@ -291,7 +291,7 @@ test("start returns the name the harness gave, as one volatile section, with the
 
   await eventually(() => typesOf(records).includes("session.started"));
   const record = records.find((entry) => entry.type === "session.started");
-  expect(record?.data).toEqual({ session: SESSION, id: started.session });
+  expect(record?.data).toMatchObject({ session: SESSION, id: started.session, disabledTools: ["Bash"] });
   // A session that was given no visible actions sees none.
   await call(niwa, "session.start", { harness: HARNESS, prompt: "again" });
   expect(control.starts[1]?.visible).toEqual({ actions: [], disabledTools: [] });
@@ -353,7 +353,7 @@ test("a model and an effort reach the harness at the start, and the session reco
   expect(control.starts[0]).toMatchObject({ model: "gpt-6-luna", effort: "high" });
   await eventually(() => typesOf(records).includes("session.started"));
   // The alias is the request of the start call: the session has one model, the one the harness names.
-  expect(records.find((entry) => entry.type === "session.started")?.data).toEqual({ session: SESSION, id: expect.stringMatching(/^s-/), effort: "high" });
+  expect(records.find((entry) => entry.type === "session.started")?.data).toMatchObject({ session: SESSION, id: expect.stringMatching(/^s-/), effort: "high" });
   expect(typesOf(records)).not.toContain("session.model");
 });
 
