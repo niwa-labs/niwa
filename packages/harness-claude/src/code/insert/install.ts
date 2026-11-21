@@ -19,6 +19,8 @@ import { join } from "node:path";
 
 import { NIWA_CLI_ENV } from "@niwa-labs/harness";
 
+import { INSERT_HARNESS_ENV } from "./constants.ts";
+
 /** The name of the plugin, as Claude Code knows it. */
 export const PLUGIN_NAME = "niwa-insert";
 
@@ -43,6 +45,11 @@ export interface InstallOptions {
    * from the PATH.
    */
   readonly cli?: string;
+  /**
+   * The id of the harness instance the plugin is installed for, which the sessions its hooks
+   * report belong to. Default: none is written, and the hooks report for `claude-code`.
+   */
+  readonly harness?: string;
 }
 
 /**
@@ -67,10 +74,11 @@ export function pluginJson(): string {
  *
  * @pure
  */
-export function hooksJson(bun = "bun", home?: string, cli?: string): string {
+export function hooksJson(bun = "bun", home?: string, cli?: string, harness?: string): string {
   const prefix =
     (home === undefined ? "" : `NIWA_HOME=${shellQuote(home)} `) +
-    (cli === undefined ? "" : `${NIWA_CLI_ENV}=${shellQuote(cli)} `);
+    (cli === undefined ? "" : `${NIWA_CLI_ENV}=${shellQuote(cli)} `) +
+    (harness === undefined ? "" : `${INSERT_HARNESS_ENV}=${shellQuote(harness)} `);
   const command = `${prefix}${shellQuote(bun)} ${shellQuote(hookPath())}`;
   const handler = { type: "command", command, timeout: 10 };
   return `${JSON.stringify(
@@ -115,6 +123,6 @@ export async function installClaudeCodeInsert(
   await mkdir(join(root, ".claude-plugin"), { recursive: true });
   const home = options.home ?? process.env.NIWA_HOME;
   await writeFile(join(root, ".claude-plugin", "plugin.json"), pluginJson(), "utf8");
-  await writeFile(join(hooksDir, "hooks.json"), hooksJson(options.bun ?? "bun", home, options.cli), "utf8");
+  await writeFile(join(hooksDir, "hooks.json"), hooksJson(options.bun ?? "bun", home, options.cli, options.harness), "utf8");
   return root;
 }

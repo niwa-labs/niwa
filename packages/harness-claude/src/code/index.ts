@@ -95,7 +95,11 @@ export function claudeCodeKind(options: ClaudeCodeKindOptions) {
       // plugins directory of that installation, and the hooks report to the host at the home
       // the caller names, through `niwa insert report`.
       install: async (opts) => {
-        await installClaudeCodeInsert(join(options.home, "plugins"), { home: opts.home, ...(opts.cli === undefined ? {} : { cli: opts.cli }) });
+        await installClaudeCodeInsert(join(options.home, "plugins"), {
+          home: opts.home,
+          harness: options.harness,
+          ...(opts.cli === undefined ? {} : { cli: opts.cli }),
+        });
       },
     },
     capabilities: CLAUDE_CODE_CAPABILITIES,

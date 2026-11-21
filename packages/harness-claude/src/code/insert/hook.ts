@@ -24,7 +24,8 @@
  */
 
 import { NIWA_SESSION_ENV, reportThroughCli } from "@niwa-labs/harness";
-import { CLAUDE_CODE_HARNESS } from "./constants.ts";
+import { nativeIdOfSubagent } from "../paths.ts";
+import { CLAUDE_CODE_HARNESS, INSERT_HARNESS_ENV } from "./constants.ts";
 
 /** The event Claude Code fired. */
 export interface HookInput {
@@ -76,9 +77,13 @@ export type Report =
       readonly detail?: string;
     };
 
-/** The session of the harness, as niwa names it. */
-function sessionOf(native: string): { harness: string; native: string } {
-  return { harness: CLAUDE_CODE_HARNESS, native };
+/**
+ * The session of the harness, as niwa names it: of the instance the plugin was installed for,
+ * else of `claude-code`.
+ */
+function sessionOf(env: NodeJS.ProcessEnv, native: string): { harness: string; native: string } {
+  const instance = env[INSERT_HARNESS_ENV];
+  return { harness: instance === undefined || instance === "" ? CLAUDE_CODE_HARNESS : instance, native };
 }
 
 /**
@@ -99,7 +104,7 @@ export function reportOf(input: HookInput, env: NodeJS.ProcessEnv): Report | nul
       if (input.source === "resume" || input.source === "compact") return null;
       return {
         kind: "opened-by-hand",
-        session: sessionOf(sessionId),
+        session: sessionOf(env, sessionId),
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       };
     }
@@ -108,13 +113,14 @@ export function reportOf(input: HookInput, env: NodeJS.ProcessEnv): Report | nul
       if (childId === undefined || childId.length === 0) return null;
       return {
         kind: "nested-spawned",
-        parent: sessionOf(sessionId),
-        child: sessionOf(childId),
+        parent: sessionOf(env, sessionId),
+        // The reading side names a subagent by its log, so the child is named the same way.
+        child: sessionOf(env, nativeIdOfSubagent(childId)),
         ...(input.agent_type === undefined ? {} : { role: input.agent_type }),
       };
     }
     case "PreCompact": {
-      return { kind: "compacted", session: sessionOf(sessionId) };
+      return { kind: "compacted", session: sessionOf(env, sessionId) };
     }
     case "PermissionRequest": {
       const tool = input.tool_name;
@@ -122,7 +128,7 @@ export function reportOf(input: HookInput, env: NodeJS.ProcessEnv): Report | nul
       const detail = detailOf(input.tool_input);
       return {
         kind: "permission-asked",
-        session: sessionOf(sessionId),
+        session: sessionOf(env, sessionId),
         requestId: input.tool_use_id ?? `${sessionId}:${tool}`,
         tool,
         ...(detail === undefined ? {} : { detail }),

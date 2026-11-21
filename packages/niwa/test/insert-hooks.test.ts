@@ -117,7 +117,7 @@ test("insert: a nested session is linked to its parent, and a session opened by 
     const nested = seen.find((record) => record.type === "insert.nested-spawned");
     expect(nested?.data).toEqual({
       parent: { harness: "claude-code", native: "hand-opened-abc" },
-      child: { harness: "claude-code", native: "child-agent-xyz" },
+      child: { harness: "claude-code", native: "subagent-child-agent-xyz" },
       role: "Explore",
     });
 
