@@ -46,7 +46,7 @@ import { tempDir, tempHome, fakeSdkQuery, eventually, connectAsOwner, requests, 
 
 import { requestAnswer, requestOpen } from "@niwa-labs/requests/records";
 import { boxRules } from "@niwa-labs/proc";
-import { workflow, workflowCancel, workflowStart } from "@niwa-labs/workflow";
+import { workflow, workflowCancel, workflowInspect, workflowStart } from "@niwa-labs/workflow";
 import { sessionStart, sessionEnd, sessionOpenQuestions } from "@niwa-labs/sessions/records";
 import { ClaudeSdkControl } from "@niwa-labs/harness-claude";
 import { codexControl } from "@niwa-labs/harness-codex";
@@ -561,6 +561,10 @@ test.each(["cancel", "finish"])("a run owns its authenticated session helpers th
   expect(births).toMatchObject([
     { run, session: "rec s1" },
     { run, session: child.ref, parentSession: "rec s1", boxAccess: { only: [] } },
+  ]);
+  expect((await host.call(workflowInspect, { run })).sessions).toMatchObject([
+    { ref: "rec s1" },
+    { id: child.session, ref: child.ref, parentSession: "rec s1" },
   ]);
   const childClient = await connectSession(1);
   await expect(childClient.call(sessionEnd, { session: "rec s1", reason: "try to end parent" })).rejects.toThrow("outside");

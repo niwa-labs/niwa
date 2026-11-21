@@ -78,6 +78,12 @@ export const Inspection = z.object({
   }),
   phases: z.array(z.object({ title: z.string(), detail: z.string().optional(), state: PhaseState, steps: z.array(Step) })),
   steps: z.array(Step),
+  sessions: z.array(z.object({
+    id: z.string(),
+    ref: z.string(),
+    parentSession: z.string().optional(),
+    startedAt: z.string(),
+  })),
 });
 export type Inspection = z.infer<typeof Inspection>;
 

@@ -2,9 +2,9 @@
 
 import { EntityLink, PageLink, useAction, useCall, type PageProps } from "@niwa-labs/cockpit-sdk";
 import { useQueryClient } from "@tanstack/react-query";
-import { PhasePlan, StateRing, formatDuration, type PhasePlanStep, type PlanTarget } from "@niwa-labs/ui-kit";
+import { PhasePlan, StateRing, formatAgo, formatDuration, type PhasePlanStep, type PlanTarget } from "@niwa-labs/ui-kit";
 
-import { inspectAction, resumeAction, stopAction, type Step } from "./actions.ts";
+import { inspectAction, resumeAction, stopAction, type Inspection, type Step } from "./actions.ts";
 import { planOf, recomputeOf, stepDuration, stepState, stopOf } from "./plan.ts";
 import { ringOf } from "./runs.tsx";
 
@@ -31,10 +31,44 @@ function toStep(step: Step): PhasePlanStep {
   };
 }
 
+function RunSessions({ sessions }: { sessions: Inspection["sessions"] }) {
+  if (sessions.length === 0) return null;
+  const ids = new Map(sessions.map(({ id, ref }) => [ref, id]));
+  return (
+    <section aria-label="Run sessions" className="min-w-0 rounded-lg border bg-card text-card-foreground">
+      <h3 className="border-b px-3 py-2 text-sm font-semibold">Run sessions</h3>
+      <ul className="divide-y px-3" data-slot="run-sessions">
+        {sessions.map(({ id, ref, parentSession, startedAt }) => {
+          const parent = parentSession === undefined ? undefined : ids.get(parentSession);
+          return (
+            <li key={id} className="flex min-w-0 flex-wrap items-center gap-2 py-2">
+              <EntityLink entity={{ kind: "session", id }} />
+              <span className="min-w-0 truncate text-sm" title={ref}>{ref}</span>
+              {parentSession === undefined ? null : (
+                <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+                  <span className="shrink-0">Started by</span>
+                  {parent === undefined ? (
+                    <span className="truncate" title={parentSession}>{parentSession}</span>
+                  ) : (
+                    <EntityLink entity={{ kind: "session", id: parent }} />
+                  )}
+                </span>
+              )}
+              <time className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums" dateTime={startedAt}>
+                {formatAgo(startedAt)}
+              </time>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 export function RunPage({ params }: PageProps<"/runs/$runId">) {
   const run = params.runId;
   const queryClient = useQueryClient();
-  const inspection = useCall(inspectAction, { run }, { refreshOn: { types: ["workflow.*", "niwa.step.*", "niwa.invocation.state"] } });
+  const inspection = useCall(inspectAction, { run }, { refreshOn: { types: ["workflow.*", "niwa.step.*", "niwa.invocation.state", "session.started"] } });
   const resume = useAction(resumeAction);
   const stop = useAction(stopAction);
 
@@ -102,6 +136,7 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
             : "Stops this step: it ends as cancelled, its sessions are interrupted, and the rest of the run goes on."
         }
       />
+      <RunSessions sessions={inspection.data.sessions} />
       {failure === null ? null : <p role="alert" className="text-sm text-destructive">{failure.message}</p>}
     </article>
   );
