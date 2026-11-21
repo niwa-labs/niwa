@@ -8,7 +8,7 @@
  * two branches that finish in another order on a replay keep their own answers.
  */
 
-import { CANCEL_STEPS_ACTION, CORE_TYPES, CatchableError, DeniedError, NOW_ACTION, RANDOM_ACTION, WAIT_ACTION, action, actionName, currentInvocation, grantId, jsonOf, keyUnder, record, recordId, seq, stableJson, timestamp } from "@niwa-labs/core";
+import { CANCEL_STEPS_ACTION, CORE_TYPES, CatchableError, DeniedError, NOW_ACTION, RANDOM_ACTION, WAIT_ACTION, action, actionName, currentInvocation, grantId, isSuspend, jsonOf, keyUnder, record, recordId, seq, stableJson, timestamp } from "@niwa-labs/core";
 import type { Action, ActionTarget, AuthorizeHow, JournalReader, Principal, RecordType, Step, Verb } from "@niwa-labs/core";
 import { owner } from "@niwa-labs/core";
 import { AskAnswered, answeredBy, QuestionName, RequestCancelled, RequestExpired, requestAsk } from "@niwa-labs/requests/records";
@@ -299,7 +299,8 @@ export function bridge(deps: BridgeDeps): Bridge {
     try {
       return await body();
     } catch (error) {
-      if (!(error instanceof CatchableError)) {
+      // A wait that suspends the run did not fail: the other branches go on, and may still cancel it.
+      if (!(error instanceof CatchableError) && !isSuspend(error)) {
         pausing = true;
         deps.failed();
         throw pausesRun(error);

@@ -422,3 +422,46 @@ test("workflow.inspect lists the steps of scopes and of keyed parallel branches,
     ["p1.left.call-1", "p1.left"],
   ]);
 }, 30_000);
+
+test("a race of two waits ends when the first record arrives, and the wait that lost is cancelled", async () => {
+  const t = await setup();
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    const won = await race("either", {
+      a: async () => { await wait("stub.finished", { filter: { id: "a" } }); return "a"; },
+      b: async () => { await wait("stub.finished", { filter: { id: "b" } }); return "b"; },
+    });
+    return won;
+  });`);
+  await eventually(
+    async () => ofType(await t.records(), "niwa.invocation.state").at(-1)?.data !== undefined &&
+      (ofType(await t.records(), "niwa.invocation.state").at(-1)?.data as { state: string }).state === "waiting",
+    10_000,
+    "the run should wait for both records",
+  );
+  await t.niwa.call("stub.finish" as ActionName, { id: "b" } as never);
+  expect(await t.ended(run)).toEqual({ status: "done", result: { key: "b", value: "b" } });
+  const settled = ofType(await t.records(), "workflow.scope.settled").map((row) => row.data as { key: string; outcome: string });
+  expect(settled.map(({ key, outcome }) => `${key}:${outcome}`).sort()).toEqual(["a:cancelled", "b:done"]);
+}, 30_000);
+
+test("next() over a stream of waits gives the first record to arrive, and closing the stream cancels the wait left", async () => {
+  const t = await setup();
+  const run = await t.start(`export default workflow({ output: z.json() }, async () => {
+    const either = stream("either", {
+      a: () => wait("stub.finished", { filter: { id: "a" } }),
+      b: () => wait("stub.finished", { filter: { id: "b" }, timeout: "1h" }),
+    });
+    const first = await either.next();
+    await either.close();
+    return first.key;
+  });`);
+  await eventually(
+    async () => (ofType(await t.records(), "niwa.invocation.state").at(-1)?.data as { state: string } | undefined)?.state === "waiting",
+    10_000,
+    "the run should wait for both records",
+  );
+  await t.niwa.call("stub.finish" as ActionName, { id: "a" } as never);
+  expect(await t.ended(run)).toEqual({ status: "done", result: "a" });
+  const settled = ofType(await t.records(), "workflow.scope.settled").map((row) => row.data as { key: string; outcome: string });
+  expect(settled.map(({ key, outcome }) => `${key}:${outcome}`).sort()).toEqual(["a:done", "b:cancelled"]);
+}, 30_000);
