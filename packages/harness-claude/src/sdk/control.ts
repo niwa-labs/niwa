@@ -11,6 +11,7 @@
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   CanUseTool,
+  McpServerConfig,
   Options as SdkOptions,
   PermissionResult,
   SDKMessage,
@@ -41,6 +42,7 @@ import type {
   AskOptions,
   DeliveryReceipt,
   LifeEvent,
+  McpServerSpec,
   ModelName,
   Prompt,
   ResumeOptions,
@@ -65,10 +67,15 @@ import { signsOf } from "./messages.ts";
 import { answerText, permissionQuestion, permissionResult, questionsOf, rawRequest } from "./reverse.ts";
 import { MessageStream } from "./stream.ts";
 
-/** What a session's process is given beyond the options of the query: its environment, its tools, its box. */
-type ProcessPlan = Pick<StartOptions, "env" | "tools" | "box" | "reverse"> & {
+/**
+ * What a session's process is given beyond the options of the query: its environment, its tools,
+ * its box, its servers, its directory, its tool switches and its effort. A question over the
+ * session and a process launched again are given the same.
+ */
+type ProcessPlan = Pick<StartOptions, "env" | "tools" | "box" | "reverse" | "servers" | "cwd" | "visible"> & {
   readonly mode: SessionMode;
   readonly claude: ClaudeOptions;
+  readonly effort: string | undefined;
 };
 
 /** The SDK's tool that asks a person questions. */
@@ -159,13 +166,38 @@ type Watcher = (event: LifeEvent | undefined) => void;
 /** How many turn signs are kept for the first watcher of a session. */
 const UNWATCHED_LIMIT = 64;
 
+/** What waits behind the turn that runs: a message, or a question that is a turn of the session. */
+interface Pending {
+  /** The turn the entry will be, as it was announced when it was queued. */
+  readonly turn: number;
+  /** Starts the entry: a message is written into the query, a question opens its own. */
+  readonly begin: () => void;
+  /** The entry will never begin: the session is gone, or the one who waited gave up. */
+  readonly drop: (reason: string) => void;
+}
+
+/** A question that runs in a query of its own, as a turn of the session it is about. */
+interface Questioning<T> {
+  readonly session: LiveSession;
+  readonly done: Promise<T>;
+}
+
 /** One live session: its query, its turn accounting, and the people waiting on it. */
 class LiveSession {
-  /** The turns started so far; the running one, if any, has this number. */
+  /** The turn that runs, or ran last. */
   turn = 0;
+  /** The last turn number given out, to a message or a question that may still wait. */
+  assigned = 0;
+  /** Whether a message of this query is a turn that runs. */
   running = false;
-  /** Messages written while a turn ran; each becomes a turn when the previous result arrives. */
-  queued = 0;
+  /** The query of the question that is the turn that runs, when one is. */
+  questioned: LiveSession | undefined;
+  /**
+   * What waits behind the turn that runs, in order. A message is written into the query only when
+   * the turn before it has its result, so every message is a turn of its own: the SDK merges
+   * messages that are written together into one turn.
+   */
+  readonly pending: Pending[] = [];
   ended = false;
   /** The id the SDK gave the session; empty until the `system/init` message. */
   nativeId: string;
@@ -249,15 +281,9 @@ class LiveSession {
     }
   }
 
-  /**
-   * Resolves when no turn runs and none waits, or when the query is gone; `false` when a turn
-   * did not end within the timeout.
-   */
-  async whenIdle(timeoutMs: number): Promise<boolean> {
-    while (!this.ended && (this.running || this.queued > 0)) {
-      if ((await this.awaitResult(timeoutMs)) === undefined && !this.ended) return false;
-    }
-    return true;
+  /** Whether a turn runs: a message of this query, or a question over the session. */
+  get busy(): boolean {
+    return this.running || this.questioned !== undefined;
   }
 
   /** Resolves with the next result, or `undefined` on timeout or when the query is gone. */
@@ -277,22 +303,89 @@ class LiveSession {
     });
   }
 
-  beginTurn(): number {
-    this.turn += 1;
-    this.running = true;
-    this.emit({ kind: "turn-started", turn: this.turn, at: Date.now() });
-    return this.turn;
+  /** A turn begins: the session is told which. */
+  #begin(turn: number): void {
+    this.turn = turn;
+    this.emit({ kind: "turn-started", turn, at: Date.now() });
   }
 
-  /** The result ended the running turn; a queued message, if any, is the next turn. */
+  /** A message: written now when nothing runs, else queued behind what runs and what already waits. */
+  submit(text: string): DeliveryReceipt {
+    this.assigned += 1;
+    const turn = this.assigned;
+    const at = Date.now();
+    const write = (): void => {
+      this.running = true;
+      this.input.push(userMessage(text));
+      this.#begin(turn);
+    };
+    if (this.busy) {
+      this.pending.push({ turn, begin: write, drop: () => {} });
+      return { status: "queued", turn, at };
+    }
+    write();
+    return { status: "started", turn, at };
+  }
+
+  /**
+   * A question over this session, as a turn of it: it begins when what runs and what waits before
+   * it are over, and nothing else is written meanwhile. `open` starts the question's own query at
+   * that moment, so the turn and the query begin together.
+   */
+  question<T>(open: () => Questioning<T>, waitMs: number, fail: (reason: string) => Error): Promise<T> {
+    this.assigned += 1;
+    const turn = this.assigned;
+    return new Promise<T>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const begin = (): void => {
+        clearTimeout(timer);
+        let asked: Questioning<T>;
+        try {
+          asked = open();
+        } catch (error) {
+          reject(error);
+          this.#drain();
+          return;
+        }
+        this.questioned = asked.session;
+        this.#begin(turn);
+        asked.done.then(resolve, reject).finally(() => {
+          this.questioned = undefined;
+          this.emit({ kind: "turn-ended", turn, at: Date.now() });
+          this.#drain();
+        });
+      };
+      if (!this.busy) {
+        begin();
+        return;
+      }
+      const entry: Pending = { turn, begin, drop: (reason) => reject(fail(reason)) };
+      this.pending.push(entry);
+      timer = setTimeout(() => {
+        const at = this.pending.indexOf(entry);
+        if (at === -1) return;
+        this.pending.splice(at, 1);
+        reject(fail("the turn before the question did not end in time"));
+      }, waitMs);
+    });
+  }
+
+  /** The result ended the running turn; what waited is the next turn. */
   endTurn(result: SDKResultMessage): void {
+    const ran = this.running;
     this.running = false;
     this.#stopAsking();
-    this.emit({ kind: "turn-ended", turn: this.turn, at: Date.now() });
+    if (ran) this.emit({ kind: "turn-ended", turn: this.turn, at: Date.now() });
     for (const waiter of this.resultWaiters.splice(0)) waiter(result);
-    if (this.queued > 0) {
-      this.queued -= 1;
-      this.beginTurn();
+    this.#drain();
+  }
+
+  /** The next entry that waits begins, when nothing runs. */
+  #drain(): void {
+    while (!this.ended && !this.busy) {
+      const next = this.pending.shift();
+      if (next === undefined) return;
+      next.begin();
     }
   }
 
@@ -301,7 +394,7 @@ class LiveSession {
     if (this.ended) return;
     this.ended = true;
     this.running = false;
-    this.queued = 0;
+    for (const entry of this.pending.splice(0)) entry.drop(reason);
     this.#stopAsking();
     for (const waiter of this.resultWaiters.splice(0)) waiter(undefined);
     for (const waiter of this.nameWaiters.splice(0)) waiter.reject(new Error(reason));
@@ -332,10 +425,12 @@ export class ClaudeSdkControl implements SessionControl {
   readonly #sessions = new Map<string, LiveSession>();
   /** Every query this side started and has not seen end, so none can be forgotten. */
   readonly #owned = new Set<LiveSession>();
-  /** The resume in flight per session id. */
-  readonly #resuming = new Map<string, Promise<void>>();
-  /** The question in flight per session id: one query over a session at a time. */
-  readonly #asking = new Map<string, Promise<unknown>>();
+  /**
+   * The last resume or question per session id: they run one after the other, so a process that is
+   * launched again never runs beside a question over the same session. Two queries writing one
+   * session at once would be two writers.
+   */
+  readonly #operations = new Map<string, Promise<unknown>>();
   /** What each session's process was given, so a question over the session runs under the same limits. */
   readonly #plans = new Map<string, ProcessPlan>();
   #disposed = false;
@@ -389,14 +484,14 @@ export class ClaudeSdkControl implements SessionControl {
       tools: options.tools,
       box: options.box,
       reverse: options.reverse,
+      servers: options.servers,
+      cwd: options.cwd,
+      visible: options.visible,
+      effort,
       mode,
       claude: { ...this.#claude, ...options.claude },
     };
-    const session = this.#open(
-      this.#sdkOptions(model, effort, system, options.visible, options.cwd, plan),
-      "",
-      plan.reverse,
-    );
+    const session = this.#open(this.#sdkOptions(model, system, plan), "", plan.reverse);
     let first: DeliveryReceipt | undefined;
     const nativeId = await this.#ownedBy(session, async () => {
       first = this.#submit(session, turn);
@@ -410,16 +505,18 @@ export class ClaudeSdkControl implements SessionControl {
 
   /** Resume a session; the SDK reads the same files back. */
   async resume(id: SessionId, options?: ResumeOptions): Promise<void> {
-    // One query per session id: a resume waits for the one in flight, then finds it held.
-    const previous = this.#resuming.get(id.native);
-    const run = (previous ?? Promise.resolve())
-      .catch(() => {})
-      .then(() => this.#resumeOnce(id, options));
-    this.#resuming.set(id.native, run);
+    await this.#inTurn(id, () => this.#resumeOnce(id, options));
+  }
+
+  /** Runs `work` after the resume or question before it on the session id is over. */
+  async #inTurn<T>(id: SessionId, work: () => Promise<T>): Promise<T> {
+    const previous = this.#operations.get(id.native);
+    const run = (previous ?? Promise.resolve()).catch(() => {}).then(work);
+    this.#operations.set(id.native, run);
     try {
-      await run;
+      return await run;
     } finally {
-      if (this.#resuming.get(id.native) === run) this.#resuming.delete(id.native);
+      if (this.#operations.get(id.native) === run) this.#operations.delete(id.native);
     }
   }
 
@@ -430,7 +527,7 @@ export class ClaudeSdkControl implements SessionControl {
     if (session === undefined) {
       throw new InputNotSent(this.#harness, "send", `the session ${id.native} is not held by this control side`);
     }
-    if (options?.into === "turn" && session.running) {
+    if (options?.into === "turn" && session.busy) {
       throw new Unsupported(this.#harness, "control", "send", "the SDK cannot deliver into a running turn");
     }
     return this.#submit(session, message);
@@ -439,13 +536,15 @@ export class ClaudeSdkControl implements SessionControl {
   /** Interrupt the running turn; the session takes the next message afterwards. */
   async interrupt(id: SessionId): Promise<void> {
     const session = this.#require(id, "interrupt");
-    if (!session.running) throw this.#unavailable("interrupt", "no turn is running");
+    if (!session.busy) throw this.#unavailable("interrupt", "no turn is running");
+    // The turn that runs is a question's when one is: it is the query of its own that holds it.
+    const running = session.questioned ?? session;
     try {
-      await session.query.interrupt();
+      await running.query.interrupt();
     } catch (error) {
       throw this.#unavailable("interrupt", `the SDK refused the interrupt: ${String(error)}`);
     }
-    if (session.running && (await session.awaitResult(this.#turnTimeoutMs)) === undefined) {
+    if (running.running && (await running.awaitResult(this.#turnTimeoutMs)) === undefined) {
       throw this.#unavailable("interrupt", "the turn did not end after the interrupt");
     }
   }
@@ -453,69 +552,56 @@ export class ClaudeSdkControl implements SessionControl {
   /**
    * Ask a session and return a value that passed the schema.
    *
-   * The question runs in a query of its own over the same session, so it waits until the held
-   * session has no turn running or waiting, and until the question before it is over: two
-   * queries writing one session at once would be two writers.
+   * The question is a turn of the session, queued behind what runs and what already waits, like a
+   * send: it runs in a query of its own over the same session, and nothing else is written to the
+   * session until it is over, so two queries are never two writers. A question runs under the
+   * limits the session was launched with, so it needs the session to be held (started, or resumed
+   * after the host restarted): a process opened with none of them would be a session without its
+   * tools, box and servers.
    */
   async ask<T>(id: SessionId, options: AskOptions<T>): Promise<AskAnswer<T>> {
     const { turn } = splitPrompt(options.prompt);
     if (turn === "") {
       throw new Unsupported(this.#harness, "control", "ask", "a question needs a volatile section");
     }
-    const previous = this.#asking.get(id.native);
-    const run = (previous ?? Promise.resolve())
-      .catch(() => {})
-      .then(() => this.#askOnce(id, options));
-    this.#asking.set(id.native, run);
-    try {
-      return await run;
-    } finally {
-      if (this.#asking.get(id.native) === run) this.#asking.delete(id.native);
-    }
+    return await this.#inTurn(id, () => this.#askOnce(id, options));
   }
 
   async #askOnce<T>(id: SessionId, options: AskOptions<T>): Promise<AskAnswer<T>> {
     const { system, turn } = splitPrompt(options.prompt);
-    const busy = this.#sessions.get(id.native);
-    if (busy !== undefined && !busy.ended && !(await busy.whenIdle(this.#turnTimeoutMs))) {
-      throw this.#unavailable("ask", "the turn before the question did not end in time");
+    const stored = this.#plans.get(id.native);
+    if (stored === undefined) {
+      throw this.#unavailable("ask", `the session ${id.native} is not held by this control side: resume it, so it keeps the limits it was launched with`);
     }
-    // Its own query over the same session id: the question cannot disturb a running turn. It runs
-    // under the limits the session's own process was given.
-    const stored = this.#plans.get(id.native) ?? { mode: modeOf(undefined, this.#mode, CLAUDE_SDK_LAUNCH), claude: this.#claude };
-    // A question is asked on behalf of the session: what it asks of its client goes where the session's does.
-    const plan: ProcessPlan = { ...stored, claude: { ...stored.claude, ...options.claude }, reverse: busy?.reverse ?? stored.reverse };
-    await requireBox(plan.box);
-    const session = this.#open(
-      {
-        ...this.#sdkOptions(busy?.model ?? this.#model, this.#effort, system, undefined, undefined, plan),
-        resume: id.native,
-        outputFormat: { type: "json_schema", schema: jsonSchemaOf(options.schema) },
-      },
-      id.native,
-      plan.reverse,
-    );
-    // The question is a turn of the session, though it runs in its own query: whoever watches the
-    // session sees it begin and end. While a turn runs, the question stays unseen, as it cannot
-    // be numbered without clashing with that turn.
+    // What the question asks of its client goes where the session's does.
     const held = this.#sessions.get(id.native);
-    const watched = held !== undefined && !held.ended && !held.running ? held : undefined;
-    if (watched !== undefined) {
-      watched.turn += 1;
-      watched.emit({ kind: "turn-started", turn: watched.turn, at: Date.now() });
-    }
-    const asked = watched?.turn;
-    try {
-      session.input.push(userMessage(turn));
-      const result = await this.#runTurn(session);
-      const raw = result.structured_output ?? parseJson(result.result);
-      return { session: id, value: options.schema.parse(raw), at: timestamp(Date.now()) };
-    } finally {
-      session.stop("the question is over");
-      if (watched !== undefined && asked !== undefined) {
-        watched.emit({ kind: "turn-ended", turn: asked, at: Date.now() });
-      }
-    }
+    const plan: ProcessPlan = { ...stored, claude: { ...stored.claude, ...options.claude }, reverse: held?.reverse ?? stored.reverse };
+    await requireBox(plan.box);
+    // Its own query over the same session id, under the limits the session's own process was given.
+    const open = (): Questioning<AskAnswer<T>> => {
+      const session = this.#open(
+        {
+          ...this.#sdkOptions(held?.model ?? this.#model, system, plan),
+          resume: id.native,
+          outputFormat: { type: "json_schema", schema: jsonSchemaOf(options.schema) },
+        },
+        id.native,
+        plan.reverse,
+      );
+      session.submit(turn);
+      const done = (async (): Promise<AskAnswer<T>> => {
+        try {
+          const result = await this.#runTurn(session);
+          const raw = result.structured_output ?? parseJson(result.result);
+          return { session: id, value: options.schema.parse(raw), at: timestamp(Date.now()) };
+        } finally {
+          session.stop("the question is over");
+        }
+      })();
+      return { session, done };
+    };
+    if (held === undefined || held.ended) return await open().done;
+    return await held.question(open, this.#turnTimeoutMs, (reason) => this.#unavailable("ask", reason));
   }
 
   /** The signs of life, as they happen. */
@@ -557,7 +643,7 @@ export class ClaudeSdkControl implements SessionControl {
   async state(id: SessionId): Promise<SessionState> {
     const session = this.#sessions.get(id.native);
     if (session === undefined || session.ended) return "unknown";
-    return session.running ? "running" : "idle";
+    return session.busy ? "running" : "idle";
   }
 
   /** Stops every query this side started, including a start still in progress. */
@@ -601,34 +687,31 @@ export class ClaudeSdkControl implements SessionControl {
   }
 
   /** The options of the SDK, built from what the caller asked for. */
-  #sdkOptions(
-    model: string | undefined,
-    effort: string | undefined,
-    system: string,
-    visible: VisibleActions | undefined,
-    cwd: string | undefined,
-    plan: ProcessPlan,
-  ): SdkOptions {
+  #sdkOptions(model: string | undefined, system: string, plan: ProcessPlan): SdkOptions {
     const claude = claudeEnv(plan.claude);
     const env = Object.keys(claude).length === 0 ? plan.env : { ...plan.env, ...claude };
+    const restricted = plan.tools !== undefined && plan.tools !== "all";
+    const servers = mcpServersOf(plan.servers);
     const options: SdkOptions = {
       ...(model === undefined ? {} : { model }),
-      ...(cwd === undefined ? {} : { cwd }),
-      ...(effort === undefined || effort === "" ? {} : { effort: EffortLevel.parse(effort) }),
+      ...(plan.cwd === undefined ? {} : { cwd: plan.cwd }),
+      ...(plan.effort === undefined || plan.effort === "" ? {} : { effort: EffortLevel.parse(plan.effort) }),
       ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
       // The SDK's own allowlist of its built-in tools: none for a session of niwa's tools only.
-      ...(plan.tools === undefined || plan.tools === "all"
-        ? {}
-        : { tools: plan.tools === "niwa-only" ? [] : [...plan.tools.allow] }),
+      ...(!restricted ? {} : { tools: plan.tools === "niwa-only" ? [] : [...plan.tools.allow] }),
+      // The servers of the session. A session held to a set of tools is given those servers and no
+      // other: the ones of the owner's settings are no part of the set.
+      ...(Object.keys(servers).length === 0 ? {} : { mcpServers: servers }),
+      ...(restricted ? { strictMcpConfig: true } : {}),
       // The process is born in the funnel, like every other.
       spawnClaudeCodeProcess: (spawnOptions) => this.#spawn(spawnOptions, plan),
       // Constant and stable sections are the system prompt, so the cacheable prefix stays stable.
       ...(system === ""
         ? {}
         : { systemPrompt: { type: "preset", preset: "claude_code", append: system } }),
-      ...(visible === undefined || visible.disabledTools.length === 0
+      ...(plan.visible === undefined || plan.visible.disabledTools.length === 0
         ? {}
-        : { disallowedTools: [...visible.disabledTools] }),
+        : { disallowedTools: [...plan.visible.disabledTools] }),
     };
     options.permissionMode = PERMISSION_MODES[plan.mode];
     if (plan.mode === "full") options.allowDangerouslySkipPermissions = true;
@@ -758,13 +841,7 @@ export class ClaudeSdkControl implements SessionControl {
     if (session.ended || session.input.closed) {
       throw new InputNotSent(this.#harness, "send", "the session is not running");
     }
-    session.input.push(userMessage(text));
-    const at = Date.now();
-    if (session.running) {
-      session.queued += 1;
-      return { status: "queued", turn: session.turn + session.queued, at };
-    }
-    return { status: "started", turn: session.beginTurn(), at };
+    return session.submit(text);
   }
 
   /** Waits for the running turn and returns its result; a failed turn throws. */
@@ -845,19 +922,25 @@ export class ClaudeSdkControl implements SessionControl {
       return;
     }
 
+    // A process launched again keeps what the session was started with that the resume does not name:
+    // its directory, the tools it switched off, its effort and its Claude options (the ones the resume
+    // names, niwa records them, else the ones this side held).
+    const before = this.#plans.get(id.native);
     const plan: ProcessPlan = {
       env: options?.env,
       tools: options?.tools,
       box: options?.box,
       reverse: options?.reverse,
+      servers: options?.servers,
+      cwd: options?.cwd ?? before?.cwd,
+      visible: visible ?? before?.visible,
+      effort: before?.effort ?? this.#effort,
       mode: modeOf(options?.mode, this.#mode, CLAUDE_SDK_LAUNCH),
-      // A process launched again keeps the Claude options the session was started with: the ones the
-      // resume names (niwa records them), else the ones this side held.
-      claude: { ...(this.#plans.get(id.native)?.claude ?? this.#claude), ...options?.claude },
+      claude: { ...(before?.claude ?? this.#claude), ...options?.claude },
     };
     await requireBox(plan.box);
     const session = this.#open(
-      { ...this.#sdkOptions(options?.model ?? this.#model, this.#effort, system, visible, undefined, plan), resume: id.native },
+      { ...this.#sdkOptions(options?.model ?? this.#model, system, plan), resume: id.native },
       id.native,
       plan.reverse,
     );
@@ -893,6 +976,16 @@ export class ClaudeSdkControl implements SessionControl {
   #unavailable(ability: string, detail: string): Unavailable {
     return new Unavailable(this.#harness, "control", ability, detail);
   }
+}
+
+/** The servers of a session, in the SDK's shape: each by the name the session knows it by. */
+function mcpServersOf(servers: readonly McpServerSpec[] | undefined): Record<string, McpServerConfig> {
+  return Object.fromEntries(
+    (servers ?? []).map((server) => [
+      server.name,
+      { type: "stdio" as const, command: server.command, args: [...server.args], env: { ...server.env } },
+    ]),
+  );
 }
 
 /** A user message, in the SDK's shape. */

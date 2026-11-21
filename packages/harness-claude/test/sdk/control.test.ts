@@ -450,7 +450,7 @@ test("advisor off takes Claude Code's advisor tool away through its variable; by
   }
 });
 
-test("a resume or a question that names the Claude options runs the process with them, though this side never held the session", async () => {
+test("a resume or a question that names the Claude options runs the process with them, though the host that started the session is gone", async () => {
   const DISABLE = "CLAUDE_CODE_DISABLE_ADVISOR_TOOL";
   const fake = fakeSdkQuery();
   const harness = harnessId("claude-sdk-fake");
@@ -466,9 +466,10 @@ test("a resume or a question that names the Claude options runs the process with
     // A resume that names none leaves the owner's settings.
     await plain.resume(id, { prompt: promptFromText("three") });
     expect(fake.asked().at(-1)?.env?.[DISABLE]).toBeUndefined();
-    // A question over a session this side never held runs a query of its own, with the options it is given.
+    // A question over a session whose process this side launched again runs a query of its own, with the options it is given.
     const asker = new ClaudeSdkControl({ harness, query: fake.query });
     try {
+      await asker.resume(id, {});
       await asker.ask(id, { schema: z.string(), prompt: promptFromText("word?"), claude: { advisor: false } });
       expect(fake.asked().at(-1)?.env?.[DISABLE]).toBe("1");
       await asker.ask(id, { schema: z.string(), prompt: promptFromText("word?") });
@@ -480,5 +481,26 @@ test("a resume or a question that names the Claude options runs the process with
     await started.dispose();
     await fresh.dispose();
     await plain.dispose();
+  }
+});
+
+test("a question over a session this side never held is refused before any query: it would run without the limits the session was launched with", async () => {
+  const fake = fakeSdkQuery();
+  const harness = harnessId("claude-sdk-fake");
+  const started = new ClaudeSdkControl({ harness, query: fake.query });
+  const restarted = new ClaudeSdkControl({ harness, query: fake.query });
+  try {
+    const { session: id } = await started.start({ prompt: promptFromText("one"), tools: "niwa-only" });
+    await started.dispose();
+    const served = fake.served();
+    await expect(restarted.ask(id, { schema: z.string(), prompt: promptFromText("word?") })).rejects.toThrow("resume it");
+    expect(fake.served()).toBe(served);
+    // Resumed with its limits, it is asked under them.
+    await restarted.resume(id, { tools: "niwa-only" });
+    await restarted.ask(id, { schema: z.string(), prompt: promptFromText("word?") });
+    expect(fake.asked().at(-1)).toMatchObject({ tools: [], strictMcpConfig: true, resume: id.native });
+  } finally {
+    await started.dispose();
+    await restarted.dispose();
   }
 });
