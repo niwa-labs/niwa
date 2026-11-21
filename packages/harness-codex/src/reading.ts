@@ -831,8 +831,17 @@ export class CodexReading implements SessionReading {
         },
       ];
     }
-    // A reasoning item is the model thinking: it is not a message and not a call. It is kept
-    // whole, so that nothing of the session is lost.
+    if (kind === "reasoning") {
+      // The words of the thought when Codex wrote them out, else its summaries. A thought kept
+      // only as sealed text has no words to read: it is a thought all the same, and redacted. The
+      // item itself is what `raw` gives under the locator.
+      const written = textsOf(payload["content"]);
+      const text = written !== "" ? written : textsOf(payload["summary"]);
+      const sealed = typeof payload["encrypted_content"] === "string" && payload["encrypted_content"] !== "";
+      if (text === "" && !sealed) return [unknownRecord(raw, base)];
+      return [{ kind: "thinking", text, redacted: text === "", ...base }];
+    }
+    // Anything else the format grows is kept whole, so that nothing of the session is lost.
     return [unknownRecord(raw, base)];
   }
 

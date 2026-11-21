@@ -395,6 +395,27 @@ test("raw gives the harness's own record whole; coverage states what it does not
   await expect(reading().raw(ID, "bogus" as Locator)).rejects.toThrow("not of this side");
 });
 
+test("a reasoning item is a thinking record: its words, else its summaries, else a sealed thought; the item stays behind raw", async () => {
+  const reasoning = (ordinal: number, payload: Record<string, unknown>): string =>
+    record(ordinal, "response_item", { type: "reasoning", id: `rs_${ordinal}`, ...payload });
+  rollout(
+    NATIVE,
+    meta(NATIVE) +
+      reasoning(1, { summary: [], content: [{ type: "reasoning_text", text: "first the parser" }], encrypted_content: "sealed" }) +
+      reasoning(2, { summary: [{ type: "summary_text", text: "Read the parser" }, { type: "summary_text", text: "Fix it" }], encrypted_content: "sealed" }) +
+      reasoning(3, { summary: [], content: null, encrypted_content: "sealed" }) +
+      reasoning(4, { summary: [] }),
+  );
+  const records = await all(reading().read(ID));
+  expect(records.map((r) => r.kind)).toEqual(["thinking", "thinking", "thinking", "unknown"]);
+  expect(records[0]).toMatchObject({ text: "first the parser", redacted: false });
+  expect(records[1]).toMatchObject({ text: "Read the parser\nFix it", redacted: false });
+  expect(records[2]).toMatchObject({ text: "", redacted: true });
+  expect(await reading().raw(ID, records[2]?.locator as Locator)).toMatchObject({
+    payload: { type: "reasoning", id: "rs_3", encrypted_content: "sealed" },
+  });
+});
+
 test("a resumed read keeps what the earlier lines said: the tool's name and the model", async () => {
   rollout(
     NATIVE,
