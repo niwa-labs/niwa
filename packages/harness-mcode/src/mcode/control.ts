@@ -983,6 +983,11 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
 
   // -- the child ------------------------------------------------------------
 
+  /** The id of a session that is gone no longer names it, unless a newer process of the same session took the id. */
+  function forget(session: AcpSession): void {
+    if (sessions.get(session.nativeId) === session) sessions.delete(session.nativeId);
+  }
+
   /** Signal the child's process group: the child leads it, so the signal reaches what it started. */
   function signalGroup(session: AcpSession, signal: NodeJS.Signals): void {
     signalChild(session.child, signal);
@@ -1079,7 +1084,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
 
     child.once("close", (code: number | null) => {
       owned.delete(session);
-      sessions.delete(session.nativeId);
+      forget(session);
       // Whatever the agent started may outlive it; the group is the unit of cleanup, and the MCP
       // servers it was given, which are in no group of its own, go by their mark.
       signalGroup(session, "SIGKILL");
@@ -1397,6 +1402,73 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     return { status: "started", turn, at };
   }
 
+  /** The cold resumes in progress, by native session id: a session has one process, however many ask for it. */
+  const resuming = new Map<string, Promise<void>>();
+
+  async function resume(id: SessionId, resumeOptions?: ResumeOptions): Promise<void> {
+    for (;;) {
+      if (disposed) throw unavailable("resume", "the control side is closed");
+      refuseDisabledTools("resume", resumeOptions?.visible, resumeOptions?.tools);
+      const session = sessions.get(id.native);
+      const text = resumeOptions?.prompt === undefined ? "" : promptText(resumeOptions.prompt);
+      // A session that is still live is resumed by resuming its own process: the agent keeps
+      // its context, and the prompt is another turn of it.
+      if (session !== undefined && !session.ended && !session.stopping) {
+        if (resumeOptions?.box !== undefined) {
+          throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
+        }
+        // The one who resumes names where its reverse requests go from now on.
+        if (resumeOptions?.reverse !== undefined) session.reverse = resumeOptions.reverse;
+        if (text.length === 0) return;
+        if (session.running) {
+          session.queued.push({ text, turn: session.reserveTurn() });
+          return;
+        }
+        await runTurn(session, text, "resume");
+        return;
+      }
+      // A resume of this session is already bringing its process up: wait for it, then resume what
+      // it brought up, with this caller's own prompt and reverse handler. If it failed, this one tries.
+      const inflight = resuming.get(id.native);
+      if (inflight !== undefined) {
+        await inflight.catch(() => undefined);
+        continue;
+      }
+      const work = resumeCold(id, resumeOptions, session?.cwd, text);
+      resuming.set(id.native, work);
+      try {
+        await work;
+      } finally {
+        if (resuming.get(id.native) === work) resuming.delete(id.native);
+      }
+      return;
+    }
+  }
+
+  /** Bring a session whose process is gone back up in a new one. */
+  async function resumeCold(
+    id: SessionId,
+    resumeOptions: ResumeOptions | undefined,
+    lastCwd: string | undefined,
+    text: string,
+  ): Promise<void> {
+    const mode = modeOf(resumeOptions?.mode, options.mode, MCODE_LAUNCH);
+    requireLaunch(harnessId, MCODE_LAUNCH, { mode });
+    const fresh = await startProcess(resumeOptions?.cwd ?? lastCwd ?? process.cwd(), resumeOptions ?? {});
+    fresh.reverse = resumeOptions?.reverse;
+    try {
+      const nativeId = await handshake(fresh, resumeOptions?.model ?? defaultModel, defaultEffort, mode, id.native, resumeOptions?.servers);
+      // The session may still have a turn running: the one that was cut off with the process
+      // that sent it. What comes next waits behind it.
+      await adoptActiveTurn(fresh);
+      sessions.set(nativeId, fresh);
+      if (text.length > 0) await turnOn(fresh, text, "resume");
+    } catch (error) {
+      await stopSession(fresh);
+      throw refusal("resume", error);
+    }
+  }
+
   // -- the control side -----------------------------------------------------
 
   return {
@@ -1434,43 +1506,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       return { session: id, first: deliver(session, text), mode };
     },
 
-    async resume(id: SessionId, resumeOptions?: ResumeOptions): Promise<void> {
-      if (disposed) throw unavailable("resume", "the control side is closed");
-      refuseDisabledTools("resume", resumeOptions?.visible, resumeOptions?.tools);
-      const session = sessions.get(id.native);
-      const text = resumeOptions?.prompt === undefined ? "" : promptText(resumeOptions.prompt);
-      // A session that is still live is resumed by resuming its own process: the agent keeps
-      // its context, and the prompt is another turn of it.
-      if (session !== undefined && !session.ended && !session.stopping) {
-        if (resumeOptions?.box !== undefined) {
-          throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
-        }
-        // The one who resumes names where its reverse requests go from now on.
-        if (resumeOptions?.reverse !== undefined) session.reverse = resumeOptions.reverse;
-        if (text.length === 0) return;
-        if (session.running) {
-          session.queued.push({ text, turn: session.reserveTurn() });
-          return;
-        }
-        await runTurn(session, text, "resume");
-        return;
-      }
-      const mode = modeOf(resumeOptions?.mode, options.mode, MCODE_LAUNCH);
-      requireLaunch(harnessId, MCODE_LAUNCH, { mode });
-      const fresh = await startProcess(resumeOptions?.cwd ?? session?.cwd ?? process.cwd(), resumeOptions ?? {});
-      fresh.reverse = resumeOptions?.reverse;
-      try {
-        const nativeId = await handshake(fresh, resumeOptions?.model ?? defaultModel, defaultEffort, mode, id.native, resumeOptions?.servers);
-        // The session may still have a turn running: the one that was cut off with the process
-        // that sent it. What comes next waits behind it.
-        await adoptActiveTurn(fresh);
-        sessions.set(nativeId, fresh);
-        if (text.length > 0) await turnOn(fresh, text, "resume");
-      } catch (error) {
-        await stopSession(fresh);
-        throw refusal("resume", error);
-      }
-    },
+    resume,
 
     async send(id: SessionId, message: string, sendOptions?: SendOptions): Promise<DeliveryReceipt> {
       const session = sessions.get(id.native);
@@ -1610,7 +1646,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   /** Stop one child: an in-protocol cancel, then SIGTERM to the group, then SIGKILL. */
   async function stopSession(session: AcpSession): Promise<void> {
     owned.delete(session);
-    sessions.delete(session.nativeId);
+    forget(session);
     const child = session.child;
     const gone = (): boolean => child.exitCode !== null || child.signalCode !== null;
     if (!gone() && !session.stopping) {

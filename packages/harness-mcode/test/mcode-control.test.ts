@@ -1421,3 +1421,24 @@ test("a start that is still launching its process when the control side is dispo
   while (leftover().length > 0 && Date.now() < deadline) await Bun.sleep(50);
   expect(leftover()).toEqual([]);
 });
+
+test("two resumes of a session that lost its process share one new process", async () => {
+  control = await fakeControl();
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  await control.send(id, "die");
+  for (let i = 0; i < 100 && (await control.state(id)) !== "unknown"; i += 1) await Bun.sleep(50);
+  const here = process.cwd();
+  process.chdir(dir);
+  try {
+    // The second one carries a prompt: it runs on the process the first one brought up.
+    await Promise.all([control.resume(id), control.resume(id, { prompt: promptFromText("reply with ok") })]);
+  } finally {
+    process.chdir(here);
+  }
+  expect(await argvOf()).toHaveLength(2);
+  expect(await sessionRequestsOf()).toHaveLength(2);
+  // The session is held by the one process that is left, and stopping it leaves nothing running.
+  expect(await control.state(id)).not.toBe("unknown");
+  await control.stop(id);
+  expect(await control.state(id)).toBe("unknown");
+});
