@@ -1407,7 +1407,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       }
       const mode = modeOf(resumeOptions?.mode, options.mode, MCODE_LAUNCH);
       requireLaunch(harnessId, MCODE_LAUNCH, { mode });
-      const fresh = await startProcess(session?.cwd ?? process.cwd(), resumeOptions ?? {});
+      const fresh = await startProcess(resumeOptions?.cwd ?? session?.cwd ?? process.cwd(), resumeOptions ?? {});
       fresh.reverse = resumeOptions?.reverse;
       try {
         const nativeId = await handshake(fresh, resumeOptions?.model ?? defaultModel, defaultEffort, mode, id.native, resumeOptions?.servers);

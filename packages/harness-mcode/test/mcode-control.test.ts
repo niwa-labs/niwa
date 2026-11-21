@@ -1259,3 +1259,21 @@ test.skipIf(!(live && Bun.which("mcode")))(
   },
   180_000,
 );
+
+// -- what a resume, an exit and a request leave behind -------------------------------------------------
+
+test("a session that lost its process is resumed in the directory it is resumed with", async () => {
+  control = await fakeControl();
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  await control.send(id, "die");
+  for (let i = 0; i < 100 && (await control.state(id)) !== "unknown"; i += 1) await Bun.sleep(50);
+  const workspace = join(dir, "workspace");
+  await mkdir(workspace);
+  await control.resume(id, { cwd: workspace });
+  // The fake keeps its files in its own working directory: the one it was started in.
+  const loads = (await readFile(join(workspace, "sessions.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(loads[0]?.["cwd"]).toBe(workspace);
+  expect(loads[0]?.["sessionId"]).toBe(id.native);
+  expect(await control.state(id)).toBe("idle");
+});
+
