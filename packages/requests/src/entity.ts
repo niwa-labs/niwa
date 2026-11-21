@@ -22,11 +22,14 @@ function cutTo(text: string, max: number): string {
 
 /**
  * The description of a request: the title the asker gave its question, on one line. A title too
- * short to read is put after the name of the question.
+ * short to read is put after the name of the question; when that is too short as well, the id of
+ * the request is what is shown, so that a request already written never fails to be read.
  */
-export function descriptionOf(created: Pick<Created, "question" | "input">): EntityDescription {
+export function descriptionOf(created: Pick<Created, "id" | "question" | "input">): EntityDescription {
   const title = created.input.title.replace(/\s+/g, " ").trim();
-  return EntityDescription.parse(cutTo(title.length >= DESCRIPTION_MIN ? title : `${created.question} ${title}`, DESCRIPTION_MAX));
+  const named = `${created.question} ${title}`.trim();
+  const shown = title.length >= DESCRIPTION_MIN ? title : named.length >= DESCRIPTION_MIN ? named : created.id;
+  return EntityDescription.parse(cutTo(shown, DESCRIPTION_MAX));
 }
 
 /** What `request.list` shows of a request at a glance. */
