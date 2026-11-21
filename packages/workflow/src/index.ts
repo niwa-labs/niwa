@@ -35,7 +35,8 @@ import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 import { AccessGranted, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, callerOf, grant, jsonOf, narrow, principalOf, record, recordId, rule, ruleText, specsOf, toJsonSchema } from "@niwa-labs/core";
-import { plugin } from "@niwa-labs/plugin";
+import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE } from "@niwa-labs/core";
 import { BUILTIN_WORKFLOW } from "@niwa-labs/plugin";
@@ -234,6 +235,8 @@ export function workflow(opts: WorkflowOptions = {}) {
   }
 
   return plugin("workflow", (api) => {
+    // The page of this plugin in the cockpit: a client module, offered by the path of its source.
+    api.offer(COCKPIT_MODULE, { id: "workflow", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     api.declare(...WORKFLOW_TYPES, ...emits.values());
 
     const triggers = new Map<string, RecordType<any>>();
