@@ -97,18 +97,6 @@ export interface McpServerSpec {
    * allow-list also filters MCP tools adds them to it; a foreign server has none here.
    */
   readonly tools?: readonly string[];
-  /** What only ZCode's `mcpServers` entry takes; left out, ZCode's own defaults stand. Other kinds ignore it. */
-  readonly zcode?: ZcodeMcpOptions;
-}
-
-/** The optional fields of a ZCode `mcpServers` entry, as ZCode's protocol names them. */
-export interface ZcodeMcpOptions {
-  readonly alwaysLoad?: boolean;
-  readonly timeoutMs?: number;
-  readonly isolation?: "session" | "workspace";
-  readonly scope?: "user" | "workspace";
-  readonly cwd?: string;
-  readonly protocolVersion?: "legacy" | "auto" | "2026-07-28";
 }
 
 /**

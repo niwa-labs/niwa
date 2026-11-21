@@ -323,7 +323,6 @@ export type {
   TurnOutcome,
   McpServerSpec,
   ModelName,
-  ZcodeMcpOptions,
   PermissionMark,
   Prompt,
   PromptSection,

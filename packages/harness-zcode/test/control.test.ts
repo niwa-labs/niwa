@@ -779,10 +779,10 @@ test("a resume that is refused does not change who answers the session's request
   expect([first.length, second.length]).toEqual([1, 1]);
 });
 
-test("the ZCode fields of a server go through to its mcpServers entry, and are absent by default", async () => {
-  const c = control();
+test("the ZCode fields the installation sets for a server go through to its mcpServers entry, and are absent by default", async () => {
+  const c = control({ mcp: { b: { alwaysLoad: true, timeoutMs: 5000, isolation: "session", scope: "workspace", cwd: "/w" } } });
   const plain = { name: "a", command: "a", args: [], env: {} };
-  const set = { name: "b", command: "b", args: [], env: {}, zcode: { alwaysLoad: true, timeoutMs: 5000, isolation: "session" as const, scope: "workspace" as const, cwd: "/w" } };
+  const set = { name: "b", command: "b", args: [], env: {} };
   await c.start({ prompt: promptFromText(""), cwd: dir, servers: [plain, set] });
   expect((await requestsOf("session/create"))[0]?.["mcpServers"]).toEqual([
     { name: "a", command: "a", args: [], env: [] },

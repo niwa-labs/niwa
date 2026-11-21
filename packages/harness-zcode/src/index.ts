@@ -20,7 +20,7 @@ import type { ZcodeReadingOptions } from "./reading.ts";
 export { ZcodeReading } from "./reading.ts";
 export type { ZcodeReadingOptions } from "./reading.ts";
 export { zcodeControl } from "./control.ts";
-export type { ZcodeControlOptions, ZcodePermissionPolicy, ZcodeSessionControl } from "./control.ts";
+export type { ZcodeControlOptions, ZcodeMcpOptions, ZcodePermissionPolicy, ZcodeSessionControl } from "./control.ts";
 
 /**
  * The sides a ZCode instance has by default.

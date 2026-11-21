@@ -114,6 +114,21 @@ export interface ZcodeControlOptions {
   readonly turnTimeoutMs?: number;
   /** How long a graceful stop waits before each signal, in milliseconds. */
   readonly stopGraceMs?: number;
+  /**
+   * What ZCode's `mcpServers` entry of a server takes beyond niwa's own spec, by the name of the
+   * server. A server not named here gets ZCode's own defaults.
+   */
+  readonly mcp?: Readonly<Record<string, ZcodeMcpOptions>>;
+}
+
+/** The optional fields of a ZCode `mcpServers` entry, as ZCode's protocol names them. */
+export interface ZcodeMcpOptions {
+  readonly alwaysLoad?: boolean;
+  readonly timeoutMs?: number;
+  readonly isolation?: "session" | "workspace";
+  readonly scope?: "user" | "workspace";
+  readonly cwd?: string;
+  readonly protocolVersion?: "legacy" | "auto" | "2026-07-28";
 }
 
 /** A `SessionControl` that also owns the processes it started. */
@@ -1077,7 +1092,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
    */
   async function resumeSession(id: SessionId, resumeOptions?: ResumeOptions): Promise<(() => Promise<void>) | undefined> {
     const text = resumeOptions?.prompt === undefined ? "" : promptText(resumeOptions.prompt);
-    const named = surfaceOf(resumeOptions?.servers, resumeOptions?.tools, resumeOptions?.visible);
+    const named = surfaceOf(resumeOptions?.servers, resumeOptions?.tools, resumeOptions?.visible, options.mcp);
     let launch: Launch = {
       env: resumeOptions?.env,
       box: resumeOptions?.box,
@@ -1102,7 +1117,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         tools: resumeOptions?.tools ?? held.launch.tools,
         visible: resumeOptions?.visible ?? held.launch.visible,
       };
-      const surface = surfaceOf(launch.servers, launch.tools, launch.visible);
+      const surface = surfaceOf(launch.servers, launch.tools, launch.visible, options.mcp);
       const changed = Object.keys(named).length > 0 && JSON.stringify(surface) !== held.surface;
       if (!changed) {
         // The resume is accepted: its caller names where the reverse requests go from now on.
@@ -1124,7 +1139,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       sessions.delete(id.native);
       await stopSession(held);
     }
-    const surface = surfaceOf(launch.servers, launch.tools, launch.visible);
+    const surface = surfaceOf(launch.servers, launch.tools, launch.visible, options.mcp);
 
     // The session is resumed in the directory it ran in: the database's, else the one the caller says
     // it started in. One neither knows is resumed where this process is, and the CLI says whether it has it.
@@ -1188,7 +1203,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       const effort = startOptions.effort ?? options.effort;
       const mode = modeOf(startOptions.mode, options.mode, ZCODE_LAUNCH);
       requireLaunch(harnessId, ZCODE_LAUNCH, { model, effort, mode });
-      const surface = surfaceOf(startOptions.servers, startOptions.tools, startOptions.visible);
+      const surface = surfaceOf(startOptions.servers, startOptions.tools, startOptions.visible, options.mcp);
       if (model !== undefined && model !== "") parseModel(harnessId, model);
       const cwd = startOptions.cwd ?? process.cwd();
 
@@ -1413,12 +1428,14 @@ function modelRefOf(value: unknown): ModelRef | undefined {
  * every tool of the session, the MCP tools (`mcp__<server>__<tool>`) among them. So when there is
  * an allow-list, the tools niwa knows its servers list (`McpServerSpec.tools`: niwa's own server)
  * are appended to it as `mcp__<server>__<tool>`; a foreign server lists none here, and its tools
- * pass only when the allow-list names them itself.
+ * pass only when the allow-list names them itself. What the installation sets for a server by its
+ * name (`ZcodeControlOptions.mcp`) is added to that server's entry.
  */
 function surfaceOf(
   servers: readonly McpServerSpec[] | undefined,
   mode: ToolsMode | undefined,
   visible: VisibleActions | undefined,
+  mcp: Readonly<Record<string, ZcodeMcpOptions>> | undefined,
 ): Record<string, unknown> {
   const denied = visible?.disabledTools ?? [];
   const hasServers = servers !== undefined && servers.length > 0;
@@ -1437,7 +1454,7 @@ function surfaceOf(
             command: server.command,
             args: [...server.args],
             env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
-            ...server.zcode,
+            ...mcp?.[server.name],
           })),
         }
       : {}),
