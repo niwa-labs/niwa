@@ -14,7 +14,7 @@ import type { Host } from "@niwa-labs/testing";
 import { workflow, workflowGet, workflowRegister, workflowResume, workflowStart, workflowWait } from "../src/index.ts";
 import { z } from "zod";
 
-import { versionOf } from "../src/registry.ts";
+import { closureOf, versionOf } from "../src/registry.ts";
 
 const homes: Array<{ cleanup(): Promise<void> }> = [];
 const hosts: Host[] = [];
@@ -183,3 +183,9 @@ test("a copy finds what the script takes from niwa: its globals, the types of th
   await rm(src, { recursive: true });
   expect(await run(host, id)).toEqual({ status: "done", result: "true:ok" });
 }, 60_000);
+
+test("a script that imports a data file has a closure: the data file is in it and is not read as code", () => {
+  const dir = join(import.meta.dir, "fixtures", "with-data");
+  const closure = closureOf(join(dir, "flow.ts"));
+  expect([...(closure?.files.keys() ?? [])].sort()).toEqual([join(dir, "flow.ts"), join(dir, "table.json")]);
+});

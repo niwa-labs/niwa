@@ -152,6 +152,12 @@ export interface SourceClosure {
   files: Map<string, Buffer>;
 }
 
+/** The extensions of the files a script imports as code; any other file it imports is data. */
+const CODE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+
+/** Is this file of a closure code, whose imports are part of the closure, or data, which imports nothing? */
+export const isCode = (path: string): boolean => CODE.test(path);
+
 /** The source closure of a script, as it is on disk now. Undefined when the entry cannot be read. */
 export function closureOf(file: string): SourceClosure | undefined {
   if (!existsSync(file)) return undefined;
@@ -162,6 +168,8 @@ export function closureOf(file: string): SourceClosure | undefined {
     if (files.has(next)) continue;
     const bytes = readFileSync(next);
     files.set(next, bytes);
+    // A data file (`./table.json`) is part of the version by its bytes; it is not read for imports.
+    if (!isCode(next)) continue;
     for (const { path } of transpiler.scanImports(bytes.toString("utf8"))) {
       const found = localImport(next, path);
       if (found !== undefined) pending.push(found);
