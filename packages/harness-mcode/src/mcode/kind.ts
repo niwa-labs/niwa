@@ -71,7 +71,8 @@ export interface McodeKindOptions extends McodeReadingOptions {
    * `mcode()` derives the home from it (`default` is `~/.minimax`, any other `~/.minimax-<profile>`)
    * when no home is given. Without a profile the control side is started with `--profile default`
    * when the home holds a durable history (the fork of the harness, whose wrapper has a default
-   * profile of its own that could move sessions to another home), and without one otherwise.
+   * profile of its own that could move sessions to another home), and without one otherwise. The
+   * published build takes no profile: naming one for `mcode` refuses its starts and resumes.
    */
   readonly profile?: string;
   /**

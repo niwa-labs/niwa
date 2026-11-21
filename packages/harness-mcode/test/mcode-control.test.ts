@@ -898,12 +898,15 @@ const argvOf = async (): Promise<string[][]> =>
     .split("\n")
     .map((line) => JSON.parse(line) as string[]);
 
-async function fakeKind(options: { profile?: string; home?: string; control?: { profile?: string } }) {
+async function fakeKind(
+  options: { profile?: string; home?: string; control?: { profile?: string } },
+  make: typeof mcode | typeof ncode = mcode,
+) {
   dir = await tempDir("mcode-profile");
   const binary = join(dir, "mcode");
   await writeFile(binary, FAKE_AGENT);
   await chmod(binary, 0o755);
-  const kind = mcode({ home: join(dir, "home"), ...options, control: { mode: "full", ...options.control, binary } });
+  const kind = make({ home: join(dir, "home"), ...options, control: { mode: "full", ...options.control, binary } });
   control = kind.control as McodeSessionControl;
   await control.start({ prompt: promptFromText(""), cwd: dir });
   return argvOf();
@@ -942,16 +945,31 @@ test("without a profile the fork (a home with a durable history) is started with
 });
 
 test("the profile of the kind is the profile the agent is started with", async () => {
-  expect(await fakeKind({ profile: "work" })).toEqual([["acp", "--profile", "work"]]);
+  expect(await fakeKind({ profile: "work" }, ncode)).toEqual([["acp", "--profile", "work"]]);
 });
 
 test("a profile named in the control options is the profile of the kind", async () => {
-  expect(await fakeKind({ control: { profile: "work" } })).toEqual([["acp", "--profile", "work"]]);
+  expect(await fakeKind({ control: { profile: "work" } }, ncode)).toEqual([["acp", "--profile", "work"]]);
 });
 
 test("an explicit home and a profile are both kept", async () => {
-  const argv = await fakeKind({ home: "/somewhere/else", profile: "work" });
+  const argv = await fakeKind({ home: "/somewhere/else", profile: "work" }, ncode);
   expect(argv).toEqual([["acp", "--profile", "work"]]);
+});
+
+test("the published build has no --profile: a start or a resume that names a profile is refused before a process is run", async () => {
+  dir = await tempDir("mcode-profile");
+  const binary = join(dir, "mcode");
+  await writeFile(binary, FAKE_AGENT);
+  await chmod(binary, 0o755);
+  for (const kind of [mcode({ home: join(dir, "home"), profile: "work", control: { mode: "full", binary } })]) {
+    control = kind.control as McodeSessionControl;
+    await expect(control.start({ prompt: promptFromText(""), cwd: dir })).rejects.toMatchObject({ code: "Unsupported" });
+    await expect(control.resume(sessionId(harnessId("mcode"), "mvs_x"))).rejects.toMatchObject({ code: "Unsupported" });
+    expect(existsSync(join(dir, "argv.log"))).toBe(false);
+  }
+  // The fork takes it, and so does an upstream build that names none.
+  expect(await fakeKind({ profile: "work" }, ncode)).toEqual([["acp", "--profile", "work"]]);
 });
 
 test("the home follows the profile: default is ~/.minimax, any other is ~/.minimax-<profile>", () => {

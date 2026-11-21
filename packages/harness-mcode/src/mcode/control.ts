@@ -120,6 +120,15 @@ export const DEFAULT_BINARIES: Readonly<Record<MinimaxLineage, string>> = {
 };
 
 /**
+ * Whether the build of a lineage takes `--profile` on `mcode acp`. The published build exits with
+ * its usage text on it, so a profile named for it is refused, never passed on.
+ */
+export const PROFILE_SUPPORT: Readonly<Record<MinimaxLineage, boolean>> = {
+  upstream: false,
+  fork: true,
+};
+
+/**
  * What mcode needs inside a box: the directory of the installation, where its sessions, logs and
  * sign-in live. It depends on the installation and its profile, not on the program. Its model
  * endpoint depends on the profile too, so the grant names it.
@@ -1031,6 +1040,14 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
    * another's.
    */
   async function startProcess(cwd: string, plan: Pick<StartOptions, "env" | "box">): Promise<AcpSession> {
+    if (options.profile !== undefined && !PROFILE_SUPPORT[lineage]) {
+      throw new Unsupported(
+        harnessId,
+        "control",
+        "profile",
+        `the ${lineage} build of MiniMax Code takes no --profile (it would exit on it); drop the profile "${options.profile}" or use the fork`,
+      );
+    }
     const launch = launchProcess(cwd, plan);
     launching.add(launch);
     try {
