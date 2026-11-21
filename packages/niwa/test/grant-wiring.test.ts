@@ -1,15 +1,14 @@
 // A session's grant becomes its launch.
 //
 // What it proves:
-//   1. the pure derivation: `tool:` rules are the allowance, `write:` and `net:` rules are the box,
-//      `tool:*` and no `tool:` rule leave the harness its default
-//   2. through `session.start` the control side is given exactly that, the launch rules never
+//   1. the pure derivation: `tool:` rules are the allowance, `tool:*` and no `tool:` rule leave the
+//      harness its default
+//   2. through `session.start` the control side is given the tools and a box, the launch rules never
 //      reach the visible actions, and a request wider than the caller is still refused
 //   3. a harness gets the flags of its grant: pi's argv, codex's switches, the Claude SDK's tools;
 //      mcode refuses `tool:` by name before anything is spawned
-//   4. a grant with `write:`/`net:` starts the process in a box whose manifest is a journal record,
-//      written before the process starts, and equal to the spec the funnel made (apart from the token)
-//   5. a box that is not available stops the start: nothing is spawned, no token is issued
+//   4. a box that is not available stops the start: nothing is spawned, no token is issued
+//   5. a session resumed after its process is gone is launched again with its tools and its box
 
 import { afterEach, expect, test } from "bun:test";
 import { chmod, realpath, rm, writeFile } from "node:fs/promises";
@@ -41,7 +40,7 @@ import {
   srt,
   useSandbox,
 } from "@niwa-labs/sandbox";
-import { SessionBoxManifest, SessionMarked, launchOf, sessions } from "@niwa-labs/sessions";
+import { SessionBoxManifest, SessionMarked, sessions, toolsOfGrant } from "@niwa-labs/sessions";
 import type { SessionsOptions } from "@niwa-labs/sessions";
 import { tempDir, tempHome, fakeSdkQuery } from "@niwa-labs/testing";
 
@@ -194,189 +193,95 @@ process.stdin.on("data", (chunk) => {
 
 // -- the derivation ----------------------------------------------------------
 
-const plan = { home: "/niwa-absent-home/.niwa", cwd: "/work", socket: "/niwa-absent-home/.niwa/niwa.sock", sandbox: "srt" } as const;
-/** What every box closes whatever its grant says: the owner's token and the host key. */
-const KEYS = ["/niwa-absent-home/.niwa/owner.token", "/niwa-absent-home/.niwa/host.key"];
-
 test("tool rules are the allowance; no tool rule and `tool:*` leave the harness its default", () => {
-  expect(launchOf(grant(["tool:read", "tool:grep", "request.open"]), plan)).toEqual({ tools: { allow: ["read", "grep"] } });
-  expect(launchOf(grant(["request.open"]), plan)).toEqual({});
-  expect(launchOf(grant(["tool:*"]), plan)).toEqual({});
+  expect(toolsOfGrant(grant(["tool:read", "tool:grep", "request.open"]))).toEqual({ allow: ["read", "grep"] });
+  expect(toolsOfGrant(grant(["request.open"]))).toBeUndefined();
+  expect(toolsOfGrant(grant(["tool:*"]))).toBeUndefined();
   // A rule that asks grants nothing at launch; the grant still speaks of tools, so none is allowed.
-  expect(launchOf(grant([{ do: "tool:Bash", ask: true }]), plan)).toEqual({ tools: { allow: [] } });
-});
-
-test("write and net rules are the box; its cwd is the session's, and tools ride along", () => {
-  const launch = launchOf(grant(["tool:read", "write:/work/out/*", "write:/tmp/scratch", "net:registry.npmjs.org"]), plan);
-  expect(launch.tools).toEqual({ allow: ["read"] });
-  expect(launch.box).toEqual({
-    sandbox: "srt",
-    spec: {
-      cwd: "/work",
-      write: ["/work/out", "/tmp/scratch"],
-      net: ["registry.npmjs.org"],
-      sockets: ["/niwa-absent-home/.niwa/niwa.sock"],
-      closed: KEYS,
-    },
-  });
-  // A net rule alone makes a box too, with nothing writable.
-  expect(launchOf(grant(["net:gitlab.example.com"]), { ...plan, cwd: "/w", sandbox: "nono" }).box).toEqual({
-    sandbox: "nono",
-    spec: { cwd: "/w", write: [], net: ["gitlab.example.com"], sockets: ["/niwa-absent-home/.niwa/niwa.sock"], closed: KEYS },
-  });
-});
-
-test("every box closes the owner's token and the host key, whatever the grant says, in srt and in nono", () => {
-  const keys = (paths: readonly string[]) => paths.map(String);
-  for (const sandbox of ["srt", "nono"] as const) {
-    for (const rules of [["net:example.com"], ["write:/work/out/*"], ["write:*", "net:example.com"]]) {
-      const box = launchOf(grant(rules), { ...plan, sandbox }).box;
-      if (box === undefined) throw new Error("a box was expected");
-      const spec = boxSpec(box.spec);
-      expect(keys(spec.closed)).toEqual(KEYS);
-      if (sandbox === "srt") {
-        expect(srt().manifest(spec).settings.filesystem.denyRead.map((entry) => entry.path)).toEqual(KEYS);
-      } else if (rules.includes("write:*")) {
-        // nono reads by allow-list: a key under a place the box may write cannot be carved out, so the box is refused.
-        expect(() => nono().manifest(spec)).toThrow(BoxRefused);
-      } else {
-        expect(nono().manifest(spec).flags).not.toContain("/niwa-absent-home/.niwa/owner.token");
-      }
-    }
-  }
-});
-
-test("a mask a box cannot say is refused, not widened or dropped", () => {
-  expect(() => launchOf(grant(["write:/a/b.*"]), plan)).toThrow("write:/a/b.*");
-  expect(() => launchOf(grant(["net:example.*"]), plan)).toThrow("net:example.*");
-  expect(() => launchOf(grant(["net:example.com@x"]), plan)).toThrow("has a target");
-});
-
-test("`net:*` is no list of hosts: it is refused as unsupported by the sandbox, whichever it is", () => {
-  for (const sandbox of ["srt", "nono"] as const) {
-    expect(() => launchOf(grant(["write:/work/*", "net:*"]), { ...plan, sandbox })).toThrow(BoxRefused);
-  }
-  // A rule that asks grants nothing at launch, so it names no host.
-  expect(launchOf(grant([{ do: "net:*", ask: true }]), plan).box?.spec.net).toEqual([]);
+  expect(toolsOfGrant(grant([{ do: "tool:Bash", ask: true }]))).toEqual({ allow: [] });
+  expect(() => toolsOfGrant(grant(["tool:Read@x"]))).toThrow("has a target");
 });
 
 // -- through session.start ---------------------------------------------------
 
-test("session.start gives the control side the tools and the box of the grant, and the launch rules are not visible actions", async () => {
+test("session.start gives the control side the tools of the grant and a box, and the launch rules are not visible actions", async () => {
   const control = new Recording();
   const host = await served([{ instance: instance("rec"), control }]);
   undo.push(useSandbox("srt", passthrough("srt", () => host)));
 
   // No niwa action is visible: no niwa MCP server is needed, and no `submit-answer` is added.
-  await host.call(START, { harness: "rec", prompt: "go", cwd: "/work", visible: { actions: ["tool:Read", "net:example.com"] } });
-  await host.call(START, { harness: "rec", prompt: "go", visible: { actions: [] } });
+  await host.call(START, { harness: "rec", prompt: "go", cwd: "/work", visible: { actions: ["tool:Read"] }, box: { allow: [{ net: "example.com" }] } });
   await host.call(START, { harness: "rec", prompt: "go", visible: { actions: ["tool:*"] } });
 
-  const [boxed, plain, all] = control.starts;
+  const [boxed, all] = control.starts;
   expect(boxed?.tools).toEqual({ allow: ["Read"] });
   expect(boxed?.visible?.actions).toEqual([]);
   expect(boxed?.servers).toBeUndefined();
-  expect(boxed?.box?.sandbox).toBe("srt");
   const home = await realpath(host.homePath);
-  expect(boxed?.box?.spec).toEqual({
-    cwd: "/work",
-    write: [],
-    net: ["example.com"],
-    sockets: [`${home}/niwa.sock`],
-    closed: [`${home}/owner.token`, `${home}/host.key`],
-  });
-  expect(plain?.tools).toBeUndefined();
-  expect(plain?.box).toBeUndefined();
+  const spec = boxSpec(boxed?.box?.spec ?? { cwd: "/" });
+  const write = spec.write.map(String);
+  expect(String(spec.cwd)).toBe("/work");
+  expect(write).toContain("/work");
+  expect(spec.net.map(String)).toEqual(["example.com"]);
+  expect(spec.sockets.map(String)).toEqual([`${home}/niwa.sock`]);
+  expect(spec.closed.map(String)).toEqual(expect.arrayContaining([`${home}/owner.token`, `${home}/host.key`, `${home}/journal.db`, `${home}/secrets`]));
+  // Its temp directory is its own, and the process is told it.
+  expect(write).toContain(boxed?.env?.["TMPDIR"] ?? "");
   expect(all?.tools).toBeUndefined();
-  expect(all?.box).toBeUndefined();
+  expect(all?.box).toBeDefined();
 });
 
-test("a session's box takes the profile of its installation: its program, its places and its hosts", async () => {
-  const control = new Recording();
-  const profile = { read: ["/opt/rec/bin"], write: ["/srv/rec-home"], net: ["api.rec.example"] };
-  const host = await served([{ instance: instance("rec"), control, profile }]);
-  undo.push(useSandbox("srt", passthrough("srt", () => host)));
-  await host.call(START, { harness: "rec", prompt: "go", cwd: "/work", visible: { actions: ["write:/work/*", "net:example.com"] } });
-  const spec = control.starts[0]?.box?.spec;
-  expect(spec?.read).toEqual(["/opt/rec/bin"]);
-  expect(spec?.write).toEqual(["/work", "/srv/rec-home"]);
-  expect(spec?.net).toEqual(["example.com", "api.rec.example"]);
-});
-
-test("the sandbox the host names is the one a box is made in", async () => {
-  const control = new Recording();
-  const host = await served([{ instance: instance("rec"), control }], { sandbox: "nono" });
-  undo.push(useSandbox("nono", passthrough("nono", () => host)));
-  await host.call(START, { harness: "rec", prompt: "go", visible: { actions: ["write:/tmp/x/*"] } });
-  expect(control.starts[0]?.box?.sandbox).toBe("nono");
-});
-
-test("a session hands on only the tool, write and net rules it holds", async () => {
+test("a session hands on only the tools and the box rules it holds", async () => {
   const control = new Recording();
   const host = await served([{ instance: instance("rec"), control }], { niwaMcp: { command: "bun", args: [new URL("../bin/niwa.ts", import.meta.url).pathname, "mcp"] } });
   undo.push(useSandbox("srt", passthrough("srt", () => host)));
   await host.call(START, {
     harness: "rec",
     prompt: "go",
-    visible: { actions: ["session.start", "net:example.com", "tool:Read", "tool:Grep"] },
+    visible: { actions: ["session.start", "box.net@example.com", "tool:Read", "tool:Grep"] },
   });
   const parent = await connect({ home: host.homePath, token: token(control.starts[0]?.env?.["NIWA_ID"] ?? "") });
   cleanups.push(() => parent.close());
 
-  await parent.call(START, { harness: "rec", prompt: "go", visible: { actions: ["net:example.com", "tool:Read"] } });
-  expect(control.starts[1]?.box?.spec.net).toEqual(["example.com"]);
+  await parent.call(START, { harness: "rec", prompt: "go", visible: { actions: ["tool:Read"] }, box: { allow: [{ net: "example.com" }] } });
+  expect(control.starts[1]?.box?.spec.net?.map(String)).toEqual(["example.com"]);
   expect(control.starts[1]?.tools).toEqual({ allow: ["Read"] });
 
-  for (const wider of ["net:gitlab.com", "tool:Bash", "write:/tmp"]) {
-    await expect(parent.call(START, { harness: "rec", prompt: "go", visible: { actions: [wider] } })).rejects.toThrow(wider);
+  await expect(parent.call(START, { harness: "rec", prompt: "go", visible: { actions: ["tool:Bash"] } })).rejects.toThrow("tool:Bash");
+  for (const [wider, rule] of [[{ net: "gitlab.com" }, "box.net@gitlab.com"], [{ write: "/tmp" }, "box.write@/private/tmp"]] as const) {
+    await expect(parent.call(START, { harness: "rec", prompt: "go", box: { allow: [wider] } })).rejects.toThrow(rule);
   }
   expect(control.starts).toHaveLength(2);
 });
 
-test("a child of a limited caller is never wider: it takes the launch rules it did not ask for", async () => {
+test("a child of a limited caller is never wider: it takes the tools it did not ask for, and the box is the host's", async () => {
   const control = new Recording();
   const host = await served([{ instance: instance("rec"), control }], { niwaMcp: { command: "bun", args: [new URL("../bin/niwa.ts", import.meta.url).pathname, "mcp"] } });
   undo.push(useSandbox("srt", passthrough("srt", () => host)));
   await host.call(START, {
     harness: "rec",
     prompt: "go",
-    visible: { actions: ["session.start", "tool:Read", "tool:Grep", "write:/tmp/x/*", "net:example.com"] },
+    visible: { actions: ["session.start", "tool:Read", "tool:Grep"] },
+    box: { allow: [{ net: "example.com" }] },
   });
   const parent = await connect({ home: host.homePath, token: token(control.starts[0]?.env?.["NIWA_ID"] ?? "") });
   cleanups.push(() => parent.close());
 
-  // Asking for nothing is not asking to be unconfined: the child has the tools and the box of the caller.
+  // Asking for nothing is not asking to be unconfined: the child has the tools of the caller and the host's box.
   await parent.call(START, { harness: "rec", prompt: "go", cwd: "/work" });
-  // Asking for one verb leaves the others the caller's: tools narrowed, the box not dropped.
   await parent.call(START, { harness: "rec", prompt: "go", cwd: "/work", visible: { actions: ["tool:Read"] } });
 
   const [, bare, narrowed] = control.starts;
   expect(bare?.tools).toEqual({ allow: ["Read", "Grep"] });
-  expect(bare?.box?.spec.write).toEqual(["/tmp/x"]);
-  expect(bare?.box?.spec.net).toEqual(["example.com"]);
+  expect(bare?.box?.spec.net?.map(String)).toEqual([]);
   expect(narrowed?.tools).toEqual({ allow: ["Read"] });
-  expect(narrowed?.box?.spec.write).toEqual(["/tmp/x"]);
-  expect(narrowed?.box?.spec.net).toEqual(["example.com"]);
+  expect(narrowed?.box?.spec.net?.map(String)).toEqual([]);
 
-  // The owner is unlimited in what it hands down: its children stay unboxed unless they ask.
+  // The owner is unlimited in what it hands down: its children keep the harness's tools, in the host's box.
   await host.call(START, { harness: "rec", prompt: "go" });
   expect(control.starts[3]?.tools).toBeUndefined();
-  expect(control.starts[3]?.box).toBeUndefined();
+  expect(control.starts[3]?.box).toBeDefined();
 });
-
-test("a limited caller with no launch rules hands down none: its child stays as the harness has it", async () => {
-  const control = new Recording();
-  const host = await served([{ instance: instance("rec"), control }], { niwaMcp: { command: "bun", args: [new URL("../bin/niwa.ts", import.meta.url).pathname, "mcp"] } });
-  undo.push(useSandbox("srt", passthrough("srt", () => host)));
-  await host.call(START, { harness: "rec", prompt: "go", visible: { actions: ["session.start"] } });
-  const parent = await connect({ home: host.homePath, token: token(control.starts[0]?.env?.["NIWA_ID"] ?? "") });
-  cleanups.push(() => parent.close());
-  await parent.call(START, { harness: "rec", prompt: "go" });
-  expect(control.starts[1]?.tools).toBeUndefined();
-  expect(control.starts[1]?.box).toBeUndefined();
-});
-
-// -- per harness -------------------------------------------------------------
 
 test("pi and codex are launched with the flags of the grant", async () => {
   const dir = await workdir();
@@ -453,86 +358,6 @@ test("a codex grant whose tools leave out what Codex cannot switch off refuses t
 
 // -- the box and its manifest ------------------------------------------------
 
-test("a grant with write and net starts the process in a box whose manifest is recorded before the process", async () => {
-  const dir = await workdir();
-  const codex = codexControl({ harness: "codex-fake", binary: await fake(dir, "codex", FAKE_CODEX) });
-  cleanups.push(() => codex.dispose());
-  const manifests: BoxRecord[] = [];
-  const journalAtLaunch: string[][] = [];
-  undo.push(onSpawn((event) => spawns.push(event)), onBoxManifest((made) => void manifests.push(made)));
-  // The installation's profile: what Codex keeps in its home and the endpoints it reaches.
-  const profile = { write: [homePath(".codex")], net: ["api.openai.com", "chatgpt.com"] };
-  const host = await served([{ instance: instance("codex-fake"), control: codex, profile }]);
-  undo.push(useSandbox("srt", passthrough("srt", () => host, journalAtLaunch)));
-
-  const { ref: session } = (await host.call(START, {
-    harness: "codex-fake",
-    prompt: "",
-    cwd: dir,
-    visible: { actions: [`write:${dir}/*`, "net:registry.npmjs.org"] },
-  })) as { ref: string };
-
-  // The process was started in the sandbox, and the journal already held the record at that moment.
-  expect(spawns.map((event) => event.sandbox)).toEqual(["srt"]);
-  expect(journalAtLaunch).toEqual([["session.box.manifest"]]);
-
-  const rows = await host.records.read({ types: [SessionBoxManifest.name, SessionMarked.name] });
-  expect(rows.map((row) => String(row.type))).toEqual(["session.box.manifest", "session.marked"]);
-  const data = SessionBoxManifest.schema.parse(rows[0]?.data);
-  const marked = SessionMarked.schema.parse(rows[1]?.data);
-  expect(String(marked.session)).toBe(session);
-  expect(data.mark).toBe(marked.mark);
-  expect(data.harness).toBe("codex-fake");
-  expect(data.sandbox).toBe("srt");
-
-  // It matches the spec the funnel made: the grant's places and hosts, then the installation's profile.
-  expect(data.spec.write.map(String)).toEqual([dir, homePath(".codex")]);
-  expect(data.spec.net.map(String)).toEqual(["registry.npmjs.org", "api.openai.com", "chatgpt.com"]);
-  expect(String(data.spec.cwd)).toBe(dir);
-  expect(data.spec.sockets.map(String)).toEqual([`${await realpath(host.homePath)}/niwa.sock`]);
-  const made = manifests[0]!;
-  const { env: madeEnv, ...madeSpec } = made.spec;
-  expect(data.spec).toEqual(madeSpec);
-  expect(data.env.map(String)).toEqual(Object.keys(made.manifest.env));
-  expect(data.env).toEqual(expect.arrayContaining(Object.keys(madeEnv)));
-
-  // The journal keeps no token: the session's own is in the process's environment, not in the record.
-  const token = made.spec.env["NIWA_ID" as keyof typeof made.spec.env];
-  expect(token).toBeDefined();
-  expect(JSON.stringify(rows)).not.toContain(token as string);
-});
-
-/** A control side that starts its process with a provider key in its environment, as a harness that is given one does. */
-class Keyed extends Recording {
-  static readonly KEY = "sk-provider-key-that-is-never-written";
-  override async start(options: StartOptions) {
-    const child = await spawnAgent({
-      harness: "keyed",
-      program: "/usr/bin/true",
-      args: [],
-      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
-      env: { ...options.env, PROVIDER_API_KEY: Keyed.KEY },
-      ...(options.box === undefined ? {} : { box: options.box }),
-    });
-    await new Promise((done) => child.once("exit", done));
-    return await super.start(options);
-  }
-}
-
-test("the manifest of a box keeps the names of the process's environment, never a value of it", async () => {
-  const dir = await workdir();
-  const host = await served([{ instance: instance("keyed"), control: new Keyed() }]);
-  undo.push(useSandbox("srt", passthrough("srt", () => host)));
-  await host.call(START, { harness: "keyed", prompt: "", cwd: dir, visible: { actions: [`write:${dir}/*`] } });
-
-  const rows = await host.records.read({ types: [SessionBoxManifest.name] });
-  expect(rows).toHaveLength(1);
-  expect(JSON.stringify(rows)).not.toContain(Keyed.KEY);
-  const data = SessionBoxManifest.schema.parse(rows[0]?.data);
-  expect(data.env).toEqual(expect.arrayContaining(["PROVIDER_API_KEY", "NIWA_ID", "HOME", "PATH"]));
-  expect("env" in data.spec).toBe(false);
-  expect("env" in data.manifest).toBe(false);
-});
 
 test("a box that is not available stops the start: nothing is spawned, no token or mark is made", async () => {
   const control = new Recording();
@@ -542,7 +367,7 @@ test("a box that is not available stops the start: nothing is spawned, no token 
   const issued = async () => (await host.records.read({ types: [CORE_TYPES.accessIssued] })).length;
   const before = await issued();
 
-  const error = await host.call(START, { harness: "rec", prompt: "go", visible: { actions: ["net:example.com"] } }).then(
+  const error = await host.call(START, { harness: "rec", prompt: "go", visible: { actions: ["tool:Read"] } }).then(
     () => undefined,
     (thrown: unknown) => thrown,
   );
@@ -551,10 +376,6 @@ test("a box that is not available stops the start: nothing is spawned, no token 
   expect(spawns).toEqual([]);
   expect(await issued()).toBe(before);
   expect(await host.records.read({ types: [SessionMarked.name, SessionBoxManifest.name] })).toHaveLength(0);
-
-  // Tools alone need no box: the same host starts such a session.
-  await host.call(START, { harness: "rec", prompt: "go", visible: { actions: ["tool:Read"] } });
-  expect(control.starts).toHaveLength(1);
 });
 
 // -- a resume after the process is gone ------------------------------
@@ -562,19 +383,25 @@ test("a box that is not available stops the start: nothing is spawned, no token 
 const RESUME = actionName("session.resume");
 const MINE = actionName("access.mine");
 
-/** A session born with `actions`, whose host is then stopped: the journal is all that is left of it. */
-async function bornAndLeft(actions: string[], cwd: string | undefined) {
+/** A box with its own temp directory left out: each launch has a new one. */
+const withoutTemp = (box: StartOptions["box"] | undefined, env: Readonly<Record<string, string>> | undefined) => {
+  const spec = boxSpec(box?.spec ?? { cwd: "/" });
+  return { ...spec, write: spec.write.map(String).filter((path) => path !== env?.["TMPDIR"]) };
+};
+
+/** A session born with `actions` and `box`, whose host is then stopped: the journal is all that is left of it. */
+async function bornAndLeft(actions: string[], cwd: string | undefined, box?: { allow: Array<{ net: string } | { write: string }> }) {
   const first = new Recording();
   const host = await served([{ instance: instance("rec"), control: first }]);
   undo.push(useSandbox("srt", passthrough("srt", () => host)));
-  const { session } = (await host.call(START, { harness: "rec", prompt: "go", cwd, visible: { actions } })) as { session: string };
+  const { session } = (await host.call(START, { harness: "rec", prompt: "go", cwd, visible: { actions }, ...(box === undefined ? {} : { box }) })) as { session: string };
   await host.close();
   return { first, session, home: host.homePath };
 }
 
-test("a boxed session resumes after a host restart with its tools, its box and its own token", async () => {
+test("a session resumes after a host restart with its tools, its box and its own token", async () => {
   const dir = await workdir();
-  const { first, session, home } = await bornAndLeft(["tool:Read", "tool:Grep", `write:${dir}/*`, "net:example.com"], dir);
+  const { first, session, home } = await bornAndLeft(["tool:Read", "tool:Grep", "box.net@example.com"], dir, { allow: [{ net: "example.com" }] });
 
   const second = new Recording();
   second.running = "unknown";
@@ -586,7 +413,10 @@ test("a boxed session resumes after a host restart with its tools, its box and i
   const [resumed] = second.resumes;
   expect(resumed?.tools).toEqual({ allow: ["Read", "Grep"] });
   expect(resumed?.tools).toEqual(born.tools);
-  expect({ ...resumed?.box, mark: undefined }).toEqual({ ...born.box, mark: undefined });
+  // The same box, with the same request: only its temp directory is new.
+  expect(withoutTemp(resumed?.box, resumed?.env)).toEqual(withoutTemp(born.box, born.env));
+  expect(resumed?.box?.spec.net?.map(String)).toEqual(["example.com"]);
+  expect(resumed?.env?.["TMPDIR"]).not.toBe(born.env?.["TMPDIR"]);
   expect(resumed?.visible).toEqual({ actions: [], disabledTools: [] });
 
   // NIWA_ID is the session's own token: not the one it was born with, not the owner's, and it holds the grant.
@@ -598,31 +428,12 @@ test("a boxed session resumes after a host restart with its tools, its box and i
   const mine = (await self.call(MINE, {})) as { principal?: { kind: string }; unlimited: boolean; rules: unknown[] };
   expect(mine.principal?.kind).toBe("session");
   expect(mine.unlimited).toBe(false);
-  expect(mine.rules).toEqual(expect.arrayContaining(["tool:Read", "tool:Grep", `write:${dir}/*`, "net:example.com"]));
-});
-
-test("an unboxed session resumes unboxed, with its own tools and its own token", async () => {
-  const { first, session, home } = await bornAndLeft(["tool:Read"], undefined);
-  expect(first.starts[0]?.box).toBeUndefined();
-
-  const second = new Recording();
-  second.running = "unknown";
-  const host = await restarted(home, [{ instance: instance("rec"), control: second }]);
-  await host.call(RESUME, { session });
-
-  const [resumed] = second.resumes;
-  expect(resumed?.tools).toEqual({ allow: ["Read"] });
-  expect(resumed?.box).toBeUndefined();
-  expect(resumed?.servers).toBeUndefined();
-  const id = resumed?.env?.["NIWA_ID"];
-  expect(id).toBeDefined();
-  expect(id).not.toBe(first.starts[0]?.env?.["NIWA_ID"]);
-  expect(await host.records.read({ types: [SessionBoxManifest.name] })).toHaveLength(0);
+  expect(mine.rules).toEqual(expect.arrayContaining(["tool:Read", "tool:Grep", "call:box.net@example.com"]));
 });
 
 test("a resume of a running session carries only its token, and the grant survives the next restart", async () => {
   const dir = await workdir();
-  const { session, home } = await bornAndLeft(["tool:Read", `write:${dir}/*`], dir);
+  const { session, home } = await bornAndLeft(["tool:Read"], dir, { allow: [{ net: "example.com" }] });
 
   const live = new Recording();
   const host = await restarted(home, [{ instance: instance("rec"), control: live }]);
@@ -639,7 +450,8 @@ test("a resume of a running session carries only its token, and the grant surviv
   undo.push(useSandbox("srt", passthrough("srt", () => again)));
   await again.call(RESUME, { session });
   expect(dead.resumes[0]?.tools).toEqual({ allow: ["Read"] });
-  expect(dead.resumes[0]?.box?.spec.write).toEqual([dir]);
+  expect(dead.resumes[0]?.box?.spec.net?.map(String)).toEqual(["example.com"]);
+  expect(dead.resumes[0]?.box?.spec.write?.map(String)).toContain(await realpath(dir));
 });
 
 test("a resume that names its own visible actions is launched from them, not from the record", async () => {
@@ -663,7 +475,8 @@ test("codex resumed after a restart is born again with the tool flags, the box m
     harness: "codex-fake",
     prompt: "",
     cwd: dir,
-    visible: { actions: ["tool:web_search", ...CODEX_KEPT, `write:${dir}/*`, "net:registry.npmjs.org"] },
+    visible: { actions: ["tool:web_search", ...CODEX_KEPT] },
+    box: { allow: [{ net: "registry.npmjs.org" }] },
   })) as { session: string };
   await host.close();
 
@@ -681,13 +494,18 @@ test("codex resumed after a restart is born again with the tool flags, the box m
   expect(spawns[1]?.env["NIWA_ID"]).toBeDefined();
   expect(spawns[1]?.env["NIWA_ID"]).not.toBe(spawns[0]?.env["NIWA_ID"]);
 
-  // The spec the funnel made for the new process is the first one's: the token is the one thing that differs.
+  // The spec the funnel made for the new process is the first one's: the token and the temp directory are what differ.
   expect(manifests).toHaveLength(2);
-  const withoutToken = (made: BoxRecord | undefined) =>
-    Object.fromEntries(Object.entries(made?.spec.env ?? {}).filter(([name]) => name !== "NIWA_ID"));
-  expect({ ...manifests[1]?.spec, env: withoutToken(manifests[1]) }).toEqual({ ...manifests[0]?.spec, env: withoutToken(manifests[0]) });
+  const same = (made: BoxRecord | undefined) => {
+    const temp = made?.spec.env["TMPDIR" as keyof typeof made.spec.env];
+    const env = Object.fromEntries(Object.entries(made?.spec.env ?? {}).filter(([name]) => name !== "NIWA_ID" && name !== "TMPDIR"));
+    return { ...made?.spec, env, write: made?.spec.write.map(String).filter((path) => path !== temp) };
+  };
+  expect(same(manifests[1])).toEqual(same(manifests[0]));
   const rows = (await restartedHost.records.read({ types: [SessionBoxManifest.name] })).map((row) => SessionBoxManifest.schema.parse(row.data));
   expect(rows).toHaveLength(2);
-  expect({ ...rows[1], mark: "" }).toEqual({ ...rows[0], mark: "" });
+  const kept = (row: (typeof rows)[number] | undefined) => ({ ...row, mark: "", paths: row?.paths.filter((need) => need.from !== "temp") });
+  expect(kept(rows[1])).toEqual(kept(rows[0]));
+  expect(rows[1]?.request.items).toContainEqual({ item: { net: "registry.npmjs.org" }, from: "call" });
   expect(rows[1]?.mark).not.toBe(rows[0]?.mark);
 });

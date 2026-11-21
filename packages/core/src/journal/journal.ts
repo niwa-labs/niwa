@@ -16,7 +16,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { grantId } from "../grant.ts";
-import { principalSchema } from "../access.ts";
+import { JOURNAL_FILE, principalSchema } from "../access.ts";
 import { IntegrityError, LostOwnership, WriterBusy } from "../errors.ts";
 import { holds } from "../filter.ts";
 import { isFamily } from "../record-query.ts";
@@ -582,7 +582,7 @@ class SqliteJournal implements Journal {
 export function openJournal(home: string, opts: { takeover?: boolean; clock?: Clock } = {}): Journal {
   const directory = expandHome(home);
   mkdirSync(directory, { recursive: true });
-  const db = new Database(join(directory, "journal.db"), { create: true });
+  const db = new Database(join(directory, JOURNAL_FILE), { create: true });
   try {
     db.run("PRAGMA journal_mode = WAL");
     db.run("PRAGMA busy_timeout = 5000");

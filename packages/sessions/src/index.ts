@@ -24,6 +24,9 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { z } from "zod";
 
@@ -41,6 +44,7 @@ import {
   accessMine,
   action,
   assertNever,
+  closedPlacesOf,
   effectPossibleAfter,
   grant,
   owner,
@@ -85,14 +89,14 @@ import type {
   SessionId,
   SessionInfo,
   SessionReading,
+  ToolAllowance,
   VisibleActions,
 } from "@niwa-labs/harness";
-import { EnvNameSchema, onBoxManifest, requireBox } from "@niwa-labs/sandbox";
-import type { BoxRecord, BoxSandboxName } from "@niwa-labs/sandbox";
+import { BoxRefused, admit, boxManifest, onBoxManifest, requireSandbox, sandbox as sandboxHost, sandboxOf } from "@niwa-labs/sandbox";
+import type { BoxAccess, BoxAccessInput, BoxPlan, BoxRequest, SandboxHost } from "@niwa-labs/sandbox";
 import { RequestCreated, requestOpen } from "@niwa-labs/requests/records";
 
-import { inheritedLaunch, isLaunchRule, launchOf, toolsOfSession, withProfile } from "./box.ts";
-import type { GrantLaunch } from "./box.ts";
+import { heldRule, inheritedLaunch, isLaunchRule, toolsOfGrant, toolsOfSession } from "./box.ts";
 import { SessionRefusal } from "./refusal.ts";
 import { REVERSE_TYPES, installReverse } from "./reverse.ts";
 import { askNonNative, questionText, submitAnswerAction, SUBMIT_ANSWER_ACTION } from "./ask.ts";
@@ -210,10 +214,17 @@ export interface SessionsOptions {
    */
   readonly niwaMcp?: NiwaMcp;
   /**
-   * The sandbox a session whose grant has `write:` or `net:` rules runs in. Default `srt`. Where
-   * it is not available such a session does not start.
+   * The host's sandbox: its adapter (default srt), its profiles and its closed list
+   * (`sandbox({ ... })` of `@niwa-labs/sandbox`). The profile of every installation is given to it,
+   * so every other box finds that installation's places closed. Default: the catalog alone.
    */
-  readonly sandbox?: BoxSandboxName;
+  readonly sandbox?: SandboxHost;
+  /**
+   * What a session's box has when its start asks for nothing: `allow` (the default
+   * `["project", "toolchains"]`) or `only`. Every session runs in a box, with the profile of its
+   * installation; a sandbox that cannot run here stops every start.
+   */
+  readonly box?: BoxAccess;
   /**
    * The ceiling of a harness, by its id: how many of its sessions may run a turn at once on this host.
    * A start or a send over it waits until a turn ends; a sleeping session holds no slot. Absent, a
@@ -297,7 +308,11 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
   const followers = new Map<SessionControl, Set<Promise<void>>>();
   // The launches that are waiting for their box to be recorded, by mark: the funnel's manifest
   // listener is global, and a manifest is the business of the plugin that asked for that box.
-  const boxManifests = new Map<string, (data: BoxManifest) => Promise<unknown>>();
+  const boxManifests = new Map<string, (made: SandboxManifestOf) => Promise<unknown>>();
+  // The host's sandbox: every installation's profile is given to it, so each is closed to every other box.
+  const boxes = options.sandbox ?? sandboxHost();
+  for (const binding of bindings) if (binding.profile !== undefined) boxes.install(binding.instance.id, binding.profile);
+  const boxDefault: BoxAccess = options.box ?? { allow: ["project", "toolchains"] };
 
   /**
    * The MCP servers a session is given, from the actions it may see.
@@ -463,7 +478,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       const stop = onBoxManifest(async (made) => {
         const write = made.mark === undefined ? undefined : boxManifests.get(made.mark);
         if (made.mark === undefined || write === undefined) return;
-        await write(manifestRecord(made, made.mark));
+        await write(made.manifest);
       });
       return async () => stop();
     });
@@ -820,30 +835,54 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       api.issueToken("session", mark, { grant: rules, parent });
 
     /**
-     * The launch a grant makes: its tools and its box. A box that
-     * cannot be had here stops the start: this runs before a mark, a token or a process exists.
+     * The launch of a session: the tools its grant allows, and its box. The box is the host's
+     * default, what the start asks for, and the installation's profile, with a temp directory of
+     * its own and the host's socket; what goes beyond the default is held to the caller's grant. A
+     * box that cannot be had stops the start with every reason: this runs before a mark, a token
+     * or a process exists.
      */
-    const launchFor = async (rules: Grant, cwd: string | undefined, harness: string): Promise<GrantLaunch> => {
-      const made = launchOf(rules, { home: api.home(), cwd: cwd ?? process.cwd(), socket: api.socket(), sandbox: options.sandbox ?? "srt" });
-      const profile = bindings.find((binding) => binding.instance.id === harness)?.profile;
-      const launch = made.box === undefined || profile === undefined ? made : { ...made, box: withProfile(made.box, profile, harness) };
-      await requireBox(launch.box);
-      return launch;
+    const launchFor = async (rules: Grant, cwd: string | undefined, harness: string, request: BoxAccessInput | undefined, caller: Caller): Promise<Launch> => {
+      const tools = toolsOfGrant(rules);
+      const adapter = sandboxOf(boxes.adapter ?? "srt");
+      await requireSandbox(adapter);
+      const temp = realpathSync(mkdtempSync(join(tmpdir(), "niwa-box-")));
+      const plan = boxes.plan({
+        cwd: cwd ?? process.cwd(),
+        ...(cwd === undefined ? { noProject: "the session names no working directory" } : {}),
+        defaults: boxDefault,
+        request,
+        owner: harness,
+        writes: [{ path: temp, from: "temp" }],
+        closed: [...closedPlacesOf(api.home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
+        network: true,
+      });
+      const rights = api.rights(caller);
+      try {
+        const admitted = admit(plan, adapter, (needed) => heldRule(rights, needed), { sockets: [api.socket()] });
+        return { ...(tools === undefined ? {} : { tools }), box: { sandbox: adapter, spec: admitted.spec }, plan, rules: admitted.rules, temp };
+      } catch (error) {
+        rmSync(temp, { recursive: true, force: true });
+        if (error instanceof BoxRefused) throw new SessionRefusal("box-refused", error.message);
+        throw error;
+      }
     };
 
     /** The launch as the control side takes it: the box carries the mark its manifest is recorded under. */
-    const launchOptions = (launch: GrantLaunch, mark: string) => ({
-      ...(launch.tools === undefined ? {} : { tools: launch.tools }),
-      ...(launch.box === undefined ? {} : { box: { ...launch.box, mark } }),
-    });
+    const launchOptions = (launch: Launch | undefined, mark: string) =>
+      launch === undefined
+        ? {}
+        : { ...(launch.tools === undefined ? {} : { tools: launch.tools }), box: { ...launch.box, mark } };
+
+    /** What the process of a launch is given besides its token: its own temp directory. */
+    const launchEnv = (launch: Launch | undefined): Record<string, string> => (launch === undefined ? {} : { TMPDIR: launch.temp });
 
     /**
      * Runs the launch of a session whose process is born in a box, with the manifest of that box
      * written to the journal by the action that launches it, before the process starts.
      */
-    const recording = async <T>(mark: string, launch: GrantLaunch, ctx: ActionContext, work: () => Promise<T>): Promise<T> => {
-      if (launch.box === undefined) return await work();
-      boxManifests.set(mark, (data) => ctx.emit(SessionBoxManifest, data));
+    const recording = async <T>(mark: string, harness: string, launch: Launch | undefined, ctx: ActionContext, work: () => Promise<T>): Promise<T> => {
+      if (launch === undefined) return await work();
+      boxManifests.set(mark, (made) => ctx.emit(SessionBoxManifest, { mark, harness, ...boxManifest(launch.plan, launch.rules, made) }));
       try {
         return await work();
       } finally {
@@ -857,9 +896,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      *
      * Asking for more than the caller has creates no session and answers with the masks refused.
      * The answering action is added to the request by the module for every session that cannot
-     * answer natively, so it is not compared with the caller's rights. A launch verb the request
-     * says nothing of (`tool:`, `write:`, `net:`) is taken from the caller's own rules: a child is
-     * never wider than a limited caller, and an unlimited caller's child stays as it asked.
+     * answer natively, so it is not compared with the caller's rights. When the request names no
+     * tool, the caller's `tool:` rules are taken: a child is never wider than a limited caller, and
+     * an unlimited caller's child stays as it asked.
      */
     const grantOfSession = (caller: Caller, requested: VisibleActionsInput | undefined, visible: VisibleActions): Grant => {
       const asked = requested?.actions ?? [];
@@ -1067,11 +1106,12 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         .find({ type: SessionBoxManifest.name, field: "mark", equals: mark })
         .flatMap((stored) => {
           const parsed = SessionBoxManifest.schema.safeParse(stored.data);
-          return parsed.success ? [String(parsed.data.spec.cwd)] : [];
+          return parsed.success ? [parsed.data.cwd] : [];
         })
         .at(-1);
+      // The directory as the session was started in it, as its harness knows it; the box's own when there is none.
       const started = startedOf(ref)?.cwd;
-      return { request: { actions }, cwd: boxed ?? (started === undefined ? undefined : String(started)) };
+      return { request: { actions }, cwd: started === undefined ? boxed : String(started) };
     };
 
     /**
@@ -1126,6 +1166,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
               effort: input.effort,
               mode: input.mode,
               ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
+              ...(input.box === undefined ? {} : { box: input.box }),
               ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
             });
             await ctx.emit(SessionInputSending, { session: ref, operation, digest });
@@ -1168,7 +1209,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       // A session asked to run in a worktree gets one made by the git module, and runs in it.
       const worktree = input.worktree === undefined ? undefined : await worktreeFor(ctx, input.harness, input.worktree, input.cwd);
       const cwd = worktree?.path ?? input.cwd;
-      const launch = await launchFor(rules, cwd, input.harness);
+      const launch = await launchFor(rules, cwd, input.harness, input.box, ctx.caller);
       // The mode asked for, within the allow-list of the grant: what the grant adds is held too.
       const tools = toolsOfSession(input.tools, launch.tools);
       requireTools(instance.id, instance.sides.control?.tools, tools);
@@ -1184,7 +1225,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         slot.release();
         throw error;
       });
-      const asking = recording(mark, launch, ctx, () =>
+      const asking = recording(mark, instance.id, launch, ctx, () =>
         control.start({
           prompt: input.prompt,
           model: input.model,
@@ -1194,7 +1235,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           ...(Object.keys(blocks).length === 0 ? {} : { blocks }),
           visible,
           servers,
-          env: { [TOKEN_ENV]: token },
+          env: { [TOKEN_ENV]: token, ...launchEnv(launch) },
           reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
           ...launchOptions(launch, mark),
           ...(tools === undefined ? {} : { tools }),
@@ -1225,6 +1266,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         mode: mode ?? input.mode,
         options: Object.keys(blocks).length === 0 ? undefined : blocks,
         ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
+        ...(input.box === undefined ? {} : { box: input.box }),
         ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
       });
       await ctx.emit(SessionMarked, { session: ref, mark });
@@ -1271,9 +1313,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             if (gone) restart(ref);
             // The directory the session was started in: a harness that loads a session by it needs the same one.
             const startedIn = restored?.cwd ?? startedOf(ref)?.cwd;
-            const launch = launches ? await launchFor(rules, startedIn, id.harness) : {};
+            const launch = launches ? await launchFor(rules, startedIn, id.harness, startedOf(ref)?.box, ctx.caller) : undefined;
             // A process launched again keeps the tools the session was started with, within its grant.
-            const tools = launches ? toolsOfSession(startedOf(ref)?.tools, launch.tools) : undefined;
+            const tools = launch === undefined ? undefined : toolsOfSession(startedOf(ref)?.tools, launch.tools);
             const mark = randomUUID();
             const token = tokenFor(mark, rules, ctx.caller);
             const servers = launches ? serversOf(visible.actions, mark, token) : undefined;
@@ -1284,7 +1326,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             const mode = started?.mode;
             // The session starts again with the model the harness named for it, not the alias it was asked for.
             const model = modelOf(ref);
-            await recording(mark, launch, ctx, () =>
+            await recording(mark, id.harness, launch, ctx, () =>
               control.resume(id, {
                 ...(mode === undefined ? {} : { mode }),
                 ...(model === undefined ? {} : { model }),
@@ -1293,7 +1335,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
                 ...(launches && startedIn !== undefined ? { cwd: startedIn } : {}),
                 ...(launches && requested !== undefined ? { visible } : {}),
                 ...(servers === undefined ? {} : { servers }),
-                env: { [TOKEN_ENV]: token },
+                env: { [TOKEN_ENV]: token, ...launchEnv(launch) },
                 reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
                 ...launchOptions(launch, mark),
                 ...(tools === undefined ? {} : { tools }),
@@ -1486,30 +1528,24 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
 /** The sessions plugin: a plugin that also says what address a session's own client speaks as. */
 export type SessionsPlugin = Plugin & { bind(fallback?: CallerBinding): CallerBinding };
 
-/** What the manifest record holds. */
-type BoxManifest = z.output<typeof SessionBoxManifest.schema>;
+/** What the sandbox reports of a box, as the funnel hears it before the process starts. */
+type SandboxManifestOf = Parameters<Parameters<typeof onBoxManifest>[0]>[0]["manifest"];
 
-/** What a request asks for besides the niwa actions: its `tool:`, `write:` and `net:` rules are for the launch. */
+/** What a start or a resume launches with: its tools, and its box with the plan it was resolved from. */
+interface Launch {
+  readonly tools?: ToolAllowance;
+  readonly box: BoxRequest;
+  readonly plan: BoxPlan;
+  /** The rules of the caller's grant the box took. */
+  readonly rules: readonly string[];
+  /** The box's own temp directory: `TMPDIR` of the process. */
+  readonly temp: string;
+}
+
+/** What a request asks for besides the niwa actions: its `tool:` rules are for the launch. */
 function callsOf(input: VisibleActionsInput | undefined): VisibleActionsInput | undefined {
   if (input?.actions === undefined) return input;
   return { ...input, actions: input.actions.filter((spec) => !isLaunchRule(spec)) };
-}
-
-/**
- * The record of a box, with the names of its environment and none of the values: they hold the
- * session's token, of which the journal keeps only the MAC, and the keys of the provider.
- */
-function manifestRecord(made: BoxRecord, mark: string): BoxManifest {
-  const { env: _specEnv, ...spec } = made.spec;
-  const { env, ...manifest } = made.manifest;
-  return {
-    mark,
-    harness: made.harness,
-    sandbox: made.sandbox,
-    spec,
-    env: Object.keys(env).map((name) => EnvNameSchema.parse(name)),
-    manifest,
-  };
 }
 
 /** The installations the plugin may read from and start sessions on, with their sides. */
@@ -1606,8 +1642,7 @@ export { SessionCatalog } from "./catalog.ts";
 export { SessionRefusal } from "./refusal.ts";
 export { REVERSE_QUESTION, REVERSE_TYPES, ReverseIdSchema, SessionReverseAnswered, SessionReverseAsked, SessionReverseCancelled } from "./reverse.ts";
 export type { ReverseId } from "./reverse.ts";
-export { isLaunchRule, launchOf } from "./box.ts";
-export type { GrantLaunch, LaunchPlan } from "./box.ts";
+export { heldRule, isLaunchRule, toolsOfGrant } from "./box.ts";
 export type { Belonging, SessionEntry } from "./catalog.ts";
 export { NiwaSessionIdSchema, SessionRefSchema, sessionOf, sessionRef } from "./identity.ts";
 export type { NiwaSessionId, SessionRef } from "./identity.ts";

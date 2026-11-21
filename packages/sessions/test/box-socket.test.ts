@@ -1,10 +1,10 @@
 // A boxed session reaches niwa's socket on a real machine.
 //
-// A session is started through `session.start` with a grant that writes one directory: the funnel
+// A session is started through `session.start` in the host's default box: the sessions module
 // puts the host's socket into the box, and the session's shell, inside the real srt or nono, speaks
-// to the running host with its `NIWA_ID` and calls `access.mine`. gitlab.com, which the grant does
+// to the running host with its `NIWA_ID` and calls `access.mine`. gitlab.com, which the box does
 // not name, stays unreachable. A box made without the socket does not reach the host: the socket
-// is there because the funnel put it there.
+// is there because the module put it there.
 //
 // Skipped unless NIWA_LIVE=1 and the sandbox works on this machine.
 
@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { actionName } from "@niwa-labs/core";
 import { harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
 import type { Harness, SessionControl, StartOptions } from "@niwa-labs/harness";
-import { boxSpec, nono, spawnAgent, srt } from "@niwa-labs/sandbox";
+import { boxSpec, nono, sandbox as sandboxHost, spawnAgent, srt } from "@niwa-labs/sandbox";
 import type { Sandbox } from "@niwa-labs/sandbox";
 import { createNiwa, live, tempDir, tempHome } from "@niwa-labs/testing";
 
@@ -94,14 +94,14 @@ for (const sandbox of [srt(), nono()]) {
         () => `( ${callMine(join(home.path, "niwa.sock"))}; echo; echo "gitlab $(${CURL("https://gitlab.com")} 2>&1)" ) > ${out} 2>&1`,
       );
       const host = createNiwa({ home: home.path });
-      host.use(sessions({ harnesses: [{ instance: instance(dir), control }], sandbox: sandbox.name === "srt" ? "srt" : "nono" }));
+      host.use(sessions({ harnesses: [{ instance: instance(dir), control }], sandbox: sandboxHost({ adapter: sandbox }) }));
       await host.serve();
       cleanups.push(async () => {
         await host.close();
         await home.cleanup();
       });
 
-      await host.call(actionName("session.start"), { harness: HARNESS, prompt: "", cwd: dir, visible: { actions: [`write:${dir}/*`] } });
+      await host.call(actionName("session.start"), { harness: HARNESS, prompt: "", cwd: dir });
 
       const answers = await readFile(out, "utf8");
       expect(answers).toContain('"id":1,"ok":true');

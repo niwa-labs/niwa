@@ -67,7 +67,7 @@ type ProfileDefault = () => readonly RuleSpec[];
  * What a connection with no token may do when the owner says nothing else.
  * `insert.report` is there because the hooks of a harness report what it did inside itself without a token.
  */
-const DEFAULT_PROFILE: readonly RuleSpec[] = ["task.*", "message.send", "insert.report", "emit:wf.*", "net:registry.npmjs.org"];
+const DEFAULT_PROFILE: readonly RuleSpec[] = ["task.*", "message.send", "insert.report", "emit:wf.*", "box.net@registry.npmjs.org"];
 
 /** The grants and the profiles of one host. */
 export class AccessControl {

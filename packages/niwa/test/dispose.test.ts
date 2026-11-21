@@ -12,7 +12,7 @@ import type { ActionName } from "@niwa-labs/core";
 import { harnessId, harnessKind, machineId } from "@niwa-labs/harness";
 import type { Harness } from "@niwa-labs/harness";
 import { sessions } from "@niwa-labs/sessions";
-import { eventually, tempDir, tempHome } from "@niwa-labs/testing";
+import { eventually, openBoxes, tempDir, tempHome } from "@niwa-labs/testing";
 
 import { pi, piSides } from "@niwa-labs/harness-pi";
 
@@ -75,7 +75,7 @@ test("closing the host stops the harness process a session started", async () =>
   const home = await tempHome();
   try {
     const niwa = createNiwa({ home: home.path });
-    niwa.use(sessions({ harnesses: [{ instance, reading: kind.reading, control: kind.control }] }));
+    niwa.use(sessions({ harnesses: [{ instance, reading: kind.reading, control: kind.control }], sandbox: openBoxes() }));
     await niwa.serve();
     await niwa.call("session.start" as ActionName, { harness: HARNESS, prompt: "hello" });
 

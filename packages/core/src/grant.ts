@@ -11,7 +11,7 @@ import { z } from "zod";
 import type { Grant, GrantId, Mask, Rule, Verb } from "./types.ts";
 
 /** The verbs a rule may have; `call` when none is written. */
-export const VERBS: readonly Verb[] = ["call", "emit", "tool", "write", "net"];
+export const VERBS: readonly Verb[] = ["call", "emit", "tool"];
 
 /** A rule as it is written or stored: the text, or the text with `ask`. */
 export type RuleSpec = string | { readonly do: string; readonly ask?: true };
@@ -284,6 +284,17 @@ export function match(of: Grant, verb: Verb, name: string, target?: string, opts
     if (best === undefined || longer(candidate, best)) best = candidate;
   }
   return best;
+}
+
+/**
+ * The rule of a grant that lets one call through, the call written as a rule (`box.read@/data`):
+ * as the grant writes it, without the `call:` of the default verb. Undefined when no rule does, or
+ * when the rule that decides asks: a call that has no moment for the owner's answer is not let through.
+ */
+export function coveringRule(of: Grant, call: string): string | undefined {
+  const at = call.indexOf("@");
+  const found = match(of, "call", at < 0 ? call : call.slice(0, at), at < 0 ? undefined : call.slice(at + 1));
+  return found === undefined || found.ask ? undefined : ruleText(found).replace(/^call:/, "");
 }
 
 /** Does a parent rule cover a requested one: same verb, a mask that holds the name, and a target that holds the target? */

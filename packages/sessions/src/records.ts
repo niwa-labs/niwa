@@ -23,7 +23,7 @@ import {
   ToolsModeSchema,
   VariantNameSchema,
 } from "@niwa-labs/harness";
-import { BoxSpecSchema, EnvNameSchema } from "@niwa-labs/sandbox";
+import { BoxAccessSchema, BoxManifestSchema } from "@niwa-labs/sandbox";
 
 import { NiwaSessionIdSchema, SessionRefSchema } from "./identity.ts";
 import type { DeliveryReceipt } from "@niwa-labs/harness";
@@ -73,6 +73,8 @@ export const SessionStarted = record(
     options: OptionBlocksSchema.optional(),
     /** The tools the session was started with, so a resume launches it with the same; absent for the harness's own. */
     tools: ToolsModeSchema.optional(),
+    /** What the start asked of its box, so a resume launches it in the same; absent when it asked nothing. */
+    box: BoxAccessSchema.optional(),
     /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck; absent when none was set. */
     stuckAfter: z.number().int().positive().optional(),
   }),
@@ -279,33 +281,21 @@ export const SessionMarked = record(
 );
 
 /**
- * The box a session's process is about to be started in: the manifest the sandbox is given, kept
- * before the process exists.
- *
- * The mark is the one the session was started with, and `session.marked` pairs it with the
- * session once the harness has named it. The spec is the one the sandbox was given, the
- * installation's profile in it. The environment of the process is kept by its names
- * only: its values hold the session's token and the keys a harness is given for its provider,
- * and the journal keeps neither.
+ * The box a session's process is about to be started in, kept before the process exists: the
+ * request with where each item came from, the paths it resolved to and where each came from, what
+ * was closed and left out, the rules of the caller's grant it took, and the policy the sandbox
+ * reports it applies. The mark is the one the session was started with, and `session.marked`
+ * pairs it with the session once the harness has named it. The environment of the process is kept
+ * by its names only: its values hold the session's token and the keys a harness is given for its
+ * provider, and the journal keeps neither.
  */
 export const SessionBoxManifest = record(
   "session.box.manifest",
-  z.object({
+  BoxManifestSchema.extend({
     /** The mark of the session whose process this is. */
     mark: z.string().min(1),
     /** The harness instance that starts the process. */
     harness: z.string().min(1),
-    /** The sandbox the process runs in. */
-    sandbox: z.string().min(1),
-    /** What the process may reach, but its environment: that is `env`. */
-    spec: BoxSpecSchema.omit({ env: true }),
-    /** The names of the variables the process is started with, as the sandbox sets them. */
-    env: z.array(EnvNameSchema),
-    /** The rest of the configuration the sandbox is given for the spec: its settings or its flags. */
-    manifest: z.looseObject({
-      sandbox: z.string().min(1),
-      cwd: z.string().min(1),
-    }),
   }),
 );
 

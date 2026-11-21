@@ -268,3 +268,9 @@ test("a program found through a link keeps the link's name in the box beside its
   expect(allows(plan, at("bin", "tool"), "read")).toBe(true);
   expect(allows(plan, at("lib", "node_modules", "@acme", "tool", "bin", "tool.js"), "read")).toBe(true);
 });
+
+test("a box whose working directory nobody chose is not given it to write, and says why", () => {
+  const plan = host().plan({ cwd: at("work"), defaults: { allow: ["project"] }, noProject: "the session names no working directory", network: false });
+  expect(allows(plan, at("work"), "write")).toBe(false);
+  expect(plan.skipped).toEqual([{ place: at("work"), from: "project", why: "the session names no working directory" }]);
+});

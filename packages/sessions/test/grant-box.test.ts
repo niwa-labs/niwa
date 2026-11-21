@@ -1,10 +1,10 @@
-// A session's grant is its box, on a real machine.
+// A session's box reaches the hosts it asks for, on a real machine.
 //
-// A session is started through `session.start` with a grant that lets it write one directory and
-// reach example.com, and nothing else. The harness is a shell: its process is the real thing the
+// A session is started through `session.start` with a box that writes its directory and reaches
+// example.com, and nothing else. The harness is a shell: its process is the real thing the
 // funnel starts inside the real srt, so no model is asked, and what the box lets through is
 // what the shell itself reaches. example.com answers, which shows the box lets the listed host
-// through, and gitlab.com, which is not in the grant, does not.
+// through, and gitlab.com, which is not in the box, does not.
 //
 // Skipped unless NIWA_LIVE=1 and srt works on this machine.
 
@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { actionName } from "@niwa-labs/core";
 import { harnessId, harnessKind, machineId } from "@niwa-labs/harness";
 import type { Harness, SessionControl, StartOptions } from "@niwa-labs/harness";
-import { spawnAgent, srt } from "@niwa-labs/sandbox";
+import { sandbox, spawnAgent, srt } from "@niwa-labs/sandbox";
 import { createNiwa, live, tempDir, tempHome } from "@niwa-labs/testing";
 
 import { sessions } from "../src/index.ts";
@@ -64,7 +64,7 @@ class ShellControl implements SessionControl {
 
 const probe = (url: string) => `echo "${url} $(curl -sS -m 10 -o /dev/null -w '%{http_code}' ${url} 2>&1)"`;
 
-test.skipIf(!present)("a session whose grant lacks gitlab.com cannot reach it from its shell", async () => {
+test.skipIf(!present)("a session whose box lacks gitlab.com cannot reach it from its shell", async () => {
   const dir = await realpath(await tempDir("grant-box"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const home = await tempHome();
@@ -81,7 +81,7 @@ test.skipIf(!present)("a session whose grant lacks gitlab.com cannot reach it fr
     },
   };
   const host = createNiwa({ home: home.path });
-  host.use(sessions({ harnesses: [{ instance, control }], sandbox: "srt" }));
+  host.use(sessions({ harnesses: [{ instance, control }], sandbox: sandbox({ adapter: "srt" }) }));
   await host.serve();
   cleanups.push(async () => {
     await host.close();
@@ -92,7 +92,7 @@ test.skipIf(!present)("a session whose grant lacks gitlab.com cannot reach it fr
     harness: HARNESS,
     prompt: "",
     cwd: dir,
-    visible: { actions: [`write:${dir}/*`, "net:example.com"] },
+    box: { allow: [{ net: "example.com" }] },
   });
 
   const answers = await readFile(out, "utf8");

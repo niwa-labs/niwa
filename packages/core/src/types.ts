@@ -46,8 +46,11 @@ export interface Principal {
   readonly id: PrincipalId;
 }
 
-/** What a rule is about: a call, an emitted record type, a harness tool, a directory, a host. */
-export type Verb = "call" | "emit" | "tool" | "write" | "net";
+/**
+ * What a rule is about: a call, an emitted record type, a harness tool. What a box may reach is said
+ * by call rules with a target (`box.read@<path>`, `box.net@<host>`), held by the action that makes it.
+ */
+export type Verb = "call" | "emit" | "tool";
 
 /** One line of a grant: `verb:name[@target]`, and whether the owner is asked at the moment of the call. */
 export interface Rule {

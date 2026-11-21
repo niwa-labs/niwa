@@ -30,7 +30,7 @@ import { z } from "zod";
 
 import { claudeCode, claudeCodeSides } from "@niwa-labs/harness-claude";
 import { mcode, mcodeSides } from "@niwa-labs/harness-mcode";
-import { tempDir } from "@niwa-labs/testing";
+import { openBoxes, tempDir } from "@niwa-labs/testing";
 
 /** The id the fake harness gives to the session it names. */
 const NATIVE = "native-7";
@@ -193,7 +193,7 @@ for (const scenario of CASES) {
 
     const niwa: Host = createNiwa({ home: join(fake.dir, "home") });
     niwa.use(starter);
-    niwa.use(sessions({ harnesses: [{ instance: installation(built.kind, built.capabilities, id, fake.dir), control }] }));
+    niwa.use(sessions({ harnesses: [{ instance: installation(built.kind, built.capabilities, id, fake.dir), control }], sandbox: openBoxes() }));
     await niwa.serve();
     const records: StoredRecord[] = [];
     void (async () => {

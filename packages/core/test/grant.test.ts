@@ -9,9 +9,13 @@ test("a rule is verb:name[@target], with call as the default verb and an optiona
   expect(rule("task.create")).toMatchObject({ verb: "call", name: "task.create", ask: false });
   expect(rule("emit:wf.*")).toMatchObject({ verb: "emit", name: "wf.*", ask: false });
   expect(rule({ do: "rin.decide@money", ask: true })).toMatchObject({ verb: "call", name: "rin.decide", target: "money", ask: true });
-  expect(ruleText(rule("net:registry.npmjs.org"))).toBe("net:registry.npmjs.org");
+  expect(ruleText(rule("tool:Read"))).toBe("tool:Read");
+  // What a box may reach is a call rule with a target: `box.read@/data`, `box.net@crates.io`.
+  expect(rule("box.net@crates.io")).toMatchObject({ verb: "call", name: "box.net", target: "crates.io" });
   expect(() => rule("task.*.x")).toThrow("not a mask");
   expect(() => rule("hover:x")).toThrow("not a mask");
+  expect(() => rule("net:registry.npmjs.org")).toThrow("not a mask");
+  expect(() => rule("write:/work/*")).toThrow("not a mask");
 });
 
 test("what is not listed is forbidden, and the longest match wins", () => {

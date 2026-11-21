@@ -20,6 +20,17 @@ export const HOST_KEY_FILE = "host.key";
 /** The file of the owner's token, in the home: the owner's own tools read it by themselves. */
 export const OWNER_TOKEN_FILE = "owner.token";
 
+/** The journal's database, in the home: SQLite keeps its log and its shared memory beside it. */
+export const JOURNAL_FILE = "journal.db";
+
+/**
+ * The places of a home a process in a box never reaches unless it is asked for by name: the host's
+ * key, the owner's token and the journal. The secret store is the host's to add, wherever it is.
+ */
+export function closedPlacesOf(home: string): string[] {
+  return [HOST_KEY_FILE, OWNER_TOKEN_FILE, JOURNAL_FILE, `${JOURNAL_FILE}-wal`, `${JOURNAL_FILE}-shm`].map((file) => `${home}/${file}`);
+}
+
 /** The environment variable that carries a session's token into the process it started. */
 export const TOKEN_ENV = "NIWA_ID";
 

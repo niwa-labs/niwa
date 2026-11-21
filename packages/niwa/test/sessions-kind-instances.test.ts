@@ -17,7 +17,7 @@ import { HarnessInstanceRegistry, HarnessKindRegistry } from "@niwa-labs/harness
 import { claudeCodeKind } from "@niwa-labs/harness-claude";
 import { codexKind, codexSides, writeCodexFixtures } from "@niwa-labs/harness-codex";
 import { sessions } from "@niwa-labs/sessions";
-import { tempHome } from "@niwa-labs/testing";
+import { openBoxes, tempHome } from "@niwa-labs/testing";
 
 import { defaultComposition } from "../src/index.ts";
 
@@ -68,7 +68,7 @@ test("two installations of one kind start their sessions on their own models thr
     }
 
     const niwa = createNiwa({ home: join(home.path, "niwa") });
-    niwa.use(...defaultComposition({ home: join(home.path, "niwa"), harnesses }));
+    niwa.use(...defaultComposition({ home: join(home.path, "niwa"), harnesses, sandbox: openBoxes() }));
     await niwa.serve();
     try {
       for (const harness of ["claude-haiku", "claude-sonnet"]) await call(niwa, "session.start", { harness, prompt: "hi" });

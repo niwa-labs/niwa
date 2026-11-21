@@ -20,7 +20,7 @@ import { harnessId, harnessKind, machineId, promptFromText } from "@niwa-labs/ha
 import type { Harness, ReverseHandler, ReverseRequest, SessionControl } from "@niwa-labs/harness";
 import { requests } from "@niwa-labs/requests";
 import { sessions } from "@niwa-labs/sessions";
-import { eventually, tempDir, tempHome, live } from "@niwa-labs/testing";
+import { eventually, live, openBoxes, tempDir, tempHome } from "@niwa-labs/testing";
 
 import { PI_LAUNCH, PiControl } from "@niwa-labs/harness-pi";
 
@@ -330,7 +330,7 @@ async function stack(script: readonly Step[]): Promise<{ niwa: Host; records: St
   const home = await tempHome();
   const niwa = createNiwa({ home: home.path });
   niwa.use(requests({ bind: () => owner }));
-  niwa.use(sessions({ harnesses: [{ instance: installation, control: side }] }));
+  niwa.use(sessions({ harnesses: [{ instance: installation, control: side }], sandbox: openBoxes() }));
   await niwa.serve();
   const records: StoredRecord[] = [];
   void (async () => {
@@ -463,7 +463,7 @@ test.skipIf(!piRuns)(
     const home = await tempHome();
     const niwa = createNiwa({ home: home.path });
     niwa.use(requests({ bind: () => owner }));
-    niwa.use(sessions({ harnesses: [{ instance: installation, control: side }] }));
+    niwa.use(sessions({ harnesses: [{ instance: installation, control: side }], sandbox: openBoxes() }));
     await niwa.serve();
     try {
       const { session } = await call<{ session: string }>(niwa, "session.start", { harness: HARNESS, cwd: dir, prompt: "" });

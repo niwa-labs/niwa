@@ -15,6 +15,8 @@ import type { HarnessInstanceRegistry } from "@niwa-labs/harness";
 import { history } from "@niwa-labs/history";
 import { messages } from "@niwa-labs/messages";
 import type { CallerBinding, Plugin } from "@niwa-labs/plugin";
+import { sandbox } from "@niwa-labs/sandbox";
+import type { BoxAccess, SandboxHost } from "@niwa-labs/sandbox";
 import { requests } from "@niwa-labs/requests";
 import { insertPlugin, sessions } from "@niwa-labs/sessions";
 import { tasks } from "@niwa-labs/tasks";
@@ -33,6 +35,14 @@ export interface DefaultCompositionOptions {
    * "claude-haiku", model: "haiku" })`): sessions start on them and history reads each in its own home.
    */
   readonly harnesses: HarnessInstanceRegistry;
+  /**
+   * The host's sandbox (`sandbox({ adapter, profiles, closed })`): the adapter boxes run in and the
+   * profiles a box may take besides the catalog. Every installation's profile is given to it.
+   * Default: srt and the catalog.
+   */
+  readonly sandbox?: SandboxHost;
+  /** What a session's box has when its start asks for nothing. Default `{ allow: ["project", "toolchains"] }`. */
+  readonly box?: BoxAccess;
   /** The agents of the host, the harness of each role and the default agent of `niwa agent attach`. */
   readonly agents?: AgentOptions;
   readonly git?: GitOptions;
@@ -50,8 +60,11 @@ export interface DefaultCompositionOptions {
  * reports (so a harness can say a session ended), sessions, the agents module and workflow.
  */
 export function defaultComposition(options: DefaultCompositionOptions): Plugin[] {
+  const boxes = options.sandbox ?? sandbox();
   const made = sessions({
     harnesses: options.harnesses,
+    sandbox: boxes,
+    ...(options.box === undefined ? {} : { box: options.box }),
     niwaMcp: { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
   });
   const agents = agentsModule(options.agents);

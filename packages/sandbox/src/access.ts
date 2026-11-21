@@ -140,6 +140,11 @@ export interface PlanInput {
   readonly closed?: readonly { readonly path: string; readonly from: Origin }[];
   /** Whether the box may reach a network at all. A box that may not refuses every host asked of it. */
   readonly network: boolean;
+  /**
+   * Why `"project"` gives nothing, when it does not: a box whose working directory nobody chose
+   * (the host's own) is not given it to write. The item is kept as skipped, with this reason.
+   */
+  readonly noProject?: string;
 }
 
 /** A host's sandbox: its profiles, the closed list, and the plans of its boxes. */
@@ -235,7 +240,9 @@ function merged(defaults: BoxAccess | BoxAccessInput, request: BoxAccess | BoxAc
 function planBox(input: PlanInput, registry: Registry): BoxPlan {
   const home = homedir();
   const env = process.env;
+  // The places of the box are decided on real paths; the box itself runs where it was asked to.
   const cwd = realPlace(input.cwd, home);
+  const given = resolve(homeExpanded(input.cwd, home));
   const request = merged(input.defaults, input.request);
   const refusals: BoxRefusal[] = [];
   const skipped: Skipped[] = [];
@@ -343,7 +350,8 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
   for (const { item, from } of request.items) {
     const fromCall = from === "call";
     if (item === "project") {
-      paths.push({ path: cwd, mode: "write", from: "project" });
+      if (input.noProject !== undefined) skipped.push({ place: cwd, from: "project", why: input.noProject });
+      else paths.push({ path: cwd, mode: "write", from: "project" });
       if (fromCall) needs(defaultNames.has("project"), "box.use@project");
     } else if (item === "toolchains") {
       for (const place of toolchains(env, home, [...known.keys()])) {
@@ -384,7 +392,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
   }
   for (const write of input.writes ?? []) paths.push({ path: realPlace(write.path, home), mode: "write", from: write.from });
 
-  return { cwd, request, paths: distinctNeeds(paths), net: distinctHosts(net), closed, skipped, rules, refusals };
+  return { cwd: given, request, paths: distinctNeeds(paths), net: distinctHosts(net), closed, skipped, rules, refusals };
 }
 
 /** The needs with each path once, writable when any need writes it, from the first that named it. */
@@ -455,6 +463,8 @@ export const BoxPolicySchema = z.object({
  */
 export const BoxManifestSchema = z.object({
   sandbox: z.string().min(1),
+  /** The working directory of the box. */
+  cwd: z.string().min(1),
   request: z.object({
     mode: z.enum(["allow", "only"]),
     items: z.array(z.object({ item: AccessItemSchema, from: z.enum(["host", "call"]) })),
@@ -474,6 +484,7 @@ export function boxManifest(plan: BoxPlan, rules: readonly string[], made: Sandb
   const policy: BoxPolicy = made.policy ?? { write: [], devices: [], read: { except: [] }, net: [] };
   return {
     sandbox: made.sandbox,
+    cwd: plan.cwd,
     request: { mode: plan.request.mode, items: plan.request.items.map((one) => ({ item: one.item, from: one.from })) },
     paths: [...plan.paths],
     net: [...plan.net],
