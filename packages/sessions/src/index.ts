@@ -34,6 +34,7 @@ import { z } from "zod";
 
 import {
   AccessClosed,
+  runIdOfPrincipal,
   AccessGranted,
   Address,
   DESCRIPTION_MAX,
@@ -521,11 +522,14 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       if (caller.kind !== "client" || caller.principal?.kind === "owner") return;
       const principal = caller.principal;
       const own = principal?.kind === "session" ? sessionOfMark(principal.id) : undefined;
-      const run = principal?.kind === "run" ? principal.id : own === undefined ? undefined : startedOf(own)?.run;
+      const run = principal?.kind === "run" ? runIdOfPrincipal(principal.id) : own === undefined ? undefined : startedOf(own)?.run;
       const target = startedOf(ref);
       if (run === undefined && target?.run === undefined) return;
       if (run !== undefined && run === target?.run) {
-        if (principal?.kind === "run") return;
+        if (principal?.kind === "run") {
+          if (principal.id === (target?.execution ?? target?.run)) return;
+          throw new SessionRefusal("earlier-execution", "this session belongs to an earlier execution; recompute from the step that opened the conversation");
+        }
         const seen = new Set<SessionRef>();
         for (let next: SessionRef | undefined = ref; next !== undefined && !seen.has(next); next = startedOf(next)?.parentSession) {
           if (next === own) return;
@@ -1224,6 +1228,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
               id: sessionIds.issue(ctx.operationId),
               cwd: reserved.cwd,
               run: reserved.run,
+              execution: reserved.execution,
               parentSession: reserved.parentSession,
               boxAccess: reserved.boxAccess,
               disabledTools: reserved.disabledTools,
@@ -1278,7 +1283,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       if (parent?.run !== undefined && parentSession !== undefined && ended(parentSession)) {
         throw new SessionRefusal("ended-parent", "the session that asked for a helper has ended");
       }
-      const run = principal?.kind === "run" ? principal.id : parent?.run;
+      const run = principal?.kind === "run" ? runIdOfPrincipal(principal.id) : parent?.run;
+      const execution = principal?.kind === "run" ? principal.id : parent?.execution;
       if (parent?.run !== undefined && (input.worktree !== undefined ||
         (input.cwd !== undefined && (parent.cwd === undefined || realpathSync(input.cwd) !== realpathSync(parent.cwd))))) {
         throw new SessionRefusal("different-project", "a helper starts in its parent's working directory");
@@ -1307,7 +1313,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       // The mark is made in the run: a replay returns what the run returned, and the mark
       // is in the journal with the session it names.
       const mark = randomUUID();
-      const context = { run, parentSession, disabledTools: [...visible.disabledTools], boxAccess: { only: launch.plan.request.items.map(({ item }) => item) }, tools: run === undefined && parent === undefined ? input.tools : tools };
+      const context = { run, execution, parentSession, disabledTools: [...visible.disabledTools], boxAccess: { only: launch.plan.request.items.map(({ item }) => item) }, tools: run === undefined && parent === undefined ? input.tools : tools };
       // A harness at its ceiling takes the start once one of its turns ends.
       const slot = await caps.admit(instance.id);
       // Written before the harness is asked: from here on a retry never asks it again.

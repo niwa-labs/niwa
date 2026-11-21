@@ -4,7 +4,7 @@
  * run and of its invocation.
  */
 
-import { CORE_TYPES, offeredChoices, seq, shortRun } from "@niwa-labs/core";
+import { CORE_TYPES, runIdOfPrincipal, offeredChoices, seq, shortRun } from "@niwa-labs/core";
 import type { JournalReader, RecordTypeName, StoredRecord } from "@niwa-labs/core";
 import { RequestAnswered, RequestCancelledRecord, RequestCreated, RequestExpiredRecord, fold } from "@niwa-labs/requests/records";
 import type { Address } from "@niwa-labs/core";
@@ -174,10 +174,13 @@ export function childRunsOf(journal: JournalReader, run: string): string[] {
     .map((row) => RunRequested.schema.parse(row.data))
     .filter((data) => data.parent?.run === run)
     .map((data) => String(data.run));
-  const granted = journal.find({ type: CORE_TYPES.accessGranted, field: "parent.principal.id", equals: run }).flatMap((row) => {
-    const data = row.data as { principal?: { kind?: string; id?: string }; parent?: { principal?: { kind?: string } } };
-    return data.principal?.kind === "run" && data.parent?.principal?.kind === "run" && data.principal.id !== undefined ? [data.principal.id] : [];
-  });
+  const executions = journal.find({ type: RunRequested.name, field: "run", equals: run })
+    .map(row => RunRequested.schema.parse(row.data).execution ?? run);
+  const granted = [...new Set([run, ...executions])].flatMap(id =>
+    journal.find({ type: CORE_TYPES.accessGranted, field: "parent.principal.id", equals: id }).flatMap(row => {
+      const data = row.data as { principal?: { kind?: string; id?: string }; parent?: { principal?: { kind?: string } } };
+      return data.principal?.kind === "run" && data.parent?.principal?.kind === "run" && data.principal.id !== undefined ? [runIdOfPrincipal(data.principal.id)] : [];
+    }));
   return [...new Set([...named, ...granted])];
 }
 
@@ -188,7 +191,7 @@ function parentRunOf(journal: JournalReader, run: string): string | undefined {
   if (named !== undefined) return named;
   for (const row of journal.find({ type: CORE_TYPES.accessGranted, field: "principal.id", equals: run })) {
     const data = row.data as { principal?: { kind?: string }; parent?: { principal?: { kind?: string; id?: string } } };
-    if (data.principal?.kind === "run") return data.parent?.principal?.kind === "run" ? data.parent.principal.id : undefined;
+    if (data.principal?.kind === "run") return data.parent?.principal?.kind === "run" ? runIdOfPrincipal(data.parent.principal.id!) : undefined;
   }
   return undefined;
 }
@@ -343,7 +346,9 @@ function stateOf(journal: JournalReader, run: string): RunStatus {
   const requests = openRequestsOf(journal, run);
   const requested = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1);
   const after = requested?.seq ?? seq(0);
-  const finished = journal.find({ type: RunFinished.name, field: "run", equals: run, after }).at(-1);
+  const execution = requested === undefined ? run : RunRequested.schema.parse(requested.data).execution ?? run;
+  const finished = journal.find({ type: RunFinished.name, field: "run", equals: run, after })
+    .findLast(row => (RunFinished.schema.parse(row.data).execution ?? run) === execution);
   if (finished !== undefined) {
     const data = RunFinished.schema.parse(finished.data);
     return { run, state: "finished", outcome: data.outcome, requests };

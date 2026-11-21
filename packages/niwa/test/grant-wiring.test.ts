@@ -512,13 +512,16 @@ test("Codex resumed after a restart keeps its unrestricted tools, box manifest a
 });
 
 
-test.each(["cancel", "finish"])("a run owns its authenticated session helpers through %s", async (termination) => {
+test.each(["cancel", "finish", "branch"])("a run owns its authenticated session helpers through %s", async (termination) => {
   const home = await tempHome();
   const cwd = await realpath(await workdir());
   const file = join(home.path, "helpers.js");
   await writeFile(file, [
     'export default workflow({ uses: ["session.start@rec", "session.end", "niwa.records.read", "box.net@example.org"] }, async () => {',
+    ...(termination === "branch" ? ['  await race("work", { helper: async () => {'] : []),
     '  await call("session.start", { harness: "rec", prompt: "", cwd: ' + JSON.stringify(cwd) + ', tools: "niwa-only", box: { only: [] }, visible: { actions: ["session.start@rec", "session.end", {do:"box.net@example.org",ask:true}] } }, { label: "parent" });',
+    ...(termination === "branch" ? ['    await wait("stub.finished", { filter: { id: "never" } });',
+      '  }, winner: () => wait("stub.finished", { filter: { id: "winner" } }) });'] : []),
     '  await wait("stub.finished", { filter: { id: "stop" } });',
     '});',
   ].join("\n"));
@@ -594,9 +597,13 @@ test.each(["cancel", "finish"])("a run owns its authenticated session helpers th
   await owner.call(requestAnswer, { id: question, answer: { ids: ["deny"] } });
   expect(await answer).toEqual({ ids: [OptionIdSchema.parse("deny")] });
   if (termination === "cancel") await host.call(workflowCancel, { run });
-  else await host.call(actionName("stub.finish"), { id: "stop" });
+  else await host.call(actionName("stub.finish"), { id: termination === "branch" ? "winner" : "stop" });
   await eventually(() => stopped.includes("s1") && stopped.includes("s2"));
   await expect(childClient.call(sessionStart, { ...helper, operation: "after-cancel" })).rejects.toThrow("closed");
   expect(harness.starts).toHaveLength(2);
+  if (termination === "branch") {
+    expect((await host.records.read()).filter(row => row.type === "workflow.run.finished")).toHaveLength(0);
+    await host.call(actionName("stub.finish"), { id: "stop" });
+  }
   expect(stopped.sort()).toEqual(["s1", "s2"]);
 }, 60000);

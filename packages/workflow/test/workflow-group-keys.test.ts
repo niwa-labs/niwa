@@ -55,8 +55,10 @@ test("two groups of branches in one script have keys of their own", async () => 
       four: [answer("d1"), answer("d2")],
     });
     // Eight calls, eight keys; the hold of the grant on each call is a step of its own, under `<key>~auth`.
+    const actor = seen.find(r => r.type === "workflow.run.started")?.actor;
+    if (actor?.kind !== "handler") throw new Error("the script did not start");
     const keys = seen
-      .filter((r) => r.type === "niwa.step.intent")
+      .filter(r => r.type === "niwa.step.intent" && (r.data as { invocation: string }).invocation === actor.invocation)
       .map((r) => (r.data as { key?: string }).key)
       .filter((key) => !key?.endsWith("~auth"));
     expect(new Set(keys).size).toBe(8);

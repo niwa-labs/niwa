@@ -8,12 +8,12 @@
  * two branches that finish in another order on a replay keep their own answers.
  */
 
-import { CANCEL_STEPS_ACTION, CORE_TYPES, CatchableError, DeniedError, NOW_ACTION, RANDOM_ACTION, WAIT_ACTION, action, actionName, currentInvocation, grantId, isSuspend, jsonOf, keyUnder, record, recordId, seq, stableJson, timestamp } from "@niwa-labs/core";
+import { CANCEL_STEPS_ACTION, CORE_TYPES, CatchableError, DeniedError, NOW_ACTION, RANDOM_ACTION, WAIT_ACTION, action, actionName, principalOf, currentInvocation, grantId, isSuspend, jsonOf, keyUnder, record, recordId, seq, stableJson, timestamp } from "@niwa-labs/core";
 import type { Action, ActionTarget, AuthorizeHow, JournalReader, Principal, RecordType, Step, Verb } from "@niwa-labs/core";
 import { owner } from "@niwa-labs/core";
 import { AskAnswered, answeredBy, QuestionName, RequestCancelled, RequestExpired, requestAsk } from "@niwa-labs/requests/records";
 import { TimerSlept, sleepKey, timerSleepRequest } from "@niwa-labs/timer/records";
-import { sessionInterrupt } from "@niwa-labs/sessions/records";
+import { sessionEnd } from "@niwa-labs/sessions/records";
 import type { SessionMarked } from "@niwa-labs/sessions/records";
 import { z } from "zod";
 
@@ -48,7 +48,7 @@ export interface BridgeDeps {
     invocation: string,
     prefixes: readonly string[],
     except: readonly string[],
-  ): { sessions: Array<z.infer<typeof SessionMarked.schema>["session"]>; children: RunId[] };
+  ): { sessions: Array<z.infer<typeof SessionMarked.schema>["session"]>; marks: string[]; children: RunId[] };
   /** The journal, when the host is serving. */
   journal(): JournalReader;
   /** The action an agent call of that harness goes to. */
@@ -386,7 +386,15 @@ export function bridge(deps: BridgeDeps): Bridge {
   const clock = async (key: string, lineage: Lineage = NONE): Promise<number> =>
     takeOrRun(key, deps.earlier.get(key), { key, action: NOW_ACTION, input: null }, lineage, () => guarded(() => step.now({ key })));
 
-  /** A call of an action, or of an agent: taken from the earlier start while it is the same call, else made. */
+  /** End each scope resource under a replayable key. Closing a parent grant also closes its helpers. */
+  const endHeld = async (invocation: string, prefixes: readonly string[], except: readonly string[], key: string, reason: string): Promise<void> => {
+    const held = deps.heldBy(invocation, prefixes, except);
+    for (const session of held.sessions) await step.outcome(sessionEnd, { session, reason }, { key: `${key}~end:${encodeURIComponent(session)}` });
+    for (const mark of held.marks) await step.outcome(actionName("access.grant.close"), { principal: principalOf("session", mark), reason }, { key: `${key}~close:${mark}` });
+    for (const child of held.children) await guarded(() => step(deps.cancelChild, { run: child }, { key: `${key}~child:${child}` }));
+  };
+
+  /** A call of an action, or of an agent, taken from an earlier start or made afresh. */
   const act = async <I, O, In = I>(
     key: string,
     target: ActionTarget<I, O, In>,
@@ -589,9 +597,7 @@ export function bridge(deps: BridgeDeps): Bridge {
         );
         // The agents the branches started are interrupted, and the runs they started are ended. Each is a step
         // keyed by what it ends, so a replay meets the ones that are still going under the same keys.
-        const held = deps.heldBy(invocation, request.prefixes, except);
-        for (const session of held.sessions) await step.outcome(sessionInterrupt, { session }, { key: `${key}~interrupt:${String(session)}` });
-        for (const child of held.children) await guarded(() => step(deps.cancelChild, { run: child }, { key: `${key}~child:${child}` }));
+        await endHeld(invocation, request.prefixes, except, key, request.reason);
         return null;
       }
       case "scope-snapshot":
@@ -608,10 +614,13 @@ export function bridge(deps: BridgeDeps): Bridge {
           deadlines.add(gone);
           forget = deps.schedule(request.at, () => answer(true));
         });
-      case "scope-close":
+      case "scope-close": {
         shields.delete(request.scope);
         await step.emit(ScopeClosed, { run: deps.runId, scope: request.scope, outcome: request.outcome }, { key: `scope-closed:${request.scope}` });
+        const invocation = currentInvocation()?.invocation;
+        if (invocation !== undefined) await endHeld(invocation, [request.scope], [], key, "the workflow scope ended");
         return null;
+      }
     }
   };
 

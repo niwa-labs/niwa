@@ -222,6 +222,7 @@ export const RunFinished = record(
   z.object({
     /** The run that finished. */
     run: RunId,
+    execution: z.string().optional(),
     /** How it ended. */
     outcome: RunOutcome,
   }),
@@ -233,6 +234,7 @@ export const RunFinished = record(
  * The handler of the plugin is woken by this record, so the run is an invocation like any other.
  */
 export const RunRequested = record("workflow.run.requested", z.object({
+  execution: z.string().optional(),
   /** The id of the run: the identity of this attempt at the script. */
   run: RunId,
   /** The file the script came from. */

@@ -45,6 +45,11 @@ export function principalId(text: string): PrincipalId {
 /** The owner: one per host. */
 export const OWNER: Principal = { kind: "owner", id: principalId("owner") };
 
+/** The run named by a run principal, including a later execution of that run. */
+export function runIdOfPrincipal(id: string): string {
+  return id.split("/", 1)[0]!;
+}
+
 /** A principal of a kind, called by an id. */
 export function principalOf(kind: PrincipalKind, id: string): Principal {
   return { kind, id: principalId(id) };

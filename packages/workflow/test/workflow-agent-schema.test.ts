@@ -20,7 +20,7 @@ import { harnessId, machineId } from "@niwa-labs/harness";
 import type { Harness, SessionControl, SessionId } from "@niwa-labs/harness";
 import { createNiwa, sessions, eventually, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
-import { workflow, workflowCheck } from "../src/index.ts";
+import { RunFinished, workflow, workflowCheck } from "../src/index.ts";
 import type { RunStatus } from "../src/status.ts";
 
 const HARNESS = harnessId("fake-harness");
@@ -40,6 +40,15 @@ class FakeControl implements SessionControl {
   /** What the session answers next. */
   reply: unknown = undefined;
   private counter = 0;
+  readonly closed = new Set<string>();
+  keepAlive = false;
+  private readonly untilClosed = new Map<string, () => void>();
+  beforeAsk?: () => Promise<void>;
+
+  async close(id: SessionId): Promise<void> {
+    this.closed.add(id.native);
+    this.untilClosed.get(id.native)?.();
+  }
 
   async start(): Promise<{ session: SessionId }> {
     this.counter += 1;
@@ -60,6 +69,8 @@ class FakeControl implements SessionControl {
     id: SessionId,
     options: { prompt: { sections: Array<{ text: string }> }; schema: z.ZodType },
   ): Promise<{ session: SessionId; value: T; at: never }> {
+    await this.beforeAsk?.();
+    if (this.closed.has(id.native)) throw new Error("this conversation has closed");
     this.asked.push({
       prompt: options.prompt.sections.map((section) => section.text).join("\n\n"),
       schema: z.toJSONSchema(options.schema, { io: "input" }),
@@ -67,7 +78,9 @@ class FakeControl implements SessionControl {
     return { session: id, value: this.reply as T, at: 0 as never };
   }
 
-  async *life(): AsyncIterable<never> {}
+  async *life(id: SessionId): AsyncIterable<never> {
+    if (this.keepAlive && !this.closed.has(id.native)) await new Promise<void>(resolve => this.untilClosed.set(id.native, resolve));
+  }
 
   async state(): Promise<"running" | "idle" | "unknown"> {
     return "unknown";
@@ -285,6 +298,57 @@ test("a session handle replays each labeled turn and preserves the conversation"
   expect(rows.filter(row => row.type === "session.ended")).toHaveLength(1);
   expect(control.asked.map(turn => turn.prompt)).toEqual(["first", "second"]);
   expect(rows.filter(row => row.type === "workflow.step.reused").map(row => (row.data as { key: string }).key)).toEqual(["label:conversation", "label:first", "label:second", "label:close"]);
+}, 30_000);
+
+test("a recomputed conversation gets fresh authority after restart and ignores a late finish from its first execution", async () => {
+  const { host: first, home, control } = await served();
+  control.keepAlive = true;
+  control.reply = "ok";
+  const file = await scriptIn(home, "execution.js", [
+    'export default workflow({ uses: ["session.start.fake-harness", "session.ask", "session.end"], output: z.json() }, async () => {',
+    '  const conversation = session({ harness: "fake-harness", label: "open" });',
+    '  return await conversation.ask("next", { label: "turn", schema: z.string() });',
+    '});',
+  ]);
+  const { run } = await first.call(START, { file, wait: true }) as { run: string };
+  await eventually(async () => control.closed.has("session-1") && (await first.records.read()).some(row =>
+    row.type === "niwa.access.closed" && (row.data as { principal: { id: string } }).principal.id === run));
+  const invocationEnded = async (target: Host) => {
+    const rows = await target.records.read();
+    const actor = rows.filter(row => row.type === "workflow.run.started").at(-1)?.actor;
+    return actor?.kind === "handler" && rows.some(row => row.type === "niwa.invocation.state" &&
+      (row.data as { invocation: string; state: string }).invocation === actor.invocation && (row.data as { state: string }).state === "done");
+  };
+  await eventually(() => invocationEnded(first));
+  const finished = (await first.records.read()).find(row => row.type === RunFinished.name)!;
+  await first.close();
+  hosts.splice(hosts.indexOf(first), 1);
+  const host = createNiwa({ home });
+  host.use(sessions({ harnesses: [{ instance, control }] }), workflow({ harnesses: [HARNESS] }));
+  await host.serve();
+  hosts.push(host);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let asking = false;
+  control.beforeAsk = async () => { asking = true; await gate; };
+  await host.call(RESUME, { run, from: "label:open" });
+  await eventually(() => asking);
+  await host.emit(RunFinished, RunFinished.schema.parse(finished.data));
+  expect((await host.call(actionName("workflow.inspect"), { run }) as { status: RunStatus }).status.state).toBe("running");
+  release();
+  expect((await statusOf(host, run)).outcome).toEqual({ status: "done", result: "ok" });
+  await eventually(() => control.closed.has("session-2"));
+  await eventually(async () => {
+    const grants = (await host.records.read()).filter(row => row.type === "niwa.access.closed")
+      .map(row => (row.data as { principal: { kind: string; id: string } }).principal).filter(p => p.kind === "run");
+    return new Set(grants.map(p => p.id)).size === 2;
+  });
+
+  await eventually(() => invocationEnded(host));
+  await host.call(RESUME, { run, from: "label:turn" });
+  await eventually(async () => (await host.records.read()).some(row =>
+    JSON.stringify(row.data).includes("recompute from the step that opened the conversation")));
+  expect(control.asked).toHaveLength(2);
 }, 30_000);
 
 test("concurrent first turns share a session and another handle opens its own", async () => {

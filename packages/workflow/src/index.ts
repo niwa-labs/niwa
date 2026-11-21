@@ -29,19 +29,19 @@
  * failure pauses the run with the choices of the core. The workflow does not repair itself.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 import { z } from "zod";
 
-import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, keyUnder, callerOf, fillRule, grant, isRuleTemplate, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, storedOutcome, toJsonSchema } from "@niwa-labs/core";
+import { AccessGranted, CANCEL_STEPS_ACTION, CORE_TYPES, DESCRIPTION_MAX, DESCRIPTION_MIN, DeniedError, EntityDescription, IdIndex, JsonValueSchema, RESOLVE_ACTION, action, cancelHolds, keyUnder, runIdOfPrincipal, callerOf, fillRule, grant, isRuleTemplate, jsonOf, narrow, principalOf, record, recordId, rule, seq, ruleText, specsOf, storedOutcome, toJsonSchema } from "@niwa-labs/core";
 import { COCKPIT_MODULE, plugin } from "@niwa-labs/plugin";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE } from "@niwa-labs/core";
 import { BUILTIN_WORKFLOW, PENDING_EXTERNAL, PendingExternalAnswerSchema, SCRIPT_PACKAGE } from "@niwa-labs/plugin";
 import type { ServiceContext, Subscriber } from "@niwa-labs/plugin";
-import type { Action, ActionContext, ArtifactStore, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StoredRecord } from "@niwa-labs/core";
+import type { Action, ActionContext, ArtifactStore, Caller, Grant, Handler, IssuedId, JournalReader, JsonSchema, Principal, RecordType, RuleSpec, Seq, StepsCancelled, StoredRecord } from "@niwa-labs/core";
 import { scriptOn } from "@niwa-labs/script";
 import { requireBox } from "@niwa-labs/sandbox";
 import type { BoxSandboxName } from "@niwa-labs/sandbox";
@@ -476,7 +476,7 @@ export function workflow(opts: WorkflowOptions = {}) {
     /** The plugin whose built-in a caller is a run of; undefined for any other caller. */
     const builtinPluginOf = (caller: Caller): string | undefined => {
       if (caller.kind !== "client" || caller.principal?.kind !== "run") return undefined;
-      const id = factsOf(journal(), caller.principal.id)?.workflow;
+      const id = factsOf(journal(), runIdOfPrincipal(caller.principal.id))?.workflow;
       return id === undefined ? undefined : workflowsOf(journal()).find((one) => one.id === id)?.builtin?.plugin;
     };
 
@@ -556,6 +556,34 @@ export function workflow(opts: WorkflowOptions = {}) {
         throw new RunRefusal("allow-wider", `allow only narrows the run: ${within.refused.map((text) => text.replace(/^call:/, "")).join(", ")} ${within.refused.length === 1 ? "is" : "are"} not the run's`);
       }
       return grant([...specsOf(within.rules), `emit:${SCRIPT_TYPES}*`]);
+    };
+
+    const latestRequest = (run: string) => {
+      const row = journal().find({ type: RunRequested.name, field: "run", equals: run }).at(-1);
+      return row === undefined ? undefined : RunRequested.schema.parse(row.data);
+    };
+
+    /** A revision keeps its original authority ceiling and receives a fresh, independently closable identity. */
+    const requestAgain = async (ctx: ActionContext, request: ReturnType<typeof requestedOf> & { from?: string }) => {
+      const initial = journal().find({ type: AccessGranted.name, field: "principal.id", equals: request.run })
+        .map(row => AccessGranted.schema.parse(row.data)).find(data => data.principal.kind === "run");
+      const parent = initial?.parent === undefined ? ctx.caller : callerOf(initial.parent.principal);
+      const policy = latestRequest(request.run)?.allow;
+      const script = readScript(request.file);
+      const intrinsic = `emit:${SCRIPT_TYPES}*`;
+      const declared = await grantOfRun(parent, script?.text, request.file, request.args, policy?.rules);
+      const execution = `${request.run}/${randomUUID()}`;
+      let rules = declared;
+      if (initial !== undefined) {
+        const requested = (declared === undefined ? initial.rules : specsOf(declared)).filter(spec => spec !== intrinsic);
+        const original = narrow(grant(initial.rules), requested, { irreversible: name => api.effectOf(name) === "irreversible" });
+        if ("refused" in original) throw new UsesRefused(original.refused);
+        const current = api.narrow(parent, specsOf(original.rules));
+        if ("refused" in current) throw new UsesRefused(current.refused);
+        rules = grant([...specsOf(current.rules), intrinsic]);
+      }
+      if (rules !== undefined) api.issueToken("run", execution, { grant: rules, parent });
+      await ctx.emit(RunRequested, { ...request, execution, ...(policy === undefined ? {} : { allow: policy }) });
     };
 
     api.action(
@@ -947,11 +975,11 @@ export function workflow(opts: WorkflowOptions = {}) {
           const edited = hash !== undefined && facts.hash !== undefined && hash !== facts.hash;
           const requested = { ...requestedOf(run, facts, facts.file, hash), ...(input.from === undefined ? {} : { from: input.from }) };
           if (!edited) {
-            await ctx.emit(RunRequested, requested);
+            await requestAgain(ctx, requested);
             return { run, finished: false };
           }
           const revision = await revisionOf(journal(), api.artifacts, facts, actionNameOf, boxFor(facts.box), facts.file, run, input.from);
-          await ctx.emit(RunRequested, requested);
+          await requestAgain(ctx, requested);
           return { run, finished: false, revision };
         },
       }),
@@ -972,7 +1000,7 @@ export function workflow(opts: WorkflowOptions = {}) {
           await guardResumable(run, ctx);
           const file = resolveFile(opts.root, input.file);
           const revision = await revisionOf(journal(), api.artifacts, facts, actionNameOf, boxFor(facts.box), file, run, input.from);
-          await ctx.emit(RunRequested, { ...requestedOf(run, facts, file, readScript(file)?.hash), ...(input.from === undefined ? {} : { from: input.from }) });
+          await requestAgain(ctx, { ...requestedOf(run, facts, file, readScript(file)?.hash), ...(input.from === undefined ? {} : { from: input.from }) });
           return { run, finished: false, revision };
         },
       }),
@@ -1005,7 +1033,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       const facts = known(run);
       if (statusOf(journal(), run).state !== "finished") {
         await changeControl(run, async () => {
-          await ctx.emit(RunFinished, { run, outcome: { status: "cancelled" } });
+          await ctx.emit(RunFinished, { run, execution: latestRequest(run)?.execution, outcome: { status: "cancelled" } });
           const pause = activeManualPause(journal(), run);
           if (pause !== undefined) await ctx.emit(RunContinued, { run, pause: String(pause.id) });
         });
@@ -1065,7 +1093,8 @@ export function workflow(opts: WorkflowOptions = {}) {
           const reason = input.reason ?? "stopped by the owner";
           await ctx.step(CANCEL_STEPS_ACTION, { invocation: latest.invocation, prefixes: [at], ...(except.length === 0 ? {} : { except }), reason });
           const held = heldBy(journal(), latest.invocation, [at], except);
-          for (const session of held.sessions) await ctx.step.outcome(sessionInterrupt, { session });
+          for (const session of held.sessions) await ctx.step.outcome(sessionEnd, { session, reason });
+          for (const mark of held.marks) await ctx.step.outcome(actionName("access.grant.close"), { principal: principalOf("session", mark), reason });
           for (const child of held.children) await cancelTree(child, ctx);
           return { run, finished: false };
         },
@@ -1750,7 +1779,7 @@ export function workflow(opts: WorkflowOptions = {}) {
             }
             return { registered, found };
           });
-          const run = RunId.parse(caller.principal.id);
+          const run = RunId.parse(runIdOfPrincipal(caller.principal.id));
           if (named.some(({ found }) => found.candidate === true)) {
             await ctx.emit(BuiltinPromoted, { run, versions: input.versions.map(({ workflow: id, version }) => ({ workflow: id, version })) });
             await ctx.emit(BuiltinsWanted, { items: wantedBuiltins() });
@@ -1785,7 +1814,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         run: async (input: unknown, ctx: ActionContext) => {
           const current = workflowOf(registered.id);
           // A run that calls a workflow is the parent of the run it starts: a cancel and a pause go down to it.
-          const caller = ctx.caller.kind === "client" && ctx.caller.principal?.kind === "run" ? String(ctx.caller.principal.id) : undefined;
+          const caller = ctx.caller.kind === "client" && ctx.caller.principal?.kind === "run" ? runIdOfPrincipal(ctx.caller.principal.id) : undefined;
           const parent = caller === undefined ? undefined : { run: caller, step: String(ctx.operationId) };
           // A workflow that takes no input is called with an empty object, and its run is given nothing.
           const args = current.latest.input === undefined ? undefined : input;
@@ -1814,34 +1843,61 @@ export function workflow(opts: WorkflowOptions = {}) {
 
     // A session started by an MCP helper has no step in the script's invocation.
     // The durable ownership record includes these sessions even after a restart.
-    api.on(RunFinished, { id: "end-run-sessions", concurrency: Infinity }, async ({ run }, step) => {
-      const reason = `the run ${run} finished`;
-      const granted = journal().find({ type: AccessGranted.name, field: "principal.id", equals: run })
-        .some((row) => AccessGranted.schema.parse(row.data).principal.kind === "run");
-      if (granted) {
-        await step.outcome(actionName("access.grant.close"), { principal: principalOf("run", run), reason }, { key: "close-grant" });
+    const finishedExecution = (run: string, execution = run) =>
+      journal().find({ type: RunFinished.name, field: "run", equals: run }).some(row => {
+        const finish = RunFinished.schema.parse(row.data);
+        return (finish.execution ?? run) === execution;
+      }) || (latestRequest(run)?.execution ?? run) !== execution;
+
+    const closeExecution = async (run: string, execution: string, step: Parameters<Handler<unknown>>[1], cancelled = false) => {
+      const reason = cancelled ? `the run ${run} that started it was cancelled` : `the run ${run} finished`;
+      for (const row of journal().find({ type: SessionStarted.name, field: "run", equals: run })) {
+        const started = SessionStarted.schema.parse(row.data);
+        if ((started.execution ?? run) === execution) await step.outcome(sessionEnd, { session: started.session, reason }, { key: `end:${digestOf(started.session)}` });
+      }
+      const hasGrant = journal().find({ type: AccessGranted.name, field: "principal.id", equals: execution })
+        .some(row => AccessGranted.schema.parse(row.data).principal.kind === "run");
+      if (hasGrant) {
+        await step.outcome(actionName("access.grant.close"), { principal: principalOf("run", execution), reason }, { key: "close-grant" });
       } else {
-        // A trusted ad-hoc run can have no grant of its own to cascade from.
         for (const row of journal().find({ type: SessionStartReserved.name, field: "run", equals: run })) {
-          const { mark } = SessionStartReserved.schema.parse(row.data);
-          if (mark !== undefined) await step.outcome(actionName("access.grant.close"), {
-            principal: principalOf("session", mark), reason,
-          }, { key: `close:${mark}` });
+          const reserved = SessionStartReserved.schema.parse(row.data);
+          if ((reserved.execution ?? run) === execution && reserved.mark !== undefined) await step.outcome(actionName("access.grant.close"), {
+            principal: principalOf("session", reserved.mark), reason,
+          }, { key: `close:${reserved.mark}` });
         }
       }
-      for (const row of journal().find({ type: SessionStarted.name, field: "run", equals: run })) {
-        const { session } = SessionStarted.schema.parse(row.data);
-        await step(sessionEnd, { session, reason }, { key: `end:${session}` });
+    };
+    api.on(RunFinished, { id: "end-run-sessions", concurrency: Infinity }, async ({ run, execution, outcome }, step) => {
+      await closeExecution(run, execution ?? run, step, outcome.status === "cancelled");
+    });
+    api.on(RunRequested, { id: "end-superseded-execution", concurrency: Infinity }, async ({ run, execution }, step, stored) => {
+      if (execution === undefined) return;
+      const previous = journal().find({ type: RunRequested.name, field: "run", equals: run }).filter(row => row.seq < stored.seq).at(-1);
+      if (previous === undefined) return;
+      const prior = RunRequested.schema.parse(previous.data).execution ?? run;
+      const finished = journal().find({ type: RunFinished.name, field: "run", equals: run })
+        .some(row => (RunFinished.schema.parse(row.data).execution ?? run) === prior);
+      if (!finished) await closeExecution(run, prior, step);
+    });
+    api.on(SessionStartReserved, { id: "close-late-session-grant", concurrency: Infinity }, async ({ run, execution, mark }, step, stored) => {
+      if (run === undefined || mark === undefined) return;
+      const cancelled = journal().find({ type: CORE_TYPES.stepCancelled }).some(row => {
+        const cancel = row.data as StepsCancelled;
+        const key = sessionStep(stored, cancel.invocation);
+        return key !== undefined && cancelHolds(cancel, key);
+      });
+      const scopeEnded = journal().find({ type: ScopeClosed.name, field: "run", equals: run }).some(row => {
+        if (row.actor.kind !== "handler") return false;
+        const key = sessionStep(stored, row.actor.invocation);
+        return key !== undefined && keyUnder(key, ScopeClosed.schema.parse(row.data).scope);
+      });
+      if (cancelled || scopeEnded || finishedExecution(run, execution)) {
+        await step.outcome(actionName("access.grant.close"), { principal: principalOf("session", mark), reason: cancelled || scopeEnded ? "the workflow scope ended" : `the run ${run} finished` });
       }
     });
-    api.on(SessionStartReserved, { id: "close-late-session-grant", concurrency: Infinity }, async ({ run, mark }, step) => {
-      if (run !== undefined && mark !== undefined && journal().find({ type: RunFinished.name, field: "run", equals: run }).length > 0) {
-        await step.outcome(actionName("access.grant.close"), { principal: principalOf("session", mark), reason: `the run ${run} finished` });
-      }
-    });
-    // The harness can finish naming a session after the run finished.
-    api.on(SessionStarted, { id: "end-late-run-session", concurrency: Infinity }, async ({ run, session }, step) => {
-      if (run !== undefined && journal().find({ type: RunFinished.name, field: "run", equals: run }).length > 0) {
+    api.on(SessionStarted, { id: "end-late-run-session", concurrency: Infinity }, async ({ run, execution, session }, step) => {
+      if (run !== undefined && finishedExecution(run, execution)) {
         await step(sessionEnd, { session, reason: `the run ${run} finished` });
       }
     });
@@ -1854,7 +1910,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       async (data, step) => {
       const { run, file } = data;
       // The run acts as its own principal: its grant is what the script is held to.
-      const principal = principalOf("run", run);
+      const principal = principalOf("run", data.execution ?? run);
       const runCaller = callerOf(principal);
       const args = data.args ?? null;
       const script = readScript(file);
@@ -1963,7 +2019,10 @@ export function workflow(opts: WorkflowOptions = {}) {
       // between this check and the spawn of the child, so a cancel cannot slip between them.
       const cancelled = journal()
         .find({ type: RunFinished.name, field: "run", equals: run })
-        .some((record) => RunFinished.schema.parse(record.data).outcome.status === "cancelled");
+        .some((record) => {
+          const finish = RunFinished.schema.parse(record.data);
+          return (finish.execution ?? run) === (data.execution ?? run) && finish.outcome.status === "cancelled";
+        });
       if (cancelled) return;
 
       // A pause is a journal-backed wait within the same invocation. Keep one waiter per pause
@@ -2066,9 +2125,9 @@ export function workflow(opts: WorkflowOptions = {}) {
       // a run that is answered and goes on does not write over the run that paused, and a retry
       // that fails another way does not write over the pause before it.
       if (ended.ok) {
-        await atBoundary(() => step.emit(RunFinished, { run, outcome: outcomeOf(described?.output, ended.result) }, { key: "finished" }));
+        await atBoundary(() => step.emit(RunFinished, { run, execution: data.execution, outcome: outcomeOf(described?.output, ended.result) }, { key: "finished" }));
         // The sessions its agent calls started were kept up for it while it ran: they go with it.
-        for (const session of sessionsOf(journal(), factsOf(journal(), run)?.invocations ?? [])) {
+        for (const session of sessionsOf(journal(), current === undefined ? [] : [current])) {
           await step.outcome(sessionEnd, { session, reason: `the run ${run} that started it finished` }, { key: `end-session:${digestOf(String(session))}` });
         }
         return;
@@ -2313,11 +2372,12 @@ function depthOf(journal: JournalReader, run: string): number {
 
 /** The shielded scopes of a run that are open: opened and not closed. */
 function openShieldsOf(journal: JournalReader, run: string): string[] {
-  const closed = new Set(journal.find({ type: ScopeClosed.name, field: "run", equals: run }).map((row) => ScopeClosed.schema.parse(row.data).scope));
+  const after = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1)?.seq;
+  const closed = new Set(journal.find({ type: ScopeClosed.name, field: "run", equals: run, after }).map((row) => ScopeClosed.schema.parse(row.data).scope));
   return [
     ...new Set(
       journal
-        .find({ type: ScopeOpened.name, field: "run", equals: run })
+        .find({ type: ScopeOpened.name, field: "run", equals: run, after })
         .map((row) => ScopeOpened.schema.parse(row.data))
         .filter((opened) => opened.shield === true && !closed.has(opened.scope))
         .map((opened) => opened.scope),
@@ -2325,25 +2385,31 @@ function openShieldsOf(journal: JournalReader, run: string): string[] {
   ];
 }
 
+/** Session events emitted by an action retain its host-generated operation in the record ID. */
+function sessionStep(row: StoredRecord, invocation: string): string | undefined {
+  const id = String(row.id);
+  const operation = id.slice(0, id.lastIndexOf("/emit/"));
+  return operation.startsWith(invocation + "/") ? operation.slice(invocation.length + 1).replace(/#\d+$/, "") : undefined;
+}
+
 /**
  * The sessions and the child runs that steps of an invocation under the prefixes started, and that
  * are still going: what a cancel of those steps interrupts and ends with them.
  */
-function heldBy(journal: JournalReader, invocation: string, prefixes: readonly string[], except: readonly string[]): { sessions: Array<z.infer<typeof SessionMarked.schema>["session"]>; children: RunId[] } {
+function heldBy(journal: JournalReader, invocation: string, prefixes: readonly string[], except: readonly string[]): { sessions: Array<z.infer<typeof SessionMarked.schema>["session"]>; marks: string[]; children: RunId[] } {
   const held = (key: string): boolean => prefixes.some((prefix) => keyUnder(key, prefix)) && !except.some((spared) => keyUnder(key, spared));
   // An operation is `<invocation>/<key>`, with `#<n>` for a later attempt.
   const keyOf = (operation: string): string | undefined =>
     operation.startsWith(`${invocation}/`) ? operation.slice(invocation.length + 1).replace(/#\d+$/, "") : undefined;
   const ended = new Set(journal.find({ type: SessionEnded.name }).map((row) => SessionEnded.schema.parse(row.data).session));
-  const sessions = journal
-    .find({ type: SessionMarked.name })
-    .filter((row) => {
-      const id = String(row.id);
-      const key = keyOf(id.slice(0, id.lastIndexOf("/emit/")));
-      return key !== undefined && held(key);
-    })
-    .map((row) => SessionMarked.schema.parse(row.data).session)
-    .filter((session) => !ended.has(session));
+  const underBranch = (row: StoredRecord): boolean => {
+    const key = sessionStep(row, invocation);
+    return key !== undefined && held(key);
+  };
+  const sessions = journal.find({ type: SessionMarked.name }).filter(underBranch)
+    .map(row => SessionMarked.schema.parse(row.data).session).filter(session => !ended.has(session));
+  const marks = journal.find({ type: SessionStartReserved.name }).filter(underBranch)
+    .flatMap(row => SessionStartReserved.schema.parse(row.data).mark ?? []);
   const children = [
     ...new Set(
       journal
@@ -2356,7 +2422,7 @@ function heldBy(journal: JournalReader, invocation: string, prefixes: readonly s
         .map((data) => data.run),
     ),
   ];
-  return { sessions: [...new Set(sessions)], children };
+  return { sessions: [...new Set(sessions)], marks, children };
 }
 
 /**

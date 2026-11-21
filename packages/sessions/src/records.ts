@@ -51,6 +51,7 @@ export interface SessionSendOutput {
 }
 
 const LaunchContext = {
+  execution: z.string().optional(),
   run: z.string().min(1).optional(),
   parentSession: SessionRefSchema.optional(),
   /** Effective access items, including defaults; the starting point for nested boxes. */
