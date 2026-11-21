@@ -44,6 +44,7 @@ const wrapperGone: Sandbox = {
 
 test("a sandbox whose policy does not keep a run off the network refuses the call before anything starts", async () => {
   const cases: Array<[Sandbox, RegExp]> = [
+    [recordingSandbox((spec) => ({ ...heldPolicy(spec), write: [join(spec.cwd, "..", "sibling")] })), /outside the admitted paths/],
     [recordingSandbox(() => undefined), /does not say what a box lets a process reach/],
     [recordingSandbox((spec) => ({ ...heldPolicy(spec), net: ["example.com"] })), /lets a process reach example\.com/],
   ];
@@ -83,4 +84,30 @@ test("a box that cannot be had refuses the call before anything starts", async (
     expect(existsSync(join(cwd, "ran"))).toBe(false);
     expect(bench.emitted).toEqual([]);
   }
+});
+
+test("a manifest too large for the completion record refuses before launch", async () => {
+  const adapter = recordingSandbox((spec) => ({
+    write: spec.write, devices: [], read: { only: Array.from({ length: 6000 }, (_, i) => `${spec.cwd}/example-fixture-${i}`) }, net: [],
+  }));
+  const host = await procActions({ sandbox: adapter });
+  benches.push(host);
+  const cwd = dirIn(host.home, "work");
+  await expect(host.call("proc.run", { cmd: ["true"], cwd, timeout: 1000 })).rejects.toThrow(/manifest exceeds/);
+  expect(adapter.specs).toHaveLength(0);
+});
+
+
+test("an admitted run receives its private temp directory and removes it on completion", async () => {
+  const adapter = recordingSandbox();
+  const bench = await procActions({ sandbox: adapter });
+  benches.push(bench);
+  const cwd = realpathSync(dirIn(bench.home, "work"));
+  const result = await bench.call("proc.run", { cmd: sh('test -d "$TMPDIR"'), cwd, timeout: 1000 });
+  expect(result.exit).toBe(0);
+  expect(adapter.specs).toHaveLength(1);
+  const temp = adapter.specs[0]!.env["TMPDIR"]!;
+  expect(temp.startsWith(cwd + "/")).toBe(true);
+  expect(existsSync(temp)).toBe(false);
+  expect(bench.emitted).toHaveLength(1);
 });

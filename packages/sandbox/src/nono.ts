@@ -261,13 +261,16 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     // the profile grants on its own.
     const granted = [
       ...[spec.cwd, ...spec.read, ...spec.write, ...spec.sockets].map((place) => ({ place: expanded(place), by: place })),
-      ...system.map((place) => ({ place, by: `${place} (a system place every box reads)` })),
+      ...[...system, ...systemWrites(platform).map(expanded)].map((place) => ({ place, by: `${place} (a system place every box uses)` })),
     ];
     const carved = spec.closed.flatMap((closed) => {
-      const inside = granted.find(({ place }) => covers(place, expanded(closed)));
-      return inside === undefined
-        ? []
-        : [{ code: "adapter" as const, message: `nono cannot keep ${closed} closed inside ${inside.by}, which the box may use: its reads are an allow-list` }];
+      const boundary = expanded(closed);
+      const inside = granted.find(({ place }) => covers(place, boundary) || covers(boundary, place));
+      if (inside === undefined) return [];
+      const message = covers(inside.place, boundary)
+        ? `nono cannot keep ${closed} closed inside ${inside.by}, which the box may use: its reads are an allow-list`
+        : `nono cannot open ${inside.by} inside ${closed}, which is closed`;
+      return [{ code: "adapter" as const, message }];
     });
     if (carved.length > 0) throw new BoxRefused(carved, "nono");
     const net = spec.net.length === 0 ? ["--block-net"] : spec.net.flatMap((host) => ["--allow-domain", host]);

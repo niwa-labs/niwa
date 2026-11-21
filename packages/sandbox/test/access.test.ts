@@ -230,8 +230,9 @@ test("admit refuses with every reason at once: the plan's own, each missing rule
   expect(held.rules).toEqual(["box.use@*"]);
 });
 
-test("nono grants a file as a file and a directory as a directory, and keeps a place granted inside a closed one", () => {
-  const made = nono().manifest(boxSpec({ cwd: at("work"), read: [at("codex", "auth.json"), at("bin")], write: [at("codex", "auth.json"), at("pi")], closed: [at("codex")] }));
+test("nono grants a file as a file and a directory as a directory, and refuses a grant inside a closed directory", () => {
+  const made = nono().manifest(boxSpec({ cwd: at("work"), read: [at("codex", "auth.json"), at("bin")], write: [at("codex", "auth.json"), at("pi")], closed: [at("other")] }));
+  expect(() => nono().manifest(boxSpec({ cwd: at("codex", "child"), closed: [at("codex")] }))).toThrow(BoxRefused);
   expect(made.flags).toEqual(expect.arrayContaining(["--read-file", at("codex", "auth.json"), "--read", at("bin"), "--allow-file", at("codex", "auth.json"), "--allow", at("pi")]));
 });
 
@@ -290,25 +291,42 @@ test("a box whose working directory nobody chose is not given it to write, and s
 
 test("a box that writes its directory gets what git keeps of it outside: a worktree's own git directory, and the shared objects and refs", () => {
   const main = at("main");
-  mkdirSync(join(main, ".git", "worktrees", "wt1"), { recursive: true });
-  for (const part of ["objects", "refs", "logs"]) mkdirSync(join(main, ".git", part), { recursive: true });
-  writeFileSync(join(main, ".git", "worktrees", "wt1", "commondir"), "../..\n");
   const tree = at("trees", "wt1");
-  mkdirSync(tree, { recursive: true });
-  writeFileSync(join(tree, ".git"), `gitdir: ${join(main, ".git", "worktrees", "wt1")}\n`);
-  const plan = host().plan({ cwd: tree, defaults: { allow: ["project"] }, network: false });
+  mkdirSync(main);
+  const git = (args: string[]) => {
+    const made = Bun.spawnSync(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], {
+      cwd: main, env: { ...process.env, PATH: savedPath, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, stderr: "pipe",
+    });
+    if (made.exitCode !== 0) throw new Error(made.stderr.toString());
+  };
+  git(["init", "-q"]);
+  git(["commit", "-q", "--allow-empty", "-m", "fixture"]);
+  git(["worktree", "add", "-qb", "fixture", tree]);
+  const input = { cwd: tree, defaults: { allow: ["project"] }, network: false } as const;
+  const worktree = { id: "wt1", path: tree, repo: main };
+  for (const binding of [undefined, { ...worktree, id: "unrelated" }]) {
+    const denied = host().plan({ ...input, ...(binding && { worktree: binding }) });
+    expect(denied.refusals[0]?.code).toBe("not-granted");
+    expect(denied.paths.some((need) => need.from === "repository")).toBe(false);
+  }
+  const explicit = host().plan({ ...input, request: { allow: [{ write: join(main, ".git") }] } });
+  expect(explicit.refusals).toEqual([]);
+  expect(explicit.paths.some((need) => need.from === "repository")).toBe(false);
+  expect(() => admit(explicit, nono(), () => undefined)).toThrow(BoxRefused);
+  const plan = host().plan({ ...input, worktree });
+  expect(plan.refusals).toEqual([]);
   expect(plan.paths).toContainEqual({ path: join(main, ".git", "worktrees", "wt1"), mode: "write", from: "repository" });
   expect(plan.paths).toContainEqual({ path: join(main, ".git"), mode: "read", from: "repository" });
   for (const part of ["objects", "refs", "logs"]) expect(plan.paths).toContainEqual({ path: join(main, ".git", part), mode: "write", from: "repository" });
   // Its configuration and hooks are read, never written.
   expect(allows(plan, join(main, ".git"), "write")).toBe(false);
   // A box that only reads its directory gets nothing of the repository.
-  const reading = host().plan({ cwd: tree, defaults: { allow: [{ read: "." }] }, network: false });
+  const reading = host().plan({ cwd: tree, worktree, defaults: { allow: [{ read: "." }] }, network: false });
   expect(reading.paths.some((need) => need.from === "repository")).toBe(false);
-  // A directory inside a checkout gets the checkout's git directory.
+  // A plain subdirectory carries no independent grant on its parent.
   mkdirSync(join(main, "pkg"));
   const inner = host().plan({ cwd: join(main, "pkg"), defaults: { allow: ["project"] }, network: false });
-  expect(inner.paths).toContainEqual({ path: join(main, ".git"), mode: "write", from: "repository" });
+  expect(inner.paths).not.toContainEqual({ path: join(main, ".git"), mode: "write", from: "repository" });
 });
 
 test("the toolchains read what each profile of the catalog reads, and nothing it writes, nor anything of a host's profile", () => {
@@ -325,4 +343,25 @@ test("the toolchains read what each profile of the catalog reads, and nothing it
   expect(closes(plan, at("codex"))).toBe(true);
   const bare = host().plan({ cwd: at("work"), defaults: { allow: [] }, owner: "pi", network: false });
   expect(closes(bare, join(home, ".gitconfig"))).toBe(true);
+});
+
+test("the cwd and required writes respect installation boundaries", () => {
+  const cwd = at("pi", "workspace");
+  const input = { cwd, defaults: { allow: [] }, network: false, writes: [{ path: cwd, from: "cwd" }] };
+  expect(host().plan({ ...input, owner: "pi" }).refusals).toEqual([]);
+  expect(host().plan({ ...input, owner: "codex-sol" }).refusals[0]?.code).toBe("closed");
+});
+
+
+test("opening a closed path for reading preserves its write restriction", () => {
+  const path = at("archive");
+  const boxes = sandbox({ closed: [path] });
+  const input = { cwd: path, defaults: { allow: [{ read: path }] }, writes: [{ path, from: "cwd" }], network: false };
+  expect(boxes.plan(input).refusals[0]?.code).toBe("closed");
+  expect(boxes.plan({ ...input, defaults: { allow: [{ write: path }] } }).refusals).toEqual([]);
+});
+
+test("admission checks the host socket against the resolved profile boundaries", () => {
+  const plan = host().plan({ cwd: at("work"), defaults: { allow: [] }, network: false });
+  expect(() => admit(plan, srt({ platform: "darwin" }), () => undefined, { sockets: [at("pi", "socket")] })).toThrow(BoxRefused);
 });

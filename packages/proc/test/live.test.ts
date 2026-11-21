@@ -11,7 +11,7 @@
 //   5. the box a run names carries nono's policy: its cwd to write, and neither a temp area nor the home to read
 //   6. a run's HOME is the user's own, which it cannot write, and a program on the PATH under the user's
 //      home runs from the toolchains, and not when the call replaces them
-// and for srt, whose reads are open: a run cannot read the places of an installation it did not take.
+// and for srt: proc refuses its additional writable directories.
 
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -113,16 +113,20 @@ for (const sandbox of [nono()]) {
     }, 60_000);
 
     test.skipIf(!present)("commits in a git worktree, whose git directory lies in the main repository", async () => {
-      const host = await procHost({ sandbox }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
+      const home = realpathSync(mkdtempSync(join(tmpdir(), "niwa-proc-home-")));
+      const main = dirIn(home, "repo");
+      const tree = join(home, "worktrees", "wt-1");
+      const boxes = sandboxHost();
+      const worktree = { path: tree, repo: main, id: "wt-1" };
+      const registered = { ...boxes, plan: (input: Parameters<typeof boxes.plan>[0]) => boxes.plan({ ...input, worktree }) };
+      const host = await procHost({ sandbox, boxes: registered }, home);
       try {
-        const main = realpathSync(dirIn(host.home, "repo"));
         const git = (cwd: string, ...args: string[]) => {
           const done = Bun.spawnSync(["git", "-c", "user.name=niwa", "-c", "user.email=niwa@example.com", ...args], { cwd, stderr: "pipe" });
           if (done.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${done.stderr.toString()}`);
         };
         git(main, "init", "-q", "-b", "main");
         git(main, "commit", "-q", "--allow-empty", "-m", "first");
-        const tree = join(host.home, "worktrees", "wt-1");
         git(main, "worktree", "add", "-q", "-b", "lane", tree);
         const cwd = realpathSync(tree);
         const committed = await host.niwa.call(procRun, {
@@ -163,20 +167,12 @@ for (const sandbox of [nono()]) {
 
 const srtPresent = live && (await srt().available());
 
-test.skipIf(!srtPresent)("in srt, whose reads are open, a run cannot read the places of an installation it did not take", async () => {
-  const codexHome = realpathSync(mkdtempSync(join(homedir(), ".niwa-proc-codex-")));
-  writeFileSync(join(codexHome, "auth.json"), "codex-sign-in\n", { mode: 0o600 });
-  const boxes = sandboxHost();
-  boxes.install("codex-luna", { write: [codexHome] });
-  const host = await procHost({ sandbox: srt(), boxes }, mkdtempSync(join(homedir(), ".niwa-proc-home-")));
+test.skipIf(!srtPresent)("refuses srt's additional writable directories before a run", async () => {
+  const host = await procHost({ sandbox: srt() });
   try {
-    const cwd = realpathSync(dirIn(host.home, "work"));
-    const result = await host.niwa.call(procRun, { cmd: ["/bin/sh", "-c", `cat ${join(codexHome, "auth.json")}`], cwd, timeout: 20_000 });
-    expect(result.exit).not.toBe(0);
-    expect(outputOf(host, result.output)).not.toContain("codex-sign-in");
-    expect(result.box.closed).toContainEqual({ path: codexHome, from: "harness:codex-luna" });
+    const cwd = dirIn(host.home, "work");
+    await expect(host.niwa.call(procRun, { cmd: ["true"], cwd, timeout: 1000 })).rejects.toThrow(/outside the admitted paths/);
   } finally {
     await host.stop();
-    rmSync(codexHome, { recursive: true, force: true });
   }
-}, 60_000);
+});

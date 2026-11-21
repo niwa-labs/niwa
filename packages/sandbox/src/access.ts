@@ -18,9 +18,9 @@
  * caller holds them against the grant, since the sandbox knows nothing of grants.
  */
 
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -128,6 +128,8 @@ export interface SandboxOptions {
 export interface PlanInput {
   /** The working directory of the box, absolute. */
   readonly cwd: string;
+  /** Active registration from the host Git registry, never from the box request. */
+  readonly worktree?: { readonly id: string; readonly path: string; readonly repo: string };
   /** The host's default for this kind of box. */
   readonly defaults: BoxAccess | BoxAccessInput;
   /** What the call asked for. */
@@ -319,6 +321,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     }
   }
   // The closed list: open only where the box names a place in it, from the host's default or a call.
+  const explicitWrites = request.items.flatMap(({ item }) => typeof item === "object" && "write" in item ? [placeOf(item.write, cwd, home)] : []);
   const explicit = request.items.flatMap(({ item }) =>
     typeof item === "object" && !("net" in item) ? [placeOf("read" in item ? item.read : item.write, cwd, home)] : [],
   );
@@ -327,7 +330,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     ...(input.closed ?? []).map((one) => ({ path: realPlace(one.path, home), from: one.from })),
   ];
   for (const one of always) {
-    if (explicit.some((place) => place === one.path)) continue;
+    if (explicit.includes(one.path)) continue;
     closed.push(one);
   }
   const closedAt = (place: string) => closed.find((one) => covers(one.path, place));
@@ -403,9 +406,32 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     }
   }
   for (const write of input.writes ?? []) paths.push({ path: realPlace(write.path, home), mode: "write", from: write.from });
-  // A box that writes its working directory may commit there: what git keeps of it outside, it gets.
   if (paths.some((need) => need.mode === "write" && covers(need.path, cwd))) {
-    for (const need of repositoryOf(cwd)) if (!paths.some((one) => one.mode === "write" && covers(one.path, need.path))) paths.push(need);
+    try {
+      for (const need of repositoryOf(cwd, input.worktree, paths)) {
+        if (!paths.some((one) => one.mode === "write" && covers(one.path, need.path))) paths.push(need);
+      }
+    } catch (error) {
+      if (!(error instanceof BoxRefused)) throw error;
+      refusals.push(...error.reasons);
+    }
+  }
+
+  for (const place of new Set([cwd, ...paths.map((one) => realPlace(one.path))])) {
+    const inside = closedAt(place);
+    if (inside) refusals.push({ code: "closed", message: `${place} lies in ${inside.path}, closed by ${inside.from}` });
+  }
+
+  // Opening a closed place for reading cannot also make an overlapping write reachable.
+  for (const one of always) {
+    if (!explicit.includes(one.path) || explicitWrites.includes(one.path)) continue;
+    for (const need of paths) {
+      if (need.mode !== "write") continue;
+      const place = realPlace(need.path);
+      if ((covers(place, one.path) || covers(one.path, place)) && !explicitWrites.some((root) => covers(one.path, root) && covers(root, place))) {
+        refusals.push({ code: "closed", message: `${one.path} was opened for reading only; ${place} requires write access` });
+      }
+    }
   }
 
   return { cwd: given, request, paths: distinctNeeds(paths), net: distinctHosts(net), closed, skipped, rules, refusals };
@@ -427,38 +453,65 @@ function distinctHosts(hosts: readonly { host: string; from: Origin }[]): { host
   return hosts.filter((one) => (seen.has(one.host) ? false : (seen.add(one.host), true)));
 }
 
-/**
- * What git needs of the repository a directory is in, where it lies outside the directory: the
- * repository's own git directory to write (a worktree's lies in the main repository's), and of the
- * directory it shares with the main checkout the objects, the refs and their logs to write and the
- * rest (its configuration, its hooks) to read. Found on disk, without running git.
- */
-export function repositoryOf(dir: string): PathNeed[] {
+/** Read a small regular pointer without following links or waiting on special files. */
+function gitPointer(path: string): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size === 0 || stat.size > 8192) throw new Error("invalid Git pointer");
+    const buffer = Buffer.alloc(stat.size + 1);
+    if (readSync(fd, buffer, 0, buffer.length, 0) !== stat.size) throw new Error("Git pointer changed");
+    return buffer.toString("utf8", 0, stat.size);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** External metadata of a linked checkout. Only a host registration can add a path. */
+export function repositoryOf(dir: string, registered?: PlanInput["worktree"], authorized: readonly PathNeed[] = []): PathNeed[] {
+  const refuse = (): never => {
+    throw new BoxRefused([{ code: "not-granted", message: `no matching Git worktree registration or explicit access for ${dir}` }]);
+  };
   for (let at = dir; ; at = dirname(at)) {
     const dot = join(at, ".git");
-    let found: ReturnType<typeof lstatSync> | undefined;
+    let entry;
     try {
-      found = lstatSync(dot);
+      entry = lstatSync(dot, { throwIfNoEntry: false });
     } catch {
-      found = undefined;
+      return refuse();
     }
-    if (found !== undefined) {
-      let gitDir = dot;
-      if (found.isFile()) {
-        const named = /^gitdir:\s*(.+)$/m.exec(readFileSync(dot, "utf8"))?.[1]?.trim();
-        if (named === undefined) return [];
-        gitDir = realPlace(resolve(at, named));
+    const expected = registered?.path === at ? registered : undefined;
+    if (expected || entry) {
+      if (entry?.isDirectory() && !expected) return [];
+      if (!entry?.isFile() || entry.size > 8192) return refuse();
+      try {
+        const name = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(gitPointer(dot))?.[1];
+        if (!name) return refuse();
+        const pointed = resolve(at, name);
+        if (!expected) {
+          if (authorized.some((need) => need.mode === "write" && covers(need.path, realPlace(pointed)))) return [];
+          return refuse();
+        }
+        const { id, repo } = expected;
+        if (!isAbsolute(repo) || basename(id) !== id || !id || id === "." || id === "..") return refuse();
+        const common = join(repo, ".git");
+        const admin = join(common, "worktrees", id);
+        if (pointed !== admin || realPlace(admin) !== admin || !statSync(admin).isDirectory()) return refuse();
+        const pointer = (file: string) => {
+          return resolve(admin, gitPointer(join(admin, file)).trimEnd());
+        };
+        if (pointer("gitdir") !== dot || pointer("commondir") !== common) return refuse();
+        const paths: PathNeed[] = [{ path: admin, mode: "write", from: "repository" }, { path: common, mode: "read", from: "repository" }];
+        for (const part of ["objects", "refs", "logs"]) {
+          const path = join(common, part);
+          const stat = lstatSync(path, { throwIfNoEntry: false });
+          if (stat && !stat.isDirectory()) return refuse();
+          paths.push({ path, mode: "write", from: "repository" });
+        }
+        return paths;
+      } catch {
+        return refuse();
       }
-      const pointer = join(gitDir, "commondir");
-      const common = existsSync(pointer) ? realPlace(resolve(gitDir, readFileSync(pointer, "utf8").trim())) : gitDir;
-      const outside = (path: string) => !covers(dir, path);
-      const needs: PathNeed[] = [];
-      if (outside(gitDir)) needs.push({ path: gitDir, mode: "write", from: "repository" });
-      if (common !== gitDir && outside(common)) {
-        needs.push({ path: common, mode: "read", from: "repository" });
-        for (const part of ["objects", "refs", "logs"]) needs.push({ path: join(common, part), mode: "write", from: "repository" });
-      }
-      return needs;
     }
     if (dirname(at) === at) return [];
   }
@@ -573,6 +626,10 @@ export function admit(
     else if (!used.includes(by)) used.push(by);
   }
   const spec = planSpec(plan, extra);
+  for (const socket of spec.sockets) {
+    const place = placeOf(socket, plan.cwd, homedir());
+    if (plan.closed.some((one) => covers(one.path, place))) reasons.push({ code: "closed", message: `socket ${socket} lies in a closed directory` });
+  }
   let manifest: SandboxManifest | undefined;
   try {
     manifest = sandbox.manifest(spec);

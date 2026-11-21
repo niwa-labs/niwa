@@ -31,16 +31,17 @@
  * itself dies is not stopped by it.
  */
 
-import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 import { RECORD_DATA_LIMIT, action, closedPlacesOf, coveringRule } from "@niwa-labs/core";
 import type { ActionContext } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import type { Plugin } from "@niwa-labs/plugin";
-import { BoxRefused, SandboxUnavailable, admit, boxManifest, nono, requireSandbox, sandbox as sandboxHost, sandboxOf } from "@niwa-labs/sandbox";
-import type { BoxAccess, Sandbox, SandboxHost, SandboxManifest } from "@niwa-labs/sandbox";
+import { BoxRefused, SandboxUnavailable, admit, boxManifest, nono, realPlace, requireSandbox, sandbox as sandboxHost, sandboxOf } from "@niwa-labs/sandbox";
+import type { BoxAccess, BoxSpec, Sandbox, SandboxHost, SandboxManifest } from "@niwa-labs/sandbox";
 
 import { OutputCapture } from "./artifact.ts";
 import { ProcRefusal } from "./refusal.ts";
@@ -111,25 +112,32 @@ function directoryOf(cwd: string, authorized: string | undefined): string {
 }
 
 /**
- * The policy a sandbox reports for a run's box, when it keeps what `proc.run` promises: no network.
+ * The policy a sandbox reports for a run's box, when it keeps the admitted write boundary and reaches no network.
  * A sandbox that does not say what it applies is taken not to keep it.
  */
-function heldPolicy(sandbox: Sandbox, manifest: SandboxManifest): void {
+function heldPolicy(sandbox: Sandbox, manifest: SandboxManifest, spec: BoxSpec): void {
   const refuse = (why: string): never => {
-    throw new BoxRefused([{ code: "adapter", message: `${why}, and a run reaches no network` }], sandbox.name);
+    throw new BoxRefused([{ code: "adapter", message: why }], sandbox.name);
   };
   if (manifest.policy === undefined) return refuse("it does not say what a box lets a process reach");
   const host = manifest.policy.net[0];
-  if (host !== undefined) refuse(`it lets a process reach ${host}`);
+  if (host !== undefined) refuse(`it lets a process reach ${host}, and a run reaches no network`);
+  const roots = spec.write.map((path) => realPlace(path));
+  for (const path of manifest.policy.write) {
+    const place = realPlace(path);
+    if (!isAbsolute(path) || !roots.some((root) => root === place || place.startsWith(root.endsWith("/") ? root : root + "/"))) {
+      refuse(`it lets a process write ${path} outside the admitted paths`);
+    }
+  }
 }
 
 /**
  * A run's temp directory, inside its cwd, the one place besides the cwd itself its box always lets
  * it write; removed after the run. A cwd it cannot be made in refuses the run.
  */
-function tempIn(cwd: string): string {
+function makeTemp(cwd: string, temp: string): void {
   try {
-    return mkdtempSync(join(cwd, ".niwa-tmp-"));
+    mkdirSync(temp, { mode: 0o700 });
   } catch (error) {
     throw new ProcRefusal("bad-cwd", `${cwd} cannot be written: a run keeps its temp files there (${(error as Error).message})`);
   }
@@ -224,33 +232,39 @@ export function proc(options: ProcOptions = {}): Plugin {
           // Cancelled while the sandbox was being found: nothing was started, and nothing will be.
           ctx.signal?.throwIfAborted();
           // The temp files go inside the directory, where the box lets the command write.
-          const temp = tempIn(cwd);
-          const capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
+          const temp = join(cwd, `.niwa-tmp-${randomUUID()}`);
+          const plan = boxes.plan({
+            cwd,
+            defaults: boxDefault,
+            request: input.box,
+            writes: [
+              { path: cwd, from: "cwd" },
+              { path: temp, from: "temp" },
+            ],
+            closed: [...closedPlacesOf(home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
+            network: false,
+          });
+          const rights = api.rights(ctx.caller);
+          const env = { ...baseEnv(), TMPDIR: temp, TMP: temp, TEMP: temp, ...input.env };
+          const admitted = await beforeStart(async () =>
+            admit(plan, sandbox, (needed) => (rights === "unlimited" ? needed : coveringRule(rights, needed)), { env }),
+          );
+          await beforeStart(async () => heldPolicy(sandbox, admitted.manifest, admitted.spec));
+          const box = boxManifest(plan, admitted.rules, admitted.manifest);
+          const data = { action: "proc.run" as const, cwd, program: input.cmd[0] as string, box };
+          if (Buffer.byteLength(JSON.stringify(data)) > RECORD_DATA_LIMIT - RECORD_SLACK) {
+            throw new ProcRefusal("box-refused", "the box manifest exceeds the space available in the completion record");
+          }
+          makeTemp(cwd, temp);
+          let capture: OutputCapture | undefined;
           try {
-            const plan = boxes.plan({
-              cwd,
-              defaults: boxDefault,
-              request: input.box,
-              writes: [
-                { path: cwd, from: "cwd" },
-                { path: temp, from: "temp" },
-              ],
-              closed: [...closedPlacesOf(home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
-              network: false,
-            });
-            const rights = api.rights(ctx.caller);
-            const env = { ...baseEnv(), TMPDIR: temp, TMP: temp, TEMP: temp, ...input.env };
-            const admitted = await beforeStart(async () =>
-              admit(plan, sandbox, (needed) => (rights === "unlimited" ? needed : coveringRule(rights, needed)), { env }),
-            );
-            await beforeStart(async () => heldPolicy(sandbox, admitted.manifest));
-            const box = boxManifest(plan, admitted.rules, admitted.manifest);
+            capture = new OutputCapture({ artifacts: api.artifacts, secrets: [], limit, tailBytes });
             const child = await beforeStart(() => sandbox.launch(admitted.spec, input.cmd, { detached: true }));
             const ended = await supervise(child, capture, { timeout: input.timeout, killGraceMs, drainMs: DRAIN_MS, signal: ctx.signal });
-            const result = await finish(ctx, { action: "proc.run", cwd, program: input.cmd[0] as string, box }, { ...ended, ...capture.finish() });
+            const result = await finish(ctx, data, { ...ended, ...capture.finish() });
             return { ...result, box };
           } catch (error) {
-            capture.discard();
+            capture?.discard();
             throw error;
           } finally {
             rmSync(temp, { recursive: true, force: true });
