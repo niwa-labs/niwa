@@ -46,7 +46,7 @@ import type {
   SessionState,
   StartOptions,
   StartedSession,
-  ToolAllowance,
+  ToolsMode,
   SessionMode,
   SessionId,
   ReverseHandler,
@@ -1287,27 +1287,36 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   }
 
   /**
-   * The `_meta` of a session: the tools switched off and the effort. The adapter passes
-   * `_meta.claudeCode.options` to the Claude Code SDK, whose `disallowedTools` takes the names of
-   * Claude Code's own tools ("Bash", "WebFetch", ...) and whose `extraArgs` are flags of the
-   * program. Nothing to set adds nothing.
+   * The `_meta` of a session: the tools switched off, the tools allowed and the effort. The
+   * adapter passes `_meta.claudeCode.options` to the Claude Code SDK, whose `disallowedTools` takes
+   * the names of Claude Code's own tools ("Bash", "WebFetch", ...) and whose `extraArgs` are flags
+   * of the program. The adapter sets the SDK's `tools` itself; niwa's adapter entry sets them from
+   * `_meta.niwa.tools` instead, so an allow-list reaches Claude Code whole, and the built-in tools
+   * it leaves out are switched off as well. Nothing to set adds nothing.
    */
   function sessionMetaOf(
     disabled: readonly string[],
-    tools: ToolAllowance | undefined,
+    tools: ToolsMode | undefined,
     effort: string | undefined,
     reverse: ReverseHandler | undefined,
   ): Record<string, unknown> {
-    const off = [...new Set([...disabled, ...(tools === undefined ? [] : claudeToolsOff(tools.allow))])];
+    const allowed = tools === undefined || tools === "all" ? undefined : tools === "niwa-only" ? [] : [...tools.allow];
+    const off = [...new Set([...disabled, ...(allowed === undefined ? [] : claudeToolsOff(allowed))])];
     const given = {
       ...(off.length === 0 ? {} : { disallowedTools: off }),
       // The program's own `--effort <level>`, for the whole life of the session.
       ...(effort === undefined || effort === "" ? {} : { extraArgs: { effort } }),
     };
+    const niwa = {
+      // A session whose questions have somewhere to go keeps AskUserQuestion (niwa's adapter entry reads this).
+      ...(reverse === undefined ? {} : { askUserQuestion: true }),
+      ...(allowed === undefined ? {} : { tools: allowed }),
+    };
     const meta = {
       ...(Object.keys(given).length === 0 ? {} : { claudeCode: { options: given } }),
-      // A session whose questions have somewhere to go keeps AskUserQuestion (niwa's adapter entry reads this).
-      ...(reverse === undefined ? {} : { niwa: { askUserQuestion: true } }),
+      ...(Object.keys(niwa).length === 0 ? {} : { niwa }),
+      // Only niwa's tools: the adapter drops its own MCP server of file and terminal tools too.
+      ...(tools === "niwa-only" ? { disableBuiltInTools: true } : {}),
     };
     return Object.keys(meta).length === 0 ? {} : { _meta: meta };
   }

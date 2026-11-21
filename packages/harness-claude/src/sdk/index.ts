@@ -7,7 +7,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
 import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { ClaudeCodeReading } from "../code/reading.ts";
@@ -43,6 +43,7 @@ export const claudeSdkSides: SideCapabilities = {
     ask: true,
     structuredOutput: true,
     launch: CLAUDE_SDK_LAUNCH,
+    tools: { niwaOnly: true, allow: true },
   },
 };
 
@@ -57,6 +58,7 @@ export const CLAUDE_SDK_CAPABILITIES: KindCapabilities = {
     ask: VERIFIED,
     structuredOutput: VERIFIED,
     launch: { model: VERIFIED, effort: CLAUDE_SDK_LAUNCH.effort, modes: CLAUDE_SDK_LAUNCH.modes },
+    tools: { niwaOnly: ADMITTED, allow: ADMITTED },
   },
   insert: NO_INSERT,
 };

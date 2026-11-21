@@ -12,7 +12,16 @@ import { z } from "zod";
 
 import { actionName, record, stableJson, Address } from "@niwa-labs/core";
 import type { ActionName } from "@niwa-labs/core";
-import { DeliveryReceiptSchema, ModelNameSchema, OptionBlocks, PermissionMarkSchema, ProtocolNameSchema, SessionModeSchema, VariantNameSchema } from "@niwa-labs/harness";
+import {
+  DeliveryReceiptSchema,
+  ModelNameSchema,
+  OptionBlocks,
+  PermissionMarkSchema,
+  ProtocolNameSchema,
+  SessionModeSchema,
+  ToolsModeSchema,
+  VariantNameSchema,
+} from "@niwa-labs/harness";
 import { BoxSpecSchema } from "@niwa-labs/sandbox";
 
 import { NiwaSessionIdSchema, SessionRefSchema } from "./identity.ts";
@@ -61,6 +70,8 @@ export const SessionStarted = record(
     mode: SessionModeSchema.optional(),
     /** The options block of its kind the session was started with, so a resume starts it again with them; absent when it had none. */
     options: OptionBlocks.optional(),
+    /** The tools the session was started with, so a resume launches it with the same; absent for the harness's own. */
+    tools: ToolsModeSchema.optional(),
   }),
 );
 

@@ -262,6 +262,19 @@ test("an allow-list gets niwa's own server tools appended; foreign server tools 
   expect(spawned.length).toBeGreaterThan(0);
 });
 
+test("a session of niwa's tools only allows none of ZCode's own tools, only those niwa's server lists", async () => {
+  const c = control();
+  const niwa = { name: "niwa", command: "niwa", args: [], env: {}, tools: ["session_send"] };
+  const github = { name: "github", command: "gh-mcp", args: [], env: {} };
+  await c.start({ prompt: promptFromText(""), cwd: dir, servers: [niwa, github], tools: "niwa-only" });
+  await c.start({ prompt: promptFromText(""), cwd: dir, tools: "niwa-only" });
+  await c.start({ prompt: promptFromText(""), cwd: dir, tools: "all" });
+  const created = await requestsOf("session/create");
+  expect(created[0]?.["toolAllowlist"]).toEqual(["mcp__niwa__session_send"]);
+  expect(created[1]?.["toolAllowlist"]).toEqual([]);
+  expect(created[2]).not.toHaveProperty("toolAllowlist");
+});
+
 test("the servers and the tool sets of a session go to session/create in ZCode's own shape", async () => {
   const c = control();
   const niwa = { name: "niwa", command: "niwa", args: ["--home", "/h", "mcp"], env: { NIWA_ID: "k3f9", EMPTY: "" } };

@@ -33,9 +33,11 @@ import type {
   HarnessId,
   SessionId,
   ReverseHandler,
+  ToolsMode,
 } from "@niwa-labs/harness";
 import {
   DEFAULT_TURN_TIMEOUT_MS,
+  describeToolsMode,
   modelName,
   unknownVariantSigns,
   modeOf,
@@ -547,12 +549,15 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
   async function spawnSession(
     cwd: string | undefined,
     plan: Pick<StartOptions, "env" | "tools" | "box">,
+    ability: "start" | "resume" = "start",
   ): Promise<LiveSession> {
     if (disposed) throw unavailable("start", "the control side is disposed");
+    // A tool mode Codex cannot hold is refused before the child exists.
+    const toolFlags = codexToolsModeFlags(harnessId, ability, plan.tools);
     const child = await spawnAgent({
       harness: harnessId,
       program: binary,
-      args: ["app-server", "--stdio", ...(plan.tools === undefined ? [] : codexToolFlags(plan.tools.allow))],
+      args: ["app-server", "--stdio", ...toolFlags],
       cwd,
       // Its own process group, so a stop reaches everything Codex started and nothing else.
       detached: true,
@@ -897,7 +902,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         return;
       }
 
-      const session = await spawnSession(undefined, resumeOptions ?? {});
+      const session = await spawnSession(undefined, resumeOptions ?? {}, "resume");
       session.reverse = resumeOptions?.reverse;
       try {
         const resumed = await call(session, "thread/resume", {
@@ -1054,9 +1059,32 @@ const CODEX_SWITCHES: ReadonlyArray<{ tool: string; flag: readonly string[] }> =
   { tool: "web_search", flag: ["-c", 'web_search="disabled"'] },
 ];
 
+/**
+ * The tools Codex gives every session that no flag switches off: `apply_patch` comes with the
+ * model, and the plan and image tools with Codex itself.
+ */
+export const CODEX_FIXED_TOOLS: readonly string[] = ["apply_patch", "update_plan", "view_image"];
+
 /** The flags for a tool allowance: each switchable tool that is not allowed is switched off. */
 export function codexToolFlags(allow: readonly string[]): string[] {
   return CODEX_SWITCHES.filter(({ tool }) => !allow.includes(tool)).flatMap(({ flag }) => flag);
+}
+
+/**
+ * The flags for a tool mode, or `Unsupported` when Codex cannot hold a session to it: a session
+ * of niwa's tools only would still have `apply_patch`, and an allow-list must name every tool
+ * Codex cannot switch off.
+ */
+export function codexToolsModeFlags(harness: HarnessId, ability: "start" | "resume", tools: ToolsMode | undefined): string[] {
+  if (tools === undefined || tools === "all") return [];
+  if (tools === "niwa-only") {
+    throw new Unsupported(harness, "control", ability, `${describeToolsMode(tools)}: Codex cannot switch ${CODEX_FIXED_TOOLS.join(", ")} off`);
+  }
+  const kept = CODEX_FIXED_TOOLS.filter((tool) => !tools.allow.includes(tool));
+  if (kept.length > 0) {
+    throw new Unsupported(harness, "control", ability, `${describeToolsMode(tools)}: Codex cannot switch ${kept.join(", ")} off`);
+  }
+  return codexToolFlags(tools.allow);
 }
 
 /** Whether two Codex configs say the same thing; the same config is no change at all. */

@@ -18,7 +18,7 @@ import type { ActionName, Answer, StoredRecord } from "@niwa-labs/core";
 import type { Host } from "@niwa-labs/host";
 import { harnessId, harnessKind, machineId, promptFromText } from "@niwa-labs/harness";
 import type { Harness, ReverseHandler, ReverseRequest, SessionId } from "@niwa-labs/harness";
-import { CODEX_LAUNCH, codexControl } from "@niwa-labs/harness-codex";
+import { CODEX_FIXED_TOOLS, CODEX_LAUNCH, codexControl } from "@niwa-labs/harness-codex";
 import type { CodexSessionControl } from "@niwa-labs/harness-codex";
 import { requests } from "@niwa-labs/requests";
 import { sessions } from "@niwa-labs/sessions";
@@ -475,12 +475,15 @@ test("an elicitation of a kind niwa cannot ask stays declined", async () => {
 
 const HARNESS = "codex-fake";
 
+/** A grant that names tools must name the ones Codex cannot switch off, or the start is refused. */
+const CODEX_KEPT = CODEX_FIXED_TOOLS.map((tool) => `tool:${tool}`);
+
 const installation: Harness = {
   id: harnessId(HARNESS),
   kind: harnessKind("codex"),
   machine: machineId("machine-1"),
   home: "/tmp/fake-home",
-  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: true, launch: CODEX_LAUNCH } },
+  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: true, launch: CODEX_LAUNCH, tools: { niwaOnly: false, allow: true } } },
 };
 
 async function stack(script: readonly Step[], niwaMcp?: { command: string; args: readonly string[] }): Promise<{ niwa: Host; records: StoredRecord[] }> {
@@ -575,7 +578,7 @@ test("allow always is for the same command only", async () => {
 
 test("a tool the grant covers is allowed with no request", async () => {
   const { niwa, records } = await stack([command("a", { command: "ls" }), { wait: "a" }]);
-  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:commandExecution"] } });
+  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:commandExecution", ...CODEX_KEPT] } });
   await eventually(replied(1));
   expect((await repliesOf())[0]?.result).toEqual({ decision: "accept" });
   expect(records.filter((entry) => entry.type === "request.created")).toEqual([]);
@@ -667,7 +670,7 @@ test.skipIf(!live || Bun.which("codex") === null)(
 
 test("an MCP tool a grant covers is allowed with no request; another is asked of the starter", async () => {
   const { niwa, records } = await stack([toolApproval("a", "github", "create_issue"), { wait: "a" }, toolApproval("b", "other", "do"), { wait: "b" }]);
-  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:mcp__github__create_issue"] } });
+  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", cwd: dir, visible: { actions: ["tool:mcp__github__create_issue", ...CODEX_KEPT] } });
   await eventually(replied(1));
   expect((await repliesOf())[0]?.result).toMatchObject({ action: "accept" });
   const open = await nextRequest(niwa);

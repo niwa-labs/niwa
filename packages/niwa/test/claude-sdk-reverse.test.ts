@@ -283,7 +283,7 @@ const installation: Harness = {
   kind: harnessKind("claude-sdk"),
   machine: machineId("machine-1"),
   home: "/tmp/fake-home",
-  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: true, launch: CLAUDE_SDK_LAUNCH } },
+  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: true, launch: CLAUDE_SDK_LAUNCH, tools: { niwaOnly: true, allow: true } } },
 };
 
 async function stack(calls: readonly FakeCall[]) {

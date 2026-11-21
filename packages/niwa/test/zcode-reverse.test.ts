@@ -351,7 +351,7 @@ const installation: Harness = {
   kind: harnessKind("zcode"),
   machine: machineId("machine-1"),
   home: "/tmp/fake-home",
-  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: true, launch: zcodeSides.control!.launch } },
+  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: true, launch: zcodeSides.control!.launch, tools: zcodeSides.control!.tools } },
 };
 
 async function stack(script: readonly Step[]): Promise<{ niwa: Host; records: StoredRecord[]; control: ZcodeSessionControl }> {

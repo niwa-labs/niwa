@@ -80,7 +80,7 @@ class RecordingControl implements SessionControl {
   }
 }
 
-function installation(kind: string, structuredOutput = false): Harness {
+function installation(kind: string, structuredOutput = false, tools?: { niwaOnly: boolean; allow: boolean }): Harness {
   return {
     id: harnessId(HARNESS),
     kind: harnessKind(kind),
@@ -95,6 +95,7 @@ function installation(kind: string, structuredOutput = false): Harness {
         ask: true,
         structuredOutput,
         launch: { model: false, effort: [], modes: [] },
+        ...(tools === undefined ? {} : { tools }),
       },
     },
   };
@@ -313,4 +314,45 @@ test("an installation that claims more than its kind declares is refused before 
   const harnesses = new HarnessInstanceRegistry();
   harnesses.register(installation("claude-code", true));
   await expect(serve({ harnesses, kinds })).rejects.toThrow(/control\.structuredOutput/);
+});
+
+test("a tool mode the installation cannot hold is refused before anything is started, naming the mode", async () => {
+  const control = new RecordingControl();
+  const { niwa, records } = await serve([
+    { instance: installation("claude-code", true, { niwaOnly: false, allow: true }), control, options: KIND_OPTIONS.claude },
+  ]);
+
+  await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", tools: "niwa-only" })).rejects.toMatchObject({
+    code: "Unsupported",
+    message: expect.stringContaining("tools niwa-only"),
+  });
+  // The harness's own tools are never refused.
+  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", tools: "all" });
+  expect(control.starts).toHaveLength(1);
+  expect(Object.keys(control.starts[0] ?? {})).not.toContain("tools");
+  await until(() => typesOf(records).includes("session.started"));
+  expect(records.filter((entry) => entry.type === "session.started")).toHaveLength(1);
+});
+
+test("the tool mode reaches the control side, is recorded, and a process launched again keeps it", async () => {
+  const first = new RecordingControl();
+  const holding = { niwaOnly: true, allow: true };
+  const before = await serve([{ instance: installation("claude-code", true, holding), control: first, options: KIND_OPTIONS.claude }]);
+  const { session } = await call<{ session: string }>(before.niwa, "session.start", { harness: HARNESS, prompt: "go", tools: "niwa-only" });
+  await call(before.niwa, "session.start", { harness: HARNESS, prompt: "go", tools: { allow: ["Read"] } });
+  expect(first.starts.map((options) => options.tools)).toEqual(["niwa-only", { allow: ["Read"] }]);
+  await until(() => before.records.filter((entry) => entry.type === "session.started").length === 2);
+  const started = before.records.filter((entry) => entry.type === "session.started").map((entry) => entry.data);
+  expect(started.map((data) => (data as { tools?: unknown }).tools)).toEqual(["niwa-only", { allow: ["Read"] }]);
+  await before.stop();
+
+  // A control side that never held the session: its process is gone and is launched again.
+  const second = new (class extends RecordingControl {
+    override async state(): Promise<SessionState> {
+      return "unknown";
+    }
+  })();
+  const after = await serve([{ instance: installation("claude-code", true, holding), control: second, options: KIND_OPTIONS.claude }], before.home);
+  await call(after.niwa, "session.resume", { session });
+  expect(second.resumes[0]?.tools).toBe("niwa-only");
 });

@@ -611,8 +611,10 @@ export class ClaudeSdkControl implements SessionControl {
       ...(cwd === undefined ? {} : { cwd }),
       ...(effort === undefined || effort === "" ? {} : { effort: EffortLevel.parse(effort) }),
       ...(env === undefined ? {} : { env: { ...process.env, ...env } }),
-      // The SDK's own allowlist of its built-in tools.
-      ...(plan.tools === undefined ? {} : { tools: [...plan.tools.allow] }),
+      // The SDK's own allowlist of its built-in tools: none for a session of niwa's tools only.
+      ...(plan.tools === undefined || plan.tools === "all"
+        ? {}
+        : { tools: plan.tools === "niwa-only" ? [] : [...plan.tools.allow] }),
       // The process is born in the funnel, like every other.
       spawnClaudeCodeProcess: (spawnOptions) => this.#spawn(spawnOptions, plan),
       // Constant and stable sections are the system prompt, so the cacheable prefix stays stable.

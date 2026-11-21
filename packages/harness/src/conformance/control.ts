@@ -15,10 +15,10 @@
 
 import { z } from "zod";
 
-import { requireAbility, supports, Unavailable } from "../capabilities.ts";
+import { requireAbility, supports, Unavailable, Unsupported } from "../capabilities.ts";
 import type { ControlCapabilities } from "../capabilities.ts";
-import { DeliveryReceiptSchema, LifeEventSchema, promptFromText } from "../control.ts";
-import type { LifeEvent, SessionControl } from "../control.ts";
+import { DeliveryReceiptSchema, LifeEventSchema, describeToolsMode, promptFromText } from "../control.ts";
+import type { LifeEvent, SessionControl, ToolsMode } from "../control.ts";
 import { excessOf } from "../declaration.ts";
 import type { KindCapabilities } from "../declaration.ts";
 import type { Harness } from "../instance.ts";
@@ -33,6 +33,11 @@ export interface ControlConformanceSides {
   readonly control: SessionControl;
   /** What the kind declares it can serve; the installation is checked against it when given. */
   readonly declared?: KindCapabilities;
+  /**
+   * How many messages the harness has been sent so far, when the side under test can tell: a
+   * refusal is then checked to have sent nothing.
+   */
+  readonly dispatched?: () => Promise<number>;
 }
 
 /**
@@ -44,7 +49,7 @@ const TURN_DEADLINE_MS = 120_000;
 
 export function controlConformance(
   kind: string,
-  { instance, control, declared }: ControlConformanceSides,
+  { instance, control, declared, dispatched }: ControlConformanceSides,
 ): () => Promise<ConformanceReport> {
   return async () => {
     const { check, report } = collector(kind);
@@ -57,6 +62,33 @@ export function controlConformance(
         insert: instance.sides.insert !== undefined,
       });
       check("capabilities: the installation claims no more than the kind declares", excess.length === 0, excess.join(", "));
+
+      // A tool mode the kind declares it cannot hold is refused by the side itself, by name,
+      // before anything reaches the harness: a session must never start with tools on silently.
+      const refused: Array<["niwaOnly" | "allow", ToolsMode]> = [
+        ["niwaOnly", "niwa-only"],
+        ["allow", { allow: [] }],
+      ];
+      for (const [name, mode] of refused) {
+        if (declared.control.tools[name].supported) continue;
+        const before = dispatched === undefined ? undefined : await dispatched();
+        let refusal: unknown;
+        try {
+          const started = await control.start({ prompt: promptFromText("the conformance suite"), tools: mode });
+          refusal = new Error(`the side started ${started.session.native}`);
+        } catch (error) {
+          refusal = error;
+        }
+        check(
+          `tools: ${describeToolsMode(mode)} is refused by the side when the kind cannot hold it`,
+          refusal instanceof Unsupported && refusal.side === "control" && refusal.ability === "start",
+          refusal instanceof Error ? refusal.message : String(refusal),
+        );
+        if (before !== undefined && dispatched !== undefined) {
+          const after = await dispatched();
+          check(`tools: a refused ${describeToolsMode(mode)} sends nothing to the harness`, after === before, `${after - before} messages were sent`);
+        }
+      }
     }
     if (!supports(instance, "control", "start")) {
       check("the side declares it can start", false, "control.start is not declared");

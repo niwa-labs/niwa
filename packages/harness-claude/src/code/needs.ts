@@ -15,10 +15,10 @@ export const CLAUDE_NEEDS: HarnessNeeds = {
 };
 
 /**
- * The built-in tools a tool allowance switches off: every name the SDK lists that is not allowed.
- * The ACP adapter sets its own `tools` after the options it is given, so an allowlist cannot reach
- * Claude Code through it; the denylist can. The SDK says its list is not complete, so a tool it
- * does not list stays as Claude Code has it.
+ * The built-in tools an allow-list switches off: every name the SDK lists that is not allowed.
+ * The allow-list itself reaches Claude Code through niwa's adapter entry; the same tools switched
+ * off as well keep them off should a build of the adapter give its own set after all. The SDK says
+ * its list is not complete, which is why the allow-list, not this, is what holds the session.
  */
 export function claudeToolsOff(allow: readonly string[]): string[] {
   return BUILTIN_TOOL_NAMES.filter((name) => !allow.includes(name));

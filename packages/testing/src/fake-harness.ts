@@ -110,6 +110,7 @@ export function fakeHarness(options: FakeHarnessOptions = {}): FakeHarness {
         ask: true,
         structuredOutput: true,
         launch: { model: false, effort: [], modes: [] },
+        tools: { niwaOnly: false, allow: false },
       },
     },
   };

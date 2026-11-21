@@ -13,6 +13,8 @@ import { z } from "zod";
 
 import type { Harness } from "./instance.ts";
 import type { KindOptions, OptionBlocks } from "./options.ts";
+import { describeToolsMode } from "./control.ts";
+import type { ToolsMode } from "./control.ts";
 
 /** The three sides of a harness. */
 export type HarnessSide = "reading" | "control" | "insert";
@@ -68,6 +70,12 @@ export const ControlCapabilitiesSchema = z.object({
    * refused before the session is started.
    */
   launch: LaunchCapabilitiesSchema.default({ model: false, effort: [], modes: [] }),
+  /**
+   * The tool modes the control side can hold a session to, beyond `all`, which every side can:
+   * only niwa's tools, and an allow-list of the harness's own. A mode outside this is refused
+   * before the session is started; an installation that says nothing of them holds neither.
+   */
+  tools: z.object({ niwaOnly: z.boolean(), allow: z.boolean() }).optional(),
 });
 export type ControlCapabilities = z.output<typeof ControlCapabilitiesSchema>;
 
@@ -97,7 +105,7 @@ export type SideCapabilities = z.output<typeof SideCapabilitiesSchema>;
 /** The ability names of each side. */
 export interface SideAbilities {
   reading: keyof ReadingCapabilities;
-  control: Exclude<keyof ControlCapabilities, "launch">;
+  control: Exclude<keyof ControlCapabilities, "launch" | "tools">;
   insert: keyof InsertCapabilities;
 }
 
@@ -232,4 +240,18 @@ export function requireOwnBlocks(harness: Harness["id"], kind: KindOptions | und
       ? `it takes no options (asked for "${foreign.join('", "')}")`
       : `it takes the "${kind.block}" options block only (asked for "${foreign.join('", "')}")`,
   );
+}
+
+/**
+ * Refuse with `Unsupported`, before a session is started, a tool mode the side cannot hold the
+ * session to. `all` is never refused.
+ */
+export function requireTools(
+  harness: Harness["id"],
+  tools: ControlCapabilities["tools"] | undefined,
+  mode: ToolsMode | undefined,
+): void {
+  if (mode === undefined || mode === "all") return;
+  const held = mode === "niwa-only" ? tools?.niwaOnly === true : tools?.allow === true;
+  if (!held) throw new Unsupported(harness, "control", "start", describeToolsMode(mode));
 }

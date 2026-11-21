@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE, rule, specsOf } from "@niwa-labs/core";
 import type { Grant, Rule, RuleSpec, Verb } from "@niwa-labs/core";
-import type { ToolAllowance } from "@niwa-labs/harness";
+import type { ToolAllowance, ToolsMode } from "@niwa-labs/harness";
 import { SandboxUnsupported } from "@niwa-labs/sandbox";
 import type { BoxRequest, BoxSandboxName, BoxSpecInput } from "@niwa-labs/sandbox";
 
@@ -80,6 +80,17 @@ function hostOf(name: string, sandbox: BoxSandboxName): string {
   if (name === "*") throw new SandboxUnsupported(sandbox, "net:* cannot be said as a list of hosts: name the hosts");
   if (name.endsWith("*")) throw new SessionRefusal("net-mask", `net:${name} cannot be a host: use a host`);
   return name;
+}
+
+/**
+ * The tools of a session: the mode the start asked for, held within the allow-list its grant
+ * makes. Only niwa's tools is narrower than any allow-list; two allow-lists keep the names both
+ * have.
+ */
+export function toolsOfSession(asked: ToolsMode | undefined, granted: ToolAllowance | undefined): ToolsMode | undefined {
+  if (asked === undefined || asked === "all") return granted;
+  if (asked === "niwa-only" || granted === undefined) return asked;
+  return { allow: asked.allow.filter((tool) => granted.allow.includes(tool)) };
 }
 
 /**

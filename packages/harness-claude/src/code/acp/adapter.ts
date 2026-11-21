@@ -1,5 +1,5 @@
 /**
- * The ACP adapter niwa runs for Claude Code: `@zed-industries/claude-code-acp`, with one thing
+ * The ACP adapter niwa runs for Claude Code: `@zed-industries/claude-code-acp`, with a few things
  * changed.
  *
  * The adapter switches `AskUserQuestion` off for every session, and carries no way to ask the
@@ -12,26 +12,25 @@
  *   and hands the client's answers to the tool; when the tool call is aborted it says so with the
  *   notification `_niwa/cancel_request`;
  * - tells the client the model the session really runs, with the notification `_niwa/session_model`:
- *   the `system/init` message of the program names it, and the adapter drops that message.
+ *   the `system/init` message of the program names it, and the adapter drops that message;
+ * - gives a session the built-in tools `_meta.niwa.tools` names, and only those, where the adapter
+ *   gives every session Claude Code's whole preset: an allow-list, and with none named only the
+ *   tools of the MCP servers the session was given.
  *
- * The switch is one line in the adapter's source, replaced as the adapter loads. The adapter is
- * pinned to one version, and a version that does not have the line fails to start: a session
- * must never run with the tool on by accident, or off silently.
+ * The tools are changed by lines of the adapter's source, replaced as the adapter loads
+ * (`adapter-patch.ts`). The adapter is pinned to one version, and a version that does not have a
+ * line fails to start: a session must never run with a tool on by accident, or off silently.
  */
 
-const SWITCH = 'const disallowedTools = ["AskUserQuestion"];';
-const OPT_IN = 'const disallowedTools = params._meta?.niwa?.askUserQuestion === true ? [] : ["AskUserQuestion"];';
+import { patchAdapter } from "./adapter-patch.ts";
 
 Bun.plugin({
   name: "niwa-claude-code-adapter",
   setup(build) {
-    build.onLoad({ filter: /claude-code-acp\/dist\/acp-agent\.js$/ }, async ({ path }) => {
-      const source = await Bun.file(path).text();
-      if (!source.includes(SWITCH)) {
-        throw new Error(`the Claude Code ACP adapter at ${path} does not switch AskUserQuestion off the way niwa expects`);
-      }
-      return { contents: source.replace(SWITCH, OPT_IN), loader: "js" };
-    });
+    build.onLoad({ filter: /claude-code-acp\/dist\/acp-agent\.js$/ }, async ({ path }) => ({
+      contents: patchAdapter(await Bun.file(path).text(), path),
+      loader: "js",
+    }));
   },
 });
 

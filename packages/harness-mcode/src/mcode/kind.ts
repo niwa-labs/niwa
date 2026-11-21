@@ -36,6 +36,7 @@ export function minimaxSides(): SideCapabilities {
       ask: true,
       structuredOutput: true,
       launch: MCODE_LAUNCH,
+      tools: { niwaOnly: false, allow: false },
     },
   };
 }
@@ -57,6 +58,7 @@ export function minimaxCapabilities(lineage: MinimaxLineage): KindCapabilities {
       ask: proved,
       structuredOutput: proved,
       launch: { model: proved, effort: MCODE_LAUNCH.effort, modes: MCODE_LAUNCH.modes },
+      tools: { niwaOnly: UNSUPPORTED, allow: UNSUPPORTED },
     },
     insert: NO_INSERT,
   };

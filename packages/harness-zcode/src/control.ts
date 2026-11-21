@@ -50,7 +50,7 @@ import type {
   SessionState,
   StartOptions,
   StartedSession,
-  ToolAllowance,
+  ToolsMode,
   VisibleActions,
 } from "@niwa-labs/harness";
 import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
@@ -1168,8 +1168,8 @@ function modelRefOf(value: unknown): ModelRef | undefined {
  * takes the same three, because a cold resume rebuilds the runtime and would drop them otherwise.
  * The keys are left out when empty, so a session with nothing asked for sends what it always did.
  *
- * niwa's `tools.allow` is the allow-list and the `disabledTools` of the visible actions the
- * deny-list; both are the harness's own tool names. ZCode's allow-list is an exact-name filter on
+ * niwa's tool mode is the allow-list (`niwa-only` names none of ZCode's own tools) and the
+ * `disabledTools` of the visible actions the deny-list; both are the harness's own tool names. ZCode's allow-list is an exact-name filter on
  * every tool of the session, the MCP tools (`mcp__<server>__<tool>`) among them. So when there is
  * an allow-list, the tools niwa knows its servers list (`McpServerSpec.tools`: niwa's own server)
  * are appended to it as `mcp__<server>__<tool>`; a foreign server lists none here, and its tools
@@ -1177,16 +1177,18 @@ function modelRefOf(value: unknown): ModelRef | undefined {
  */
 function surfaceOf(
   servers: readonly McpServerSpec[] | undefined,
-  tools: ToolAllowance | undefined,
+  mode: ToolsMode | undefined,
   visible: VisibleActions | undefined,
 ): Record<string, unknown> {
   const denied = visible?.disabledTools ?? [];
   const hasServers = servers !== undefined && servers.length > 0;
+  // Only niwa's tools is an allow-list of none of ZCode's own.
+  const own = mode === undefined || mode === "all" ? undefined : mode === "niwa-only" ? [] : mode.allow;
   const served =
-    tools === undefined
+    own === undefined
       ? []
       : (servers ?? []).flatMap((server) => (server.tools ?? []).map((tool) => `mcp__${server.name}__${tool}`));
-  const allowed = tools === undefined ? undefined : [...new Set([...tools.allow, ...served])];
+  const allowed = own === undefined ? undefined : [...new Set([...own, ...served])];
   return {
     ...(hasServers
       ? {

@@ -45,11 +45,14 @@ import type { SessionsOptions } from "@niwa-labs/sessions";
 import { tempDir, tempHome, fakeSdkQuery } from "@niwa-labs/testing";
 
 import { ClaudeSdkControl } from "@niwa-labs/harness-claude";
-import { codexControl } from "@niwa-labs/harness-codex";
+import { CODEX_FIXED_TOOLS, codexControl } from "@niwa-labs/harness-codex";
 import { mcodeControl } from "@niwa-labs/harness-mcode";
 import { PiControl } from "@niwa-labs/harness-pi";
 
 const START = actionName("session.start");
+
+/** A grant that names tools must name the ones Codex cannot switch off, or the start is refused. */
+const CODEX_KEPT = CODEX_FIXED_TOOLS.map((tool) => `tool:${tool}`);
 
 const spawns: SpawnEvent[] = [];
 const undo: Array<() => void> = [];
@@ -69,7 +72,7 @@ function instance(id: string): Harness {
     home: "/tmp/fake-home",
     sides: {
       reading: { list: true, read: true, watch: false },
-      control: { start: true, resume: true, send: true, interrupt: true, ask: false, structuredOutput: false, launch: { model: false, effort: [], modes: [] } },
+      control: { start: true, resume: true, send: true, interrupt: true, ask: false, structuredOutput: false, launch: { model: false, effort: [], modes: [] }, tools: { niwaOnly: true, allow: true } },
     },
   };
 }
@@ -378,7 +381,7 @@ test("pi and codex are launched with the flags of the grant", async () => {
 
   await host.call(START, { harness: "pi-fake", prompt: "", cwd: dir, visible: { actions: ["tool:read", "tool:grep"] } });
   await host.call(START, { harness: "pi-fake", prompt: "", cwd: dir });
-  await host.call(START, { harness: "codex-fake", prompt: "", cwd: dir, visible: { actions: ["tool:web_search"] } });
+  await host.call(START, { harness: "codex-fake", prompt: "", cwd: dir, visible: { actions: ["tool:web_search", ...CODEX_KEPT] } });
   await host.call(START, { harness: "codex-fake", prompt: "", cwd: dir, visible: { actions: ["tool:*"] } });
 
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
@@ -418,6 +421,21 @@ test("mcode takes no tool flag: a grant with tool rules refuses the start by nam
   await expect(host.call(START, { harness: "mcode-fake", prompt: "go", cwd: dir, visible: { actions: ["tool:read"] } })).rejects.toThrow("tool flag");
   expect(spawns).toEqual([]);
   expect(await issued()).toBe(before + 1);
+});
+
+test("a codex grant whose tools leave out what Codex cannot switch off refuses the start before anything is spawned", async () => {
+  const dir = await workdir();
+  const codex = codexControl({ harness: "codex-fake", binary: join(dir, "never-run") });
+  cleanups.push(() => codex.dispose());
+  undo.push(onSpawn((event) => spawns.push(event)));
+  const host = await served([{ instance: { ...instance("codex-fake"), sides: { control: { ...instance("codex-fake").sides.control!, tools: { niwaOnly: false, allow: true } } } }, control: codex }]);
+
+  await expect(host.call(START, { harness: "codex-fake", prompt: "go", cwd: dir, visible: { actions: ["tool:web_search"] } })).rejects.toThrow(
+    "Codex cannot switch apply_patch, update_plan, view_image off",
+  );
+  // Only niwa's tools is refused by the installation itself, before the side is asked.
+  await expect(host.call(START, { harness: "codex-fake", prompt: "go", cwd: dir, tools: "niwa-only" })).rejects.toThrow("tools niwa-only");
+  expect(spawns).toEqual([]);
 });
 
 // -- the box and its manifest ------------------------------------------------
@@ -596,7 +614,7 @@ test("codex resumed after a restart is born again with the tool flags, the box m
     harness: "codex-fake",
     prompt: "",
     cwd: dir,
-    visible: { actions: ["tool:web_search", `write:${dir}/*`, "net:registry.npmjs.org"] },
+    visible: { actions: ["tool:web_search", ...CODEX_KEPT, `write:${dir}/*`, "net:registry.npmjs.org"] },
   })) as { session: string };
   await host.close();
 

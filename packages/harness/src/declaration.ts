@@ -44,6 +44,12 @@ export const LaunchDeclarationSchema = z
   })
   .strict();
 
+/**
+ * The tool modes a kind can hold a session to (`StartOptions.tools`) beyond `all`: only niwa's
+ * tools, and an allow-list of the harness's own.
+ */
+export const ToolsDeclarationSchema = z.object({ niwaOnly: SupportSchema, allow: SupportSchema }).strict();
+
 export const ControlDeclarationSchema = z
   .object({
     start: SupportSchema,
@@ -53,6 +59,7 @@ export const ControlDeclarationSchema = z
     ask: SupportSchema,
     structuredOutput: SupportSchema,
     launch: LaunchDeclarationSchema,
+    tools: ToolsDeclarationSchema,
   })
   .strict();
 
@@ -79,6 +86,7 @@ export const NO_CONTROL: KindCapabilities["control"] = {
   ask: UNSUPPORTED,
   structuredOutput: UNSUPPORTED,
   launch: { model: UNSUPPORTED, effort: [], modes: [] },
+  tools: { niwaOnly: UNSUPPORTED, allow: UNSUPPORTED },
 };
 
 /** An insert side that declares nothing: for a kind without one. */
@@ -118,6 +126,7 @@ export function sidesOf(declared: KindCapabilities): SideCapabilities {
             ask: on(control.ask),
             structuredOutput: on(control.structuredOutput),
             launch: { model: on(control.launch.model), effort: [...control.launch.effort], modes: [...control.launch.modes] },
+            tools: { niwaOnly: on(control.tools.niwaOnly), allow: on(control.tools.allow) },
           },
         }
       : {}),
@@ -159,8 +168,9 @@ export function excessOf(
   check("reading", sides.reading, declared.reading);
   check("insert", sides.insert, declared.insert);
   if (sides.control !== undefined) {
-    const { launch, ...abilities } = sides.control;
+    const { launch, tools, ...abilities } = sides.control;
     check("control", abilities, declared.control);
+    if (tools !== undefined) check("control.tools", tools, declared.control.tools);
     if (launch.model && !declared.control.launch.model.supported) excess.push("control.launch.model");
     for (const level of launch.effort) {
       if (!declared.control.launch.effort.includes(level)) excess.push(`control.launch.effort "${level}"`);

@@ -8,7 +8,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
 import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CODEX_LAUNCH, codexControl } from "./control.ts";
@@ -18,7 +18,7 @@ import type { CodexReadingOptions } from "./reading.ts";
 
 export { CodexReading } from "./reading.ts";
 export type { CodexReadingOptions } from "./reading.ts";
-export { CODEX_LAUNCH, codexControl, codexToolFlags } from "./control.ts";
+export { CODEX_FIXED_TOOLS, CODEX_LAUNCH, codexControl, codexToolFlags, codexToolsModeFlags } from "./control.ts";
 export type { CodexControlOptions, CodexSessionControl } from "./control.ts";
 
 /**
@@ -38,6 +38,7 @@ export const codexSides: SideCapabilities = {
     ask: true,
     structuredOutput: true,
     launch: CODEX_LAUNCH,
+    tools: { niwaOnly: false, allow: true },
   },
 };
 
@@ -52,6 +53,7 @@ export const CODEX_CAPABILITIES: KindCapabilities = {
     ask: VERIFIED,
     structuredOutput: VERIFIED,
     launch: { model: VERIFIED, effort: CODEX_LAUNCH.effort, modes: CODEX_LAUNCH.modes },
+    tools: { niwaOnly: UNSUPPORTED, allow: ADMITTED },
   },
   insert: NO_INSERT,
 };

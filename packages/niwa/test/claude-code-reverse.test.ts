@@ -352,7 +352,7 @@ const installation: Harness = {
   kind: harnessKind("claude-code"),
   machine: machineId("machine-1"),
   home: "/tmp/fake-home",
-  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: false, launch: CLAUDE_CODE_LAUNCH } },
+  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: false, launch: CLAUDE_CODE_LAUNCH, tools: { niwaOnly: true, allow: true } } },
 };
 
 async function stack(script: readonly Step[]): Promise<{ niwa: Host; records: StoredRecord[]; side: SessionControl }> {

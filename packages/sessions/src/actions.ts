@@ -20,6 +20,7 @@ import {
   OptionBlocks,
   SessionModeSchema,
   ThinkingRecordSchema,
+  ToolsModeSchema,
   ToolCallRecordSchema,
   ToolResultRecordSchema,
   UnknownRecordSchema,
@@ -253,6 +254,12 @@ export const sessionStart = actionRef("session.start", {
     worktree: WorktreeOption.optional(),
     /** Which niwa actions the session sees, and which harness tools are off. */
     visible: VisibleActionsInputSchema.optional(),
+    /**
+     * The tools the session may use, for its whole life: `all` (the harness's own, the default),
+     * `niwa-only` (only the tools of niwa's MCP servers), or `{ allow }` (exactly these of the
+     * harness's own). A harness that cannot hold a session to it refuses the start.
+     */
+    tools: ToolsModeSchema.optional(),
   }).extend(OptionBlocks.shape),
   output: z.object({
     /** The id niwa gave the session: what every session action takes. */

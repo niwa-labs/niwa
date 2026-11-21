@@ -70,6 +70,7 @@ import type {
   SessionState,
   StartOptions,
   StartedSession,
+  ToolsMode,
   VisibleActions,
 } from "@niwa-labs/harness";
 import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
@@ -97,13 +98,21 @@ import type {
 const PI_NEEDS: HarnessNeeds = { write: [homePath(".pi")], net: [] };
 
 /**
- * pi's flags for a tool allowance (`pi --help`, 1.5.2): `--tools` is the allowlist of the tools
- * declared to the model and leaves MCP tools alone unless an entry names them; with nothing
- * allowed `--no-builtin-tools` empties the built-in set and keeps the extension tools niwa's
- * own actions arrive through.
+ * pi's flags for an allow-list of its own tools (`docs/cli.md`): `--tools` replaces the selection
+ * with exactly the tools named, built-in, extension or custom. With none named `--no-tools` starts
+ * with every tool off, the extensions pi loads by itself among them: those are pi's, not niwa's.
  */
 export function piToolFlags(allow: readonly string[]): string[] {
-  return allow.length === 0 ? ["--no-builtin-tools"] : ["--tools", allow.join(",")];
+  return allow.length === 0 ? ["--no-tools"] : ["--tools", allow.join(",")];
+}
+
+/**
+ * The flags for a tool mode. pi's RPC mode takes no MCP server, so a session of niwa's tools only
+ * has none of pi's: `--no-tools`, the same as an empty allow-list.
+ */
+export function piToolsModeFlags(tools: ToolsMode): string[] {
+  if (tools === "all") return [];
+  return piToolFlags(tools === "niwa-only" ? [] : tools.allow);
 }
 
 /**
@@ -554,7 +563,7 @@ export class PiControl implements PiSessionControl {
     if (chosen !== undefined) args.push("--model", chosen);
     const chosenEffort = effort ?? this.#options.effort;
     if (chosenEffort !== undefined) args.push("--thinking", chosenEffort);
-    if (plan.tools !== undefined) args.push(...piToolFlags(plan.tools.allow));
+    if (plan.tools !== undefined) args.push(...piToolsModeFlags(plan.tools));
 
     const child = await spawnAgent({
       harness: this.#harness,

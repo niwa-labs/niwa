@@ -10,7 +10,7 @@
  * insert/; this file names the kind and says where pi's sessions are.
  */
 
-import { KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@niwa-labs/harness";
+import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@niwa-labs/harness";
 import type { HarnessKindDefinition, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { PiInsert } from "./insert/index.ts";
@@ -42,6 +42,7 @@ export const piSides: SideCapabilities = {
     ask: false,
     structuredOutput: false,
     launch: PI_LAUNCH,
+    tools: { niwaOnly: true, allow: true },
   },
 };
 
@@ -59,6 +60,7 @@ export const PI_CAPABILITIES: KindCapabilities = {
     ask: UNSUPPORTED,
     structuredOutput: UNSUPPORTED,
     launch: { model: VERIFIED, effort: PI_LAUNCH.effort, modes: PI_LAUNCH.modes },
+    tools: { niwaOnly: ADMITTED, allow: ADMITTED },
   },
   insert: { nested: UNSUPPORTED, compaction: VERIFIED, manualOpen: VERIFIED, permission: VERIFIED },
 };
@@ -123,7 +125,7 @@ const PI_DETECTION = {
 
 export { PI_RAW_SCHEMA, piReading } from "./reading.ts";
 export type { PiReadingOptions } from "./reading.ts";
-export { PiControl, PI_CONTROL_CAPABILITIES, PI_LAUNCH, piToolFlags } from "./control.ts";
+export { PiControl, PI_CONTROL_CAPABILITIES, PI_LAUNCH, piToolFlags, piToolsModeFlags } from "./control.ts";
 export type { PiControlOptions, PiSessionControl } from "./control.ts";
 
 export { piSkills } from "./skills.ts";

@@ -26,6 +26,7 @@ import { z } from "zod";
 import { assertNever, timestamp } from "@niwa-labs/core";
 import type { Answer, Question } from "@niwa-labs/core";
 import {
+  describeToolsMode,
   modeOf,
   requireLaunch,
   Unavailable,
@@ -53,7 +54,7 @@ import type {
   SessionState,
   StartOptions,
   StartedSession,
-  ToolAllowance,
+  ToolsMode,
   VisibleActions,
   SessionId,
   ReverseHandler,
@@ -680,14 +681,14 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   function refuseDisabledTools(
     ability: string,
     visible: VisibleActions | undefined,
-    tools?: ToolAllowance,
+    tools?: ToolsMode,
   ): void {
-    if (tools !== undefined) {
+    if (tools !== undefined && tools !== "all") {
       throw new Unsupported(
         harnessId,
         "control",
         ability,
-        "mcode's ACP takes no tool flag: its --permission policy belongs to `mcode exec`",
+        `${describeToolsMode(tools)}: mcode's ACP takes no tool flag, and its --permission policy belongs to \`mcode exec\``,
       );
     }
     const disabled = visible?.disabledTools ?? [];

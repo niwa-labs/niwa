@@ -45,14 +45,32 @@ export interface VisibleActions {
   readonly disabledTools: readonly string[];
 }
 
-/**
- * The harness tools a session may use: the names are the
- * harness's own. Only the tools a harness can switch off are governed: the rest stay as the
- * harness has them, and a harness with no way to switch tools off refuses the request with
- * `Unsupported` instead of leaving them on.
- */
+/** An allow-list of the harness's own tools: the names are the harness's own. */
 export interface ToolAllowance {
   readonly allow: readonly string[];
+}
+
+/**
+ * The tools a session may use, for its whole life:
+ *
+ * - `all`: the harness's own tools, as the harness has them;
+ * - `niwa-only`: none of the harness's own tools, only those of the MCP servers niwa gives it;
+ * - `{ allow }`: exactly the harness's own tools named, and those of the servers niwa gives it.
+ *
+ * A kind that cannot hold a session to the mode refuses it with `Unsupported` before the first
+ * prompt; a tool left on silently would be a promise broken.
+ */
+export type ToolsMode = "all" | "niwa-only" | ToolAllowance;
+
+export const ToolsModeSchema = z.union([
+  z.literal("all"),
+  z.literal("niwa-only"),
+  z.object({ allow: z.array(z.string().min(1)).readonly() }).strict(),
+]);
+
+/** The mode said the way a refusal says it. */
+export function describeToolsMode(mode: ToolsMode): string {
+  return typeof mode === "string" ? `tools ${mode}` : `tools allow [${mode.allow.join(", ")}]`;
 }
 
 export const NO_VISIBLE_ACTIONS: VisibleActions = { actions: [], disabledTools: [] };
@@ -300,8 +318,8 @@ export interface StartOptions extends OptionBlocks {
    * Every session has a process of its own, so every side applies it.
    */
   readonly env?: Readonly<Record<string, string>>;
-  /** The harness tools the session may use. */
-  readonly tools?: ToolAllowance;
+  /** The tools the session may use; the harness's own when absent. */
+  readonly tools?: ToolsMode;
   /** Run the session's process in a sandbox (L2): the process is started through the `spawnAgent` funnel. */
   readonly box?: BoxRequest;
   /**
@@ -331,8 +349,8 @@ export interface ResumeOptions extends OptionBlocks {
   readonly servers?: readonly McpServerSpec[];
   /** The environment of the session's process, as in `StartOptions`. */
   readonly env?: Readonly<Record<string, string>>;
-  /** The harness tools the session may use, as in `StartOptions`. */
-  readonly tools?: ToolAllowance;
+  /** The tools the session may use, as in `StartOptions`: the ones it was started with. */
+  readonly tools?: ToolsMode;
   /** The box of the session's process, as in `StartOptions`. */
   readonly box?: BoxRequest;
   /** Where the session's reverse requests go, as in `StartOptions`: a resume names the handler the session has from now on. */

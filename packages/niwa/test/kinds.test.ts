@@ -383,6 +383,7 @@ test("the control side of the claude-code kind passes the conformance suite", as
       instance: installation(kind.kind, controlOf(claudeCodeSides), HARNESS, fake.dir),
       control,
       declared: kind.capabilities,
+      dispatched: async () => (await framesOf(fake.log)).length,
     })();
     const failed = report.results.filter((result) => !result.passed);
     expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
@@ -407,6 +408,7 @@ test("the control side of the codex kind passes the conformance suite", async ()
       instance: installation(kind.kind, controlOf(codexSides), HARNESS, fake.dir),
       control,
       declared: kind.capabilities,
+      dispatched: async () => (await framesOf(fake.log)).length,
     })();
     const failed = report.results.filter((result) => !result.passed);
     expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
@@ -431,6 +433,7 @@ test("the control side of the pi kind passes the conformance suite", async () =>
       instance: installation(kind.kind, controlOf(piSides), HARNESS, fake.dir),
       control,
       declared: kind.capabilities,
+      dispatched: async () => (await framesOf(fake.log)).length,
     })();
     const failed = report.results.filter((result) => !result.passed);
     expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);
@@ -587,6 +590,7 @@ for (const [name, make, sides] of [
         instance: installation(kind.kind, controlOf(sides), HARNESS, fake.dir),
         control,
         declared: kind.capabilities,
+        dispatched: async () => (await framesOf(fake.log)).length,
       })();
       const failed = report.results.filter((result) => !result.passed);
       expect(failed.map((result) => `${result.name}: ${result.detail ?? ""}`)).toEqual([]);

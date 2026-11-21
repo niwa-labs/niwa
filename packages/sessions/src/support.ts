@@ -35,7 +35,7 @@ const SupportsInput = z.discriminatedUnion("side", [
   z.object({
     harness: z.string().min(1),
     side: z.literal("control"),
-    ability: z.enum(ControlCapabilitiesSchema.omit({ launch: true }).keyof().options),
+    ability: z.enum(ControlCapabilitiesSchema.omit({ launch: true, tools: true }).keyof().options),
   }),
   z.object({
     harness: z.string().min(1),

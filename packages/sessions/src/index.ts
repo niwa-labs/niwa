@@ -63,6 +63,7 @@ import {
   requireAbility,
   requireLaunch,
   requireOwnBlocks,
+  requireTools,
   supports,
 } from "@niwa-labs/harness";
 import { gitWorktreeCreate } from "@niwa-labs/git/records";
@@ -84,7 +85,7 @@ import { BoxSpecSchema, onBoxManifest, requireBox } from "@niwa-labs/sandbox";
 import type { BoxRecord, BoxSandboxName } from "@niwa-labs/sandbox";
 import { RequestCreated, requestOpen } from "@niwa-labs/requests/records";
 
-import { inheritedLaunch, isLaunchRule, launchOf } from "./box.ts";
+import { inheritedLaunch, isLaunchRule, launchOf, toolsOfSession } from "./box.ts";
 import type { GrantLaunch } from "./box.ts";
 import { SessionRefusal } from "./refusal.ts";
 import { REVERSE_TYPES, installReverse } from "./reverse.ts";
@@ -966,6 +967,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           // The options block of another kind is refused here too: nothing is ignored.
           const blocks = blocksOf(input);
           requireOwnBlocks(instance.id, optionsOf(bindings, input.harness), blocks);
+          // A tool mode the installation cannot hold is refused here too, before any prompt.
+          requireTools(instance.id, instance.sides.control?.tools, input.tools);
           const visible = visibleFor(input.harness, callsOf(input.visible));
           // Refused before a mark or a token is made: a start that asks for too much, or for a
           // box this machine cannot give, creates nothing.
@@ -974,6 +977,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           const worktree = input.worktree === undefined ? undefined : await worktreeFor(ctx, input.harness, input.worktree, input.cwd);
           const cwd = worktree?.path ?? input.cwd;
           const launch = await launchFor(rules, cwd);
+          // The mode asked for, within the allow-list of the grant: what the grant adds is held too.
+          const tools = toolsOfSession(input.tools, launch.tools);
+          requireTools(instance.id, instance.sides.control?.tools, tools);
           // The mark is made in the run: a replay returns what the run returned, and the mark
           // is in the journal with the session it names.
           const mark = randomUUID();
@@ -992,6 +998,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
               env: { [TOKEN_ENV]: token },
               reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
               ...launchOptions(launch, mark),
+              ...(tools === undefined ? {} : { tools }),
             }),
           );
           // The harness named the session: only now is there a session at all. Its first turn
@@ -1006,6 +1013,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             effort: input.effort,
             mode: mode ?? input.mode,
             options: Object.keys(blocks).length === 0 ? undefined : blocks,
+            ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
           });
           await ctx.emit(SessionMarked, { session: ref, mark });
           follow(control, ref, id);
@@ -1042,6 +1050,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           // The directory the session was started in: a harness that loads a session by it needs the same one.
           const startedIn = restored?.cwd ?? startedOf(ref)?.cwd;
           const launch = launches ? await launchFor(rules, startedIn) : {};
+          // A process launched again keeps the tools the session was started with, within its grant.
+          const tools = launches ? toolsOfSession(startedOf(ref)?.tools, launch.tools) : undefined;
           const mark = randomUUID();
           const token = tokenFor(mark, rules, ctx.caller);
           const servers = launches ? serversOf(visible.actions, mark, token) : undefined;
@@ -1064,6 +1074,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
               env: { [TOKEN_ENV]: token },
               reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
               ...launchOptions(launch, mark),
+              ...(tools === undefined ? {} : { tools }),
             }),
           );
           follow(control, ref, id);

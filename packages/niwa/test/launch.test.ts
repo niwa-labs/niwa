@@ -39,7 +39,7 @@ import type {
 } from "@niwa-labs/sandbox";
 import { claudeCodeControl, ClaudeSdkControl } from "@niwa-labs/harness-claude";
 import type { SdkQuery } from "@niwa-labs/harness-claude";
-import { codexControl, codexToolFlags } from "@niwa-labs/harness-codex";
+import { CODEX_FIXED_TOOLS, codexControl, codexToolFlags } from "@niwa-labs/harness-codex";
 import { mcodeControl } from "@niwa-labs/harness-mcode";
 import { zcodeControl } from "@niwa-labs/harness-zcode";
 import { PiControl, piToolFlags } from "@niwa-labs/harness-pi";
@@ -252,29 +252,42 @@ async function fake(name: string, source: string): Promise<string> {
 
 const empty = promptFromText("");
 
-test("pi's launch carries the tool allowlist; nothing allowed empties the built-in set", async () => {
+test("pi's launch carries the tool allowlist; nothing allowed and only niwa's tools switch every tool off", async () => {
   expect(piToolFlags(["read", "grep"])).toEqual(["--tools", "read,grep"]);
-  expect(piToolFlags([])).toEqual(["--no-builtin-tools"]);
+  expect(piToolFlags([])).toEqual(["--no-tools"]);
 
   const pi = new PiControl({ mode: "full", harness: "pi-fake", binary: await fake("pi", FAKE_PI) });
   controls.push(pi);
   await pi.start({ prompt: empty, cwd: dir, tools: { allow: ["read", "grep"] } });
+  await pi.start({ prompt: empty, cwd: dir, tools: "niwa-only" });
+  await pi.start({ prompt: empty, cwd: dir, tools: "all" });
   await pi.start({ prompt: empty, cwd: dir });
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
     ["--mode", "rpc", "--tools", "read,grep"],
+    ["--mode", "rpc", "--no-tools"],
+    ["--mode", "rpc"],
     ["--mode", "rpc"],
   ]);
 });
 
-test("codex's launch switches off the tools it can switch off and the allowance does not name", async () => {
+test("codex's launch switches off what an allow-list leaves out, and refuses a mode it cannot hold before it spawns", async () => {
   expect(codexToolFlags([])).toEqual(["-c", "features.shell_tool=false", "-c", 'web_search="disabled"']);
   expect(codexToolFlags(["shell"])).toEqual(["-c", 'web_search="disabled"']);
   expect(codexToolFlags(["shell", "web_search", "apply_patch"])).toEqual([]);
 
   const codex = codexControl({ harness: "codex-fake", binary: await fake("codex", FAKE_CODEX) });
   controls.push(codex);
-  await codex.start({ prompt: empty, cwd: dir, tools: { allow: ["web_search"] } });
+  await codex.start({ prompt: empty, cwd: dir, tools: { allow: ["web_search", ...CODEX_FIXED_TOOLS] } });
   await codex.start({ prompt: empty, cwd: dir });
+  // apply_patch comes with the model and no flag switches it off: neither mode can be held.
+  await expect(codex.start({ prompt: empty, cwd: dir, tools: "niwa-only" })).rejects.toMatchObject({
+    code: "Unsupported",
+    message: expect.stringContaining("apply_patch"),
+  });
+  await expect(codex.start({ prompt: empty, cwd: dir, tools: { allow: ["web_search"] } })).rejects.toMatchObject({
+    code: "Unsupported",
+    message: expect.stringContaining("apply_patch, update_plan, view_image"),
+  });
   expect(spawns.map((event) => event.argv.slice(1))).toEqual([
     ["app-server", "--stdio", "-c", "features.shell_tool=false"],
     ["app-server", "--stdio"],
@@ -310,6 +323,12 @@ test("the Claude SDK's query gets the tool allowlist, and its process is born in
   expect((JSON.parse(chunks.join("")) as Record<string, string>)["NIWA_ID"]).toBe("k3f9");
   expect(spawns).toHaveLength(1);
   expect(spawns[0]?.env).toEqual({ NIWA_ID: "k3f9" });
+
+  // Only niwa's tools is an allowlist of none of Claude Code's own; all of them is the SDK's default.
+  await control.start({ prompt: promptFromText("two"), tools: "niwa-only" });
+  await control.start({ prompt: promptFromText("three"), tools: "all" });
+  expect(seen[1]?.tools).toEqual([]);
+  expect(seen[2]).not.toHaveProperty("tools");
 });
 
 test("a start whose box cannot run fails with SandboxUnavailable in every harness, and no process is born", async () => {

@@ -27,6 +27,7 @@ const DECLARED: KindCapabilities = {
     ask: VERIFIED,
     structuredOutput: UNSUPPORTED,
     launch: { model: VERIFIED, effort: ["low", "high"], modes: ["ask", "auto"] },
+    tools: { niwaOnly: ADMITTED, allow: UNSUPPORTED },
   },
   insert: NO_INSERT,
 };
@@ -52,6 +53,7 @@ test("the default sides of a kind are its supported abilities, and a side with n
       ask: true,
       structuredOutput: false,
       launch: { model: true, effort: ["low", "high"], modes: ["ask", "auto"] },
+      tools: { niwaOnly: true, allow: false },
     },
   });
   expect(() => admitInstance(instance(sidesOf(DECLARED)), kind())).not.toThrow();
@@ -87,6 +89,7 @@ test("an installation that claims more than its kind is refused, each excess nam
       interrupt: true,
       structuredOutput: true,
       launch: { model: true, effort: ["low", "max"], modes: ["ask", "full"] },
+      tools: { niwaOnly: true, allow: true },
     },
     insert: { nested: false, compaction: true, manualOpen: false, permission: false },
   });
@@ -102,6 +105,7 @@ test("an installation that claims more than its kind is refused, each excess nam
     "insert.compaction",
     "control.interrupt",
     "control.structuredOutput",
+    "control.tools.allow",
     'control.launch.effort "max"',
     'control.launch.modes "full"',
   ]);

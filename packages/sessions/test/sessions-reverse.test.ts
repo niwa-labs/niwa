@@ -79,7 +79,7 @@ const installation: Harness = {
   kind: harnessKind("fake-kind"),
   machine: machineId("machine-1"),
   home: "/tmp/fake-home",
-  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: false, launch: { model: false, effort: [], modes: [] } } },
+  sides: { control: { start: true, resume: true, send: true, interrupt: true, ask: true, structuredOutput: false, launch: { model: false, effort: [], modes: [] }, tools: { niwaOnly: true, allow: true } } },
 };
 
 const open: Array<() => Promise<void>> = [];

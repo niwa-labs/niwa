@@ -9,7 +9,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
 import type { KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { ZCODE_LAUNCH, zcodeControl } from "./control.ts";
@@ -40,6 +40,7 @@ export const zcodeSides: SideCapabilities = {
     ask: true,
     structuredOutput: true,
     launch: ZCODE_LAUNCH,
+    tools: { niwaOnly: true, allow: true },
   },
 };
 
@@ -54,6 +55,7 @@ export const ZCODE_CAPABILITIES: KindCapabilities = {
     ask: VERIFIED,
     structuredOutput: VERIFIED,
     launch: { model: VERIFIED, effort: ZCODE_LAUNCH.effort, modes: ZCODE_LAUNCH.modes },
+    tools: { niwaOnly: ADMITTED, allow: ADMITTED },
   },
   insert: NO_INSERT,
 };
