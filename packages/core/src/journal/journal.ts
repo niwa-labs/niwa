@@ -296,6 +296,7 @@ function batchDigest(entries: AppendEntry[]): string {
 class SqliteJournal implements Journal {
   readonly instance: string;
   readonly epoch: number;
+  readonly openingSeq: Seq;
 
   private readonly db: Database;
   /** The clock of the host: the moment a record was committed. */
@@ -309,6 +310,7 @@ class SqliteJournal implements Journal {
     this.instance = instance;
     this.epoch = epoch;
     this.clock = clock;
+    this.openingSeq = this.last();
   }
 
   /** Rebuild the entity index with the currently installed folds, without re-admitting history. */

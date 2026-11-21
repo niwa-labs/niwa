@@ -657,6 +657,8 @@ export interface AppendEntry {
 
 /** What a plugin may read of the journal. */
 export interface JournalReader {
+  /** Last committed sequence when this writer opened the journal. Fixed for the lifetime of the writer, including plugin replacements. */
+  readonly openingSeq?: Seq;
   get(id: RecordId): StoredRecord | undefined;
   /** Records with seq > from, ascending; optionally only these types, optionally at most `limit`. */
   since(from: Seq, types?: RecordTypeName[], limit?: number, stream?: StreamId): StoredRecord[];
