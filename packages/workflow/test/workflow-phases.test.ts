@@ -121,7 +121,11 @@ test("phases at the top go one after another: each entry is a record of its own,
     "});",
   ]);
   const { run } = await host.call(workflowStart, { file });
-  await eventually(async () => (await host.call(workflowInspect, { run })).status.currentPhases?.includes("Фикс") === true, 15_000);
+  // Entering a phase precedes the first step in it. Wait until that step is visible in the plan.
+  await eventually(async () => {
+    const { phases } = await host.call(workflowInspect, { run });
+    return phases.some(phase => phase.steps.some(step => step.key === "label:nap"));
+  }, 15_000, "the plan should show the nap step");
 
   const entered = await recordsOf(host, PhaseEntered.name);
   expect(entered.map((row) => row.data)).toEqual([
