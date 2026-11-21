@@ -17,6 +17,7 @@ plugin("typing-async", async (api) => { // error
 });
 plugin("typing-promise", (api) => Promise.resolve(api.declare())); // error
 plugin("typing-async-named", async function setup(api: PluginApi) { api.declare(); }); // error
+plugin("typing-maybe-async", (api: PluginApi): void | Promise<void> => api.declare()); // error
 
 export const every: TimerDef = { id: "a", every: 1000 };
 export const at: TimerDef = { id: "a", at: 1000, missed: "skip" };

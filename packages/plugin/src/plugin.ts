@@ -98,12 +98,17 @@ export function sealVersion(source: Plugin, handlers: readonly string[]): void {
 }
 
 /**
- * What a setup function may be: one that returns nothing. A function that returns a promise is
- * refused when the plugin is made, because the host runs the setup and goes on without waiting for
+ * What a setup function may be: one that returns nothing. A function that returns a promise, or one
+ * that may (`void | Promise<void>`), is refused when the plugin is made, because the host runs the setup and goes on without waiting for
  * it, so everything an asynchronous setup declared after its first `await` would be lost.
  */
 type SynchronousSetup<S extends (api: PluginApi) => unknown> =
-  ReturnType<S> extends PromiseLike<unknown> ? never : unknown;
+  [Extract<ReturnType<S>, PromiseLike<unknown>>] extends [never] ? unknown : never;
+
+/** Did the setup return a promise (or any thenable)? */
+function isThenable(value: unknown): boolean {
+  return (typeof value === "object" || typeof value === "function") && value !== null && typeof (value as { then?: unknown }).then === "function";
+}
 
 interface PluginOptions {
   /**
@@ -191,7 +196,14 @@ export function withoutHandler(source: Plugin, handler: string): Plugin {
         kept += 1;
         api.on(type, options, run);
       };
-      source.setup({ ...api, on });
+      const returned: unknown = source.setup({ ...api, on });
+      if (isThenable(returned)) {
+        // What the promise does later is nobody's to see: it must not fail the process on its own.
+        Promise.resolve(returned).catch(() => undefined);
+        throw new TypeError(
+          `plugin "${source.name}" has an asynchronous setup: a setup runs to its end before the plugin is installed, so it must not return a promise`,
+        );
+      }
       // The source's own version covers all its handlers, the removed one too: the same code has
       // the same version whether it is installed whole or without a handler.
       sealVersion(source, sources);
