@@ -173,6 +173,7 @@ function recordsOf(
   message: MessageData | undefined,
   row: Row,
   running: boolean,
+  open: boolean,
 ): Array<{ sub: number; record: Unlocated }> {
   const read = readPart(row.pdata);
   const unknown = (raw: unknown): Array<{ sub: number; record: Unlocated }> => [
@@ -221,7 +222,9 @@ function recordsOf(
         ...zcodeToolShape(part.tool, part.state.input),
         input: optionalJsonOf(part.state.input),
         at: started,
-        incomplete: running || isRunning(part),
+        // A call left running in an older message was abandoned (its process died): it has no result
+        // and never will, so it does not hold the reader back. Only the last message can still be at work.
+        incomplete: running || (open && isRunning(part)),
       };
       if (isRunning(part)) return [{ sub: 0, record: call }];
       const result: Unlocated = {
@@ -283,7 +286,7 @@ function* itemsOf(db: Database, harness: HarnessId, native: string, after: Posit
     if (current?.sequence !== row.mseq) current = { sequence: row.mseq, message: readMessage(row.mdata) };
     const unfinished =
       row.mseq === last && current.message?.role === "assistant" && current.message.time?.completed === undefined;
-    for (const { sub, record } of recordsOf(db, current.message, row, unfinished)) {
+    for (const { sub, record } of recordsOf(db, current.message, row, unfinished, row.mseq === last)) {
       tail ||= record.incomplete;
       const item: Item = { at: { ...place, sub }, record: tail ? { ...record, incomplete: true } : record };
       if (given(item)) yield item;

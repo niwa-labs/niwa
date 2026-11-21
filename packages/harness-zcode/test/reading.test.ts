@@ -165,6 +165,19 @@ test("only the tail of a running session is incomplete; an older unfinished mess
   expect(marks.slice(5)).toEqual(["tool-call:true", "tool-result:true", "tool-call:true", "tool-call:true", "tool-result:true"]);
 });
 
+test("a call left running in an older message does not hold back what came after it", async () => {
+  writeSession(db, "sess_a", [
+    user("m1", "go"),
+    { id: "m2", data: { role: "assistant", time: { created: 2 } }, parts: [{ type: "tool", callID: "c1", tool: "Bash", state: { status: "running", input: {} } }] },
+    user("m3", "go on"),
+    assistant("m4", "done"),
+  ]);
+  const records = await all(reading().read(id("sess_a")));
+  // The abandoned call is delivered as it stands, with no result invented for it, and nothing after it is incomplete.
+  expect(records.map((record) => `${record.kind}:${record.incomplete}`)).toEqual(["user:false", "tool-call:false", "user:false", "assistant:false"]);
+  expect((await reading().coverage(id("sess_a"), records[1]!.locator)).status).toBe("not-scanned");
+});
+
 test("a session spawned inside sits after the part that existed when it was created, whichever way it names its parent", async () => {
   writeSession(db, "sess_a", [user("m1", "go"), assistant("m2", "spawning"), assistant("m3", "later")], { at: 1000 });
   writeSession(db, "sess_sub1", [user("s1", "work")], { parent: "sess_a", at: 1015 });
