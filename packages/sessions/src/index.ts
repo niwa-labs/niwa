@@ -50,7 +50,8 @@ import {
   toolNameOf,
   valueSchemaOf,
 } from "@niwa-labs/core";
-import { plugin, bindingOf } from "@niwa-labs/plugin";
+import { COCKPIT_MODULE, plugin, bindingOf } from "@niwa-labs/plugin";
+import { fileURLToPath } from "node:url";
 import type { ActionContext, Caller, Grant, JournalReader, JsonValue, Timestamp, Token } from "@niwa-labs/core";
 import type { Plugin, CallerBinding } from "@niwa-labs/plugin";
 import {
@@ -382,6 +383,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
   };
 
   const made = plugin(PLUGIN_NAME, (api) => {
+    // The page of this plugin in the cockpit: a client module, offered by the path of its source.
+    api.offer(COCKPIT_MODULE, { id: "sessions", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     api.declare(...SESSION_TYPES, ...REVERSE_TYPES);
     const reverse = installReverse(api);
     const sessionIds = new IdIndex("session", () => sessionIdsOf(api.journal?.()));
