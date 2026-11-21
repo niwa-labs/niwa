@@ -24,9 +24,9 @@ const InvocationState = z.object({
 
 export type InvocationStateData = z.infer<typeof InvocationState>;
 
-/** Read the journal from the beginning through a client subscription, into `seen`. */
+/** Read the journal from the beginning through a client subscription, into `seen`, as the owner does. */
 export async function watch(home: string): Promise<{ seen: StoredRecord[]; stop: () => Promise<void> }> {
-  const observer = await connect({ home });
+  const observer = await connectAsOwner(home, "watcher");
   const seen: StoredRecord[] = [];
   const subscription = (async () => {
     for await (const record of observer.records.since(seq(0))) seen.push(record);

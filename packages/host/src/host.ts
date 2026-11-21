@@ -2455,9 +2455,15 @@ class Niwa implements Host {
         });
       }
       case "trace":
-        return reply(connection, message.id, () => this.trace(message.record));
+        return reply(connection, message.id, async () => {
+          await this.authorize(caller, "call", TRACE_ACTION);
+          return this.trace(message.record);
+        });
       case "causes":
-        return reply(connection, message.id, () => this.causes(message.record));
+        return reply(connection, message.id, async () => {
+          await this.authorize(caller, "call", CAUSES_ACTION);
+          return this.causes(message.record);
+        });
       case "describe":
         return reply(connection, message.id, () => this.describe());
       case "live.send": {
@@ -2486,18 +2492,27 @@ class Niwa implements Host {
       }
       case "read": {
         const { from, type, types, stream, limit } = message;
-        return reply(connection, message.id, async () =>
-          this.readHistory(from, {
+        return reply(connection, message.id, async () => {
+          await this.authorize(caller, "call", RECORDS_READ_ACTION);
+          return this.readHistory(from, {
             ...(type === undefined ? {} : { type }),
             ...(types === undefined ? {} : { types }),
             ...(stream === undefined ? {} : { stream }),
             ...(limit === undefined ? {} : { limit }),
-          }),
-        );
+          });
+        });
       }
       case "since": {
-        connection.send({ id: message.id, ok: true, value: null });
         const { id, from, type, stream } = message;
+        // The subscription is a read of the same journal: it is held to the same grant, and a
+        // refusal is the first answer, before any record.
+        try {
+          await this.authorize(caller, "call", RECORDS_READ_ACTION);
+        } catch (error) {
+          refuse(connection, id, error);
+          return;
+        }
+        connection.send({ id, ok: true, value: null });
         try {
           for await (const record of this.subscribe(
             from,
