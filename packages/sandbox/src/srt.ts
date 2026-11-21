@@ -15,7 +15,7 @@ import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
-import { SYSTEM_PATH, insideBox, probe, spawnBox } from "./spawn.ts";
+import { SYSTEM_PATH, probe, spawnBox } from "./spawn.ts";
 
 /**
  * A path as srt is to read it: the name and nothing else. A plain string is also a pattern wherever
@@ -98,9 +98,10 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
     };
   };
 
-  const wrapped = (settingsPath: string, argv: readonly string[]) => {
+  /** The wrapper's own command, up to the one it runs. */
+  const wrapped = (settingsPath: string) => {
     if (!command) throw new SandboxUnavailable("srt", "@anthropic-ai/sandbox-runtime is not installed");
-    return [...command, "--settings", settingsPath, "--", ...argv];
+    return [...command, "--settings", settingsPath, "--"];
   };
 
   return {
@@ -114,7 +115,7 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
         try {
           const path = join(dir, "settings.json");
           await writeFile(path, JSON.stringify(manifest(boxSpec({ cwd: dir })).settings));
-          return await probe(wrapped(path, ["/usr/bin/true"]), dir, LAUNCHER_ENV);
+          return await probe("srt", wrapped(path), dir, LAUNCHER_ENV, dir);
         } finally {
           await rm(dir, { recursive: true, force: true });
         }
@@ -128,7 +129,8 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
       try {
         const path = join(dir, "settings.json");
         await writeFile(path, JSON.stringify(config.settings), { mode: 0o600 });
-        return spawnBox("srt", wrapped(path, insideBox("srt", LAUNCHER_ENV, config.env, argv)), config.cwd, LAUNCHER_ENV, cleanup, options);
+        // srt runs from the directory that holds its settings: no one but this process has written there.
+        return spawnBox("srt", wrapped(path), { cwd: config.cwd, env: config.env, argv }, LAUNCHER_ENV, dir, cleanup, options);
       } catch (error) {
         await cleanup();
         throw error;

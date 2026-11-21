@@ -1,6 +1,6 @@
-/** Shared by the process-class sandboxes: spawn the wrapper with exactly the listed environment. */
+/** Shared by the process-class sandboxes: start the wrapper, and the command inside it with exactly the listed environment. */
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 
 import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { LaunchOptions, LaunchedBox, SandboxName } from "./sandbox.ts";
@@ -8,28 +8,49 @@ import type { LaunchOptions, LaunchedBox, SandboxName } from "./sandbox.ts";
 /** Where a wrapper finds the system's tools: the host's choice, never the spec's. */
 export const SYSTEM_PATH = "/usr/bin:/bin";
 
+/** What a spec's variable is called in the wrapper's environment, on its way in. */
+const CARRIED = "NIWA_BOX__";
+
+/** Names a shell adds to what it starts, besides the ones it was given. */
+const SHELL_ADDED = ["PWD", "OLDPWD", "SHLVL", "_"];
+
 /**
- * The command a wrapper runs, with the spec's environment put on it from the inside.
+ * The command a wrapper runs, and the variables it has to be started with for that command.
  *
  * The wrapper is the host's own process: it locates system tools and loads libraries before any
- * restriction exists, so the spec's environment must not reach it. The spec's variables are set by
- * `env` once the restrictions hold, on the command alone; a launcher variable the spec leaves out
- * is removed there, so the command has the variables the spec lists and what the wrapper adds
- * itself.
+ * restriction exists, so the spec's environment must not reach it as its own, and it starts from a
+ * directory of the host's, not the spec's, where files the command writes cannot be read as
+ * configuration. A shell inside the box enters `cwd`, gives each variable its name and runs `env`,
+ * which removes a launcher variable the spec leaves out and what the shell adds, so the command has
+ * the variables the spec lists and what the wrapper adds itself.
+ *
+ * The values travel in the wrapper's environment under a prefix of their own. As arguments they
+ * would be readable by every user of the machine for as long as the wrapper lives.
  */
 export function insideBox(
   sandbox: SandboxName,
   launcher: Readonly<Record<string, string>>,
-  env: Readonly<Record<string, string>>,
+  guest: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
   argv: readonly string[],
-): string[] {
+): { readonly command: string[]; readonly carried: Record<string, string> } {
   const program = argv[0];
   if (program === undefined) throw new SandboxUnsupported(sandbox, "there is no program to run");
-  if (program.includes("=") || program.startsWith("-")) {
-    throw new SandboxUnsupported(sandbox, `the program ${JSON.stringify(program)} would be read by env as a variable or an option`);
+  if (program.includes("=")) {
+    throw new SandboxUnsupported(sandbox, `the program ${JSON.stringify(program)} would be read by env as a variable`);
   }
-  const unset = Object.keys(launcher).filter((name) => !(name in env)).flatMap((name) => ["-u", name]);
-  return ["/usr/bin/env", ...unset, ...Object.entries(env).map(([name, value]) => `${name}=${value}`), ...argv];
+  const names = Object.keys(guest.env);
+  const unset = [...Object.keys(launcher), ...SHELL_ADDED].filter((name) => !(name in guest.env)).flatMap((name) => ["-u", name]);
+  // The names are checked by the spec: letters, digits and `_` only.
+  const script = [
+    'cd -- "$1" || exit 126',
+    "shift",
+    ...names.map((name) => `export ${name}="$${CARRIED}${name}" || exit 126; unset ${CARRIED}${name}`),
+    `exec /usr/bin/env ${unset.join(" ")} -- "$@"`,
+  ].join("\n");
+  return {
+    command: ["/bin/sh", "-c", script, "niwa-box", guest.cwd, ...argv],
+    carried: Object.fromEntries(names.map((name) => [`${CARRIED}${name}`, guest.env[name] ?? ""])),
+  };
 }
 
 /** Is the program not to be found, where the spawn looks for it? */
@@ -38,24 +59,47 @@ function missing(program: string | undefined, env: Readonly<Record<string, strin
   return program.includes("/") ? !existsSync(program) : Bun.which(program, { PATH: env["PATH"] ?? "" }) === null;
 }
 
+/** A working directory the command is to start in has to be there: the wrapper cannot tell the spec's fault from its own. */
+function requireDirectory(cwd: string): void {
+  let directory = false;
+  try {
+    directory = statSync(cwd).isDirectory();
+  } catch {
+    // Not there: reported below, as a spawn reports it.
+  }
+  if (!directory) throw Object.assign(new Error(`ENOENT: the working directory ${cwd} is not a directory`), { code: "ENOENT" });
+}
+
 /**
- * Starts the wrapper. A wrapper that is not there is `SandboxUnavailable` and no process exists, as
- * it is when the probe finds it missing; any other failure to start is the caller's to see as it is.
+ * Starts the wrapper from `home` with the launcher's environment, and the command inside it. A
+ * wrapper that is not there is `SandboxUnavailable` and no process exists, as it is when the probe
+ * finds it missing; any other failure to start is the caller's to see as it is.
  */
 export function spawnBox(
   sandbox: SandboxName,
-  argv: readonly string[],
-  cwd: string,
-  env: Readonly<Record<string, string>>,
+  wrapper: readonly string[],
+  guest: { readonly cwd: string; readonly env: Readonly<Record<string, string>>; readonly argv: readonly string[] },
+  launcher: Readonly<Record<string, string>>,
+  home: string,
   cleanup: () => Promise<void>,
   options: LaunchOptions = {},
 ): LaunchedBox {
+  if (missing(wrapper[0], launcher)) throw new SandboxUnavailable(sandbox, `${wrapper[0] ?? "the wrapper"} is not there`);
+  requireDirectory(guest.cwd);
+  const stage = insideBox(sandbox, launcher, guest, guest.argv);
+  const argv = [...wrapper, ...stage.command];
   let child: ReturnType<typeof Bun.spawn<"pipe", "pipe", "pipe">>;
   try {
-    child = Bun.spawn([...argv], { cwd, env: { ...env }, stdin: "pipe", stdout: "pipe", stderr: "pipe", detached: options.detached ?? false });
+    child = Bun.spawn(argv, {
+      cwd: home,
+      env: { ...launcher, ...stage.carried },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      detached: options.detached ?? false,
+    });
   } catch (error) {
-    // A working directory that is not there fails the same way: that is the spec's fault, not the wrapper's.
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" && missing(argv[0], env)) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && missing(argv[0], launcher)) {
       throw new SandboxUnavailable(sandbox, `${argv[0] ?? "the wrapper"} cannot be started: ${(error as Error).message}`);
     }
     throw error;
@@ -76,10 +120,17 @@ export function spawnBox(
   };
 }
 
-/** Runs the wrapper once to see whether it works on this machine. */
-export async function probe(argv: readonly string[], cwd: string, env: Readonly<Record<string, string>>): Promise<boolean> {
+/** Runs the wrapper once, from `home`, to see whether it can start a command in `cwd` on this machine. */
+export async function probe(
+  sandbox: SandboxName,
+  wrapper: readonly string[],
+  cwd: string,
+  launcher: Readonly<Record<string, string>>,
+  home: string,
+): Promise<boolean> {
   try {
-    const child = Bun.spawn([...argv], { cwd, env: { ...env }, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const stage = insideBox(sandbox, launcher, { cwd, env: {} }, ["/usr/bin/true"]);
+    const child = Bun.spawn([...wrapper, ...stage.command], { cwd: home, env: { ...launcher }, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     return (await child.exited) === 0;
   } catch {
     return false;

@@ -20,7 +20,7 @@ import { SandboxUnavailable, SandboxUnsupported } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
-import { SYSTEM_PATH, insideBox, probe, spawnBox } from "./spawn.ts";
+import { SYSTEM_PATH, probe, spawnBox } from "./spawn.ts";
 
 /** A path as the sandbox sees it: `~` expanded, and the links of its longest existing part resolved. */
 function expanded(path: string): string {
@@ -52,13 +52,17 @@ function launcherEnv(): Readonly<Record<string, string>> {
   return { PATH: SYSTEM_PATH, HOME: homedir() };
 }
 
-/** Where nono is asked about a path: a system directory its default profile already lets it read. */
-const ASKING_DIRECTORY = "/usr/share";
+/**
+ * Where nono is started from: a place the command has no way to put files in. nono wants the
+ * directory it runs in to be granted, and this is one of the system directories its default profile
+ * already lets it read, so no grant is added for it.
+ */
+const TRUSTED_DIRECTORY = "/usr/share";
 
 /** Would nono let the box read this path, by what it grants without being asked? `undefined` when it cannot say. */
 function readable(binary: string, path: string): boolean | undefined {
   const asked = Bun.spawnSync([binary, "why", "--json", "--op", "read", "--path", path], {
-    cwd: ASKING_DIRECTORY,
+    cwd: TRUSTED_DIRECTORY,
     env: { ...launcherEnv() },
     stdin: "ignore",
     stdout: "pipe",
@@ -127,9 +131,10 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     };
   };
 
-  const wrapped = (flags: readonly string[], argv: readonly string[]) => {
+  /** The wrapper's own command, up to the one it runs. */
+  const wrapped = (flags: readonly string[]) => {
     if (!binary) throw new SandboxUnavailable("nono", "the nono binary is not on PATH");
-    return [binary, "run", ...flags, "--", ...argv];
+    return [binary, "run", ...flags, "--"];
   };
 
   return {
@@ -142,7 +147,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
         const dir = await mkdtemp(join(tmpdir(), "niwa-nono-probe-"));
         try {
           const config = manifest(boxSpec({ cwd: dir }));
-          return await probe(wrapped(config.flags, ["/usr/bin/true"]), dir, launcherEnv());
+          return await probe("nono", wrapped(config.flags), dir, launcherEnv(), TRUSTED_DIRECTORY);
         } finally {
           await rm(dir, { recursive: true, force: true });
         }
@@ -151,8 +156,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     },
     async launch(spec, argv, options) {
       const config = manifest(spec);
-      const launcher = launcherEnv();
-      return spawnBox("nono", wrapped(config.flags, insideBox("nono", launcher, config.env, argv)), config.cwd, launcher, async () => {}, options);
+      return spawnBox("nono", wrapped(config.flags), { cwd: config.cwd, env: config.env, argv }, launcherEnv(), TRUSTED_DIRECTORY, async () => {}, options);
     },
   };
 }
