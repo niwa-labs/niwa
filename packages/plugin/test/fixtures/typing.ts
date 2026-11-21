@@ -1,8 +1,9 @@
 // Code that a plugin author writes. A line ending in `// error` must not compile; every other line must.
 
-import type { RecordType } from "@niwa-labs/core";
+import { record } from "@niwa-labs/core";
+import { z } from "zod";
 
-import { plugin } from "../../src/index.ts";
+import { offerKey, plugin, trigger as triggerOf, TIMER_OFFER } from "../../src/index.ts";
 import type { PluginApi, TimerDef, TimerOffer, Trigger } from "../../src/index.ts";
 
 plugin("typing-sync", (api) => {
@@ -32,3 +33,9 @@ declare const unscheduled: Firing & { readonly timer: string };
 export const plain: TimerOffer = { id: "a", every: 1000 };
 export const carried: TimerOffer = trigger;
 export const bare: TimerOffer = unscheduled; // error
+
+const Ping = record("typing.ping", z.object({ who: z.string() }));
+export const offered = triggerOf(Ping, { name: "ping", filter: {}, offer: { key: TIMER_OFFER, value: { id: "a", every: 1000 } } });
+export const offerOfAnother = triggerOf(Ping, { name: "ping", filter: {}, offer: { key: TIMER_OFFER, value: 123 } }); // error
+export const offerOfNone = triggerOf(Ping, { name: "ping", filter: {}, offer: { key: offerKey<string>("typing.point", "reader"), value: "x" } });
+export const wrongOffer = triggerOf(Ping, { name: "ping", filter: {}, offer: { key: offerKey<string>("typing.point", "reader"), value: 1 } }); // error

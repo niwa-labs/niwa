@@ -33,10 +33,15 @@ export interface Trigger<T> {
   readonly offer?: TriggerOffer<any>;
 }
 
-/** A trigger over a type: the records whose data holds the filter, under a handler name of its own. */
-export function trigger<T>(
+/**
+ * A trigger over a type: the records whose data holds the filter, under a handler name of its own.
+ *
+ * The offer is checked here, as `api.offer` checks it: the value is what the key is the point of. The
+ * trigger keeps the pair it was given; the type that was checked is not carried further.
+ */
+export function trigger<T, V = never>(
   type: RecordType<T>,
-  spec: { readonly name: string; readonly filter: PathFilter<T>; readonly provider?: string; readonly offer?: TriggerOffer<any> },
+  spec: { readonly name: string; readonly filter: PathFilter<T>; readonly provider?: string; readonly offer?: { readonly key: OfferKey<V>; readonly value: NoInfer<V> } },
 ): Trigger<T> {
   if (spec.name.length === 0) throw new TypeError(`a trigger of "${type.name}" needs a name for its handlers`);
   return {
