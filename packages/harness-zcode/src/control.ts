@@ -379,6 +379,8 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   /** The sessions by id; `owned` also holds those still starting. */
   const sessions = new Map<string, LiveSession>();
   const owned = new Set<LiveSession>();
+  /** The launches under way: a process that is being born is not yet in `owned`. */
+  const launching = new Set<Promise<unknown>>();
   let disposed = false;
 
   function unavailable(ability: string, detail: string): Unavailable {
@@ -737,10 +739,17 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   }
 
   /** Spawns a child and pings it. A child that does not answer is stopped. */
-  async function spawnSession(
-    cwd: string | undefined,
-    plan: Pick<StartOptions, "env" | "box">,
-  ): Promise<LiveSession> {
+  async function spawnSession(cwd: string | undefined, plan: Pick<StartOptions, "env" | "box">): Promise<LiveSession> {
+    const launch = launchSession(cwd, plan);
+    launching.add(launch);
+    try {
+      return await launch;
+    } finally {
+      launching.delete(launch);
+    }
+  }
+
+  async function launchSession(cwd: string | undefined, plan: Pick<StartOptions, "env" | "box">): Promise<LiveSession> {
     if (disposed) throw unavailable("start", "the control side is disposed");
     const child = await spawnAgent({
       harness: harnessId,
@@ -793,6 +802,12 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         session.stopping ? "the session was stopped" : `the session process exited (${code ?? signal}): ${session.stderrTail.trim()}`,
       );
     });
+
+    // The control side was disposed while the process was being born: it is not served, and not left running.
+    if (disposed) {
+      await stopSession(session);
+      throw unavailable("start", "the control side was disposed while the process was starting");
+    }
 
     // Ready is an answer that is a capabilities report: anything else is not an app-server of ZCode.
     const ready = await call(session, "runtime/capabilities", {});
@@ -1271,6 +1286,8 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       disposed = true;
       sessions.clear();
       await Promise.all([...owned].map((session) => stopSession(session)));
+      // A launch that is still under way stops its own child when it finds the control side disposed.
+      await Promise.allSettled([...launching]);
     },
   };
 }

@@ -774,6 +774,33 @@ test("dispose stops the process of every session", async () => {
   await expect(c.start({ prompt: hello, cwd: dir })).rejects.toMatchObject({ code: "Unavailable" });
 });
 
+test("a start still being born when the control side is disposed leaves no session and no process", async () => {
+  // The manifest of the box is waited for before the process exists: the launch is held there.
+  let open: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const restore = useSandbox("nono", plainNono());
+  const forget = onBoxManifest(() => gate);
+  try {
+    const c = control();
+    const starting = c.start({ prompt: hello, cwd: dir, box: { sandbox: "nono", spec: { cwd: dir, write: [dir], env: {} } } }).catch((error: unknown) => error);
+    await Bun.sleep(50);
+    const disposing = c.dispose();
+    open();
+    await disposing;
+    expect(await starting).toMatchObject({ code: "Unavailable" });
+    const pid = (await logOf("env.log"))[0]?.["pid"] as number | undefined;
+    await Bun.sleep(100);
+    if (pid !== undefined) expect(() => process.kill(pid, 0)).toThrow();
+    expect(await requestsOf("session/create")).toEqual([]);
+  } finally {
+    open();
+    forget();
+    restore();
+  }
+});
+
 test("zcode passes the control conformance suite", async () => {
   const id = harnessId("zcode-fake");
   const instance: Harness = {
