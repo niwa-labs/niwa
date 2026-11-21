@@ -700,6 +700,7 @@ test("signs of life become session records, once per session, saying only that t
   await eventually(() => typesOf(records).includes("session.turn-ended"));
 
   expect(typesOf(records)).toEqual([
+    "session.start.reserved",
     "session.started",
     "session.marked",
     "session.input.sending",
@@ -984,6 +985,7 @@ test("the start returns with the receipt of its first turn, and the signs of tha
   control.pushLife({ kind: "turn-ended", turn: 1 });
   await eventually(() => typesOf(records).includes("session.turn-ended"));
   expect(typesOf(records)).toEqual([
+    "session.start.reserved",
     "session.started",
     "session.marked",
     "session.input.sending",

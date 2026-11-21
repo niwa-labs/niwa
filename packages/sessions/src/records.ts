@@ -332,6 +332,39 @@ export const SessionInputSettled = record(
   }),
 );
 
+/**
+ * A start given an operation id is about to ask its harness for a session: written before anything is
+ * sent, so a retry while it runs, or after a host stopped in the middle of it, never starts a second one.
+ */
+export const SessionStartReserved = record(
+  "session.start.reserved",
+  z.object({
+    operation: z.string().min(1),
+    /** The SHA-256 of the start's harness and prompt, so a retry with another body is told apart. */
+    digest: z.string().min(1),
+    /** The directory the session is started in, when it was given one. */
+    cwd: z.string().optional(),
+  }),
+);
+
+/** The harness named the session of a start under an operation, before its first prompt went. */
+export const SessionStartNamed = record(
+  "session.start.named",
+  z.object({
+    operation: z.string().min(1),
+    session: SessionRefSchema,
+  }),
+);
+
+/** A start under an operation failed before anything reached its harness: a retry starts again. */
+export const SessionStartUnsent = record(
+  "session.start.unsent",
+  z.object({
+    operation: z.string().min(1),
+    reason: z.string(),
+  }),
+);
+
 /** The record types this module declares, in the order they are declared. */
 export const SESSION_TYPES = [
   SessionStarted,
@@ -348,4 +381,7 @@ export const SESSION_TYPES = [
   SessionBoxManifest,
   SessionInputSending,
   SessionInputSettled,
+  SessionStartReserved,
+  SessionStartNamed,
+  SessionStartUnsent,
 ] as const;

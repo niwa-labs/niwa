@@ -41,6 +41,7 @@ import {
   accessMine,
   action,
   assertNever,
+  effectPossibleAfter,
   grant,
   owner,
   rule,
@@ -110,6 +111,9 @@ import {
   SessionBoxManifest,
   SessionInputSending,
   SessionInputSettled,
+  SessionStartNamed,
+  SessionStartReserved,
+  SessionStartUnsent,
   SessionEnded,
   SessionMarked,
   SessionModel,
@@ -295,6 +299,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
   // journal's last number is where a process that was launched again goes on, so a turn is known
   // by the same number in its records and in the receipt of a message sent into it.
   const turnCounts = new Map<SessionRef, { last: number; offset: number }>();
+  /** The starts under an operation that are running now: a retry waits for the one running. */
+  const startsRunning = new Map<string, { digest: string; answer: Promise<z.output<typeof sessionStart.output>> }>();
   // The loops that follow them, by control side, so that stopping a side waits for the last
   // records of its sessions to be written.
   const followers = new Map<SessionControl, Set<Promise<void>>>();
@@ -944,6 +950,35 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       };
     };
 
+    /**
+     * The last reservation of a start under an operation, from the journal: the digest it was made with, the
+     * directory, the session its harness named, and whether it failed with nothing sent.
+     */
+    const reservationOf = (operation: string): { digest: string; cwd?: string; named?: SessionRef; released: boolean } | undefined => {
+      const journal = api.journal?.();
+      if (journal === undefined) return undefined;
+      const last = journal
+        .find({ type: SessionStartReserved.name, field: "operation", equals: operation })
+        .flatMap((stored) => {
+          const parsed = SessionStartReserved.schema.safeParse(stored.data);
+          return parsed.success ? [{ seq: stored.seq, ...parsed.data }] : [];
+        })
+        .at(-1);
+      if (last === undefined) return undefined;
+      const after = <T>(type: { name: string; schema: z.ZodType<T> }): T[] =>
+        journal.find({ type: type.name as never, field: "operation", equals: operation }).flatMap((stored) => {
+          const parsed = type.schema.safeParse(stored.data);
+          return parsed.success && stored.seq > last.seq ? [parsed.data] : [];
+        });
+      const named = after(SessionStartNamed).at(-1)?.session;
+      return {
+        digest: last.digest,
+        ...(last.cwd === undefined ? {} : { cwd: last.cwd }),
+        ...(named === undefined ? {} : { named }),
+        released: after(SessionStartUnsent).length > 0,
+      };
+    };
+
     /** The number of the last turn the journal holds for a session. */
     const lastTurnOf = (ref: SessionRef): number =>
       Math.max(
@@ -1054,85 +1089,143 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           // The prompt is an input under an operation: a retry with it answers the session it made.
           const operation = input.operation ?? ctx.operationId;
           const digest = createHash("sha256").update(JSON.stringify(["start", input.harness, input.prompt])).digest("hex");
+          const conflict = () => new SessionRefusal("operation-conflict", `operation "${operation}" was another input of a session`);
+          // A retry while the start runs waits for it: the harness is asked once.
+          const running = startsRunning.get(operation);
+          if (running !== undefined) {
+            if (running.digest !== digest) throw conflict();
+            return await running.answer;
+          }
           const before = startUnder(operation);
           if (before !== undefined) {
-            if (before.digest !== digest || before.answer === undefined) {
-              throw new SessionRefusal("operation-conflict", `operation "${operation}" was another input of a session`);
-            }
+            if (before.digest !== digest || before.answer === undefined) throw conflict();
             return before.answer;
           }
-          const control = controlFor(bindings, input.harness, "start");
-          // A model or an effort the kind cannot apply is refused here, before anything is made.
-          const instance = instanceOf(bindings, input.harness);
-          requireLaunch(instance.id, instance.sides.control?.launch ?? { model: false, effort: [], modes: [] }, input);
-          // The options block of another kind is refused here too: nothing is ignored.
-          const blocks = blocksOf(input);
-          requireOwnBlocks(instance.id, optionsOf(bindings, input.harness), blocks);
-          // A tool mode the installation cannot hold is refused here too, before any prompt.
-          requireTools(instance.id, instance.sides.control?.tools, input.tools);
-          const visible = visibleFor(input.harness, callsOf(input.visible));
-          // Refused before a mark or a token is made: a start that asks for too much, or for a
-          // box this machine cannot give, creates nothing.
-          const rules = grantOfSession(ctx.caller, input.visible, visible);
-          // A session asked to run in a worktree gets one made by the git module, and runs in it.
-          const worktree = input.worktree === undefined ? undefined : await worktreeFor(ctx, input.harness, input.worktree, input.cwd);
-          const cwd = worktree?.path ?? input.cwd;
-          const launch = await launchFor(rules, cwd);
-          // The mode asked for, within the allow-list of the grant: what the grant adds is held too.
-          const tools = toolsOfSession(input.tools, launch.tools);
-          requireTools(instance.id, instance.sides.control?.tools, tools);
-          // The mark is made in the run: a replay returns what the run returned, and the mark
-          // is in the journal with the session it names.
-          const mark = randomUUID();
-          const token = tokenFor(mark, rules, ctx.caller);
-          const servers = serversOf(visible.actions, mark, token);
-          const { session: id, first, mode } = await recording(mark, launch, ctx, () =>
-            control.start({
-              prompt: input.prompt,
-              model: input.model,
+          // A start that was cut off after it asked its harness is never asked again: the session it made is
+          // answered when the harness named one, and otherwise its prompt may have gone with a session nobody knows.
+          const reserved = reservationOf(operation);
+          if (reserved !== undefined && !reserved.released) {
+            if (reserved.digest !== digest) throw conflict();
+            if (reserved.named === undefined) {
+              throw new InputPossiblySent(instanceOf(bindings, input.harness).id, "start", "a start under this operation was cut off after it asked the harness for a session");
+            }
+            const ref = reserved.named;
+            await ctx.emit(SessionStarted, {
+              session: ref,
+              id: sessionIds.issue(ctx.operationId),
+              cwd: reserved.cwd,
               effort: input.effort,
               mode: input.mode,
-              cwd,
-              ...blocks,
-              visible,
-              servers,
-              env: { [TOKEN_ENV]: token },
-              reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
-              ...launchOptions(launch, mark),
-              ...(tools === undefined ? {} : { tools }),
-            }),
-          );
-          // The harness named the session: only now is there a session at all. Its first turn
-          // may be running already; the side keeps the signs of that turn for the first stream
-          // of life, and that stream is the one followed here, so none of them is lost.
-          const ref = sessionRef(id);
-          const issued = sessionIds.issue(ctx.operationId);
-          await ctx.emit(SessionStarted, {
-            session: ref,
-            id: issued,
-            cwd,
-            effort: input.effort,
-            mode: mode ?? input.mode,
-            options: Object.keys(blocks).length === 0 ? undefined : blocks,
-            ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
-            ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
-          });
-          await ctx.emit(SessionMarked, { session: ref, mark });
-          // The session has a name only now, so the input of its prompt is written once the harness took it; a start
-          // without a prompt is written too, so a retry of it finds the session it made.
-          await ctx.emit(SessionInputSending, { session: ref, operation, digest });
-          if (first !== undefined) await ctx.emit(SessionInputSettled, { session: ref, operation, outcome: { status: "accepted", receipt: first } });
-          follow(control, ref, id);
-          return {
-            session: issued,
-            ref,
-            ...(first === undefined ? {} : { receipt: first }),
-            ...(worktree === undefined ? {} : { worktree: { id: worktree.id, path: worktree.path, branch: worktree.branch } }),
-            operation,
-          };
+              ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
+              ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
+            });
+            await ctx.emit(SessionInputSending, { session: ref, operation, digest });
+            const reason = "the start was cut off after its harness named the session, while its prompt was going";
+            await ctx.emit(SessionInputSettled, { session: ref, operation, outcome: { status: "possibly-sent", reason } });
+            const answer = startUnder(operation)?.answer;
+            if (answer === undefined) throw new Error(`the start under operation "${operation}" was written and cannot be read back`);
+            return answer;
+          }
+          const answer = starting(input, ctx, operation, digest);
+          startsRunning.set(operation, { digest, answer });
+          try {
+            return await answer;
+          } finally {
+            startsRunning.delete(operation);
+          }
         },
       }),
     );
+
+    /** A start that nothing answered yet: the harness is asked for a session, once. */
+    const starting = async (
+      input: z.output<typeof sessionStart.input>,
+      ctx: ActionContext,
+      operation: string,
+      digest: string,
+    ): Promise<z.output<typeof sessionStart.output>> => {
+      const control = controlFor(bindings, input.harness, "start");
+      // A model or an effort the kind cannot apply is refused here, before anything is made.
+      const instance = instanceOf(bindings, input.harness);
+      requireLaunch(instance.id, instance.sides.control?.launch ?? { model: false, effort: [], modes: [] }, input);
+      // The options block of another kind is refused here too: nothing is ignored.
+      const blocks = blocksOf(input);
+      requireOwnBlocks(instance.id, optionsOf(bindings, input.harness), blocks);
+      // A tool mode the installation cannot hold is refused here too, before any prompt.
+      requireTools(instance.id, instance.sides.control?.tools, input.tools);
+      const visible = visibleFor(input.harness, callsOf(input.visible));
+      // Refused before a mark or a token is made: a start that asks for too much, or for a
+      // box this machine cannot give, creates nothing.
+      const rules = grantOfSession(ctx.caller, input.visible, visible);
+      // A session asked to run in a worktree gets one made by the git module, and runs in it.
+      const worktree = input.worktree === undefined ? undefined : await worktreeFor(ctx, input.harness, input.worktree, input.cwd);
+      const cwd = worktree?.path ?? input.cwd;
+      const launch = await launchFor(rules, cwd);
+      // The mode asked for, within the allow-list of the grant: what the grant adds is held too.
+      const tools = toolsOfSession(input.tools, launch.tools);
+      requireTools(instance.id, instance.sides.control?.tools, tools);
+      // The mark is made in the run: a replay returns what the run returned, and the mark
+      // is in the journal with the session it names.
+      const mark = randomUUID();
+      const token = tokenFor(mark, rules, ctx.caller);
+      const servers = serversOf(visible.actions, mark, token);
+      // Written before the harness is asked: from here on a retry never asks it again.
+      await ctx.emit(SessionStartReserved, { operation, digest, ...(cwd === undefined ? {} : { cwd }) });
+      const asking = recording(mark, launch, ctx, () =>
+        control.start({
+          prompt: input.prompt,
+          model: input.model,
+          effort: input.effort,
+          mode: input.mode,
+          cwd,
+          ...blocks,
+          visible,
+          servers,
+          env: { [TOKEN_ENV]: token },
+          reverse: reverse.handlerFor(rules, starterOf(ctx.caller), ownToolPrefix(visible.actions)),
+          ...launchOptions(launch, mark),
+          ...(tools === undefined ? {} : { tools }),
+          named: async (named) => {
+            await ctx.emit(SessionStartNamed, { operation, session: sessionRef(named) });
+          },
+        }),
+      );
+      const { session: id, first, mode } = await asking.catch(async (error: unknown) => {
+        // Nothing reached the harness: the reservation is let go, and a retry asks again.
+        if (!effectPossibleAfter(error)) {
+          await ctx.emit(SessionStartUnsent, { operation, reason: error instanceof Error ? error.message : String(error) });
+        }
+        throw error;
+      });
+      // The harness named the session: only now is there a session at all. Its first turn
+      // may be running already; the side keeps the signs of that turn for the first stream
+      // of life, and that stream is the one followed here, so none of them is lost.
+      const ref = sessionRef(id);
+      const issued = sessionIds.issue(ctx.operationId);
+      await ctx.emit(SessionStarted, {
+        session: ref,
+        id: issued,
+        cwd,
+        effort: input.effort,
+        mode: mode ?? input.mode,
+        options: Object.keys(blocks).length === 0 ? undefined : blocks,
+        ...(input.tools === undefined || input.tools === "all" ? {} : { tools: input.tools }),
+        ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
+      });
+      await ctx.emit(SessionMarked, { session: ref, mark });
+      // The session has a name only now, so the input of its prompt is written once the harness took it; a start
+      // without a prompt is written too, so a retry of it finds the session it made.
+      await ctx.emit(SessionInputSending, { session: ref, operation, digest });
+      if (first !== undefined) await ctx.emit(SessionInputSettled, { session: ref, operation, outcome: { status: "accepted", receipt: first } });
+      follow(control, ref, id);
+      return {
+        session: issued,
+        ref,
+        ...(first === undefined ? {} : { receipt: first }),
+        ...(worktree === undefined ? {} : { worktree: { id: worktree.id, path: worktree.path, branch: worktree.branch } }),
+        operation,
+      };
+    };
 
     api.action(
       action(sessionResume, {

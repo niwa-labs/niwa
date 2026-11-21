@@ -8,7 +8,7 @@ import { seq } from "@niwa-labs/core";
 import type { ActionName, StoredRecord } from "@niwa-labs/core";
 import type { Host } from "@niwa-labs/host";
 import { InputNotSent, InputPossiblySent, harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
-import type { AskAnswer, DeliveryReceipt, Harness, LifeEvent, SessionControl, SessionId, SessionState, StartedSession } from "@niwa-labs/harness";
+import type { AskAnswer, DeliveryReceipt, Harness, LifeEvent, SessionControl, SessionId, SessionState, StartOptions, StartedSession } from "@niwa-labs/harness";
 import { sessions } from "@niwa-labs/sessions";
 import { tempHome } from "@niwa-labs/testing";
 
@@ -179,5 +179,88 @@ test("a start retried under its operation answers the session it made, and anoth
   expect(again).toEqual(first);
   expect(control.starts).toBe(1);
   await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "stop", operation: "start-1" })).rejects.toMatchObject({ code: "operation-conflict" });
+  expect(control.starts).toBe(1);
+});
+
+/** A control side whose start waits until it is let go; it can name its session before it does. */
+class HeldStart extends ScriptedSend {
+  starts = 0;
+  /** Lets every start that waits go on. */
+  release: () => void = () => {};
+  readonly #released = new Promise<void>((resolve) => {
+    this.release = resolve;
+  });
+  constructor(readonly names: boolean) {
+    super([]);
+  }
+  override async start(options?: StartOptions): Promise<StartedSession> {
+    this.starts += 1;
+    const session = sessionId(harnessId(HARNESS), `held-${String(this.starts)}`);
+    if (this.names) await options?.named?.(session);
+    await this.#released;
+    return { session, first: { status: "started", turn: 1 } };
+  }
+}
+
+test("a start retried while the first is on its way waits for it, and the harness is asked once", async () => {
+  const control = new HeldStart(false);
+  const { niwa } = await serve(control);
+  const first = call<{ session: string; ref: string }>(niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" });
+  for (let waited = 0; control.starts === 0 && waited < 5_000; waited += 20) await Bun.sleep(20);
+  const again = call<{ session: string; ref: string }>(niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" });
+  await Bun.sleep(50);
+  control.release();
+  expect(await again).toEqual(await first);
+  expect(control.starts).toBe(1);
+});
+
+test("a start cut off before the harness named its session is taken for possibly sent, and nothing is started again", async () => {
+  const held = new HeldStart(false);
+  const first = await serve(held);
+  void call(first.niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" }).catch(() => undefined);
+  for (let waited = 0; held.starts === 0 && waited < 5_000; waited += 20) await Bun.sleep(20);
+  await first.stop();
+
+  const next = new FirstTurn([]);
+  const after = await serve(next, first.home);
+  await expect(call(after.niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" })).rejects.toMatchObject({ code: "InputPossiblySent" });
+  await expect(call(after.niwa, "session.start", { harness: HARNESS, prompt: "other", operation: "start-1" })).rejects.toMatchObject({ code: "operation-conflict" });
+  expect(next.starts).toBe(0);
+});
+
+test("a start cut off after the harness named its thread answers that thread, with its prompt possibly sent", async () => {
+  const held = new HeldStart(true);
+  const first = await serve(held);
+  void call(first.niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" }).catch(() => undefined);
+  for (let waited = 0; held.starts === 0 && waited < 5_000; waited += 20) await Bun.sleep(20);
+  await Bun.sleep(50);
+  await first.stop();
+
+  const next = new FirstTurn([]);
+  const after = await serve(next, first.home);
+  const answer = await call<{ session: string; ref: string; receipt?: unknown }>(after.niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" });
+  expect(answer.ref).toBe(`${HARNESS} held-1`);
+  expect(answer.receipt).toBeUndefined();
+  expect(next.starts).toBe(0);
+  expect(ofType(await after.records(), "session.input.settled")).toContainEqual({ session: answer.ref, operation: "start-1", outcome: { status: "possibly-sent", reason: expect.any(String) } });
+  // The answer stands for every later retry.
+  expect(await call(after.niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" })).toEqual(answer);
+});
+
+test("a start whose prompt never reached the harness may be made again under its operation", async () => {
+  const control = new (class extends FirstTurn {
+    refuse = true;
+    override async start(options?: { prompt: { sections: { text: string }[] } }): Promise<StartedSession> {
+      if (this.refuse) {
+        this.refuse = false;
+        throw new InputNotSent(harnessId(HARNESS), "start", "the CLI was not there");
+      }
+      return await super.start(options);
+    }
+  })([]);
+  const { niwa } = await serve(control);
+  await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" })).rejects.toMatchObject({ code: "InputNotSent" });
+  const made = await call<{ ref: string }>(niwa, "session.start", { harness: HARNESS, prompt: "go", operation: "start-1" });
+  expect(made.ref).toBe(`${HARNESS} native-1`);
   expect(control.starts).toBe(1);
 });
