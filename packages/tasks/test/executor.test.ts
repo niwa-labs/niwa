@@ -414,3 +414,68 @@ test("the executor: only the assignment the creation of the task caused starts a
   }
 }, 30_000);
 
+test("the executor: a session that gives an answer the schema refuses ends the task as failed, and the addressee is told", async () => {
+  const home = await tempHome();
+  const control = new FakeControl();
+  control.answer = { nothing: true };
+  const niwa = await serve(control, home.path);
+
+  try {
+    const { id } = await niwa.call(taskCreate, {
+      kind: "change",
+      description: DESCRIPTION,
+      text: TEXT,
+      askedBy: ASKER,
+      responsible: executor(HARNESS),
+      reportTo: REPORTER,
+    });
+    await eventually(async () => (await recordsOf(niwa, TaskDone.name)).length === 1, 10_000, "the task should have ended");
+
+    const outcome = await niwa.call(taskResult, { task: id });
+    expect(outcome.outcome.status).toBe("failure");
+    expect((outcome.outcome as { reason: string }).reason).toContain("the session gave no result");
+
+    await eventually(
+      async () =>
+        (await recordsOf(niwa, MessageSent.name)).some((record) => (record.data as { body: { type: string } }).body.type === "failure"),
+      10_000,
+      "the owner should have been told the task failed",
+    );
+    // The work was not left waiting for an owner.
+    expect(
+      (await recordsOf(niwa, CORE_TYPES.invocationState)).some((record) => (record.data as { state?: string }).state === "paused"),
+    ).toBe(false);
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+}, 30_000);
+
+test("the executor: a session that cannot be started ends the task as failed", async () => {
+  const home = await tempHome();
+  const control = new FakeControl();
+  control.start = async () => {
+    throw new Error("the harness is not reachable");
+  };
+  const niwa = await serve(control, home.path);
+
+  try {
+    const { id } = await niwa.call(taskCreate, {
+      kind: "change",
+      description: DESCRIPTION,
+      text: TEXT,
+      askedBy: ASKER,
+      responsible: executor(HARNESS),
+      reportTo: REPORTER,
+    });
+    await eventually(async () => (await recordsOf(niwa, TaskDone.name)).length === 1, 10_000, "the task should have ended");
+    const outcome = await niwa.call(taskResult, { task: id });
+    expect(outcome.outcome).toEqual({
+      status: "failure",
+      reason: "the session could not be started: the harness is not reachable",
+    });
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+}, 30_000);

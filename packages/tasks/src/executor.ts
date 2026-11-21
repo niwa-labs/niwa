@@ -79,6 +79,10 @@ export function forExecutor(message: Message): boolean {
  * starts a session, and the brief is made from the contract, not from the message. Another message
  * that calls itself an assignment of the task is refused, and the assignment that was delivered
  * again finds its invocation, with the session it started.
+ *
+ * A session that cannot be started, or that does not give an answer the schema accepts, did not do
+ * the task: the task ends as failed, with the reason, and its addressee is told. A call that was
+ * cut off is another matter: nobody knows what came of it, so the invocation waits for the owner.
  */
 export function executorHandler(
   ledger: TaskLedger,
@@ -103,7 +107,15 @@ export function executorHandler(
     const contract = before.contract;
     const declared = contract.result;
 
-    const { session } = await step<{ harness: string; prompt: string }, { session: string }>(SESSION_START, {
+    /** End the task with an outcome, unless it already has an end: the same fact, written once. */
+    const end = async (outcome: TaskOutcome) => {
+      const state = ledger.state(task);
+      if (state?.status === "done") return;
+      decide(state, { kind: "finish", task, by: address, outcome });
+      await step.emit(TaskDone, { task, outcome });
+    };
+
+    const started = await attempted<{ session: string }>(step, SESSION_START, {
       harness,
       prompt: render({
         id: message.id,
@@ -117,23 +129,35 @@ export function executorHandler(
           ...(declared === undefined ? {} : { result: declared }),
         },
       }),
-    });
+    }, "start");
+    if (!started.ok) return end({ status: "failure", reason: `the session could not be started: ${started.reason}` });
 
-    const { value } = await step<
-      { session: string; prompt: string; schema: Record<string, unknown> },
-      { value: unknown }
-    >(SESSION_ASK, {
-      session,
+    const answered = await attempted<{ value: unknown }>(step, SESSION_ASK, {
+      session: started.value.session,
       prompt: "Give the result of the task.",
       schema: declared ?? RESULT_SCHEMA,
-    });
+    }, "ask");
+    if (!answered.ok) return end({ status: "failure", reason: `the session gave no result: ${answered.reason}` });
 
-    const state = ledger.state(task);
-    if (state?.status === "done") return; // the end already stands: the same fact, written once
-    const outcome = outcomeOf(value, declared !== undefined);
-    decide(state, { kind: "finish", task, by: address, outcome });
-    await step.emit(TaskDone, { task, outcome });
+    await end(outcomeOf(answered.value.value, declared !== undefined));
   };
+}
+
+/** What a call of the session came to: its value, or the reason it ended without one. */
+type Attempt<O> = { readonly ok: true; readonly value: O } | { readonly ok: false; readonly reason: string };
+
+/**
+ * Make a call of the session and tell what it came to.
+ *
+ * A call that ended in an error is over: it is a refusal of the session, and the code goes on with
+ * the reason. A call that was cut off, denied or cancelled has no answer that is final, so it is
+ * made as a plain step, which waits for the owner to decide what happens to it.
+ */
+async function attempted<O>(step: Step, action: ActionName, input: unknown, key: string): Promise<Attempt<O>> {
+  const outcome = await step.outcome<unknown, O>(action, input, { key });
+  if (outcome.status === "completed") return { ok: true, value: outcome.value };
+  if (outcome.status === "failed") return { ok: false, reason: outcome.error.length === 0 ? "it failed" : outcome.error };
+  return { ok: true, value: await step<unknown, O>(action, input, { key }) };
 }
 
 /**
