@@ -5,18 +5,21 @@
 // and no other. The run's own check (workflow.check) knows each harness's block from the same place.
 
 import { expect, test } from "bun:test";
+import { z } from "zod";
 
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ActionName } from "@niwa-labs/core";
-import { KIND_OPTIONS, harnessId, machineId, sessionId } from "@niwa-labs/harness";
+import { harnessId, kindOptions, machineId, sessionId } from "@niwa-labs/harness";
 import type { Harness, KindOptions, SessionControl, SessionId, StartOptions, StartedSession } from "@niwa-labs/harness";
 import { createNiwa, sessions, tempDirSync, watch } from "@niwa-labs/testing";
 import { workflow } from "../src/index.ts";
 
 
 const HARNESS = harnessId("claude-sonnet");
+/** The block of the Claude kinds, as their package declares it. */
+const CLAUDE = kindOptions("claude", z.strictObject({ advisor: z.boolean().optional() }));
 
 /** A control side that keeps what each session was started with and answers every question. */
 class RecordingControl implements SessionControl {
@@ -70,7 +73,7 @@ const instance: Harness = {
 async function run(
   script: string,
   done: (seen: string) => boolean,
-  binding: { options?: KindOptions } = { options: KIND_OPTIONS.claude },
+  binding: { options?: KindOptions } = { options: CLAUDE },
 ): Promise<{ control: RecordingControl; seen: string }> {
   const control = new RecordingControl();
   const home = tempDirSync("agent-options");
@@ -105,8 +108,8 @@ test("the block of the harness's kind in an agent() call reaches the control sid
     (seen) => seen.includes("workflow.run.finished"),
   );
 
-  expect(control.starts.map((start) => start.claude)).toEqual([{ advisor: false }, undefined]);
-  expect(Object.keys(control.starts[1] ?? {})).not.toContain("claude");
+  expect(control.starts.map((start) => start.blocks?.claude)).toEqual([{ advisor: false }, undefined]);
+  expect(Object.keys(control.starts[1] ?? {})).not.toContain("blocks");
 }, 30_000);
 
 test("stuckAfter of an agent() call is kept in the record of the session it starts, in milliseconds", async () => {

@@ -35,9 +35,9 @@ import type {
   SessionMode,
   BundledProgram,
   SessionId,
-  ClaudeOptions,
 } from "@niwa-labs/harness";
 import { CLAUDE_CODE_LAUNCH } from "./launch.ts";
+import type { ClaudeOptions } from "./options.ts";
 import { modeOf, requireLaunch, HarnessIdSchema, findBundled } from "@niwa-labs/harness";
 
 import {

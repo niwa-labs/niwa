@@ -4,10 +4,10 @@
  */
 
 import type { ActionDescription, ActionName } from "@niwa-labs/core";
-import type { OptionsBlock } from "@niwa-labs/harness";
 
 import type { Trigger } from "./check.ts";
 import { scriptTyping } from "./script-types.ts";
+import type { HarnessBlock } from "./script-types.ts";
 
 /** How a script is written. Short: the types say the rest. */
 export const HOW_TO_WRITE = `A workflow script is a file that exports, by default, the call workflow({ ... }, fn): what it declares, and
@@ -185,7 +185,7 @@ export function guideFor(
   description: readonly ActionDescription[],
   callable: readonly ActionName[],
   triggers: readonly Trigger[] = [],
-  blocks: ReadonlyMap<string, OptionsBlock> = new Map(),
+  blocks: ReadonlyMap<string, HarnessBlock> = new Map(),
 ): Guide {
   const typing = scriptTyping(description, callable, triggers, [], blocks);
   const wanted = new Set<string>(callable);

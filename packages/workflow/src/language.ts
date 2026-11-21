@@ -16,7 +16,7 @@ import { JsonSchemaValue, JsonValueSchema, QuestionSchema } from "@niwa-labs/cor
 import type { ActionName } from "@niwa-labs/core";
 import { WorktreeOption } from "@niwa-labs/git/records";
 import type { WorktreeOptionGiven } from "@niwa-labs/git/records";
-import { OptionBlocks, SessionModeSchema } from "@niwa-labs/harness";
+import { SessionModeSchema, withBlocks } from "@niwa-labs/harness";
 import type { SessionMode } from "@niwa-labs/harness";
 
 import type { Duration } from "@niwa-labs/script";
@@ -34,7 +34,7 @@ export const PROTOCOL_PREFIX = "@niwa ";
  * What an `agent()` call may ask for. The options of the harness's kind go in the block named after
  * it (`claude: { advisor: false }`); the block of another kind is refused.
  */
-export interface AgentOptions extends OptionBlocks {
+export interface AgentOptions {
   /** The harness the session runs in. */
   harness?: string;
   /** The key of the call, so reordering a list does not rerun the work. */
@@ -58,6 +58,12 @@ export interface AgentOptions extends OptionBlocks {
   schema?: z.ZodType;
   /** How long a turn of the session may go with no progress before it counts as stuck. */
   stuckAfter?: Duration;
+  /**
+   * The options block of the harness's kind, named after the kind (`claude: { advisor: false }`). Which kinds there
+   * are is the host's to say: the typing `workflow.check` makes of a host knows each harness's block, and the host
+   * refuses a block the harness's kind does not declare.
+   */
+  [block: string]: unknown;
 }
 
 /** The action an agent call goes to by default: `mcode-work` becomes `session.start.mcode-work`. */
@@ -115,27 +121,33 @@ export type ScopeOutcome = z.infer<typeof ScopeOutcome>;
 export const ScopeClosing = z.enum(["done", "failed", "deadline"]);
 export type ScopeClosing = z.infer<typeof ScopeClosing>;
 
+/** The fields of an `agent()` request: every other key of it is an options block. */
+export const AgentRequestFields = z.object({
+  prompt: z.string(),
+  harness: z.string().optional(),
+  label: z.string().optional(),
+  visible: z.array(z.string()).optional(),
+  model: z.string().min(1).optional(),
+  effort: z.string().min(1).optional(),
+  mode: SessionModeSchema.optional(),
+  cwd: z.string().min(1).optional(),
+  worktree: WorktreeOption.optional(),
+  /** The JSON Schema the answer must pass, made from the zod schema of the script. */
+  schema: JsonSchemaValue.optional(),
+  /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck. */
+  stuckAfter: z.number().int().positive().optional(),
+});
+
+/** The names of the fields of an `agent()` request, so the rest of it is known as its blocks. */
+export const AGENT_REQUEST_FIELDS: readonly string[] = Object.keys(AgentRequestFields.shape);
+
 /** What the child asks the parent to do: every request has a key, and the key says which one it is. */
 export const ScriptRequest = z.discriminatedUnion("op", [
   /** `agent()`: start a session of a harness and ask it. */
   z.object({
     op: z.literal("agent"),
-    input: z.object({
-      prompt: z.string(),
-      harness: z.string().optional(),
-      label: z.string().optional(),
-      visible: z.array(z.string()).optional(),
-      model: z.string().min(1).optional(),
-      effort: z.string().min(1).optional(),
-      mode: SessionModeSchema.optional(),
-      cwd: z.string().min(1).optional(),
-      worktree: WorktreeOption.optional(),
-      /** The JSON Schema the answer must pass, made from the zod schema of the script. */
-      schema: JsonSchemaValue.optional(),
-      /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck. */
-      stuckAfter: z.number().int().positive().optional(),
-      // The options of the harness's kind, in the block named after it.
-    }).extend(OptionBlocks.shape),
+    // Every key that is not a field is the options block of the harness's kind, named after it.
+    input: withBlocks(AgentRequestFields),
   }),
   /** `call()` and the generated wrappers: any action, by name. */
   z.object({ op: z.literal("call"), action: z.string().min(1), input: JsonValueSchema.optional(), reason: z.string().min(1).optional() }),

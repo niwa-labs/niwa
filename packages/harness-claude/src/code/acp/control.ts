@@ -50,7 +50,6 @@ import type {
   SessionMode,
   SessionId,
   ReverseHandler,
-  ClaudeOptions,
   Dispatch,
   TurnOutcome,
 } from "@niwa-labs/harness";
@@ -69,7 +68,8 @@ import { LIVE_PROCESS_REFUSAL, SandboxUnavailable, spawnAgent } from "@niwa-labs
 import type { AgentProcess } from "@niwa-labs/sandbox";
 import { AcpClient, answerText, acpVariant, readVariant } from "@niwa-labs/acp";
 import type { AgentNotification, AgentRequest, RpcOutcome, UnknownVariant, Written } from "@niwa-labs/acp";
-import { claudeEnv } from "../options.ts";
+import { claudeBlockOf, claudeEnv } from "../options.ts";
+import type { ClaudeOptions } from "../options.ts";
 import { CLAUDE_CODE_LAUNCH } from "../launch.ts";
 import {
   Acp,
@@ -912,7 +912,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   async function spawnSession(
     cwd: string | undefined,
     ability: string,
-    plan: Pick<StartOptions, "env" | "box" | "claude">,
+    plan: Pick<StartOptions, "env" | "box" | "blocks">,
   ): Promise<LiveSession> {
     if (disposed) throw new Unavailable(harnessId, "control", ability, "the control side is disposed");
     if (program === undefined || program === "") {
@@ -931,7 +931,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       ...claudeHomeEnv(options.home),
       ...plan.env,
       // The adapter passes its environment to Claude Code. A session's own options stand over the instance's.
-      ...claudeEnv({ ...options.claude, ...plan.claude }),
+      ...claudeEnv({ ...options.claude, ...claudeBlockOf(plan.blocks) }),
     };
 
     /**

@@ -12,7 +12,7 @@
 
 import { dirname, resolve } from "node:path";
 
-import { ADMITTED, KIND_OPTIONS, UNSUPPORTED, VERIFIED, defineHarnessKind } from "@niwa-labs/harness";
+import { ADMITTED, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
 import type { HarnessKindDefinition, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { installPiInsert } from "./insert/index.ts";
@@ -74,6 +74,9 @@ export const PI_CAPABILITIES: KindCapabilities = {
   insert: { nested: UNSUPPORTED, compaction: ADMITTED, manualOpen: VERIFIED, permission: UNSUPPORTED, end: ADMITTED },
 };
 
+/** The block a pi session takes at its start: `pi`, with no option of its own yet. */
+export const PI_OPTIONS = kindOptions("pi", NoOptions);
+
 /** What the kind needs: the installation that is read, and how its sides are set up. */
 export interface PiKindOptions extends PiReadingOptions {
   /**
@@ -108,7 +111,7 @@ export function pi(options: PiKindOptions): HarnessKindDefinition {
     },
     capabilities: PI_CAPABILITIES,
     detect: PI_DETECTION,
-    options: KIND_OPTIONS.pi,
+    options: PI_OPTIONS,
   });
 }
 

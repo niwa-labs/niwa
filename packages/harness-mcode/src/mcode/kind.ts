@@ -7,7 +7,7 @@
 
 import { existsSync } from "node:fs";
 
-import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId, kindOptions } from "@niwa-labs/harness";
 import type { HarnessDetection, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { MCODE_LAUNCH, mcodeControl } from "./control.ts";
@@ -106,7 +106,7 @@ export function minimaxKind(spec: MinimaxKindSpec, options: McodeKindOptions) {
     }),
     capabilities: minimaxCapabilities(spec.lineage),
     detect: spec.detect,
-    options: KIND_OPTIONS[spec.name],
+    options: kindOptions(spec.name, NoOptions),
   });
 }
 

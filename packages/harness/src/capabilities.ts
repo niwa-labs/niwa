@@ -230,19 +230,26 @@ export function requireLaunch(
 
 /**
  * Refuse with `Unsupported`, before a session is started, an options block that is not the one of
- * the kind: a kind takes the block it declares and no other, and nothing is ignored.
+ * the kind: a kind takes the block it declares and no other, and nothing is ignored. The kind's own
+ * block is checked by its schema, and is what is returned: the blocks the session is given.
  */
-export function requireOwnBlocks(harness: Harness["id"], kind: KindOptions | undefined, given: OptionBlocks): void {
+export function requireOwnBlocks(harness: Harness["id"], kind: KindOptions | undefined, given: OptionBlocks): OptionBlocks {
   const foreign = Object.entries(given).flatMap(([name, value]) => (value !== undefined && name !== kind?.block ? [name] : []));
-  if (foreign.length === 0) return;
-  throw new Unsupported(
-    harness,
-    "control",
-    "start",
-    kind === undefined
-      ? `it takes no options (asked for "${foreign.join('", "')}")`
-      : `it takes the "${kind.block}" options block only (asked for "${foreign.join('", "')}")`,
-  );
+  if (foreign.length > 0) {
+    throw new Unsupported(
+      harness,
+      "control",
+      "start",
+      kind === undefined
+        ? `it takes no options (asked for "${foreign.join('", "')}")`
+        : `it takes the "${kind.block}" options block only (asked for "${foreign.join('", "')}")`,
+    );
+  }
+  const own = kind === undefined ? undefined : given[kind.block];
+  if (kind === undefined || own === undefined) return {};
+  const checked = kind.schema.safeParse(own);
+  if (!checked.success) throw new Error(`the "${kind.block}" options block of harness "${harness}" is refused: ${z.prettifyError(checked.error)}`);
+  return { [kind.block]: checked.data };
 }
 
 /**

@@ -8,7 +8,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId, kindOptions } from "@niwa-labs/harness";
 import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CODEX_LAUNCH, codexControl } from "./control.ts";
@@ -58,6 +58,9 @@ export const CODEX_CAPABILITIES: KindCapabilities = {
   insert: NO_INSERT,
 };
 
+/** The block a Codex session takes at its start: `codex`, with no option of its own yet. */
+export const CODEX_OPTIONS = kindOptions("codex", NoOptions);
+
 /** What the kind needs: the installation, and how its control side is set up. */
 export interface CodexKindOptions extends CodexReadingOptions {
   /**
@@ -79,7 +82,7 @@ export function codexKind(options: CodexKindOptions) {
     control: codexControl({ ...(options.control ?? {}), harness: options.harness, home: options.home }),
     capabilities: CODEX_CAPABILITIES,
     detect: CODEX_DETECTION,
-    options: KIND_OPTIONS.codex,
+    options: CODEX_OPTIONS,
   });
 }
 

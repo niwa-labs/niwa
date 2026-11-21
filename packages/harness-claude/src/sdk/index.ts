@@ -7,9 +7,10 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import { ADMITTED, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
 import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
+import { CLAUDE_OPTIONS } from "../code/options.ts";
 import { ClaudeCodeReading } from "../code/reading.ts";
 import { CLAUDE_SDK_LAUNCH, ClaudeSdkControl } from "./control.ts";
 import type { ClaudeSdkControlOptions } from "./control.ts";
@@ -102,7 +103,7 @@ export function claudeSdkKind(options: ClaudeSdkOptions = {}) {
     }),
     capabilities: CLAUDE_SDK_CAPABILITIES,
     detect: CLAUDE_SDK_DETECTION,
-    options: KIND_OPTIONS.claude,
+    options: CLAUDE_OPTIONS,
   });
 }
 

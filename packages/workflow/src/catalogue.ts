@@ -9,9 +9,11 @@ import { z } from "zod";
 
 import { JsonSchemaValue, actionName, actionRef } from "@niwa-labs/core";
 import { isOwnerGrant, matches } from "@niwa-labs/core";
-import type { ActionContext, ActionDescription, ActionName, Grant } from "@niwa-labs/core";
+import type { ActionContext, ActionDescription, ActionName, Grant, JsonSchema } from "@niwa-labs/core";
 import type { OptionsBlock } from "@niwa-labs/harness";
 import { harnessList } from "@niwa-labs/sessions/records";
+
+import type { HarnessBlock } from "./script-types.ts";
 
 /** niwa's description of itself, as far as a script needs it. */
 const describeRef = actionRef("niwa.describe", {
@@ -50,9 +52,11 @@ export function callableBy(
     .map((action) => action.name);
 }
 
-/** The options block of each harness, by its name, out of what `harness.list` answers: a harness with none is not in it. */
-function blocksByHarness(answer: { items: ReadonlyArray<{ name: string; block?: OptionsBlock }> }): Map<string, OptionsBlock> {
-  return new Map(answer.items.flatMap((one) => (one.block === undefined ? [] : [[one.name, one.block] as const])));
+/** The options block of each harness, by its name, with its schema, out of what `harness.list` answers: a harness with none is not in it. */
+function blocksByHarness(answer: { items: ReadonlyArray<{ name: string; block?: OptionsBlock; options?: JsonSchema }> }): Map<string, HarnessBlock> {
+  return new Map(
+    answer.items.flatMap((one) => (one.block === undefined || one.options === undefined ? [] : [[one.name, { block: one.block, schema: one.options }] as const])),
+  );
 }
 
 /**
@@ -62,9 +66,9 @@ function blocksByHarness(answer: { items: ReadonlyArray<{ name: string; block?: 
 export async function catalogueFor(
   ctx: ActionContext,
   held: Grant | "unlimited",
-): Promise<{ actions: ActionDescription[]; callable: ActionName[]; rights: Grant | "unlimited"; blocks: ReadonlyMap<string, OptionsBlock> }> {
+): Promise<{ actions: ActionDescription[]; callable: ActionName[]; rights: Grant | "unlimited"; blocks: ReadonlyMap<string, HarnessBlock> }> {
   const described = await ctx.step(describeRef, {});
   const actions = described.actions.map((action): ActionDescription => ({ ...action, name: actionName(action.name) }));
-  const blocks = actions.some((action) => action.name === harnessList.name) ? blocksByHarness(await ctx.step(harnessList, {})) : new Map<string, OptionsBlock>();
+  const blocks = actions.some((action) => action.name === harnessList.name) ? blocksByHarness(await ctx.step(harnessList, {})) : new Map<string, HarnessBlock>();
   return { actions, callable: callableBy(actions, held), rights: held, blocks };
 }

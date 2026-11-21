@@ -218,13 +218,8 @@ export {
 } from "./declaration.ts";
 export type { KindCapabilities, Support } from "./declaration.ts";
 
-export {
-  ClaudeOptions,
-  KIND_OPTIONS,
-  OptionBlocks,
-  blocksOf,
-} from "./options.ts";
-export type { KindOptions, OptionsBlock } from "./options.ts";
+export { NoOptions, OptionBlocksSchema, OptionsBlockNameSchema, blocksOf, kindOptions, withBlocks } from "./options.ts";
+export type { KindOptions, OptionBlocks, OptionsBlock, OptionsBlockValue } from "./options.ts";
 
 export {
   ChecklistItemSchema,

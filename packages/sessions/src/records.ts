@@ -16,7 +16,7 @@ import {
   DeliveryReceiptSchema,
   InputOutcomeSchema,
   ModelNameSchema,
-  OptionBlocks,
+  OptionBlocksSchema,
   PermissionMarkSchema,
   ProtocolNameSchema,
   SessionModeSchema,
@@ -70,7 +70,7 @@ export const SessionStarted = record(
     /** The working mode the session was given: the one asked for, or the instance's, or the default. */
     mode: SessionModeSchema.optional(),
     /** The options block of its kind the session was started with, so a resume starts it again with them; absent when it had none. */
-    options: OptionBlocks.optional(),
+    options: OptionBlocksSchema.optional(),
     /** The tools the session was started with, so a resume launches it with the same; absent for the harness's own. */
     tools: ToolsModeSchema.optional(),
     /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck; absent when none was set. */

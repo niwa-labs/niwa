@@ -30,7 +30,7 @@ import type { CallOptions, Duration } from "@niwa-labs/script";
 
 import { choiceQuestion, confirmQuestion, formQuestion, multiQuestion, textQuestion } from "./ask.ts";
 import type { AskOption } from "./ask.ts";
-import { PROTOCOL_PREFIX, WorkflowPhases, durationMs } from "./language.ts";
+import { AGENT_REQUEST_FIELDS, PROTOCOL_PREFIX, WorkflowPhases, durationMs } from "./language.ts";
 import type { AgentOptions, ScriptRequest } from "./language.ts";
 
 const [mode, scriptUrl, argsJson] = process.argv.slice(2);
@@ -249,7 +249,7 @@ globals.agent = (prompt: string, opts: AgentOptions = {}): Promise<unknown> => {
   try {
     stuckAfter = opts.stuckAfter === undefined ? undefined : durationMs(opts.stuckAfter);
     schema = opts.schema === undefined ? undefined : answerSchema(opts.schema);
-    blocks = blocksOf(opts);
+    blocks = blocksOf(opts, AGENT_REQUEST_FIELDS);
     worktree = opts.worktree === undefined ? undefined : WorktreeOption.parse(opts.worktree);
   } catch (error) {
     return Promise.reject(error);

@@ -428,7 +428,7 @@ test("advisor off takes Claude Code's advisor tool away through its variable; by
   try {
     await plain.start({ prompt: promptFromText("one") });
     expect(fake.asked().at(-1)?.env?.[DISABLE]).toBeUndefined();
-    await plain.start({ prompt: promptFromText("two"), env: { KEEP: "1" }, claude: { advisor: false } });
+    await plain.start({ prompt: promptFromText("two"), env: { KEEP: "1" }, blocks: { claude: { advisor: false } } });
     expect(fake.asked().at(-1)?.env).toMatchObject({ KEEP: "1", [DISABLE]: "1" });
 
     // The instance's option is the default; a start can turn the advisor back on.
@@ -437,7 +437,7 @@ test("advisor off takes Claude Code's advisor tool away through its variable; by
     // A question over the session runs a query of its own, with the options the session started with.
     await off.ask(id, { schema: z.string(), prompt: promptFromText("word?") });
     expect(fake.asked().at(-1)?.env?.[DISABLE]).toBe("1");
-    await off.start({ prompt: promptFromText("four"), claude: { advisor: true } });
+    await off.start({ prompt: promptFromText("four"), blocks: { claude: { advisor: true } } });
     expect(fake.asked().at(-1)?.env?.[DISABLE]).toBeUndefined();
   } finally {
     await plain.dispose();
@@ -453,10 +453,10 @@ test("a resume or a question that names the Claude options runs the process with
   const fresh = new ClaudeSdkControl({ harness, query: fake.query });
   const plain = new ClaudeSdkControl({ harness, query: fake.query });
   try {
-    const { session: id } = await started.start({ prompt: promptFromText("one"), claude: { advisor: false } });
+    const { session: id } = await started.start({ prompt: promptFromText("one"), blocks: { claude: { advisor: false } } });
     await started.dispose();
     // A process that is launched again is given what niwa recorded: the session's own options.
-    await fresh.resume(id, { claude: { advisor: false }, prompt: promptFromText("two") });
+    await fresh.resume(id, { blocks: { claude: { advisor: false } }, prompt: promptFromText("two") });
     expect(fake.asked().at(-1)?.env?.[DISABLE]).toBe("1");
     // A resume that names none leaves the owner's settings.
     await plain.resume(id, { prompt: promptFromText("three") });
@@ -465,7 +465,7 @@ test("a resume or a question that names the Claude options runs the process with
     const asker = new ClaudeSdkControl({ harness, query: fake.query });
     try {
       await asker.resume(id, {});
-      await asker.ask(id, { schema: z.string(), prompt: promptFromText("word?"), claude: { advisor: false } });
+      await asker.ask(id, { schema: z.string(), prompt: promptFromText("word?"), blocks: { claude: { advisor: false } } });
       expect(fake.asked().at(-1)?.env?.[DISABLE]).toBe("1");
       await asker.ask(id, { schema: z.string(), prompt: promptFromText("word?") });
       expect(fake.asked().at(-1)?.env?.[DISABLE]).toBeUndefined();

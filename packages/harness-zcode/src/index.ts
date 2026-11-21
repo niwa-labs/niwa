@@ -9,7 +9,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ADMITTED, KIND_OPTIONS, NO_INSERT, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import { ADMITTED, NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId, kindOptions } from "@niwa-labs/harness";
 import type { KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { ZCODE_LAUNCH, zcodeControl } from "./control.ts";
@@ -60,6 +60,9 @@ export const ZCODE_CAPABILITIES: KindCapabilities = {
   insert: NO_INSERT,
 };
 
+/** The block a ZCode session takes at its start: `zcode`, with no option of its own yet. */
+export const ZCODE_OPTIONS = kindOptions("zcode", NoOptions);
+
 /** What the kind needs: the installation, and how its control side is set up. */
 export interface ZcodeKindOptions extends ZcodeReadingOptions {
   /**
@@ -81,7 +84,7 @@ export function zcodeKind(options: ZcodeKindOptions) {
     control: zcodeControl({ harness: options.harness, home: options.home, ...(options.control ?? {}) }),
     capabilities: ZCODE_CAPABILITIES,
     detect: ZCODE_DETECTION,
-    options: KIND_OPTIONS.zcode,
+    options: ZCODE_OPTIONS,
   });
 }
 

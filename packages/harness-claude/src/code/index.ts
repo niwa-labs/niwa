@@ -10,13 +10,14 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { ADMITTED, KIND_OPTIONS, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
+import { ADMITTED, UNSUPPORTED, VERIFIED, defineHarnessKind, harnessId } from "@niwa-labs/harness";
 import type { HarnessId, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
 import { CLAUDE_CODE_ADAPTER, claudeCodeControl } from "./control.ts";
 import { CLAUDE_CODE_LAUNCH } from "./launch.ts";
 import type { ClaudeCodeControlOptions } from "./control.ts";
 import { installClaudeCodeInsert } from "./insert/index.ts";
+import { CLAUDE_OPTIONS } from "./options.ts";
 import { ClaudeCodeReading } from "./reading.ts";
 import type { ClaudeCodeReadingOptions } from "./reading.ts";
 
@@ -104,7 +105,7 @@ export function claudeCodeKind(options: ClaudeCodeKindOptions) {
     },
     capabilities: CLAUDE_CODE_CAPABILITIES,
     detect: CLAUDE_CODE_DETECTION,
-    options: KIND_OPTIONS.claude,
+    options: CLAUDE_OPTIONS,
   });
 }
 

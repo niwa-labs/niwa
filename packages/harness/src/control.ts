@@ -257,7 +257,9 @@ export type SessionState = "running" | "idle" | "unknown";
  * What a question is asked with. The options blocks are the ones the session was started with: a
  * control side that asks in a process of its own gives it what the session's own process was given.
  */
-export interface AskOptions<T> extends OptionBlocks {
+export interface AskOptions<T> {
+  /** The options block of the session's kind it was started with, by name; a control side reads its own. */
+  readonly blocks?: OptionBlocks;
   /** The schema the answer must pass. */
   readonly schema: z.ZodType<T>;
   readonly prompt: Prompt;
@@ -296,7 +298,9 @@ export const DEFAULT_TURN_TIMEOUT_MS = 6 * 60 * 60 * 1000;
  * What a session is started with. The options blocks (`claude`, `codex`, ...) are the options of the
  * kind the session is of, checked by niwa before the start: a control side reads its own block.
  */
-export interface StartOptions extends OptionBlocks {
+export interface StartOptions {
+  /** The options block of the session's kind (`{ claude: { advisor: false } }`), checked by niwa before the start. */
+  readonly blocks?: OptionBlocks;
   /**
    * The first message of the session. When it has text, it becomes the session's first turn,
    * delivered the way a send delivers a message: the start does not wait for that turn to end.
@@ -337,7 +341,9 @@ export interface StartOptions extends OptionBlocks {
  * What a session is resumed with. The options blocks are the ones the session was started with: a
  * process that is launched again is launched as the first one was.
  */
-export interface ResumeOptions extends OptionBlocks {
+export interface ResumeOptions {
+  /** The options block the session was started with, by name. */
+  readonly blocks?: OptionBlocks;
   /** The mode the session was started in, for a process that is launched again: a session keeps its mode. */
   readonly mode?: SessionMode;
   /**

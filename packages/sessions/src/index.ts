@@ -80,6 +80,7 @@ import type {
   KindOptions,
   McpServerSpec,
   ModelName,
+  OptionBlocks,
   PermissionMark,
   SessionControl,
   SessionId,
@@ -136,6 +137,7 @@ import {
   sessionInterrupt,
   sessionList,
   SESSION_LIST_DEFAULT,
+  SESSION_START_FIELDS,
   sessionOpenQuestions,
   sessionRead,
   sessionResume,
@@ -773,7 +775,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     const harnessItem = (binding: HarnessBinding) => ({
       name: binding.instance.id,
       kind: binding.instance.kind,
-      ...(binding.options === undefined ? {} : { block: binding.options.block }),
+      ...(binding.options === undefined
+        ? {}
+        : { block: binding.options.block, options: JsonSchemaValue.parse(z.toJSONSchema(binding.options.schema, { io: "input" })) }),
     });
     api.action(
       action(harnessList, {
@@ -795,7 +799,6 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           return {
             ...harnessItem(binding),
             machine: binding.instance.machine,
-            ...(binding.options === undefined ? {} : { options: JsonSchemaValue.parse(z.toJSONSchema(binding.options.schema, { io: "input" })) }),
           };
         },
       }),
@@ -1173,8 +1176,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       const instance = instanceOf(bindings, input.harness);
       requireLaunch(instance.id, instance.sides.control?.launch ?? { model: false, effort: [], modes: [] }, input);
       // The options block of another kind is refused here too: nothing is ignored.
-      const blocks = blocksOf(input);
-      requireOwnBlocks(instance.id, optionsOf(bindings, input.harness), blocks);
+      const blocks = requireOwnBlocks(instance.id, optionsOf(bindings, input.harness), blocksOf(input, SESSION_START_FIELDS));
       // A tool mode the installation cannot hold is refused here too, before any prompt.
       requireTools(instance.id, instance.sides.control?.tools, input.tools);
       const visible = visibleFor(input.harness, callsOf(input.visible));
@@ -1207,7 +1209,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           effort: input.effort,
           mode: input.mode,
           cwd,
-          ...blocks,
+          ...(Object.keys(blocks).length === 0 ? {} : { blocks }),
           visible,
           servers,
           env: { [TOKEN_ENV]: token },
@@ -1304,7 +1306,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
               control.resume(id, {
                 ...(mode === undefined ? {} : { mode }),
                 ...(model === undefined ? {} : { model }),
-                ...started?.options,
+                ...blocksOfSession(started),
                 ...(prompt === undefined ? {} : { prompt }),
                 ...(launches && startedIn !== undefined ? { cwd: startedIn } : {}),
                 ...(launches && requested !== undefined ? { visible } : {}),
@@ -1474,7 +1476,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           if (supports(instanceOf(bindings, id.harness), "control", "structuredOutput")) {
             // The answer is a turn of the session: a harness at its ceiling takes it once one of its turns ends.
             const slot = await caps.admit(id.harness, ref);
-            const answer = await control.ask(id, { schema, prompt, ...startedOf(ref)?.options }).finally(() => slot.release());
+            const answer = await control.ask(id, { schema, prompt, ...blocksOfSession(startedOf(ref)) }).finally(() => slot.release());
             // The harness said the answer is structured; niwa checks it all the same.
             const parsed = schema.safeParse(answer.value);
             if (!parsed.success) {
@@ -1558,6 +1560,11 @@ function resolveBindings(options: SessionsOptions): HarnessBinding[] {
       options: binding.options ?? ofKind.options,
     };
   });
+}
+
+/** The options block a session was started with, as a control side is given it again. */
+function blocksOfSession(started: { readonly options?: OptionBlocks } | undefined): { blocks?: OptionBlocks } {
+  return started?.options === undefined ? {} : { blocks: started.options };
 }
 
 /** The options block the kind of a harness takes, when it declares one. */

@@ -53,7 +53,6 @@ import type {
   StartedSession,
   VisibleActions,
   HarnessId,
-  ClaudeOptions,
   SessionId,
   ReverseHandler,
 } from "@niwa-labs/harness";
@@ -61,7 +60,8 @@ import { LIVE_PROCESS_REFUSAL, requireBox, spawnAgentNow } from "@niwa-labs/sand
 
 import { localClaude } from "../code/control.ts";
 import { claudeHomeEnv, claudeNeeds } from "../code/needs.ts";
-import { claudeEnv } from "../code/options.ts";
+import { claudeBlockOf, claudeEnv } from "../code/options.ts";
+import type { ClaudeOptions } from "../code/options.ts";
 
 import { signsOf } from "./messages.ts";
 import { answerText, permissionQuestion, permissionResult, questionsOf, rawRequest } from "./reverse.ts";
@@ -510,7 +510,7 @@ export class ClaudeSdkControl implements SessionControl {
       visible: options.visible,
       effort,
       mode,
-      claude: { ...this.#claude, ...options.claude },
+      claude: { ...this.#claude, ...claudeBlockOf(options.blocks) },
     };
     // The program names a session only once its first turn has begun, so the caller cannot be told
     // the name before the prompt goes out: `named` is not called, and a start cut off in between
@@ -599,7 +599,7 @@ export class ClaudeSdkControl implements SessionControl {
     }
     // What the question asks of its client goes where the session's does.
     const held = this.#sessions.get(id.native);
-    const plan: ProcessPlan = { ...stored, claude: { ...stored.claude, ...options.claude }, reverse: held?.reverse ?? stored.reverse };
+    const plan: ProcessPlan = { ...stored, claude: { ...stored.claude, ...claudeBlockOf(options.blocks) }, reverse: held?.reverse ?? stored.reverse };
     await requireBox(plan.box);
     // Its own query over the same session id, under the limits the session's own process was given.
     const open = (): Questioning<AskAnswer<T>> => {
@@ -969,7 +969,7 @@ export class ClaudeSdkControl implements SessionControl {
       visible: visible ?? before?.visible,
       effort: before?.effort ?? this.#effort,
       mode: modeOf(options?.mode, this.#mode, CLAUDE_SDK_LAUNCH),
-      claude: { ...(before?.claude ?? this.#claude), ...options?.claude },
+      claude: { ...(before?.claude ?? this.#claude), ...claudeBlockOf(options?.blocks) },
     };
     await requireBox(plan.box);
     const session = this.#open(

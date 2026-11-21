@@ -17,7 +17,8 @@ import {
   HarnessIdSchema,
   HarnessKindSchema,
   MachineIdSchema,
-  OptionBlocks,
+  OptionsBlockNameSchema,
+  withBlocks,
   SessionModeSchema,
   ThinkingRecordSchema,
   ToolsModeSchema,
@@ -179,9 +180,6 @@ export const sessionRunning = actionRef("session.running", {
   }),
 });
 
-/** The name of an options block: the key of the block a kind declares (`claude` for Claude Code). */
-const OptionsBlockName = z.enum(Object.keys(OptionBlocks.shape) as [keyof typeof OptionBlocks.shape, ...Array<keyof typeof OptionBlocks.shape>]);
-
 /**
  * A harness instance as the sessions module binds it: its name (the id its author gave), its kind, and the options block
  * a start of it takes. An instance is named by its author, so it is listed and got by that name, as a direction is.
@@ -190,12 +188,14 @@ const HarnessItem = z.object({
   name: HarnessIdSchema,
   kind: HarnessKindSchema,
   /** The block a start of this harness may carry; absent, it takes none. */
-  block: OptionsBlockName.optional(),
+  block: OptionsBlockNameSchema.optional(),
+  /** The JSON Schema of the block, as `agent()` and `session.start` take it. */
+  options: JsonSchemaValue.optional(),
 });
 
 export const harnessList = actionRef("harness.list", {
   description:
-    "List the harnesses sessions are started on: the name, the kind and the options block of each (`claude` for Claude Code). Take a name from here to get one.",
+    "List the harnesses sessions are started on: the name, the kind and the options block of each (`claude` for Claude Code) with its JSON Schema. Take a name from here to get one.",
   input: z.object({}),
   output: z.object({ items: z.array(HarnessItem) }),
 });
@@ -206,48 +206,54 @@ export const harnessGet = actionRef("harness.get", {
   input: z.object({ name: HarnessIdSchema }),
   output: HarnessItem.extend({
     machine: MachineIdSchema,
-    /** The JSON Schema of the block, as `agent()` and `session.start` take it. */
-    options: JsonSchemaValue.optional(),
   }),
 });
+
+/** The fields of `session.start`: every other key of its input is an options block. */
+const SessionStartFields = z.object({
+  /** The harness to start the session on. */
+  harness: z.string().min(1),
+  /** The prompt: plain text becomes one volatile section. */
+  prompt: PromptInputSchema,
+  /** The model the session runs, for its whole life; the instance's own when absent. */
+  model: z.string().min(1).optional(),
+  /** The effort the session thinks with, for its whole life; the kind says which levels it takes. */
+  effort: z.string().min(1).optional(),
+  /** The working mode of the session, for its whole life; the instance's own, else `auto`, when absent. */
+  mode: SessionModeSchema.optional(),
+  cwd: z.string().min(1).optional(),
+  /**
+   * Run the session in a new git worktree (the git module's `git.worktree.create`): `true`, or the repository,
+   * the base and the description. The repository is `cwd` by default, else the host's directory; the session's
+   * cwd is the worktree. It stays until it is removed.
+   */
+  worktree: WorktreeOption.optional(),
+  /** Which niwa actions the session sees, and which harness tools are off. */
+  visible: VisibleActionsInputSchema.optional(),
+  /**
+   * The tools the session may use, for its whole life: `all` (the harness's own, the default),
+   * `niwa-only` (only the tools of niwa's MCP servers), or `{ allow }` (exactly these of the
+   * harness's own). A harness that cannot hold a session to it refuses the start.
+   */
+  tools: ToolsModeSchema.optional(),
+  /**
+   * The caller's own id of this start: the prompt is recorded as an input under it with what became of it, and a
+   * retry with it answers the session it made instead of making another. Default: the operation of the call.
+   */
+  operation: z.string().min(1).max(200).optional(),
+  /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck; kept in its record. */
+  stuckAfter: z.number().int().positive().optional(),
+});
+
+/** The names of the fields of `session.start`, so the rest of an input is known as its blocks. */
+export const SESSION_START_FIELDS: readonly string[] = Object.keys(SessionStartFields.shape);
 
 export const sessionStart = actionRef("session.start", {
   description:
     "Starts a session. With `worktree` it runs in a new git worktree of the repository (`cwd` by default), which stays until it is removed. It returns as soon as the harness has named the session; until then there is a start in progress, not a session. The prompt becomes the first turn, delivered like a send: the receipt says whether it started or was queued, and the end of that turn is not waited for. Give `operation` to make a retry safe: the same id with the same prompt answers the session it made. The block named after the harness's kind (`claude` for Claude Code) holds the options of that kind for the whole life of the session; the block of another kind is refused.",
-  input: z.object({
-    /** The harness to start the session on. */
-    harness: z.string().min(1),
-    /** The prompt: plain text becomes one volatile section. */
-    prompt: PromptInputSchema,
-    /** The model the session runs, for its whole life; the instance's own when absent. */
-    model: z.string().min(1).optional(),
-    /** The effort the session thinks with, for its whole life; the kind says which levels it takes. */
-    effort: z.string().min(1).optional(),
-    /** The working mode of the session, for its whole life; the instance's own, else `auto`, when absent. */
-    mode: SessionModeSchema.optional(),
-    cwd: z.string().min(1).optional(),
-    /**
-     * Run the session in a new git worktree (the git module's `git.worktree.create`): `true`, or the repository,
-     * the base and the description. The repository is `cwd` by default, else the host's directory; the session's
-     * cwd is the worktree. It stays until it is removed.
-     */
-    worktree: WorktreeOption.optional(),
-    /** Which niwa actions the session sees, and which harness tools are off. */
-    visible: VisibleActionsInputSchema.optional(),
-    /**
-     * The tools the session may use, for its whole life: `all` (the harness's own, the default),
-     * `niwa-only` (only the tools of niwa's MCP servers), or `{ allow }` (exactly these of the
-     * harness's own). A harness that cannot hold a session to it refuses the start.
-     */
-    tools: ToolsModeSchema.optional(),
-    /**
-     * The caller's own id of this start: the prompt is recorded as an input under it with what became of it, and a
-     * retry with it answers the session it made instead of making another. Default: the operation of the call.
-     */
-    operation: z.string().min(1).max(200).optional(),
-    /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck; kept in its record. */
-    stuckAfter: z.number().int().positive().optional(),
-  }).extend(OptionBlocks.shape),
+  // Every key that is not a field is the options block of the harness's kind, an object named after it: what
+  // is in it is the kind's schema to check, so it is checked once the harness is known.
+  input: withBlocks(SessionStartFields),
   output: z.object({
     /** The id niwa gave the session: what every session action takes. */
     session: NiwaSessionIdSchema,

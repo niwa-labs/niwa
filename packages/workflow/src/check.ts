@@ -20,7 +20,6 @@ import { fileURLToPath } from "node:url";
 
 import { isOwnerGrant, isRuleTemplate, narrow, rule, ruleTemplate, ruleText } from "@niwa-labs/core";
 import type { ActionDescription, ActionName, Grant, JsonSchema } from "@niwa-labs/core";
-import type { OptionsBlock } from "@niwa-labs/harness";
 import { bare, declarationField, declarationOf, literalOf, onOf, placeOf } from "@niwa-labs/script";
 import type { ScriptSource } from "@niwa-labs/script";
 import type * as Ts from "typescript";
@@ -33,6 +32,7 @@ import type { ScriptBox } from "./runner.ts";
 import { ContractHash, JsonSchemaValue, Subscription } from "./records.ts";
 import { SCRIPT_API, typeRoots } from "./installation.ts";
 import { allowedFor, harnessOfAction, matches, scriptTyping } from "./script-types.ts";
+import type { HarnessBlock } from "./script-types.ts";
 
 /** What a check says: the errors it found, what the script declares, and that its function was not run. */
 export interface CheckReport {
@@ -366,7 +366,7 @@ export interface Catalogue {
    * The options block each harness takes, by its id, as the sessions module binds it (`harness.list`): what the
    * block of an `agent()` call is typed by. A harness not in it takes no block.
    */
-  blocks?: ReadonlyMap<string, OptionsBlock>;
+  blocks?: ReadonlyMap<string, HarnessBlock>;
   /**
    * The records the host lets a script start on (`on`), with the schema of their data. Part of what a wait and a read are
    * typed by too. The list may grow from the journal (the records registered workflows declare in `emits`), so it is

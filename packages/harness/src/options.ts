@@ -1,62 +1,83 @@
 /**
- * What a session of each harness kind takes at its start besides the model, the effort and the
- * mode: one block of options per kind, named after the kind.
+ * What a session of a harness kind takes at its start besides the model, the effort and the mode:
+ * one block of options per kind, named by the kind.
  *
- * A kind declares the block it takes (`defineHarnessKind({ options })`). A start that carries the
- * block of its own kind has it checked and applied; a start that carries the block of another
- * kind is refused, and so is a field the block does not have. The schemas are strict for that
- * reason: a key a kind does not know is an error, never ignored.
+ * The block is the kind's own: the package of a kind declares its name and its schema
+ * (`kindOptions`), and `defineHarnessKind({ options })` carries it. Nothing here lists the kinds, so
+ * a kind from another package has a block as typed as the ones niwa ships. A start that carries the
+ * block of its own kind has it checked by that schema and applied; a start that carries the block
+ * of another kind is refused, and so is a field the block does not have. The schemas are strict
+ * for that reason: a key a kind does not know is an error, never ignored.
  *
- * Only Claude Code has options of its own. The other kinds have an empty block each: what their
- * control sides take at the instance (the binary, the home, the timeouts, the account profile)
- * belongs to the installation, and what a permission request is answered with is decided by niwa
- * for every session it starts, so none of it is a choice of one session. The block is declared
- * anyway, so the day a kind has an option per session it is typed in one place.
+ * A block travels beside the fields of a start (`claude: { advisor: false }`): every key of an input
+ * that is not one of its fields is a block (`blocksOf`).
  */
 
 import { z } from "zod";
 
-/** The options of a Claude Code session (kinds `claude-code` and `claude-sdk`). */
-export const ClaudeOptions = z.strictObject({
-  /** False takes Claude Code's advisor tool away from the session; absent, the owner's own configuration stands. */
-  advisor: z.boolean().optional(),
-});
-export type ClaudeOptions = z.infer<typeof ClaudeOptions>;
-
-/** The block of a kind that has no option of its own: it takes nothing, and is checked all the same. */
-const NoOptions = z.strictObject({});
-
-/** The options each kind declares: the name of its block, and the schema the block is checked by. */
-export const KIND_OPTIONS = {
-  claude: { block: "claude", schema: ClaudeOptions },
-  codex: { block: "codex", schema: NoOptions },
-  mcode: { block: "mcode", schema: NoOptions },
-  ncode: { block: "ncode", schema: NoOptions },
-  pi: { block: "pi", schema: NoOptions },
-  zcode: { block: "zcode", schema: NoOptions },
-} as const;
-
 /** The name of a block: the key it is written under in `agent()`, `session.start` and on the command line. */
-export type OptionsBlock = keyof typeof KIND_OPTIONS;
+export const OptionsBlockNameSchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9-]*$/, "a block name is lower case letters, digits and dashes, starting with a letter");
+export type OptionsBlock = z.output<typeof OptionsBlockNameSchema>;
 
-/** What a kind declares of its options. */
-export type KindOptions = (typeof KIND_OPTIONS)[OptionsBlock];
+/** One block, as it is carried: an object, checked against the schema of its kind before it is used. */
+export type OptionsBlockValue = Readonly<Record<string, unknown>>;
 
-/** Every block a start may carry, each optional: the shape `session.start` and `agent()` take, and the typing of a script is made from. */
-export const OptionBlocks = z.strictObject({
-  claude: KIND_OPTIONS.claude.schema.optional(),
-  codex: KIND_OPTIONS.codex.schema.optional(),
-  mcode: KIND_OPTIONS.mcode.schema.optional(),
-  ncode: KIND_OPTIONS.ncode.schema.optional(),
-  pi: KIND_OPTIONS.pi.schema.optional(),
-  zcode: KIND_OPTIONS.zcode.schema.optional(),
-});
-export type OptionBlocks = z.infer<typeof OptionBlocks>;
+/** The blocks a start, a question or a record carries, by name. A session carries the block of its own kind, or none. */
+export type OptionBlocks = Readonly<Record<OptionsBlock, OptionsBlockValue>>;
 
-/** The blocks of a start or a record, and nothing else of it. */
-const BlocksOnly = z.object(OptionBlocks.shape);
+/** The blocks as a record keeps them. */
+export const OptionBlocksSchema = z.record(OptionsBlockNameSchema, z.record(z.string(), z.unknown()));
 
-/** The blocks an input carries, checked: its other fields, and a block that is not there, are left out. */
-export function blocksOf(input: object): OptionBlocks {
-  return Object.fromEntries(Object.entries(BlocksOnly.parse(input)).filter(([, block]) => block !== undefined));
+/** What a kind declares of its options: the name of its block, and the schema the block is checked by. */
+export interface KindOptions {
+  readonly block: OptionsBlock;
+  readonly schema: z.ZodType<OptionsBlockValue, OptionsBlockValue>;
+}
+
+/** The block of a kind that has no option of its own yet: it takes nothing, and is checked all the same. */
+export const NoOptions = z.strictObject({});
+
+/** The options a kind declares: its block's name and schema. */
+export function kindOptions(block: string, schema: z.ZodType<OptionsBlockValue, OptionsBlockValue>): KindOptions {
+  return { block: OptionsBlockNameSchema.parse(block), schema };
+}
+
+/** Is this a block: a plain object? */
+function isBlock(value: unknown): value is OptionsBlockValue {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The schema of an input that carries options blocks beside its `fields`: every other key is a block, an object
+ * named after its kind. What is in a block is its kind's schema to check, once the harness is known; a key that is
+ * no field and holds anything but an object is refused here, with `refuse` saying so.
+ */
+export function withBlocks<Shape extends z.ZodRawShape>(
+  fields: z.ZodObject<Shape>,
+  refuse: (key: string) => string = (key) => `there is no field "${key}", and an options block is an object`,
+) {
+  const known = new Set(Object.keys(fields.shape));
+  return fields.catchall(z.unknown()).superRefine((input, ctx) => {
+    for (const [key, value] of Object.entries(input)) {
+      if (known.has(key) || value === undefined || isBlock(value)) continue;
+      ctx.addIssue({ code: "custom", message: refuse(key), path: [key] });
+    }
+  });
+}
+
+/**
+ * The blocks an input carries: every key that is not one of its `fields` and has a value. A key that
+ * is not a field and holds anything but an object is neither a field nor a block, and is refused.
+ */
+export function blocksOf(input: object, fields: Iterable<string>): OptionBlocks {
+  const known = new Set(fields);
+  const blocks: Record<string, OptionsBlockValue> = {};
+  for (const [name, value] of Object.entries(input)) {
+    if (known.has(name) || value === undefined) continue;
+    if (!isBlock(value)) throw new Error(`there is no field "${name}", and an options block is an object`);
+    blocks[OptionsBlockNameSchema.parse(name)] = value;
+  }
+  return blocks;
 }

@@ -12,8 +12,13 @@ import { z } from "zod";
 
 import type { ActionDescription, Grant, JsonSchema } from "@niwa-labs/core";
 import type { ActionName } from "@niwa-labs/core";
-import { OptionBlocks } from "@niwa-labs/harness";
 import type { OptionsBlock } from "@niwa-labs/harness";
+
+/** The options block a harness takes, as the sessions module reports it: its name, and its JSON Schema. */
+export interface HarnessBlock {
+  readonly block: OptionsBlock;
+  readonly schema: JsonSchema;
+}
 
 /** The names of a script that do not depend on the host: the language, and the call by name. */
 const LANGUAGE = `type NiwaDuration = number | string;
@@ -155,15 +160,17 @@ function fieldType(input: Schema, field: string): string {
   return isSchema(member) ? schemaToType(member, { root: "unknown", defs: "unknown" }) : "string";
 }
 
-/** The names of the options blocks, one per kind. */
-const BLOCKS = Object.keys(OptionBlocks.shape);
+/** The names of the blocks the harnesses of a host take, each once. */
+function blockNames(blocks: ReadonlyMap<string, HarnessBlock>): OptionsBlock[] {
+  return [...new Set([...blocks.values()].map((one) => one.block))].sort();
+}
 
 /**
  * The options blocks of a harness: the block of its kind, typed as that kind declares it, and every other block `never`,
  * so the block of another kind is an error of the check and not an extra field the checker may let through.
  */
-function blocksTyping(own: OptionsBlock | undefined): string {
-  return `{ ${BLOCKS.map((block) => (block === own ? `${block}?: NiwaOptionBlocks[${literal(block)}]` : `${block}?: never`)).join("; ")} }`;
+function blocksTyping(names: readonly OptionsBlock[], own: OptionsBlock | undefined): string {
+  return `{ ${names.map((block) => (block === own ? `${literal(block)}?: NiwaOptionBlocks[${literal(block)}]` : `${literal(block)}?: never`)).join("; ")} }`;
 }
 
 /**
@@ -173,7 +180,8 @@ function blocksTyping(own: OptionsBlock | undefined): string {
  * takes no block. A host that serves no harness has nothing to check one against, so a harness is any text and any block
  * is taken; a host that serves some holds a script to the ones it may call, and a script that may call none names none.
  */
-function agentTyping(description: readonly ActionDescription[], callable: ReadonlySet<string>, blocks: ReadonlyMap<string, OptionsBlock>): string {
+function agentTyping(description: readonly ActionDescription[], callable: ReadonlySet<string>, blocks: ReadonlyMap<string, HarnessBlock>): string {
+  const names = blockNames(blocks);
   const common = `{ label?: string; visible?: string[]; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption; stuckAfter?: NiwaDuration }`;
   const hosted = description.filter((action) => harnessOfAction(action.name) !== undefined);
   const served = hosted.filter((action) => callable.has(action.name));
@@ -181,10 +189,10 @@ function agentTyping(description: readonly ActionDescription[], callable: Readon
     hosted.length === 0
       ? ["{ harness?: string; model?: string; effort?: string } & NiwaOptionBlocks"]
       : [
-          `{ harness?: undefined; model?: string; effort?: string } & ${blocksTyping(undefined)}`,
+          `{ harness?: undefined; model?: string; effort?: string } & ${blocksTyping(names, undefined)}`,
           ...served.map((action) => {
             const harness = action.name.slice(AGENT_ACTION_PREFIX.length);
-            return `{ harness: ${literal(harness)}; model?: ${fieldType(action.input, "model")}; effort?: ${fieldType(action.input, "effort")} } & ${blocksTyping(blocks.get(harness))}`;
+            return `{ harness: ${literal(harness)}; model?: ${fieldType(action.input, "model")}; effort?: ${fieldType(action.input, "effort")} } & ${blocksTyping(names, blocks.get(harness)?.block)}`;
           }),
         ];
   return `/** What agent() takes: the harness is one the host serves, its model and effort are the ones that harness lists, and its options block is the one of its kind. */\ntype NiwaAgentOptions = ${common} & (${variants.map((variant) => `(${variant})`).join(" | ")});`;
@@ -291,9 +299,19 @@ function objectType(schema: Readonly<Record<string, unknown>>, scope: Scope, ind
   return index === undefined ? body : `${body} & { ${index} }`;
 }
 
-/** The options of each harness kind, one block each, made from the schemas the kinds declare: what agent() takes besides its own options. */
-function optionBlocksTyping(): string {
-  return `/** The options of the harness's kind, in the block named after the kind; the block of another kind is refused. */\n${aliases(z.toJSONSchema(OptionBlocks, { io: "input" }), "NiwaOptionBlocks").text}`;
+/**
+ * The options of each kind the host's harnesses are of, one block each, made from the schemas those kinds declare: what
+ * agent() takes besides its own options. Two harnesses of one kind have one block.
+ */
+function optionBlocksTyping(blocks: ReadonlyMap<string, HarnessBlock>): string {
+  const first = new Map<OptionsBlock, JsonSchema>();
+  for (const one of blocks.values()) if (!first.has(one.block)) first.set(one.block, one.schema);
+  const each = [...first.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([block, schema]) => ({ block, alias: `NiwaOptionBlock$${identifier(block)}`, schema }));
+  const text = each.map((one) => aliases(one.schema as Schema, one.alias).text).join("");
+  const fields = each.map((one) => `${literal(one.block)}?: ${one.alias}`).join("; ");
+  return `${text}/** The options of the harness's kind, in the block named after the kind; the block of another kind is refused. */\ntype NiwaOptionBlocks = { ${fields} };\n`;
 }
 
 /** The language of a script that reads the journal: \`wait\` and \`read\`, typed by the data of the record types the script names. */
@@ -449,7 +467,7 @@ export function scriptTyping(
   callable: readonly ActionName[],
   triggers: ReadonlyArray<{ name: string; schema: JsonSchema }> = [],
   records: ReadonlyArray<{ name: string; schema: JsonSchema }> = [],
-  blocks: ReadonlyMap<string, OptionsBlock> = new Map(),
+  blocks: ReadonlyMap<string, HarnessBlock> = new Map(),
   phases: readonly string[] = [],
 ): ScriptTyping {
   const wanted = new Set<string>(callable);
@@ -482,7 +500,7 @@ export function scriptTyping(
     "// Generated from the actions the host describes. Do not edit.",
     LANGUAGE,
     phaseTyping(phases),
-    optionBlocksTyping(),
+    optionBlocksTyping(blocks),
     agentTyping(description, wanted, blocks),
     "",
     triggerTypes.map((alias) => alias.text).join(""),

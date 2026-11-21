@@ -14,7 +14,8 @@ import type { Action, ActionContext } from "@niwa-labs/core";
 import { DESCRIPTION_MAX, DESCRIPTION_MIN, EntityDescription, JsonSchemaValue, action } from "@niwa-labs/core";
 import { WorktreeOption, gitWorktreeGet, gitWorktreeRemove } from "@niwa-labs/git/records";
 import type { WorktreeOptionGiven } from "@niwa-labs/git/records";
-import { OptionBlocks, SessionModeSchema, blocksOf } from "@niwa-labs/harness";
+import { SessionModeSchema, blocksOf, withBlocks } from "@niwa-labs/harness";
+import type { OptionBlocks } from "@niwa-labs/harness";
 import { SUBMIT_ANSWER_ACTION, harnessGet, sessionAsk, sessionStart } from "@niwa-labs/sessions/records";
 import { z } from "zod";
 
@@ -41,47 +42,46 @@ function oneOf(listed: readonly string[] | undefined): z.ZodType<string, string>
 }
 
 /**
- * What an agent call is given. The model and the effort are the listed ones where the adapter lists them; each options
- * block is held to the schema of its kind, and a field the call does not have is refused. Which block the harness
- * takes is the sessions module's to say, so it is checked when the call runs (`requireOwnBlock`).
+ * The fields of an agent call. The model and the effort are the listed ones where the adapter lists them. Which block
+ * the harness takes is the sessions module's to say, so it is checked when the call runs (`requireOwnBlock`), and what
+ * is in it is checked by the schema of the harness's kind when `session.start` takes it.
  */
+const agentFields = (launch: HarnessLaunch) =>
+  z.object({
+    prompt: z.string(),
+    harness: z.string().optional(),
+    label: z.string().optional(),
+    /** The actions (names or masks) the session sees besides the one that answers. */
+    visible: z.array(z.string()).optional(),
+    /** The model of the session, for its whole life. */
+    model: oneOf(launch.models).optional(),
+    /** The effort of the session, for its whole life. */
+    effort: oneOf(launch.efforts).optional(),
+    /** The working mode of the session, for its whole life. */
+    mode: SessionModeSchema.optional(),
+    /** The directory the session starts in. */
+    cwd: z.string().min(1).optional(),
+    /** Run the session in a new git worktree; removed when the call ends with it clean and no new commit. */
+    worktree: WorktreeOption.optional(),
+    /** The JSON Schema the answer must pass. Absent: the answer is text. */
+    schema: JsonSchemaValue.optional(),
+    /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck. */
+    stuckAfter: z.number().int().positive().optional(),
+  });
+
+/** Every key of an agent call that is not one of its fields is an options block, an object named after the kind. */
 const agentInput = (harness: string, launch: HarnessLaunch) =>
-  z.strictObject(
-    {
-      prompt: z.string(),
-      harness: z.string().optional(),
-      label: z.string().optional(),
-      /** The actions (names or masks) the session sees besides the one that answers. */
-      visible: z.array(z.string()).optional(),
-      /** The model of the session, for its whole life. */
-      model: oneOf(launch.models).optional(),
-      /** The effort of the session, for its whole life. */
-      effort: oneOf(launch.efforts).optional(),
-      /** The working mode of the session, for its whole life. */
-      mode: SessionModeSchema.optional(),
-      /** The directory the session starts in. */
-      cwd: z.string().min(1).optional(),
-      /** Run the session in a new git worktree; removed when the call ends with it clean and no new commit. */
-      worktree: WorktreeOption.optional(),
-      /** The JSON Schema the answer must pass. Absent: the answer is text. */
-      schema: JsonSchemaValue.optional(),
-      /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck. */
-      stuckAfter: z.number().int().positive().optional(),
-      // The options of the harness's kind, in the block named after it.
-      ...OptionBlocks.shape,
-    },
-    {
-      error: (issue) =>
-        issue.code === "unrecognized_keys" ? `the agent call of the harness "${harness}" has no field "${issue.keys.map(String).join('", "')}"` : undefined,
-    },
-  );
+  withBlocks(agentFields(launch), (key) => `the agent call of the harness "${harness}" has no field "${key}"`);
+
+/** The names of the fields of an agent call. */
+const AGENT_FIELDS: readonly string[] = Object.keys(agentFields({}).shape);
 
 /**
  * Refuse, before a session is started, a block that is not the one the sessions module binds the harness to
  * (`harness.get`): the kind of a harness is the sessions module's to know.
  */
 async function requireOwnBlock(harness: string, given: object, ctx: ActionContext): Promise<void> {
-  const blocks = Object.keys(blocksOf(given));
+  const blocks = Object.keys(blocksOfCall(harness, given));
   if (blocks.length === 0) return;
   const { block: own } = await ctx.step(harnessGet, { name: harness });
   const foreign = blocks.filter((block) => block !== own);
@@ -92,6 +92,15 @@ async function requireOwnBlock(harness: string, given: object, ctx: ActionContex
       : `the harness "${harness}" takes the "${own}" options block only (asked for "${foreign.join('", "')}")`,
   );
 }
+/** The blocks of an agent call; a key that is neither a field nor a block is refused, naming the harness. */
+function blocksOfCall(harness: string, input: object): OptionBlocks {
+  try {
+    return blocksOf(input, AGENT_FIELDS);
+  } catch (error) {
+    throw new Error(`the agent call of the harness "${harness}": ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 type AgentInput = z.output<ReturnType<typeof agentInput>>;
 type AgentInputGiven = z.input<ReturnType<typeof agentInput>>;
 
@@ -164,7 +173,7 @@ export function sessionAgent(harness: string, launch: HarnessLaunch = {}): Actio
         ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
         ...(input.worktree === undefined ? {} : { worktree: worktreeAsked(input.worktree, input.label, input.prompt) }),
         ...(input.stuckAfter === undefined ? {} : { stuckAfter: input.stuckAfter }),
-        ...blocksOf(input),
+        ...blocksOfCall(harness, input),
         visible: { actions: [...new Set([...VISIBLE_ACTIONS, ...(input.visible ?? [])])], disabledTools: [] },
       });
       const { value } = await ctx.step(sessionAsk, {

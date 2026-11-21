@@ -135,6 +135,9 @@ export function homeOf(argv: string[], env: Record<string, string | undefined>):
  */
 export function inputOf(action: ActionDescription, args: string[]): Record<string, unknown> {
   const properties = (action.input as { properties?: Record<string, unknown> }).properties;
+  // An input that takes keys besides its fields (the options block of a harness's kind) says what they hold.
+  const additional = (action.input as { additionalProperties?: unknown }).additionalProperties;
+  const others = typeof additional === "object" && additional !== null ? additional : undefined;
   const input: Record<string, unknown> = {};
 
   for (let index = 0; index < args.length; index += 1) {
@@ -155,8 +158,12 @@ export function inputOf(action: ActionDescription, args: string[]): Record<strin
     }
     const written = argument.slice(2);
     // `--timeout-ms` is the field `timeoutMs`: the dashed form is the one a command line reads in.
-    const name = properties !== undefined && !Object.hasOwn(properties, written) ? camelCase(written) : written;
-    if (properties !== undefined && !Object.hasOwn(properties, name)) {
+    // A key that is no field, in an input that takes such keys, is taken as it is written.
+    const name =
+      properties !== undefined && !Object.hasOwn(properties, written) && (others === undefined || Object.hasOwn(properties, camelCase(written)))
+        ? camelCase(written)
+        : written;
+    if (properties !== undefined && !Object.hasOwn(properties, name) && others === undefined) {
       const hint = written === "input" ? " (the whole input as JSON is --json)" : "";
       throw new CliError(
         `${action.name} has no field "${written}"${hint}; its fields are: ${Object.keys(properties).join(", ")}`,
@@ -164,14 +171,15 @@ export function inputOf(action: ActionDescription, args: string[]): Record<strin
     }
     const value = args[index + 1];
     // A flag (a boolean field) with no value after it is true: `--wait`.
-    if (typesOf(properties?.[name]).includes("boolean") && (value === undefined || value.startsWith("--"))) {
+    const field = properties !== undefined && Object.hasOwn(properties, name) ? properties[name] : others;
+    if (typesOf(field).includes("boolean") && (value === undefined || value.startsWith("--"))) {
       Object.defineProperty(input, name, { value: true, enumerable: true, writable: true, configurable: true });
       continue;
     }
     if (value === undefined) throw new CliError(`--${name} needs a value`);
     index += 1;
     Object.defineProperty(input, name, {
-      value: typedValue(properties?.[name], value),
+      value: typedValue(field, value),
       enumerable: true,
       writable: true,
       configurable: true,

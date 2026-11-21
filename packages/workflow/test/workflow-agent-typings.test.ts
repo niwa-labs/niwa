@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { action } from "@niwa-labs/core";
-import type { ActionDescription, ActionName } from "@niwa-labs/core";
-import { KIND_OPTIONS } from "@niwa-labs/harness";
+import type { ActionDescription, ActionName, JsonSchema } from "@niwa-labs/core";
+import { NoOptions } from "@niwa-labs/harness";
 import { createNiwa, describe, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 import { sessionAgent, workflow, workflowCheck } from "../src/index.ts";
@@ -45,10 +45,11 @@ const catalogue = [
 ];
 const names = catalogue.map((entry) => entry.name);
 // The blocks as the sessions module binds the harnesses (`harness.list`); `bare` is bound to none.
+const schemaOf = (schema: z.ZodType) => z.toJSONSchema(schema, { io: "input" }) as JsonSchema;
 const blocks = new Map([
-  ["codex", KIND_OPTIONS.codex.block],
-  ["mcode-work", KIND_OPTIONS.mcode.block],
-  ["claude-work", KIND_OPTIONS.claude.block],
+  ["codex", { block: "codex", schema: schemaOf(NoOptions) }],
+  ["mcode-work", { block: "mcode", schema: schemaOf(NoOptions) }],
+  ["claude-work", { block: "claude", schema: schemaOf(z.strictObject({ advisor: z.boolean().optional() })) }],
 ] as const);
 const file = join(process.cwd(), "agent-typing-probe.ts");
 
@@ -209,11 +210,12 @@ test("the agent action of a harness with listed models refuses another model, an
   expect(open.input.safeParse({ prompt: "x", model: "" }).success).toBe(false);
 });
 
-test("the agent action holds each block to its kind's schema and names a field it does not have", () => {
+test("the agent action takes a block as an object, left to its kind to check, and names a field it does not have", () => {
   const claude = sessionAgent("claude-work");
   expect(claude.input.safeParse({ prompt: "x", claude: { advisor: false } }).success).toBe(true);
-  expect(claude.input.safeParse({ prompt: "x", claude: { advisr: false } }).success).toBe(false);
-  expect(claude.input.safeParse({ prompt: "x", codex: { speed: 1 } }).success).toBe(false);
+  // What is in a block, and which block the harness takes, are the sessions module's to check when the call runs.
+  expect(claude.input.safeParse({ prompt: "x", acme: { speed: 1 } }).success).toBe(true);
+  expect(claude.input.safeParse({ prompt: "x", codex: 5 }).success).toBe(false);
   const typo = claude.input.safeParse({ prompt: "x", modle: "m" });
   expect(typo.error?.issues[0]?.message).toBe('the agent call of the harness "claude-work" has no field "modle"');
 });

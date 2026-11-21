@@ -3,6 +3,7 @@
 // another kind, and a field the block does not have, are refused before anything is started.
 
 import { afterEach, expect, test } from "bun:test";
+import { z } from "zod";
 
 import { createNiwa } from "@niwa-labs/host";
 import { seq } from "@niwa-labs/core";
@@ -12,7 +13,6 @@ import type { Host } from "@niwa-labs/host";
 import {
   HarnessInstanceRegistry,
   HarnessKindRegistry,
-  KIND_OPTIONS,
   defineHarnessKind,
   harnessId,
   harnessKind,
@@ -21,8 +21,9 @@ import {
   NO_INSERT,
   NO_READING,
   UNSUPPORTED,
+  kindOptions,
 } from "@niwa-labs/harness";
-import { CLAUDE_CODE_CAPABILITIES } from "@niwa-labs/harness-claude";
+import { CLAUDE_CODE_CAPABILITIES, CLAUDE_OPTIONS } from "@niwa-labs/harness-claude";
 import type {
   AskAnswer,
   AskOptions,
@@ -37,7 +38,7 @@ import type {
   StartedSession,
 } from "@niwa-labs/harness";
 import { claudeCode, claudeSdkKind } from "@niwa-labs/harness-claude";
-import { codex } from "@niwa-labs/harness-codex";
+import { CODEX_OPTIONS, codex } from "@niwa-labs/harness-codex";
 import { mcode, ncode } from "@niwa-labs/harness-mcode";
 import { pi } from "@niwa-labs/harness-pi";
 import { zcode } from "@niwa-labs/harness-zcode";
@@ -142,7 +143,7 @@ async function serve(
 
 const call = <O>(niwa: Host, name: string, input: unknown): Promise<O> => niwa.call(name as ActionName, input) as Promise<O>;
 
-const claude = (control: SessionControl): HarnessBinding => ({ instance: installation("claude-code", true), control, options: KIND_OPTIONS.claude });
+const claude = (control: SessionControl): HarnessBinding => ({ instance: installation("claude-code", true), control, options: CLAUDE_OPTIONS });
 
 const typesOf = (records: StoredRecord[]): string[] => records.map((record) => record.type).filter((type) => type.startsWith("session."));
 
@@ -157,12 +158,32 @@ test("the block of the session's kind reaches the control side and is recorded; 
   await call(niwa, "session.start", { harness: HARNESS, prompt: "go", claude: { advisor: false } });
   await call(niwa, "session.start", { harness: HARNESS, prompt: "again" });
 
-  expect(control.starts[0]?.claude).toEqual({ advisor: false });
-  expect(Object.keys(control.starts[1] ?? {})).not.toContain("claude");
+  expect(control.starts[0]?.blocks?.claude).toEqual({ advisor: false });
+  expect(Object.keys(control.starts[1] ?? {})).not.toContain("blocks");
   await until(() => records.filter((entry) => entry.type === "session.started").length === 2);
   const started = records.filter((entry) => entry.type === "session.started").map((entry) => entry.data);
   expect(started[0]).toMatchObject({ options: { claude: { advisor: false } } });
   expect(started[1]).not.toHaveProperty("options");
+});
+
+test("a kind no package of niwa ships has a block of its own, checked by its schema like any other", async () => {
+  const control = new RecordingControl();
+  const acme = kindOptions("acme", z.strictObject({ speed: z.enum(["slow", "fast"]).optional() }));
+  const { niwa, records } = await serve([{ instance: installation("acme-code"), control, options: acme }]);
+
+  await call(niwa, "session.start", { harness: HARNESS, prompt: "go", acme: { speed: "fast" } });
+  expect(control.starts[0]?.blocks).toEqual({ acme: { speed: "fast" } });
+  await until(() => typesOf(records).includes("session.started"));
+  expect(records.find((entry) => entry.type === "session.started")?.data).toMatchObject({ options: { acme: { speed: "fast" } } });
+
+  await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", acme: { speed: "warp" } })).rejects.toThrow(/speed/);
+  await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", acme: { sped: "fast" } })).rejects.toThrow(/sped/);
+  await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", claude: {} })).rejects.toThrow(/takes the "acme" options block only/);
+  // A key that is no field of the start and holds no object is neither a field nor a block.
+  await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", modle: "x" })).rejects.toThrow(/no field "modle"/);
+  expect(control.starts).toHaveLength(1);
+  const listed = await call<{ items: Array<{ name: string; kind: string; block?: string; options?: unknown }> }>(niwa, "harness.list", {});
+  expect(listed.items).toEqual([{ name: HARNESS, kind: "acme-code", block: "acme", options: expect.objectContaining({ properties: { speed: expect.anything() } }) }]);
 });
 
 test("the block of another kind is refused before anything is started, naming both", async () => {
@@ -199,10 +220,10 @@ test("a field the block does not have, and a value of the wrong type, are errors
 
 test("a kind with an empty block takes the empty block and nothing in it", async () => {
   const control = new RecordingControl();
-  const { niwa } = await serve([{ instance: installation("codex"), control, options: KIND_OPTIONS.codex }]);
+  const { niwa } = await serve([{ instance: installation("codex"), control, options: CODEX_OPTIONS }]);
 
   await call(niwa, "session.start", { harness: HARNESS, prompt: "go", codex: {} });
-  expect(control.starts[0]?.codex).toEqual({});
+  expect(control.starts[0]?.blocks?.codex).toEqual({});
   await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", codex: { speed: "fast" } })).rejects.toThrow(/speed/);
   expect(control.starts).toHaveLength(1);
 });
@@ -222,7 +243,7 @@ test("a resume gives the control side the options the session was started with, 
   const second = new RecordingControl();
   const after = await serve([claude(second)], before.home);
   await call(after.niwa, "session.resume", { session });
-  expect(second.resumes[0]?.claude).toEqual({ advisor: false });
+  expect(second.resumes[0]?.blocks?.claude).toEqual({ advisor: false });
 });
 
 test("a resume of a session that was started with no options gives none", async () => {
@@ -232,7 +253,7 @@ test("a resume of a session that was started with no options gives none", async 
   await until(() => typesOf(records).includes("session.started"));
 
   await call(niwa, "session.resume", { session });
-  expect(Object.keys(control.resumes[0] ?? {})).not.toContain("claude");
+  expect(Object.keys(control.resumes[0] ?? {})).not.toContain("blocks");
 });
 
 test("a kind registry carries the options each kind declares to the sessions plugin", async () => {
@@ -243,7 +264,7 @@ test("a kind registry carries the options each kind declares to the sessions plu
       name: "claude-code",
       control,
       capabilities: { ...CLAUDE_CODE_CAPABILITIES, reading: NO_READING, insert: NO_INSERT },
-      options: KIND_OPTIONS.claude,
+      options: CLAUDE_OPTIONS,
     }),
   );
   const harnesses = new HarnessInstanceRegistry();
@@ -251,7 +272,7 @@ test("a kind registry carries the options each kind declares to the sessions plu
   const { niwa } = await serve({ harnesses, kinds });
 
   await call(niwa, "session.start", { harness: HARNESS, prompt: "go", claude: { advisor: false } });
-  expect(control.starts[0]?.claude).toEqual({ advisor: false });
+  expect(control.starts[0]?.blocks?.claude).toEqual({ advisor: false });
   await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", pi: {} })).rejects.toThrow(/takes the "claude" options block only/);
 });
 
@@ -264,10 +285,13 @@ test("the command line gives the block as JSON: session.start --claude '{...}'",
   const input = inputOf(description, ["--harness", HARNESS, "--prompt", "go", "--claude", '{"advisor":false}']);
   expect(input).toMatchObject({ harness: HARNESS, claude: { advisor: false } });
   await call(niwa, "session.start", input);
-  expect(control.starts[0]?.claude).toEqual({ advisor: false });
-  // Every block is a flag the command knows; one no kind declares is not.
-  expect(() => inputOf(description, ["--codex", "{}", "--ncode", "{}", "--mcode", "{}", "--pi", "{}", "--zcode", "{}"])).not.toThrow();
-  expect(() => inputOf(description, ["--gemini", "{}"])).toThrow(/has no field "gemini"/);
+  expect(control.starts[0]?.blocks?.claude).toEqual({ advisor: false });
+  // Which blocks there are is the kinds' to say: the command takes any block as JSON, and the host refuses the one
+  // the harness's kind does not declare.
+  expect(inputOf(description, ["--gemini", '{"fast":true}'])).toEqual({ gemini: { fast: true } });
+  await expect(call(niwa, "session.start", inputOf(description, ["--harness", HARNESS, "--prompt", "go", "--gemini", "{}"]))).rejects.toThrow(
+    /takes the "claude" options block only \(asked for "gemini"\)/,
+  );
 });
 
 test("a question over the session is asked with the options the session was started with", async () => {
@@ -279,8 +303,8 @@ test("a question over the session is asked with the options the session was star
 
   await call(niwa, "session.ask", { session, prompt: "word?", schema: { type: "string" } });
   await call(niwa, "session.ask", { session: plain.session, prompt: "word?", schema: { type: "string" } });
-  expect(control.asks[0]?.claude).toEqual({ advisor: false });
-  expect(Object.keys(control.asks[1] ?? {})).not.toContain("claude");
+  expect(control.asks[0]?.blocks?.claude).toEqual({ advisor: false });
+  expect(Object.keys(control.asks[1] ?? {})).not.toContain("blocks");
 });
 
 test("every kind niwa serves declares the block named after it", () => {
@@ -308,7 +332,7 @@ test("an installation that claims more than its kind declares is refused before 
         insert: NO_INSERT,
         control: { ...CLAUDE_CODE_CAPABILITIES.control, structuredOutput: UNSUPPORTED },
       },
-      options: KIND_OPTIONS.claude,
+      options: CLAUDE_OPTIONS,
     }),
   );
   const harnesses = new HarnessInstanceRegistry();
@@ -319,7 +343,7 @@ test("an installation that claims more than its kind declares is refused before 
 test("a tool mode the installation cannot hold is refused before anything is started, naming the mode", async () => {
   const control = new RecordingControl();
   const { niwa, records } = await serve([
-    { instance: installation("claude-code", true, { niwaOnly: false, allow: true }), control, options: KIND_OPTIONS.claude },
+    { instance: installation("claude-code", true, { niwaOnly: false, allow: true }), control, options: CLAUDE_OPTIONS },
   ]);
 
   await expect(call(niwa, "session.start", { harness: HARNESS, prompt: "go", tools: "niwa-only" })).rejects.toMatchObject({
@@ -337,7 +361,7 @@ test("a tool mode the installation cannot hold is refused before anything is sta
 test("the tool mode reaches the control side, is recorded, and a process launched again keeps it", async () => {
   const first = new RecordingControl();
   const holding = { niwaOnly: true, allow: true };
-  const before = await serve([{ instance: installation("claude-code", true, holding), control: first, options: KIND_OPTIONS.claude }]);
+  const before = await serve([{ instance: installation("claude-code", true, holding), control: first, options: CLAUDE_OPTIONS }]);
   const { session } = await call<{ session: string }>(before.niwa, "session.start", { harness: HARNESS, prompt: "go", tools: "niwa-only" });
   await call(before.niwa, "session.start", { harness: HARNESS, prompt: "go", tools: { allow: ["Read"] } });
   expect(first.starts.map((options) => options.tools)).toEqual(["niwa-only", { allow: ["Read"] }]);
@@ -352,7 +376,7 @@ test("the tool mode reaches the control side, is recorded, and a process launche
       return "unknown";
     }
   })();
-  const after = await serve([{ instance: installation("claude-code", true, holding), control: second, options: KIND_OPTIONS.claude }], before.home);
+  const after = await serve([{ instance: installation("claude-code", true, holding), control: second, options: CLAUDE_OPTIONS }], before.home);
   await call(after.niwa, "session.resume", { session });
   expect(second.resumes[0]?.tools).toBe("niwa-only");
 });

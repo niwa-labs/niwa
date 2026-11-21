@@ -325,13 +325,13 @@ test("Claude Code: the options of a start stand over the instance's, and a resum
   };
   // The instance leaves the advisor on; the start takes it away.
   const open = claudeCodeControl({ harness: "fake", executable: "/bin/true", command: [script] });
-  await asleep(open, () => open.start({ prompt: promptFromText("x"), cwd: dir, claude: { advisor: false } }));
+  await asleep(open, () => open.start({ prompt: promptFromText("x"), cwd: dir, blocks: { claude: { advisor: false } } }));
   // The instance takes it away; the start gives it back.
   const closed = claudeCodeControl({ harness: "fake", executable: "/bin/true", command: [script], claude: { advisor: false } });
-  await asleep(closed, () => closed.start({ prompt: promptFromText("x"), cwd: dir, claude: { advisor: true } }));
+  await asleep(closed, () => closed.start({ prompt: promptFromText("x"), cwd: dir, blocks: { claude: { advisor: true } } }));
   // A control side that never held the session is given the options it was started with.
   const fresh = claudeCodeControl({ harness: "fake", executable: "/bin/true", command: [script] });
-  await asleep(fresh, () => fresh.resume(sessionId(harness, "native-1"), { claude: { advisor: false } }));
+  await asleep(fresh, () => fresh.resume(sessionId(harness, "native-1"), { blocks: { claude: { advisor: false } } }));
   expect((await readFile(seen, "utf8")).trim().split("\n")).toEqual(["advisor=1", "advisor=", "advisor=1"]);
 });
 
