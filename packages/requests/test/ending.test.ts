@@ -29,7 +29,7 @@ class Memory {
     since: (from: number, types?: string[]) => this.rows.filter((row) => row.seq > from && (types === undefined || types.includes(row.type))),
   } as unknown as JournalReader;
 
-  append<T>(type: RecordType<T>, data: T, id?: string): StoredRecord {
+  append<T>(type: RecordType<T>, data: T, id?: string, actor: Caller = { kind: "host" }): StoredRecord {
     const placed = id ?? `m${String(this.rows.length + 1)}`;
     const existing = this.rows.find((row) => row.id === placed);
     if (existing !== undefined) return existing;
@@ -40,7 +40,7 @@ class Memory {
       type: type.name,
       schema: 1,
       data,
-      actor: { kind: "host" },
+      actor,
       cause: null,
       root: recordId(placed),
       at: 0 as Timestamp,
@@ -79,11 +79,11 @@ function world(resolver?: Resolver): World {
     memory,
     time,
     actions: requestActions(ledger, bind, resolvers, expiry),
-    context: (operation, caller = { kind: "client", id: "owner" } as Caller) =>
+    context: (operation, caller = { kind: "client", id: "owner", principal: { kind: "owner", id: "owner" } } as Caller) =>
       ({
         operationId: operation as OperationId,
         caller,
-        emit: async <T>(type: RecordType<T>, data: T) => memory.append(type, data, `${operation}/emit/1`),
+        emit: async <T>(type: RecordType<T>, data: T) => memory.append(type, data, `${operation}/emit/1`, caller),
       }) as unknown as ActionContext,
   };
 }
@@ -188,4 +188,17 @@ test("a try made again after an answer that landed behind a cancel says it did n
   w.memory.append(RequestAnswered, { id: ID, answer: { text: "behind" }, by: owner }, "op-1/emit/1");
   expect(await w.actions.answer.run({ id: ID, answer: { text: "behind" } }, w.context("op-1"))).toEqual({ id: ID, accepted: false, reason: "cancelled" });
   expect(await w.actions.resolve.run({ id: ID, answer: { text: "behind" } }, w.context("op-1"))).toEqual({ answered: false });
+});
+
+test("an owner-only decision can be answered only through the addressee action", async () => {
+  let calls = 0;
+  const w = world(() => {
+    calls++;
+    return { answered: true, answer: { text: "automatic" } };
+  });
+  born(w.memory, { answerPolicy: "owner-only" });
+  expect(await w.actions.resolve.run({ id: ID }, w.context("automatic"))).toEqual({ answered: false });
+  expect(await w.actions.resolve.run({ id: ID, answer: { text: "forwarded" } }, w.context("forwarded", { kind: "host" }))).toEqual({ answered: false });
+  expect(calls).toBe(0);
+  expect(await w.actions.answer.run({ id: ID, answer: { text: "operator" } }, w.context("operator"))).toEqual({ id: ID, accepted: true });
 });

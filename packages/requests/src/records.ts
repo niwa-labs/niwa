@@ -36,6 +36,7 @@ export const RequestCreated = record(
     id: RequestId,
     /** The one who may answer it. */
     to: Address,
+    answerPolicy: z.literal("owner-only").optional(),
     question: QuestionName,
     /** What was asked: the question, whole. */
     input: QuestionSchema,

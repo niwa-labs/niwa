@@ -252,13 +252,15 @@ test("the decision of an allowed ask records the scope that let it through", asy
 
 test("a subject that may write the answer record itself cannot confirm its own call as the owner", async () => {
   const s = await served([{ do: "probe.run", ask: true }, "emit:request.answered"]);
-  const pending = denial(call(s.subject, "probe.run", "a"));
+  const pending = call(s.subject, "probe.run", "a");
   await eventually(async () => (await s.open()).length === 1);
   const [asked] = await s.open();
   // The record says the owner answered, but the one who wrote it is the subject's own client.
   await s.subject.emit(RequestAnswered, { id: asked?.id as never, answer: pick("always"), by: ownerAddress });
-  expect((await pending).message).toContain("not answered");
+  expect(await s.open()).toHaveLength(1);
   expect(ran).toEqual([]);
   const rows = await s.host.records.read({ types: [CORE_TYPES.accessAnswered] });
   expect(rows).toEqual([]);
+  await s.answer("once");
+  expect(await pending).toEqual({ ran: "a" });
 });

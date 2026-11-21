@@ -25,7 +25,7 @@ import { opt } from "@niwa-labs/testing";
 /** Wakes the handler. */
 export const Start = record(
   "requests.start",
-  z.object({ release: z.string(), deadline: Deadline.optional(), gate: z.boolean().optional() }),
+  z.object({ release: z.string(), deadline: Deadline.optional(), gate: z.boolean().optional(), ownerOnly: z.boolean().optional() }),
   { open: true },
 );
 
@@ -74,6 +74,7 @@ export function executor() {
         const { answer: raw } = answeredBy(
           await step(requestAsk, {
             to: owner,
+            ...(data.ownerOnly ? { answerPolicy: "owner-only" as const } : {}),
             ...ReleaseBranch,
             input: { ...ReleaseBranch.input, detail: data.release },
             ...(deadline === undefined ? {} : { deadline }),

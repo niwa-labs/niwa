@@ -7,6 +7,7 @@
 import { z } from "zod";
 
 import { CORE_TYPES, CatchableError, IdIndex, UnknownId, answerMismatch, seq, stableJson } from "@niwa-labs/core";
+import type { CallerBinding } from "@niwa-labs/plugin";
 import type { Answer, IssuedId, JournalReader, RecordId, RecordTypeName, Seq, StoredRecord, Address } from "@niwa-labs/core";
 
 import {
@@ -19,7 +20,7 @@ import { RequestId } from "./records.ts";
 import { heldAnswerCheckOf } from "./question.ts";
 
 /** What is read from a record: its type and its data. */
-export type Fact = Pick<StoredRecord, "type" | "data">;
+export type Fact = Pick<StoredRecord, "type" | "data"> & Partial<Pick<StoredRecord, "actor">>;
 
 /** A request as it was created. */
 export type Created = z.infer<typeof RequestCreated.schema>;
@@ -79,14 +80,24 @@ export class RequestExpired extends CatchableError {
 }
 
 /** The state of every request, in the order the facts happened. */
-export function fold(facts: readonly Fact[]): Map<RequestId, RequestState> {
+export function fold(facts: readonly Fact[], bind?: CallerBinding): Map<RequestId, RequestState> {
   const states = new Map<RequestId, RequestState>();
-  for (const fact of facts) applyFact(states, fact);
+  for (const fact of facts) applyFact(states, fact, bind);
   return states;
 }
 
-/** One fact more: the request it creates (returned), or the end it brings to an open one. */
-function applyFact(states: Map<RequestId, RequestState>, fact: Fact): Created | undefined {
+/** Whether the authenticated writer can speak for the owner. */
+export function operatorAnswered(fact: Fact, bind?: CallerBinding): boolean {
+  const who = fact.actor;
+  if (who === undefined || who.kind === "host") return false;
+  if (who.kind === "client") return who.principal?.kind === "owner";
+  // A handler is installed host code. Its binding certifies the owner on a running host;
+  // offline readers have its host-stamped actor and the binding recorded by the action.
+  return bind === undefined ? RequestAnswered.schema.safeParse(fact.data).data?.by?.kind === "owner" : bind(who)?.kind === "owner";
+}
+
+/** Apply a birth or the first accepted end of an open request. */
+function applyFact(states: Map<RequestId, RequestState>, fact: Fact, bind?: CallerBinding): Created | undefined {
   if (fact.type === RequestCreated.name) {
     const created = RequestCreated.schema.safeParse(fact.data);
     if (!created.success || states.has(created.data.id)) return undefined;
@@ -97,6 +108,7 @@ function applyFact(states: Map<RequestId, RequestState>, fact: Fact): Created | 
   if (end === undefined) return undefined;
   const state = states.get(end.id);
   if (state === undefined || state.status !== "open") return undefined;
+  if (state.created.answerPolicy === "owner-only" && fact.type === RequestAnswered.name && !operatorAnswered(fact, bind)) return undefined;
   states.set(end.id, end.close(state.created));
   return undefined;
 }
@@ -121,6 +133,7 @@ export class RequestLedger {
   constructor(
     private readonly types: RecordTypeName[],
     private readonly reader: () => JournalReader | undefined,
+    private readonly bind?: CallerBinding,
   ) {
     this.ids = new IdIndex("request", () => {
       this.catchUp();
@@ -200,7 +213,7 @@ export class RequestLedger {
         const data = InvocationState.safeParse(record.data);
         if (data.success) this.latest.set(data.data.invocation, data.data);
       } else {
-        const created = applyFact(this.states, record);
+        const created = applyFact(this.states, record, this.bind);
         if (created !== undefined) this.issued.set(created.id, { id: created.id, seed: record.id });
       }
     }

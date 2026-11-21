@@ -45,6 +45,7 @@ import {
   checkAnswer,
   decideAnswer,
   decideCancel,
+  operatorAnswered,
   requestOfCause,
   sameAddress,
 } from "./state.ts";
@@ -123,6 +124,7 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
     effect: "record",
     world: "niwa",
     async run(input, ctx) {
+      if (input.answerPolicy === "owner-only" && input.to.kind !== "owner") throw new Error("An owner-only request must address the owner");
       const id = ledger.ids.issue(createdRecordOf(ctx.operationId));
       // A run asks as itself, whatever the host binds its other callers to: the owner sees who asks.
       // A client is held to its binding; a handler or the host, in-process, may say who asks.
@@ -140,6 +142,7 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
         const created = await ctx.emit(RequestCreated, {
           id,
           to: input.to,
+          ...(input.answerPolicy === undefined ? {} : { answerPolicy: input.answerPolicy }),
           question: input.question,
           input: input.input,
           ...(from === undefined ? {} : { from }),
@@ -148,14 +151,27 @@ export function askWith(bind: CallerBinding, ledger: RequestLedger): Action<z.in
         // A call outside an invocation cannot wait: it leaves the request open and says so, and
         // the caller reads the answer later by the id.
         if (!waits) return { id, status: "open" as const };
-        ended = await ctx.waitAnyOf(
-          [
-            { type: RequestAnswered, filter: { id } },
-            { type: RequestCancelledRecord, filter: { id } },
-            { type: RequestExpiredRecord, filter: { id } },
-          ] as const,
-          { from: created.seq },
-        );
+        let after = created.seq;
+        for (;;) {
+          ended = await ctx.waitAnyOf(
+            [
+              { type: RequestAnswered, filter: { id } },
+              { type: RequestCancelledRecord, filter: { id } },
+              { type: RequestExpiredRecord, filter: { id } },
+            ] as const,
+            { from: after },
+          );
+          if (input.answerPolicy !== "owner-only") break;
+          const state = ledger.requests().get(id);
+          if (state?.status === "answered") {
+            releaseAnswerCheck(id);
+            return { id, answer: state.answer };
+          }
+          if (state?.status === "cancelled") throw new RequestCancelled(id);
+          if (state?.status === "expired") throw new RequestExpired(id);
+          // A raw answer written by someone other than the owner leaves this decision open.
+          after = ended.at;
+        }
       } catch (error) {
         // A wait that suspends the invocation throws, and the schema stays held for the run that
         // resumes it; any other failure ends the ask, and with it the hold.
@@ -256,7 +272,12 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
       }
       const by = bind(ctx.caller);
       const id = ledger.named(input, (request) => by !== undefined && (by.kind === "owner" || sameAddress(by, request.to)));
-      const verdict = decideAnswer(id, ledger.requests().get(id), by, input.answer);
+      const state = ledger.requests().get(id);
+      if (state?.created.answerPolicy === "owner-only" && (by?.kind !== "owner" ||
+          (ctx.caller.kind === "client" ? ctx.caller.principal?.kind !== "owner" : ctx.caller.kind !== "handler"))) {
+        throw new RequestRefusal("not-addressee", "Only the owner may answer this request");
+      }
+      const verdict = decideAnswer(id, state, by, input.answer);
       if (verdict.kind === "late") {
         // The request was over before the answer came: nothing is written, and the answerer is
         // told why its answer does not stand instead of being refused.
@@ -357,6 +378,7 @@ export function requestActions(ledger: RequestLedger, bind: CallerBinding, resol
       // exist is never taken for a longer one that starts the same.
       const id = input.id;
       const state = ledger.requests().get(id);
+      if (state?.created.answerPolicy === "owner-only") return { answered: false };
       // A client that gives an answer is held to its binding as the one who answers is: the
       // addressee, or the owner. `submit-answer` and answers forwarded by another module reach the request here.
       const by = input.answer === undefined || state === undefined ? undefined : answerer(ctx.caller, bind, state.created.to);
@@ -432,7 +454,7 @@ export function requests(opts: RequestsOptions = {}): Plugin {
     api.offer(COCKPIT_MODULE, { id: "requests", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     api.declare(...REQUEST_TYPES);
     const types = REQUEST_TYPES.map((type) => type.name);
-    const ledger = new RequestLedger(types, () => api.journal?.());
+    const ledger = new RequestLedger(types, () => api.journal?.(), bind);
     // The clock of the host, known once the service runs: an answer is held to the deadline by it.
     let clock: (() => Timestamp) | undefined;
     const expiry: Expiry = {
@@ -550,7 +572,10 @@ export function requests(opts: RequestsOptions = {}): Plugin {
     // the actor the host stamped on it, bound as any caller is, never the `by` the data claims.
     api.on(RequestAnswered, (data, _step, written) => {
       rearm?.();
-      asks.end(data.id, outcomeOf(data.answer), bind(written.actor));
+      const state = ledger.requests().get(data.id);
+      if (state?.status === "answered" && operatorAnswered(written, bind)) {
+        asks.end(data.id, outcomeOf(state.answer), bind(written.actor));
+      }
     });
     api.on(RequestCancelledRecord, (data) => {
       rearm?.();
@@ -565,7 +590,7 @@ export function requests(opts: RequestsOptions = {}): Plugin {
     // A resolver may take its time over one request: the others do not wait for it.
     api.on(RequestCreated, { concurrency: Number.POSITIVE_INFINITY }, async (data, step) => {
       rearm?.();
-      if (resolvers.resolversFor(data.question).length === 0) return;
+      if (data.answerPolicy === "owner-only" || resolvers.resolversFor(data.question).length === 0) return;
       await step(written.resolve, { id: data.id });
     });
   });

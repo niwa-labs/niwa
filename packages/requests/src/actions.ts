@@ -17,6 +17,8 @@ import { Deadline, QuestionName, RequestId } from "./records.ts";
 export const AskInput = z.object({
   /** Who may answer. */
   to: Address,
+  /** An operator decision bypasses all automatic resolvers. */
+  answerPolicy: z.literal("owner-only").optional(),
   /** The name of the question. */
   question: QuestionName,
   /** What is asked: the question, whole. */
@@ -73,6 +75,7 @@ export const AnswerOutput = z.object({
 });
 
 export const OpenRequest = z.object({
+  answerPolicy: z.literal("owner-only").optional(),
   id: RequestId,
   to: Address,
   question: z.string().min(1),
@@ -136,6 +139,7 @@ export const RequestStatus = z.enum(["open", "answered", "cancelled", "expired"]
 
 /** The fields of a request that a list and a read both show. */
 const GLANCE = {
+  answerPolicy: z.literal("owner-only").optional(),
   status: RequestStatus,
   question: QuestionName,
   to: Address,

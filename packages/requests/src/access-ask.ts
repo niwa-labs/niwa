@@ -89,6 +89,7 @@ export function requestOf(
   return {
     id,
     to: owner,
+    answerPolicy: "owner-only",
     question: ACCESS_ASK,
     input: questionOf(asked),
     deadline: Deadline.parse(now + timeoutMs),

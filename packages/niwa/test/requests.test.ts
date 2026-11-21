@@ -9,7 +9,7 @@ import { expect, test } from "bun:test";
 import { connect } from "@niwa-labs/client";
 import { createNiwa } from "@niwa-labs/host";
 import { plugin } from "@niwa-labs/plugin";
-import { principalOf, record, agent, owner } from "@niwa-labs/core";
+import { grant, principalOf, record, agent, owner } from "@niwa-labs/core";
 import type { Host } from "@niwa-labs/host";
 import type { NiwaApi } from "@niwa-labs/client";
 import type { StoredRecord, Timestamp } from "@niwa-labs/core";
@@ -355,6 +355,28 @@ test("requests: a handler may say who cancels; a client that says it in the payl
     await intruder.close();
     await host.close();
     await home.cleanup();
+  }
+});
+
+test("an operator ask waits through automatic resolution and a forged raw answer", async () => {
+  const resolvers = new ResolverRegistry();
+  resolvers.register(ReleaseBranch, () => ({ answered: true, answer: pick("next") }));
+  const world = await serve(resolvers);
+  const token = world.host.issueToken(principalOf("session", "writer"), { grant: grant(["emit:request.answered"]) });
+  const writer = await connect({ home: world.home.path, token });
+  try {
+    await world.host.emit(Start, { release: "operator", ownerOnly: true });
+    await eventually(() => of(world.seen, RequestCreated).length === 1);
+    const id = RequestCreated.schema.parse(of(world.seen, RequestCreated)[0]?.data).id;
+    expect(await world.ownerClient.call(REQUEST_RESOLVE, { id, answer: pick("next") })).toEqual({ answered: false });
+    await writer.emit(RequestAnswered, { id, answer: pick("next"), by: owner });
+    expect(await openIds(world.ownerClient)).toContain(id);
+    await world.ownerClient.call(REQUEST_ANSWER, { id, answer: pick("main") });
+    await eventually(() => of(world.seen, Answered).length === 1);
+    expect(of(world.seen, Answered)[0]?.data).toEqual({ release: "operator", branch: "main" });
+  } finally {
+    await writer.close();
+    await world.close();
   }
 });
 

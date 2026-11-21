@@ -43,5 +43,5 @@ export {
 } from "./actions.ts";
 export { question } from "./question.ts";
 export type { DeclaredQuestion } from "./question.ts";
-export { RequestCancelled, RequestExpired, fold } from "./state.ts";
+export { RequestCancelled, RequestExpired, fold, operatorAnswered } from "./state.ts";
 export type { AnswerVerdict, RequestState } from "./state.ts";

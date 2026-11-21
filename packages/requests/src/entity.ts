@@ -41,6 +41,7 @@ export function itemOf(state: RequestState): z.infer<typeof requestList.output>[
     status: state.status,
     question: created.question,
     to: created.to,
+    ...(created.answerPolicy === undefined ? {} : { answerPolicy: created.answerPolicy }),
     ...(created.from === undefined ? {} : { from: created.from }),
     ...(created.deadline === undefined ? {} : { deadline: created.deadline }),
   };
