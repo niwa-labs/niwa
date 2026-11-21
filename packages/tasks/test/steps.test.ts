@@ -1,5 +1,5 @@
 // What a handler of another module sees of the tasks module through a step: a refusal it can catch
-// and correct.
+// and correct, and a result it waits for as an invocation that is waiting, holding nothing in memory.
 
 import { expect, test } from "bun:test";
 
@@ -11,13 +11,18 @@ import { connectAsOwner, createNiwa, messages, tempHome } from "@niwa-labs/testi
 import type { Host } from "@niwa-labs/testing";
 import { z } from "zod";
 
-import { TaskId, TaskRefusal, taskCreate, taskFinish, taskResult, tasks } from "../src/index.ts";
+import { TaskId, TaskRefusal, TaskWaiters, taskCreate, taskFinish, taskResult, tasks } from "../src/index.ts";
 
 const WORKER: Address = { kind: "agent", id: "worker" };
 const OWNER: Address = { kind: "owner" };
 
-/** A handler of the plugin "worker" speaks as the worker, which is responsible for the tasks. */
-const bind: CallerBinding = (caller: Caller) => (caller.kind === "handler" && caller.handler.startsWith("worker/") ? WORKER : undefined);
+const SOMEBODY: Address = { kind: "agent", id: "somebody" };
+
+/** A handler of the plugin "worker" speaks as the worker; a client speaks as somebody else. */
+const bind: CallerBinding = (caller: Caller) => {
+  if (caller.kind === "handler" && caller.handler.startsWith("worker/")) return WORKER;
+  return caller.kind === "client" ? SOMEBODY : undefined;
+};
 
 /** The record that wakes the worker: a task for it to do. */
 const Job = record("worker.job", z.object({ task: TaskId }), { open: true });
@@ -90,3 +95,53 @@ test("a result that does not fit is a refusal the handler catches and corrects, 
   });
 }, 30_000);
 
+test("a handler that asks for the result of an open task waits as an invocation, and goes on when the task ends", async () => {
+  const waiter = plugin("worker", (api) => {
+    api.declare(Job, Saw);
+    api.on(Job, async (job, step) => {
+      const got = await step(taskResult, { task: job.task });
+      await step.emit(Saw, { task: job.task, note: got.outcome.status });
+    });
+  });
+
+  await served(waiter, async (niwa, home) => {
+    const { id } = await niwa.call(taskCreate, {
+      kind: "change",
+      description: "Move argument parsing",
+      text: "Move it.",
+      askedBy: OWNER,
+      responsible: SOMEBODY,
+      reportTo: OWNER,
+    });
+    const client = await connectAsOwner(home);
+    try {
+      await client.emit(Job, { task: id });
+      // The invocation is waiting for the end of the task: it is not a step that runs in memory.
+      await eventually(async () => (await states(niwa)).includes("waiting"), "the invocation should be waiting");
+      await Bun.sleep(200);
+      expect((await states(niwa)).at(-1)).toBe("waiting");
+
+      await client.call(taskFinish, { task: id, result: "done" });
+      await eventually(async () => (await niwa.records.read({ types: ["worker.saw" as never] })).length === 1, "the handler should have gone on");
+      expect((await niwa.records.read({ types: ["worker.saw" as never] })).map((row) => (row.data as { note: string }).note)).toEqual(["result"]);
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+}, 30_000);
+
+test("the callers that wait for a task in memory leave nothing behind, whether the task ended or not", () => {
+  const waiters = new TaskWaiters();
+  const ended = waiters.watch("task-aaaaaa");
+  expect(waiters.size).toBe(1);
+  // The caller read the state, found the task done and stopped waiting.
+  ended.stop();
+  expect(waiters.size).toBe(0);
+
+  const first = waiters.watch("task-bbbbbb");
+  const second = waiters.watch("task-bbbbbb");
+  first.stop();
+  expect(waiters.size).toBe(1);
+  second.stop();
+  expect(waiters.size).toBe(0);
+});

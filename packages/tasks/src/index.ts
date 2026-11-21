@@ -82,7 +82,7 @@ export interface TasksOptions {
 /** The tasks module. */
 export function tasks(opts: TasksOptions = {}): Plugin {
   const bind = bindingOf(opts.messages);
-  const waiting = new Map<string, Set<() => void>>();
+  const waiters = new TaskWaiters();
 
   return plugin("tasks", (api) => {
     // The page of this plugin in the cockpit: a client module, offered by the path of its source.
@@ -91,16 +91,7 @@ export function tasks(opts: TasksOptions = {}): Plugin {
     const ledger = taskLedger(journal);
     const ids = taskIds(journal);
     const written = taskActions(ledger, ids, bind);
-    const result = taskResult(ledger, {
-      watch(task) {
-        let wake = () => {};
-        const woken = new Promise<void>((resolve) => (wake = resolve));
-        const set = waiting.get(task) ?? new Set();
-        set.add(wake);
-        waiting.set(task, set);
-        return { woken, stop: () => set.delete(wake) };
-      },
-    });
+    const result = taskResultAction(ledger, waiters);
     const reads = taskReads(ledger, ids, bind);
 
     api.declare(TaskCreated, TaskUpdated, TaskDone);
@@ -172,12 +163,43 @@ export function tasks(opts: TasksOptions = {}): Plugin {
       TaskDone,
       { id: "task.done.wake" },
       async (data) => {
-        const wakes = waiting.get(data.task);
-        waiting.delete(data.task);
-        for (const wake of wakes ?? []) wake();
+        waiters.wake(data.task);
       },
     );
   });
+}
+
+/** The callers that wait for the end of a task in this process, by task. */
+export class TaskWaiters {
+  readonly #by = new Map<string, Set<() => void>>();
+
+  /** Watch for the end of a task. Watching starts before the state is read, so no end is missed. */
+  watch(task: string): { woken: Promise<void>; stop(): void } {
+    let wake = () => {};
+    const woken = new Promise<void>((resolve) => (wake = resolve));
+    const set = this.#by.get(task) ?? new Set();
+    set.add(wake);
+    this.#by.set(task, set);
+    return {
+      woken,
+      stop: () => {
+        set.delete(wake);
+        if (set.size === 0 && this.#by.get(task) === set) this.#by.delete(task);
+      },
+    };
+  }
+
+  /** The task ended: wake whoever waits for it. */
+  wake(task: string): void {
+    const wakes = this.#by.get(task);
+    this.#by.delete(task);
+    for (const wake of wakes ?? []) wake();
+  }
+
+  /** How many tasks have a caller waiting. */
+  get size(): number {
+    return this.#by.size;
+  }
 }
 
 /** The actions that write facts, made from the ledger and the binding of callers to addresses. */
@@ -357,31 +379,37 @@ function taskReads(ledger: TaskLedger, ids: IdIndex<"task">, bind: CallerBinding
   return { list, get, assigned };
 }
 
-/** The ways the action that asks for a result is woken. */
-interface Watcher {
-  /** Watch for the end of a task. Watching starts before the state is read, so no end is missed. */
-  watch(task: string): { woken: Promise<void>; stop(): void };
-}
-
-/** The action that gives the result of a task, and waits for it when the task is not done. */
-function taskResult(ledger: TaskLedger, watcher: Watcher) {
+/**
+ * The action that gives the result of a task, and waits for it when the task is not done.
+ *
+ * Inside an invocation the wait is the invocation's own: it is waiting for the end of the task, it
+ * holds nothing in memory and it survives a restart. It looks from the creation of the task, so an
+ * end written between the read and the wait is not missed. A direct call has no invocation to
+ * suspend: it blocks in this process until the end is written.
+ */
+export function taskResultAction(ledger: TaskLedger, waiters: TaskWaiters) {
   return action(taskResultRef, {
     // The result is read from the journal: it may be asked again.
     recovery: "repeat",
     effect: "read",
     world: "niwa",
-    async run(input) {
+    async run(input, ctx) {
       for (;;) {
-        const watch = watcher.watch(input.task);
+        const watch = ctx.invocation === undefined ? waiters.watch(input.task) : undefined;
         try {
           const state = ledger.state(input.task);
           if (state === undefined) {
             throw new TaskRefusal("unknown", `the task "${input.task}" does not exist`);
           }
           if (state.status === "done") return { task: input.task, outcome: state.outcome };
-          await watch.woken;
+          if (watch === undefined) {
+            const created = ledger.created(input.task);
+            await ctx.wait(TaskDone, { filter: { task: input.task }, ...(created === undefined ? {} : { from: created.seq }) });
+          } else {
+            await watch.woken;
+          }
         } finally {
-          watch.stop();
+          watch?.stop();
         }
       }
     },
