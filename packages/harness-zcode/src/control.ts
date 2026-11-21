@@ -1220,6 +1220,15 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         throw error;
       }
       const id = makeSessionId(harnessId, session.nativeId);
+      // The caller knows the session before its prompt goes: a start cut off while its first turn
+      // is on the way still finds it. A session whose name could not be kept is given no work.
+      try {
+        await startOptions.named?.(id);
+      } catch (error) {
+        if (sessions.get(session.nativeId) === session) sessions.delete(session.nativeId);
+        await stopSession(session);
+        throw error;
+      }
       // The session exists once ZCode has named it. The prompt is its first turn, delivered like a
       // send: the start waits for ZCode to accept the turn, never for the turn to end.
       const text = promptText(startOptions.prompt);

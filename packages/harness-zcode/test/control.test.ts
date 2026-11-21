@@ -908,6 +908,37 @@ test("close stops the process of one session, as the contract's release", async 
   expect(await c.state(session)).toBe("unknown");
 });
 
+test("a start tells the caller the session before its first prompt goes out", async () => {
+  const named: string[] = [];
+  let prompted: number | undefined;
+  const { session } = await control().start({
+    prompt: hello,
+    cwd: dir,
+    named: async (id) => {
+      named.push(String(id.native));
+      prompted = (await requestsOf("session/send")).length;
+    },
+  });
+  expect(named).toEqual([String(session.native)]);
+  expect(prompted).toBe(0);
+});
+
+test("a start whose session could not be written down gives it no work and stops the process", async () => {
+  const c = control();
+  await expect(
+    c.start({
+      prompt: hello,
+      cwd: dir,
+      named: async () => {
+        throw new Error("the journal is full");
+      },
+    }),
+  ).rejects.toThrow("the journal is full");
+  expect(await requestsOf("session/send")).toEqual([]);
+  const pid = (await logOf("env.log"))[0]?.["pid"] as number;
+  expect(() => process.kill(pid, 0)).toThrow();
+});
+
 test("a start still being born when the control side is disposed leaves no session and no process", async () => {
   // The manifest of the box is waited for before the process exists: the launch is held there.
   let open: () => void = () => {};
