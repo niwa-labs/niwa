@@ -288,17 +288,21 @@ export interface SessionReading {
 /**
  * The stretches of a message's text that sit in a tag a harness wraps its own insertions in: `tags`
  * names each tag and who puts it there. A stretch takes in the whitespace that follows it, so what
- * is left of the message reads as the person wrote it. An unlisted tag is the person's own.
+ * is left of the message reads as the person wrote it, and tags that touch, from one origin, are one stretch. An unlisted tag is the person's own.
  */
 export function insertedRanges(text: string, tags: Readonly<Record<string, InsertionOrigin>>): InsertedRange[] {
   const names = Object.keys(tags);
   if (names.length === 0) return [];
   const block = new RegExp(`<(${names.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b[^>]*>[\\s\\S]*?</\\1>\\s*`, "g");
-  return [...text.matchAll(block)].map((match) => ({
-    from: match.index,
-    to: match.index + match[0].length,
-    origin: tags[match[1]!]!,
-  }));
+  const ranges: InsertedRange[] = [];
+  for (const match of text.matchAll(block)) {
+    const origin = tags[match[1]!]!;
+    const last = ranges[ranges.length - 1];
+    // Tags that touch and come from the same place are one stretch.
+    if (last !== undefined && last.origin === origin && last.to === match.index) ranges[ranges.length - 1] = { ...last, to: match.index + match[0].length };
+    else ranges.push({ from: match.index, to: match.index + match[0].length, origin });
+  }
+  return ranges;
 }
 
 /**

@@ -347,3 +347,66 @@ test("a locator resumes exactly, and raw gives the harness's own record", async 
   });
   await expect(reading().raw(ID, "bogus" as Locator)).rejects.toThrow("not of this side");
 });
+
+const userBlocks = (blocks: unknown[]): string =>
+  record({
+    type: "user",
+    uuid: "u2",
+    timestamp: "2026-10-07T12:00:02.000Z",
+    cwd: "/work/project",
+    sessionId: SESSION,
+    message: { role: "user", content: blocks },
+  });
+
+test("a message marks the stretches the harness inserted, and a tag the person typed is not among them", async () => {
+  const reminder = "<system-reminder>be brief</system-reminder>\n";
+  const command = "<command-name>/review</command-name>\n<command-args></command-args>";
+  writeFileSync(
+    logPath(),
+    userBlocks([
+      { type: "text", text: `${reminder}Fix <user-card>x</user-card> now` },
+      { type: "text", text: command },
+      { type: "text", text: "plain" },
+    ]),
+  );
+  const [first, second, third] = await all(reading().read(ID));
+  expect(first).toMatchObject({ kind: "user", text: `${reminder}Fix <user-card>x</user-card> now`, inserted: [{ from: 0, to: reminder.length, origin: "harness" }] });
+  expect(second).toMatchObject({ kind: "user", inserted: [{ from: 0, to: command.length, origin: "command" }] });
+  // Nothing inserted is an answer too: an empty list, not an absent field.
+  expect(third).toMatchObject({ kind: "user", text: "plain", inserted: [] });
+});
+
+test("a picture in a message is a mark where it stood, alone or after the text, and its payload is not kept", async () => {
+  const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } };
+  writeFileSync(logPath(), userBlocks([{ type: "text", text: "look at this" }, image]) + userBlocks([image]));
+  const [mixed, alone] = await all(reading().read(ID));
+  expect(mixed).toMatchObject({ kind: "user", text: "look at this", images: [{ at: 12, mime: "image/png" }] });
+  expect(alone).toMatchObject({ kind: "user", text: "", images: [{ at: 0, mime: "image/png" }] });
+  expect(JSON.stringify([mixed, alone])).not.toContain("AAAA");
+});
+
+test("a picture in a tool result is taken out of its output and marked where it stood", async () => {
+  const image = { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "BBBB" } };
+  writeFileSync(
+    logPath(),
+    assistant([{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a.png" } }]) +
+      userBlocks([{ type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "a" }, image, { type: "text", text: "b" }] }]),
+  );
+  const result = (await all(reading().read(ID))).find((r) => r.kind === "tool-result");
+  expect(result).toMatchObject({ kind: "tool-result", output: [{ type: "text", text: "a" }, { type: "text", text: "b" }], images: [{ at: 1, mime: "image/jpeg" }] });
+  expect(JSON.stringify(result)).not.toContain("BBBB");
+});
+
+test("a locator from before the file was rewritten starts the read over and its first record says so", async () => {
+  writeFileSync(logPath(), user("one") + assistant([{ type: "text", text: "two" }]));
+  const before = await all(reading().read(ID));
+  expect(before.some((r) => r.reanchored === true)).toBe(false);
+  // The file is replaced by another history: the old locator names nothing in it.
+  writeFileSync(logPath(), user("other beginning") + assistant([{ type: "text", text: "other" }]) + user("more"));
+  const after = await all(reading().read(ID, before[1]?.locator));
+  expect(after.map((r) => r.kind)).toEqual(["user", "assistant", "user"]);
+  expect(after.map((r) => r.reanchored)).toEqual([true, undefined, undefined]);
+  // A locator that still holds follows on without the mark.
+  const again = await all(reading().read(ID, after[0]?.locator));
+  expect(again.some((r) => r.reanchored === true)).toBe(false);
+});

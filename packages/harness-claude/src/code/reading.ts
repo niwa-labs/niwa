@@ -26,6 +26,7 @@ import type {
   SessionInfo,
   SessionReading,
   SessionRecord,
+  InsertionOrigin,
   ToolShape,
 } from "@niwa-labs/harness";
 import {
@@ -34,6 +35,8 @@ import {
   NOT_SCANNED,
   NativeSessionIdSchema,
   failedCoverage,
+  insertedRanges,
+  takeImages,
   titleFromText,
   unavailableCoverage,
 } from "@niwa-labs/harness";
@@ -41,6 +44,7 @@ import {
 import {
   RawRecordSchema,
   isServerError,
+  typeOf,
   millisOf,
   newParseState,
   parseNativeRecord,
@@ -257,6 +261,8 @@ export class ClaudeCodeReading implements SessionReading {
       // would refuse to name its own records a moment later.
       const head = await prefixOf(handle, PREFIX_BYTES);
       const resume = position !== undefined && (await positionHolds(handle, position)) ? position : undefined;
+      // A locator that no longer holds starts the read over, and the first record says so.
+      let restarted = position !== undefined && resume === undefined;
       const state = newParseState();
       const children = await this.#childrenOf(found);
       for await (const line of scanLines(handle, resume?.offset ?? 0)) {
@@ -265,7 +271,8 @@ export class ClaudeCodeReading implements SessionReading {
         const produced = await this.#recordsOf(line, state, children);
         for (const [index, record] of produced.entries()) {
           if (index < skip) continue;
-          yield { ...record, locator: makeLocator(head, line, index + 1) } as SessionRecord;
+          yield { ...record, ...(restarted ? { reanchored: true } : {}), locator: makeLocator(head, line, index + 1) } as SessionRecord;
+          restarted = false;
         }
       }
     } finally {
@@ -521,8 +528,41 @@ function userRecords(
     const summary = blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
     return [{ kind: "compaction", summary, ...base }];
   }
-  const records = blocks.flatMap((block) => blockRecords(block, "user", base, state, children, harness));
+  const records: Unlocated[] = [];
+  for (const block of blocks) {
+    const image = imageOf(block);
+    const last = records[records.length - 1];
+    if (image === undefined) {
+      records.push(...blockRecords(block, "user", base, state, children, harness));
+    } else if (last?.kind === "user") {
+      // The picture stands where the text before it ends.
+      records[records.length - 1] = { ...last, images: [...(last.images ?? []), { at: last.text.length, ...image }] };
+    } else {
+      records.push({ kind: "user", text: "", inserted: [], images: [{ at: 0, ...image }], ...base });
+    }
+  }
   return records.length === 0 ? [unknownRecord(raw, base)] : records;
+}
+
+/** The tags Claude Code wraps its own insertions in, and who puts each there. */
+const INSERTION_TAGS: Readonly<Record<string, InsertionOrigin>> = {
+  "system-reminder": "harness",
+  "local-command-caveat": "command",
+  "local-command-stdout": "command",
+  "local-command-stderr": "command",
+  "command-name": "command",
+  "command-message": "command",
+  "command-args": "command",
+  "command-contents": "command",
+  "user-prompt-submit-hook": "hook",
+};
+
+/** What an image block says of itself: its media type when it names one; `undefined` for a block that is not an image. */
+function imageOf(block: unknown): { mime?: string } | undefined {
+  if (typeOf(block) !== "image") return undefined;
+  const source = (block as { source?: { media_type?: unknown } }).source;
+  const mime = source?.media_type;
+  return typeof mime === "string" && mime.length > 0 ? { mime } : {};
 }
 
 /** What the model said, and the calls it made. */
@@ -554,7 +594,7 @@ function blockRecords(
   switch (block.type) {
     case "text":
       return role === "user"
-        ? [{ kind: "user", text: block.text, ...base }]
+        ? [{ kind: "user", text: block.text, inserted: insertedRanges(block.text, INSERTION_TAGS), ...base }]
         : [{ kind: "assistant", text: block.text, ...(model !== undefined ? { model } : {}), ...base }];
     case "thinking":
       return [{ kind: "thinking", text: block.thinking, redacted: false, ...base }];
@@ -625,7 +665,17 @@ function callRecord(
 /** The answer of a tool, named by the call it answers. */
 function resultRecord(callId: string, output: unknown, ok: boolean, base: RecordBase, state: ParseState): Unlocated {
   const name = state.toolNames.get(callId);
-  return { kind: "tool-result", callId, ...(name !== undefined ? { name } : {}), output: optionalJsonOf(output), ok, ...base };
+  // The pictures of a result are marks, not payload: the encoded image is not kept in the output.
+  const { rest, images } = Array.isArray(output) ? takeImages<unknown>(output, imageOf) : { rest: output, images: [] };
+  return {
+    kind: "tool-result",
+    callId,
+    ...(name !== undefined ? { name } : {}),
+    output: optionalJsonOf(rest),
+    ok,
+    ...(images.length > 0 ? { images } : {}),
+    ...base,
+  };
 }
 
 function unknownRecord(raw: unknown, base: RecordBase): Unlocated {
