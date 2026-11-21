@@ -196,10 +196,9 @@ export type Narrowed = { readonly rules: Grant } | { readonly refused: readonly 
  * - the request itself, asking when the parent rule that governs it asks;
  * - the parent's rules that lie inside the request, which stay as the parent has them;
  * - the part that a parent rule that asks shares with the request, when the two overlap without
- *   one holding the other (the name is wider in one and the target in the other): the request
- *   would otherwise let that part through without a question.
- *
- * A request that asks makes every call it covers ask, whatever the rules inside it say.
+ *   one holding the other (the name is wider in one and the target in the other) and no longer
+ *   parent rule answers for that part: the request would otherwise let it through without a
+ *   question.
  */
 export function narrow(parent: Grant, requested: readonly RuleSpec[]): Narrowed {
   const refused: string[] = [];
@@ -214,10 +213,11 @@ export function narrow(parent: Grant, requested: readonly RuleSpec[]): Narrowed 
     rules.push({ ...asked, ask: asked.ask || over.ask });
     for (const own of parent.rules) {
       if (inside(asked, own)) {
-        rules.push({ ...own, ask: own.ask || asked.ask });
+        rules.push(own);
       } else if (own.ask && !holds(own, asked)) {
+        // Only where the rule decides: a longer parent rule over the shared part answers for it.
         const shared = common(asked, own);
-        if (shared !== undefined) rules.push({ ...shared, ask: true });
+        if (shared !== undefined && governing(parent, shared)?.ask === true) rules.push({ ...shared, ask: true });
       }
     }
   }

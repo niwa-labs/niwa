@@ -128,7 +128,6 @@ function violation(parent: Grant, requested: RuleSpec, child: Grant): string | u
     if (now < closedness(parent, name, target)) return `${at} is less closed than under the parent`;
     const inRequest = match({ rules: [{ ...asked, ask: false }] }, "call", name, target) !== undefined;
     if (now < 2 && !inRequest) return `${at} is outside the request`;
-    if (inRequest && asked.ask && now < 1 && closedness(parent, name, target) < 2) return `${at} does not ask though the request does`;
   }
   return undefined;
 }
@@ -185,4 +184,31 @@ test("a grant that now asks on part of what a rule of the old one let through is
   const before = grant(["a.b@*"]);
   expect(narrowed(before, grant(["*", { do: "a.*@secret/*", ask: true }]))).toBe(true);
   expect(narrowed(before, grant(["*", { do: "a.*@secret/*" }]))).toBe(false);
+});
+
+test("a grant is not narrowed by itself, and one that only drops asks or adds rules is not either", () => {
+  const failures: string[] = [];
+  const check = (rules: RuleSpec[]): void => {
+    const own = grant(rules);
+    if (narrowed(own, own)) failures.push(`${JSON.stringify(rules)} is narrowed by itself`);
+    // The same rules without their asks, and with a rule on top, hold everything the grant has.
+    const open = grant(rules.map((spec) => (typeof spec === "string" ? spec : spec.do)));
+    if (narrowed(own, open)) failures.push(`${JSON.stringify(rules)} is narrowed by dropping its asks`);
+    if (narrowed(own, grant([...rules, "emit:wf.*"]))) failures.push(`${JSON.stringify(rules)} is narrowed by gaining a rule`);
+  };
+  for (const first of SPECS) for (const second of SPECS) check([first, second]);
+  let state = 7;
+  const next = (below: number): number => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state % below;
+  };
+  for (let round = 0; round < 3000; round++) check([0, 1, 2, 3].map(() => SPECS[next(SPECS.length)]!));
+  expect(failures.slice(0, 5)).toEqual([]);
+});
+
+test("a grant that gives up an ask is widened, whatever rules sit under it", () => {
+  const before = grant([{ do: "a.*", ask: true }, "a.b"]);
+  expect(narrowed(before, grant(["a.*", "a.b"]))).toBe(false);
+  const own = grant([{ do: "a.*@x/*", ask: true }, "a.b@*"]);
+  expect(narrowed(own, own)).toBe(false);
 });
