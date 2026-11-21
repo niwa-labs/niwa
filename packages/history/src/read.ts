@@ -109,15 +109,20 @@ async function readDigest(
   }
 }
 
-/** Retain only the records of the requested window while scanning in the harness's order. */
+/**
+ * Retain only the records of the requested window while scanning in the harness's order.
+ *
+ * A page never splits the records of one locator: the next page goes back from the locator of the
+ * page's first record, so a record left out of this page by a split would be unreachable from the
+ * next. The page is therefore the last `limit` records widened to the whole of the locator it starts
+ * in, and a locator that holds more than `limit` records is one page.
+ */
 async function readRecordWindow(
   reading: SessionReading,
   id: SessionId,
   { limit, before }: { limit: number; before?: string },
 ) {
   const records: SessionRecord[] = [];
-  // Once the buffer fills, each new record replaces the oldest one.
-  let next = 0;
   let hasEarlier = false;
   let found = before === undefined;
   let coverage: Coverage;
@@ -127,9 +132,12 @@ async function readRecordWindow(
         found = true;
         break;
       }
-      if (records.length === limit) hasEarlier = true;
-      records[next] = record;
-      next = (next + 1) % limit;
+      records.push(record);
+      // The oldest record goes once the page is full, unless the next one is of its locator.
+      while (records.length > limit && records[0]!.locator !== records[1]!.locator) {
+        records.shift();
+        hasEarlier = true;
+      }
     }
     coverage = await reading.coverage(id);
   } catch (error) {
@@ -142,8 +150,7 @@ async function readRecordWindow(
     }
     return { records: [], coverage, page: { hasEarlier: false } };
   }
-  const ordered = hasEarlier ? records.slice(next).concat(records.slice(0, next)) : records;
-  return { records: ordered.map(recordOf), coverage, page: { hasEarlier } };
+  return { records: records.map(recordOf), coverage, page: { hasEarlier } };
 }
 
 /**

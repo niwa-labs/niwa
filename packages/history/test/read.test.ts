@@ -60,3 +60,28 @@ test("a digest read says it started over when the reading side did, and carries 
   const later = await readTranscript({ instance, reading }, ID, { mode: "digest", from: "L1" });
   expect(later.digest?.restarted).toBe(false);
 });
+
+test("pages going back never split the records of one locator, so no record is unreachable", async () => {
+  const shared: SessionRecord[] = [
+    { kind: "user", text: "a", locator: at(1), incomplete: false },
+    { kind: "assistant", text: "b1", locator: at(2), incomplete: false },
+    { kind: "assistant", text: "b2", locator: at(2), incomplete: false },
+    { kind: "assistant", text: "c", locator: at(3), incomplete: false },
+  ];
+  const sharing: SessionReading = { ...reading, async *read() { yield* shared; } };
+  const texts = (answer: { records: unknown[] }) => (answer.records as Array<{ text: string }>).map((record) => record.text);
+
+  const last = await readTranscript({ instance, reading: sharing }, ID, { window: { limit: 2 } });
+  // The page is the last two records, widened to take in the whole of the locator it starts in.
+  expect(texts(last)).toEqual(["b1", "b2", "c"]);
+  expect(last.page).toEqual({ hasEarlier: true });
+
+  const earlier = await readTranscript({ instance, reading: sharing }, ID, { window: { limit: 2, before: "L2" } });
+  expect(texts(earlier)).toEqual(["a"]);
+  expect(earlier.page).toEqual({ hasEarlier: false });
+
+  // One locator holding more records than the limit is one page.
+  const crowded = await readTranscript({ instance, reading: sharing }, ID, { window: { limit: 1, before: "L3" } });
+  expect(texts(crowded)).toEqual(["b1", "b2"]);
+  expect(crowded.page).toEqual({ hasEarlier: true });
+});

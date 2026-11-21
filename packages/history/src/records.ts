@@ -127,7 +127,9 @@ const readFields = {
       limit: z.number().int().positive().max(250),
       before: z.string().min(1).optional(),
     })
-    .describe("Return up to limit records immediately before the given locator, or from the end of the transcript. Cannot be combined with from.")
+    .describe(
+      "Return limit records immediately before the given locator, or from the end of the transcript, widened to take in every record of the locator the page starts in: a page never splits one, so more than limit may come back. Cannot be combined with from.",
+    )
     .optional(),
   /**
    * How much to keep: `full` (every record, the default), `digest` (messages whole, each tool call
