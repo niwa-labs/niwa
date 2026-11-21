@@ -44,6 +44,7 @@ import { runSource } from "./source.ts";
 import { chainOf } from "./trace.ts";
 import type { Chain } from "./trace.ts";
 
+export { feedOf } from "./feed.ts";
 export type { Chain, ChainRecord } from "./trace.ts";
 
 /**
