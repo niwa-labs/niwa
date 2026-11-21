@@ -123,7 +123,8 @@ export function history(options: HistoryOptions): Plugin {
   return plugin("history", (api: PluginApi) => {
     api.declare(...HISTORY_TYPES);
     const bindings = bindingsOf(options);
-    const watches = new Map<string, AbortController>();
+    /** The watches that are on: the signal that stops one, and the task that settles when it has stopped writing. */
+    const watches = new Map<string, { readonly controller: AbortController; finished: Promise<void> }>();
 
     /** Where each watch stands, from the journal. */
     const standingNow = () => standingOf(api.journal?.()?.since(seq(0), HISTORY_TYPES.map((type) => type.name)) ?? []);
@@ -148,8 +149,10 @@ export function history(options: HistoryOptions): Plugin {
       const key = keyOf(id);
       const under = starting.get(key);
       if (under !== undefined) return await under;
-      if (watches.has(key)) return;
-      const task = start();
+      const running = watches.get(key);
+      if (running !== undefined && !running.controller.signal.aborted) return;
+      // A watch that is stopping finishes what it was writing before the next one starts.
+      const task = running === undefined ? start() : running.finished.then(start);
       starting.set(key, task);
       try {
         await task;
@@ -158,11 +161,32 @@ export function history(options: HistoryOptions): Plugin {
       }
     };
 
-    /** Stop following a session, when it is followed. */
-    const stop = (id: SessionId): void => {
-      const controller = watches.get(keyOf(id));
-      watches.delete(keyOf(id));
-      controller?.abort();
+    /** Stop following a session, when it is followed, and wait until the watch has stopped writing. */
+    const stop = async (id: SessionId): Promise<void> => {
+      const watch = watches.get(keyOf(id));
+      if (watch === undefined) return;
+      watch.controller.abort();
+      await watch.finished;
+    };
+
+    /**
+     * End the watch of a session with the record `write` makes. The watch is stopped first and what it
+     * was writing lands before the end, never after it; when the watch itself wrote the end meanwhile,
+     * nothing more is written. False when the session is not watched.
+     */
+    const finish = async (id: SessionId, write: () => Promise<unknown>): Promise<boolean> => {
+      if (standingNow().get(keyOf(id))?.watching !== true) return false;
+      await stop(id);
+      if (standingNow().get(keyOf(id))?.watching !== true) return false;
+      await write();
+      return true;
+    };
+
+    /** Write a record the watch learned, unless the watch was stopped meanwhile. */
+    const publish = async (signal: AbortSignal, write: () => Promise<unknown>): Promise<boolean> => {
+      if (signal.aborted) return false;
+      await write();
+      return true;
     };
 
     /** Follow a session; what it learns is written as records until it ends or the watch stops. */
@@ -171,9 +195,10 @@ export function history(options: HistoryOptions): Plugin {
       if (watches.has(key)) return;
       const reading = readingOf(id);
       const controller = new AbortController();
-      watches.set(key, controller);
+      const watch = { controller, finished: Promise.resolve() };
+      watches.set(key, watch);
       const owned = ownedBy(api.journal?.(), id);
-      void (async () => {
+      watch.finished = (async () => {
         try {
           const events = watchSession(reading, id, {
             signal: controller.signal,
@@ -186,22 +211,24 @@ export function history(options: HistoryOptions): Plugin {
             ...(standing.pid === undefined ? {} : { alive: () => lives(standing.pid!) }),
           });
           for await (const event of events) {
+            let written: boolean;
             switch (event.kind) {
               case "progress":
-                await api.emit(SessionProgress, { session: id, done: event.done, total: event.total });
+                written = await publish(controller.signal, () => api.emit(SessionProgress, { session: id, done: event.done, total: event.total }));
                 break;
               case "paused":
-                await api.emit(HistorySessionPaused, { session: id, upto: event.upto, why: event.why });
+                written = await publish(controller.signal, () => api.emit(HistorySessionPaused, { session: id, upto: event.upto, why: event.why }));
                 break;
               case "ended":
-                await api.emit(HistorySessionEnded, { session: id, certainty: event.certainty, why: event.why });
+                written = await publish(controller.signal, () => api.emit(HistorySessionEnded, { session: id, certainty: event.certainty, why: event.why }));
                 break;
             }
+            if (!written) break;
           }
         } catch {
-          // A host that closes while a record is written ends the watch; the next start resumes it.
+          // A watch that cannot go on is dropped; the journal still says it is on, so the next start resumes it.
         } finally {
-          if (watches.get(key) === controller) watches.delete(key);
+          if (watches.get(key) === watch) watches.delete(key);
         }
       })();
     };
@@ -257,10 +284,9 @@ export function history(options: HistoryOptions): Plugin {
         effect: "record",
         world: "niwa",
         run: async (input, ctx) => {
-          if (!watches.has(keyOf(input.session))) return { stopped: false };
-          stop(input.session);
-          await ctx.emit(HistorySessionUnwatched, { session: input.session });
-          return { stopped: true };
+          // The journal says whether a watch is on: one whose task has gone is still stopped by writing so.
+          const stopped = await finish(input.session, () => ctx.emit(HistorySessionUnwatched, { session: input.session }));
+          return { stopped };
         },
       }),
     );
@@ -272,12 +298,12 @@ export function history(options: HistoryOptions): Plugin {
         effect: "record",
         world: "niwa",
         run: async (input, ctx) => {
-          if (standingNow().get(keyOf(input.session))?.watching !== true) return { ended: false };
           // A session niwa runs ends when niwa says so: a sign that only suggests an end does not end it.
           if (GUESSED_SIGNALS.includes(input.signal) && ownedBy(api.journal?.(), input.session)) return { ended: false };
-          stop(input.session);
-          await ctx.emit(HistorySessionEnded, { session: input.session, certainty: certaintyOf(input.signal), why: input.signal });
-          return { ended: true };
+          const ended = await finish(input.session, () =>
+            ctx.emit(HistorySessionEnded, { session: input.session, certainty: certaintyOf(input.signal), why: input.signal }),
+          );
+          return { ended };
         },
       }),
     );
@@ -308,10 +334,9 @@ export function history(options: HistoryOptions): Plugin {
             return;
           }
           const id = stored.type === SESSION_ENDED ? sessionOfRef(session) : sessionOfPair(session);
-          if (id === undefined || standingNow().get(keyOf(id))?.watching !== true) return;
-          stop(id);
+          if (id === undefined) return;
           const why: EndSignal = stored.type === SESSION_ENDED ? "session-ended" : "end-hook";
-          await step.emit(HistorySessionEnded, { session: id, certainty: certaintyOf(why), why });
+          await finish(id, () => step.emit(HistorySessionEnded, { session: id, certainty: certaintyOf(why), why }));
         },
       };
       return [sessions];
@@ -330,7 +355,7 @@ export function history(options: HistoryOptions): Plugin {
         }
       }
       return () => {
-        for (const controller of watches.values()) controller.abort();
+        for (const { controller } of watches.values()) controller.abort();
         watches.clear();
       };
     });
