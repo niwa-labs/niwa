@@ -24,7 +24,7 @@
 
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { HOST_KEY_FILE, OWNER_TOKEN_FILE, action } from "@niwa-labs/core";
 import type { ActionContext } from "@niwa-labs/core";
@@ -66,6 +66,18 @@ const DRAIN_MS = 1000;
 
 /** Places under the user's home where credentials live. A box does not read them. */
 const CREDENTIAL_PLACES = [".ssh", ".aws", ".gnupg", ".netrc", ".config/gh", ".config/gcloud", ".docker", ".kube"] as const;
+
+/**
+ * The directory a call is about, as a grant names it: the real path, so a link cannot name a place
+ * the grant does not cover.
+ */
+function cwdTarget(cwd: string): string {
+  try {
+    return realpathSync(cwd);
+  } catch {
+    return resolve(cwd);
+  }
+}
 
 /** The directory a command runs in: the real path of an existing directory. */
 function directoryOf(cwd: string): string {
@@ -113,6 +125,7 @@ export function proc(options: ProcOptions = {}): Plugin {
     api.action(
       action(procRun, {
         recovery: "do-not-repeat",
+        target: (input) => cwdTarget(input.cwd),
         async run(input, ctx) {
           const cwd = directoryOf(input.cwd);
           const sandbox = await sandboxOf();
@@ -147,6 +160,7 @@ export function proc(options: ProcOptions = {}): Plugin {
     api.action(
       action(procExec, {
         recovery: "do-not-repeat",
+        target: (input) => cwdTarget(input.cwd),
         async run(input, ctx) {
           const cwd = directoryOf(input.cwd);
           // Every secret is resolved before anything starts: one that cannot be given stops the call.

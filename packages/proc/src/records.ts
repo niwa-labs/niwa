@@ -13,9 +13,6 @@
  * value is resolved where the command starts and never written down.
  */
 
-import { realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
-
 import { actionRef, record } from "@niwa-labs/core";
 import { z } from "zod";
 
@@ -49,7 +46,7 @@ const Cmd = z
   .min(1)
   .refine((argv) => argv[0] !== undefined && argv[0].length > 0, "the program must not be empty");
 
-const Cwd = z.string().refine((path) => isAbsolute(path), "the working directory must be an absolute path");
+const Cwd = z.string().regex(/^\//, "the working directory must be an absolute path");
 
 const Timeout = z.number().int().min(1).max(MAX_TIMEOUT_MS);
 
@@ -91,18 +88,6 @@ export const BoxUsed = z.strictObject({
 });
 export type BoxUsed = z.infer<typeof BoxUsed>;
 
-/**
- * The directory a call is about, as a grant names it: the real path, so a link cannot name a place
- * the grant does not cover.
- */
-export function cwdTarget(cwd: string): string {
-  try {
-    return realpathSync(cwd);
-  } catch {
-    return resolve(cwd);
-  }
-}
-
 export const procRun = actionRef("proc.run", {
   description:
     "Run a command in a box: it may write only in `cwd`, it has no network and no credentials. " +
@@ -118,7 +103,6 @@ export const procRun = actionRef("proc.run", {
     env: z.record(EnvName, z.string()).optional(),
   }),
   output: ProcResult.extend({ box: BoxUsed }),
-  target: (input) => cwdTarget(input.cwd),
 });
 
 export const procExec = actionRef("proc.exec", {
@@ -139,7 +123,6 @@ export const procExec = actionRef("proc.exec", {
     secrets: z.array(SecretName).optional(),
   }),
   output: ProcResult,
-  target: (input) => cwdTarget(input.cwd),
 });
 
 /** A command ended. Written by both actions, once the output is stored. */

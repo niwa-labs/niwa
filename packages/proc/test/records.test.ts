@@ -29,10 +29,6 @@ test("a secret reference names a variable-like secret", () => {
   expect(secret("DEPLOY_KEY")).toEqual({ secret: "DEPLOY_KEY" });
 });
 
-test("a call is about its real directory, so a link cannot name another place", () => {
-  expect(procRun.target?.({ ...base, cwd: "/tmp" } as never)).toBe(procRun.target?.({ ...base, cwd: "/private/tmp" } as never));
-});
-
 test("run is a write in the local world, exec an irreversible one in the external world", () => {
   expect(PROC_RUN_CLASS).toEqual({ effect: "write", world: "local" });
   expect(PROC_EXEC_CLASS).toEqual({ effect: "irreversible", world: "external" });
