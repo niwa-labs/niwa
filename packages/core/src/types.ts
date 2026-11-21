@@ -627,6 +627,8 @@ export interface JournalReader {
   find(q: JournalQuery): StoredRecord[];
   /** The records that answer a query, in commit order; at most `limit` of them when it is given. */
   query(q: ResolvedQuery, limit?: number): StoredRecord[];
+  /** The last `count` records that answer a query, in commit order; read from the end, so the cost does not follow the journal's size. */
+  tail(q: ResolvedQuery, count: number): StoredRecord[];
   /** Highest committed seq, 0 when empty. */
   last(): Seq;
 }

@@ -1188,7 +1188,7 @@ class Niwa implements Host {
     });
     const end = journal.last();
     if (input.tail !== undefined) {
-      return { records: journal.query(query).slice(-input.tail), next: seq(Math.max(end, from)) };
+      return { records: journal.tail(query, input.tail), next: seq(Math.max(end, from)) };
     }
     const records = journal.query(query, input.limit);
     const full = input.limit !== undefined && records.length === input.limit;

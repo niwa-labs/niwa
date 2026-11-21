@@ -428,18 +428,9 @@ class SqliteJournal implements Journal {
 
   query(q: ResolvedQuery, limit?: number): StoredRecord[] {
     this.assertOpen();
-    const where = ["seq > ?"];
-    const params: SQLQueryBindings[] = [];
-    if (q.types !== undefined && q.types.length > 0) {
-      const one = q.types.map((selector) => typeClause(selector, params));
-      where.push(`(${one.join(" OR ")})`);
-    }
-    if (q.stream !== undefined) {
-      where.push("stream = ?");
-      params.push(q.stream);
-    }
+    const { where, params } = this.clauseOf(q);
     const statement = this.db.query<RecordRow, SQLQueryBindings[]>(
-      `SELECT * FROM records WHERE ${where.join(" AND ")} ORDER BY seq LIMIT ?`,
+      `SELECT * FROM records WHERE ${where} ORDER BY seq LIMIT ?`,
     );
     // The filter is equality on paths of the data, read the same way everywhere: the rows of the
     // types and the stream are read a chunk at a time and the filter is applied to each.
@@ -458,6 +449,46 @@ class SqliteJournal implements Journal {
       if (last === undefined || rows.length < want) return found;
       cursor = last.seq;
     }
+  }
+
+  tail(q: ResolvedQuery, count: number): StoredRecord[] {
+    this.assertOpen();
+    const { where, params } = this.clauseOf(q);
+    const statement = this.db.query<RecordRow, SQLQueryBindings[]>(
+      `SELECT * FROM records WHERE ${where} AND seq < ? ORDER BY seq DESC LIMIT ?`,
+    );
+    // From the end backwards, the same way `query` reads forwards: a chunk at a time, the filter applied to each row,
+    // and no more rows than the count needs when nothing is filtered.
+    const found: StoredRecord[] = [];
+    let before = Number.MAX_SAFE_INTEGER;
+    for (;;) {
+      const want = q.filter === undefined ? count - found.length : QUERY_CHUNK;
+      const rows = statement.all(q.from ?? 0, ...params, before, want);
+      for (const row of rows) {
+        const record = decode(row);
+        if (q.filter !== undefined && !holds(record.data, q.filter)) continue;
+        found.push(record);
+        if (found.length >= count) return found.reverse();
+      }
+      const last = rows.at(-1);
+      if (last === undefined || rows.length < want) return found.reverse();
+      before = last.seq;
+    }
+  }
+
+  /** The condition of the types and the stream of a query, and what it binds after the position: the filter is not SQL. */
+  private clauseOf(q: ResolvedQuery): { where: string; params: SQLQueryBindings[] } {
+    const where = ["seq > ?"];
+    const params: SQLQueryBindings[] = [];
+    if (q.types !== undefined && q.types.length > 0) {
+      const one = q.types.map((selector) => typeClause(selector, params));
+      where.push(`(${one.join(" OR ")})`);
+    }
+    if (q.stream !== undefined) {
+      where.push("stream = ?");
+      params.push(q.stream);
+    }
+    return { where: where.join(" AND "), params };
   }
 
   find(q: JournalQuery): StoredRecord[] {

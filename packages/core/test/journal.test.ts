@@ -16,6 +16,7 @@ import {
   RecordTooLarge,
   recordId,
   recordTypeName,
+  resolveQuery,
   seq,
   streamId,
 } from "../src/index.ts";
@@ -149,5 +150,42 @@ test("a record whose data is larger than a record may be is refused, and nothing
   expect(journal.get(recordId("a"))).toBeUndefined();
   // Just under the limit is a record like any other.
   expect(journal.append(rec("c", null, { big: big.slice(0, RECORD_DATA_LIMIT - 20) })).seq).toBe(seq(1));
+  journal.close();
+});
+
+test("the tail of a query is the last of what the query answers, whatever narrows it", async () => {
+  const home = await tempHome();
+  const journal = openJournal(home.path);
+  // More records than one chunk of a filtered read, so the walk back crosses chunks.
+  const many: NewRecord[] = [];
+  for (let n = 0; n < 2600; n += 1) {
+    many.push({
+      ...rec(`r${String(n)}`, null, { n: n % 7 }),
+      type: recordTypeName(n % 3 === 0 ? "t.a" : "t.b"),
+      stream: streamId(n % 5 === 0 ? "s1" : "s2"),
+    });
+  }
+  journal.appendMany(many);
+
+  const queries = [
+    {},
+    { from: seq(2400) },
+    { from: seq(2590) },
+    { types: ["t.a"] },
+    { types: ["t.*"], stream: "s1" },
+    { filter: { n: 3 } },
+    { filter: { n: 3 }, types: ["t.b"], from: seq(100) },
+    { filter: { n: 99 } },
+    { stream: "s2", filter: { n: 0 } },
+  ];
+  for (const query of queries) {
+    const resolved = resolveQuery(query as never);
+    const all = journal.query(resolved);
+    for (const count of [1, 5, 1000, 5000]) {
+      expect(journal.tail(resolved, count).map((record) => record.seq), `${JSON.stringify(query)} last ${String(count)}`).toEqual(
+        all.slice(-count).map((record) => record.seq),
+      );
+    }
+  }
   journal.close();
 });
