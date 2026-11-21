@@ -1,5 +1,6 @@
 /**
- * The history plugin: `history.read` of a transcript, and `history.watch` and `history.unwatch` over the reading sides of the
+ * The history plugin: `history.list` of the sessions, `history.read` and `history.search` of a
+ * transcript, and `history.watch` and `history.unwatch` over the reading sides of the
  * installations it is given. A watch writes what it learns as records (records.ts) and goes on after
  * a restart from where the last pause left it; the transcript itself is never written.
  *
@@ -15,7 +16,7 @@ import type { Plugin, PluginApi, Subscriber } from "@niwa-labs/plugin";
 import { harnessId, requireAbility, sessionId } from "@niwa-labs/harness";
 import type { HarnessInstanceRegistry, HarnessKindRegistry, Locator, SessionId } from "@niwa-labs/harness";
 
-import { readTranscript } from "./read.ts";
+import { listSessions, readTranscript, searchSession } from "./read.ts";
 import type { ReadingBinding } from "./read.ts";
 import {
   GUESSED_SIGNALS,
@@ -25,7 +26,9 @@ import {
   HistorySessionSeen,
   HistorySessionUnwatched,
   SessionProgress,
+  historyList,
   historyRead,
+  historySearch,
   historySignal,
   historyUnwatch,
   historyWatch,
@@ -298,6 +301,30 @@ export function history(options: HistoryOptions): Plugin {
         effect: "read",
         world: "local",
         run: async (input) => await readTranscript(bindings.find((candidate) => candidate.instance.id === input.session.harness), input.session, input),
+      }),
+    );
+
+    api.action(
+      action(historyList, {
+        // A listing changes nothing: it may be made again.
+        recovery: "repeat",
+        effect: "read",
+        world: "local",
+        run: async (input) => await listSessions(bindings, input),
+      }),
+    );
+
+    api.action(
+      action(historySearch, {
+        recovery: "repeat",
+        effect: "read",
+        world: "local",
+        run: async (input) =>
+          await searchSession(
+            bindings.find((candidate) => candidate.instance.id === input.session.harness),
+            input.session,
+            input,
+          ),
       }),
     );
 

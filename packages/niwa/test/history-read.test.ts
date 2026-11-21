@@ -94,3 +94,57 @@ test("history.read of a session of a harness that is not served says so in its c
   expect(none.records).toEqual([]);
   expect(none.coverage.status).toBe("unavailable");
 });
+
+test("history.list names the sessions the reading sides hold, latest change first, and the sides that could not be asked", async () => {
+  const home = await tempHome();
+  const niwa = createNiwa({ home: home.path });
+  const listing = (...sessions: Array<{ native: string; updatedAt?: number; title?: string }>): SessionReading => ({
+    ...reading,
+    async *list() {
+      for (const { native, ...rest } of sessions) yield { id: sessionId(harnessId("h"), native), ...rest } as never;
+    },
+  });
+  const broken: SessionReading = {
+    ...reading,
+    async *list() {
+      yield* [];
+      throw new Error("the sessions directory is gone");
+    },
+  };
+  const other: Harness = { ...instance, id: harnessId("g") };
+  niwa.use(
+    history({
+      harnesses: [
+        { instance, reading: listing({ native: "old", updatedAt: 1 }, { native: "undated" }, { native: "new", updatedAt: 3, title: "fix it" }) },
+        { instance: other, reading: broken },
+        { instance: { ...instance, id: harnessId("none"), sides: {} } },
+      ],
+    }),
+  );
+  await niwa.serve();
+  open.push(async () => {
+    await niwa.close();
+    await home.cleanup();
+  });
+  const call = (name: string, input: unknown) => niwa.call(name as ActionName, input) as Promise<any>;
+  const all = await call("history.list", {});
+  expect(all.sessions.map((entry: { session: { native: string } }) => entry.session.native)).toEqual(["new", "old", "undated"]);
+  expect(all.sessions[0]).toEqual({ session: { harness: "h", native: "new" }, title: "fix it", updatedAt: 3 });
+  expect(all.more).toBe(false);
+  expect(all.unreadable).toEqual([{ harness: "g", reason: "the sessions directory is gone" }]);
+  const cut = await call("history.list", { harness: "h", limit: 2 });
+  expect(cut.sessions).toHaveLength(2);
+  expect(cut.more).toBe(true);
+  expect(cut.unreadable).toEqual([]);
+});
+
+test("history.search finds the records that hold the words, and says when it could not look", async () => {
+  const call = await host();
+  const found = await call("history.search", { session: ID, query: "FIX" });
+  expect(found.matches).toMatchObject([{ index: 0, kind: "user", locator: "L1" }]);
+  expect(found.more).toBe(false);
+  expect(found.coverage).toEqual({ status: "not-scanned" });
+  const none = await call("history.search", { session: { harness: "elsewhere", native: "x" }, query: "fix" });
+  expect(none.matches).toEqual([]);
+  expect(none.coverage.status).toBe("unavailable");
+});

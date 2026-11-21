@@ -255,6 +255,54 @@ export const historyUnwatch = actionRef("history.unwatch", {
   output: z.object({ stopped: z.boolean() }),
 });
 
+/** How many sessions a list answers with when it is not told, and at most. */
+export const DEFAULT_LIST_LIMIT = 50;
+export const MAX_LIST_LIMIT = 200;
+
+/** One session a reading side lists, as the side knows it; an unknown field is absent. */
+export const SessionListingSchema = z.object({
+  session: SessionIdSchema,
+  title: z.string().optional(),
+  cwd: z.string().optional(),
+  startedAt: z.number().optional(),
+  updatedAt: z.number().optional(),
+});
+export type SessionListing = z.output<typeof SessionListingSchema>;
+
+export const historyList = actionRef("history.list", {
+  description:
+    "Lists the sessions the reading sides of the harnesses hold, whether niwa started them or not, the most recently changed first. A harness that cannot be asked is named in `unreadable`: the list is what is known, not proof that there is nothing more. When `more` is true the list was cut at `limit`; narrow it with `harness` or `cwd`.",
+  input: z.object({
+    /** Only the sessions of this harness. */
+    harness: HarnessIdSchema.optional(),
+    /** Only the sessions that work in this directory. */
+    cwd: z.string().min(1).optional(),
+    /** How many sessions to answer with. Default: 50. */
+    limit: z.number().int().positive().max(MAX_LIST_LIMIT).optional(),
+  }),
+  output: z.object({
+    sessions: z.array(SessionListingSchema),
+    /** True when there are more sessions than were answered with. */
+    more: z.boolean(),
+    /** The harnesses that could not be asked, and why. */
+    unreadable: z.array(z.object({ harness: HarnessIdSchema, reason: z.string() })),
+  }),
+});
+
+export const historySearch = actionRef("history.search", {
+  description:
+    "Searches the transcript of a session of any harness through the harness's reading side: the records that hold every word of the query, case aside, each with its index and a short snippet. A search that could not look says so in the coverage; it is not \"no matches\".",
+  input: SearchQuerySchema.extend({ session: SessionIdSchema }),
+  output: z.object({
+    /** The records that matched, in the harness's order. */
+    matches: z.array(SearchMatchSchema),
+    /** True when there are more matches after these. */
+    more: z.boolean(),
+    /** How much of the session was actually read. */
+    coverage: CoverageSchema,
+  }),
+});
+
 export const historyRead = actionRef("history.read", {
   description:
     "Reads the transcript of a session of any harness through the harness's reading side, whole or compressed: `mode` `digest` or `brief` reads a window of about `budget` tokens, and the next window goes on from its `next`. The transcript is never written into niwa's journal.",

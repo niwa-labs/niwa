@@ -3,9 +3,9 @@
 
 export { describeCoverage, isEmpty } from "./coverage.ts";
 export { matchText, recordText, searchRecords, searchTranscript } from "./search.ts";
-export { readTranscript, searchSession } from "./read.ts";
+export { listSessions, readTranscript, searchSession } from "./read.ts";
 export type { ReadAnswer, ReadQuery, ReadingBinding } from "./read.ts";
-export type { SearchMatch, SearchQuery } from "./records.ts";
+export type { SearchMatch, SearchQuery, SessionListing } from "./records.ts";
 export { history } from "./plugin.ts";
 export type { HistoryOptions } from "./plugin.ts";
 export { DEFAULT_WATCH_TIMING, SYSTEM_CLOCK, watchSession } from "./watch.ts";

@@ -8,11 +8,11 @@ import type { z } from "zod";
 
 import { readWindow } from "@niwa-labs/digest";
 import type { DigestMode, FileIndex } from "@niwa-labs/digest";
-import { LocatorSchema, failedCoverage, requireAbility, unavailableCoverage } from "@niwa-labs/harness";
-import type { Coverage, Harness, SessionId, SessionReading, SessionRecord } from "@niwa-labs/harness";
+import { LocatorSchema, failedCoverage, requireAbility, supports, unavailableCoverage } from "@niwa-labs/harness";
+import type { Coverage, Harness, HarnessId, SessionId, SessionReading, SessionRecord } from "@niwa-labs/harness";
 
-import { DEFAULT_READ_BUDGET } from "./records.ts";
-import type { DigestReadSchema, SessionRecordSchema } from "./records.ts";
+import { DEFAULT_LIST_LIMIT, DEFAULT_READ_BUDGET } from "./records.ts";
+import type { DigestReadSchema, SessionListing, SessionRecordSchema } from "./records.ts";
 import type { SearchMatch, SearchQuery } from "./records.ts";
 import { searchTranscript } from "./search.ts";
 
@@ -87,6 +87,41 @@ export async function searchSession(
   }
   requireAbility(binding.instance, "reading", "read");
   return await searchTranscript(binding.reading, id, input);
+}
+
+/**
+ * The sessions the reading sides list, the most recently changed first, and the harnesses that could not be asked.
+ *
+ * A side without a reading side, or without the ability to list, is not asked and not blamed. A
+ * side that fails is reported: the list is what is known, not proof that there is nothing more.
+ */
+export async function listSessions(
+  bindings: readonly ReadingBinding[],
+  input: { harness?: string | undefined; cwd?: string | undefined; limit?: number | undefined },
+): Promise<{ sessions: SessionListing[]; more: boolean; unreadable: Array<{ harness: HarnessId; reason: string }> }> {
+  const listed: SessionListing[] = [];
+  const unreadable: Array<{ harness: HarnessId; reason: string }> = [];
+  for (const binding of bindings) {
+    if (input.harness !== undefined && binding.instance.id !== input.harness) continue;
+    if (binding.reading === undefined || !supports(binding.instance, "reading", "list")) continue;
+    try {
+      for await (const info of binding.reading.list(input.cwd === undefined ? undefined : { cwd: input.cwd })) {
+        listed.push({
+          session: info.id,
+          ...(info.title === undefined ? {} : { title: info.title }),
+          ...(info.cwd === undefined ? {} : { cwd: info.cwd }),
+          ...(info.startedAt === undefined ? {} : { startedAt: info.startedAt }),
+          ...(info.updatedAt === undefined ? {} : { updatedAt: info.updatedAt }),
+        });
+      }
+    } catch (error) {
+      unreadable.push({ harness: binding.instance.id, reason: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  // Latest change first; a session that does not say when it changed comes last. The sort is stable.
+  listed.sort((a, b) => (b.updatedAt ?? -Infinity) - (a.updatedAt ?? -Infinity));
+  const limit = input.limit ?? DEFAULT_LIST_LIMIT;
+  return { sessions: listed.slice(0, limit), more: listed.length > limit, unreadable };
 }
 
 /** A window of a digest or a brief from `from`; what was read before a failure is not given, the failure is. */
