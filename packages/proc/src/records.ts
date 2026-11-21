@@ -99,7 +99,8 @@ export const procRun = actionRef("proc.run", {
     "`cmd` is the program and its arguments, run as they are (a shell is [\"sh\", \"-c\", \"…\"]). " +
     "`timeout` is in milliseconds; a command that runs longer is stopped, with everything it started, as is one whose call is cancelled. " +
     "`env` is the whole environment besides PATH and HOME. " +
-    "The result has the exit code, the end of the output and the whole output as an artifact; a non-zero exit is a result, not an error. " +
+    "The result has the exit code, the end of the output (`tail`) and the output as an artifact, which keeps its first 16 MiB: with `truncated` the artifact holds the start and `tail` the end. " +
+    "A non-zero exit is a result, not an error. A command is stopped with its process group: one that left the group is not reached. " +
     "A grant names the real path of `cwd` (`proc.run@/work/repo`); a space or another character a rule cannot hold is written as % and its hex code (`My%20Project`). " +
     "Class: write, local.",
   input: z.strictObject({
@@ -119,7 +120,7 @@ export const procExec = actionRef("proc.exec", {
     "`env` values are text or a secret reference, `secret(\"name\")`; `secrets` lists secrets given to the command as variables of their own names. " +
     "The values are resolved where the command starts and are never written down; known secret values are removed from the output. " +
     "`net` says the command is meant to reach the network: it is for the owner who is asked, nothing enforces it. " +
-    "The result has the exit code, the end of the output and the whole output as an artifact. " +
+    "The result has the exit code, the end of the output (`tail`) and the output as an artifact, which keeps its first 16 MiB: with `truncated` the artifact holds the start and `tail` the end. " +
     "A grant names the real path of `cwd` as `proc.exec@/work/repo`, with a space or another character a rule cannot hold written as % and its hex code. Class: irreversible, external.",
   input: z.strictObject({
     cmd: Cmd,

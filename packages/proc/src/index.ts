@@ -20,6 +20,10 @@
  *
  * A command that was cut off may have done any part of its work, so the recovery contract is
  * `do-not-repeat`.
+ *
+ * Stopping a command (its time is up, or its call is cancelled) signals the process group it
+ * leads. A process that left that group is not reached, and a command still running when the host
+ * itself dies is not stopped by it.
  */
 
 import { realpathSync, statSync } from "node:fs";
