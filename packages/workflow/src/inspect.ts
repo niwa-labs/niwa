@@ -6,7 +6,7 @@ import { requestAsk } from "@niwa-labs/requests/records";
 import { NiwaSessionIdSchema, SessionStarted } from "@niwa-labs/sessions/records";
 import { z } from "zod";
 
-import { InstallationId, RunFinished, RunId, RunRequested, RunStarted, StepPhase, WorkflowId, WorkflowVersion } from "./records.ts";
+import { InstallationId, RunFinished, RunId, RunRequested, RunStarted, StepPhase, StepReused, WorkflowId, WorkflowVersion } from "./records.ts";
 import { PhaseProgress, RunStatus, statusOf } from "./status.ts";
 
 const ReceivedAt = z.iso.datetime();
@@ -24,6 +24,10 @@ export const WorkflowStep = z.object({
   session: NiwaSessionIdSchema.optional(),
   /** The declared phase the step belongs to, when the script named one. */
   phase: z.string().optional(),
+  /** The call has an effect: it was made under a contract other than repeat, so running it again repeats the effect. */
+  effect: z.boolean().optional(),
+  /** A later start of the run took this step's answer instead of making the call again. */
+  reused: z.boolean().optional(),
 });
 export type WorkflowStep = z.infer<typeof WorkflowStep>;
 
@@ -48,7 +52,13 @@ export const WorkflowInspection = z.object({
 });
 export type WorkflowInspection = z.infer<typeof WorkflowInspection>;
 
-const Intent = z.object({ key: z.string(), action: z.string(), operationId: z.string(), input: z.unknown().optional() });
+const Intent = z.object({
+  key: z.string(),
+  action: z.string(),
+  operationId: z.string(),
+  input: z.unknown().optional(),
+  recovery: z.enum(["repeat", "repeat-with-key", "do-not-repeat"]).optional(),
+});
 const Outcome = z.object({ outcome: z.object({ status: z.enum(["completed", "failed", "denied", "unknown", "cancelled"]) }) });
 const Resolution = z.object({ key: z.string(), choice: z.enum(["retry", "skip", "cancel"]), attempt: z.number().int() });
 const State = z.object({ state: z.string(), reason: z.string().optional(), key: z.string().optional() });
@@ -89,6 +99,11 @@ export function inspectRun(journal: JournalReader, run: RunId): WorkflowInspecti
     const { key, phase } = StepPhase.schema.parse(row.data);
     stepPhases.set(`${row.actor.invocation} ${key}`, phase);
   }
+  // The steps a later start took, by the start that made them and their key.
+  const reused = new Set(forRun(StepReused.name).map((row) => {
+    const { key, from } = StepReused.schema.parse(row.data);
+    return `${from} ${key}`;
+  }));
   const phases = (status.phases ?? []).map((phase) => ({ ...phase, steps: [] as WorkflowStep[] }));
   const steps: WorkflowStep[] = [];
   const cancellation = finished !== undefined && status.outcome?.status === "cancelled" ? finished : undefined;
@@ -101,6 +116,7 @@ export function inspectRun(journal: JournalReader, run: RunId): WorkflowInspecti
     for (const { step } of projected.steps) {
       const phase = stepPhases.get(`${invocation} ${step.key}`);
       if (phase !== undefined) step.phase = phase;
+      if (reused.has(`${invocation} ${step.key}`)) step.reused = true;
       (phases.find((one) => one.title === phase)?.steps ?? steps).push(step);
     }
   }
@@ -135,7 +151,7 @@ function invocationSteps(
   const owners = new Map<string, { step: WorkflowStep; outcomeSeq?: Seq }>();
   const steps: Array<{ row: StoredRecord; step: WorkflowStep }> = [];
   for (const { row, data } of intents) {
-    const { action, input, key, operationId } = data;
+    const { action, input, key, operationId, recovery } = data;
     const nested = nestedKey.exec(key)?.[1];
     const owner = nested !== undefined && !authorized.has(`${key}~auth`) ? owners.get(nested) : undefined;
     const parsed = scriptKey.exec(key);
@@ -176,6 +192,7 @@ function invocationSteps(
         : settled === "denied" ? "failed"
         : settled ?? (pauseKey === key || nestedPause ? "paused" : state?.state === "done" ? "unknown" : "running"),
       session: sessionOf(journal, invocation, row, operationId),
+      ...(recovery !== undefined && recovery !== "repeat" ? { effect: true } : {}),
     };
     steps.push({ row, step });
     owners.set(namespace, { step, outcomeSeq: outcome?.seq });

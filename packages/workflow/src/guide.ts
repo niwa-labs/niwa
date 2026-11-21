@@ -153,7 +153,10 @@ Phases:
   phase, every phase entered: a run that finished with its result has all it entered done); ahead is the rest — not entered,
   or entered by a branch that ended while another branch has not reached it. workflow.inspect groups the steps by phase;
   workflow.get and workflow.list show the declared phases.
-- Edit the file and resume the run by its id: calls with the same key and input reuse their results.`;
+- Edit the file and resume the run by its id: the calls along the longest unchanged prefix of the earlier start are taken
+  (the same key and the same call; an agent call is its prompt and harness), and the first new or changed call and everything
+  after it in its branch, or after its scope, run. A call with an effect that ran before is taken all the same, never made
+  twice. workflow.resume { run, from } runs the steps from a step key, a branch or a phase on again.`;
 
 /** What the guide answers with. */
 export interface Guide {

@@ -1,289 +1,215 @@
-// Workflow revision: a call fails and the run pauses with a request. The script is edited and resumed
-// as a revision. Unchanged calls reuse their results, the changed call runs, and a changed input
-// under an old key is shown rather than silently rerun.
-//
-// The scenario runs against a real host process (test/fixtures/revision-host.ts):
-//
-//   1. the script makes one call that finishes and one that fails: the run pauses with a request
-//      that offers retry, skip and cancel
-//   2. the script is edited: the first call is unchanged, the second has another prompt under
-//      the same key
-//   3. the revision says what is reused, what runs again, and what is shown
-//   4. the call that was shown is not run again
-//
-// Only the public API is used: the entries of the packages, and of testing.
+// A run started again on an edited script takes the calls of its earlier start along the longest
+// unchanged prefix. The first new or changed call runs, and so does everything after it in its
+// branch, or after the scope that holds it; a call with an effect that was made before as the same
+// call is taken all the same, never made twice. An agent call is its prompt and its harness. The
+// owner may ask for the steps from one of them, a branch or a phase on to run again. Nothing is
+// taken from another run, and the journal and workflow.inspect say which steps were taken.
 
-import { expect, test } from "bun:test";
-import { fileURLToPath } from "node:url";
+import { afterEach, expect, test } from "bun:test";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
-import type { StoredRecord } from "@niwa-labs/core";
-import { counter, eventually, spawnHost, tempHome, connectAsOwner } from "@niwa-labs/testing";
 import { z } from "zod";
 
-const HOST_SCRIPT = fileURLToPath(new URL("./fixtures/revision-host.ts", import.meta.url));
-const SCRIPT = fileURLToPath(new URL("./fixtures/revision-script.js", import.meta.url));
-const EDITED_SCRIPT = fileURLToPath(new URL("./fixtures/revision-script-edited.js", import.meta.url));
-const FIXED_SCRIPT = fileURLToPath(new URL("./fixtures/revision-script-fixed.js", import.meta.url));
+import { action } from "@niwa-labs/core";
+import type { ActionName, StoredRecord } from "@niwa-labs/core";
+import { plugin } from "@niwa-labs/plugin";
+import { createNiwa, eventually, requests, tempHome, testClock, timers } from "@niwa-labs/testing";
+import type { Host } from "@niwa-labs/testing";
 
-/** What the workflow actions answer. */
-const RunOutput = z.object({
-  run: z.string(),
-  finished: z.boolean(),
-  result: z.unknown().optional(),
+import { workflow } from "../src/index.ts";
+import type { WorkflowInspection } from "../src/inspect.ts";
+
+const homes: Array<{ cleanup(): Promise<void> }> = [];
+const hosts: Host[] = [];
+
+afterEach(async () => {
+  for (const host of hosts.splice(0)) await host.close().catch(() => {});
+  for (const home of homes.splice(0)) await home.cleanup();
 });
 
-/** The report of a revision. */
 const Revision = z.object({
-  reused: z.array(
-    z.object({ key: z.string(), action: z.string(), input: z.unknown(), outcome: z.unknown() }),
-  ),
-  rerun: z.array(
-    z.object({
-      key: z.string(),
-      action: z.string(),
-      input: z.unknown(),
-      reason: z.enum(["new key", "unfinished"]),
-    }),
-  ),
-  shown: z.array(
-    z.object({
-      key: z.string(),
-      recordedAction: z.string(),
-      recordedInput: z.unknown(),
-      action: z.string(),
-      input: z.unknown(),
-    }),
-  ),
+  reused: z.array(z.object({ key: z.string() })),
+  rerun: z.array(z.object({ key: z.string(), reason: z.string() })),
 });
+const Resumed = z.object({ run: z.string(), revision: Revision.optional() });
 
-/** What the revision action answers. */
-const ReviseOutput = RunOutput.extend({ revision: Revision });
-
-/** What the resume action answers. */
-const ResumeOutput = RunOutput.extend({ revision: Revision.optional() });
-
-/** The state of an invocation, as the journal holds it. */
-const InvocationState = z.object({
-  invocation: z.string(),
-  state: z.string(),
-  reason: z.string().optional(),
-  choices: z.array(z.string()).optional(),
-});
-
-/** The paused invocations of the run. */
-function pausedOf(records: StoredRecord[]): Array<z.infer<typeof InvocationState>> {
-  const paused: Array<z.infer<typeof InvocationState>> = [];
-  for (const record of records) {
-    if (record.type !== "niwa.invocation.state") continue;
-    const data = InvocationState.safeParse(record.data);
-    if (!data.success) continue;
-    if (data.data.state !== "paused") continue;
-    paused.push(data.data);
-  }
-  return paused;
-}
-
-/** The pause of a workflow run, as the journal holds it. */
-const RunPaused = z.object({
-  run: z.string(),
-  reason: z.string(),
-  key: z.string().optional(),
-  choices: z.array(z.string()).optional(),
-  shown: z
-    .array(
-      z.object({
-        key: z.string(),
-        recordedAction: z.string(),
-        recordedInput: z.unknown(),
-        action: z.string(),
-        input: z.unknown(),
-      }),
-    )
-    .optional(),
-});
-
-/** The pauses of the workflow runs. */
-function runPausesOf(records: StoredRecord[]): Array<z.infer<typeof RunPaused>> {
-  const pauses: Array<z.infer<typeof RunPaused>> = [];
-  for (const record of records) {
-    if (record.type !== "workflow.run.paused") continue;
-    const data = RunPaused.safeParse(record.data);
-    if (data.success) pauses.push(data.data);
-  }
-  return pauses;
-}
-
-test("Workflow revision: unchanged calls are reused, and a changed input under an old key is shown", async () => {
+async function setup() {
   const home = await tempHome();
-  const homePath = home.path;
-  let host: ReturnType<typeof spawnHost> | undefined;
+  homes.push(home);
+  const calls: string[] = [];
+  const io = { input: z.object({ name: z.string() }), output: z.object({ name: z.string(), at: z.number() }) };
+  const answer = (name: string) => {
+    calls.push(name);
+    return { name, at: calls.length };
+  };
+  const agent = action("rev.agent", {
+    description: "An agent: it answers with its prompt.",
+    input: z.object({ prompt: z.string(), harness: z.string().optional(), label: z.string().optional(), effort: z.string().optional() }),
+    output: z.object({ answer: z.string(), at: z.number() }),
+    // A session is started and asked: it has an effect.
+    recovery: "do-not-repeat",
+    run: async ({ prompt }) => {
+      calls.push(`agent:${prompt}`);
+      return { answer: prompt, at: calls.length };
+    },
+  });
+  const niwa = createNiwa({ home: home.path, clock: testClock(1_700_000_000_000) });
+  niwa.use(requests());
+  niwa.use(timers([]));
+  niwa.use(
+    plugin("rev", (api) => {
+      api.action(agent);
+      api.action(action("rev.read", { ...io, description: "Reads: it may be made again.", recovery: "repeat", run: async ({ name }) => answer(`read:${name}`) }));
+      api.action(action("rev.write", { ...io, description: "Writes: it is made once.", recovery: "do-not-repeat", run: async ({ name }) => answer(`write:${name}`) }));
+    }),
+  );
+  niwa.use(workflow({ agentAction: agent }));
+  await niwa.serve();
+  hosts.push(niwa);
+  const file = join(home.path, "script.js");
+  const call = <T>(name: string, input: unknown): Promise<T> => niwa.call(name as ActionName, input as never) as Promise<T>;
+  const records = (): Promise<StoredRecord[]> => niwa.records.read();
+  const finished = async (run: string): Promise<unknown[]> =>
+    (await records())
+      .filter((row) => row.type === "workflow.run.finished" && (row.data as { run: string }).run === run)
+      .map((row) => (row.data as { outcome: { result?: unknown } }).outcome.result);
+  return {
+    calls,
+    records,
+    write: (source: string) => writeFile(file, source),
+    start: async (): Promise<string> => (await call<{ run: string }>("workflow.start", { file })).run,
+    resume: async (run: string, from?: string) =>
+      Resumed.parse(await call("workflow.resume", { run, ...(from === undefined ? {} : { from }) })),
+    inspect: (run: string) => call<WorkflowInspection>("workflow.inspect", { run }),
+    /** Wait for the n-th end of the run, and give what it returned. */
+    ended: async (run: string, n: number): Promise<unknown> => {
+      await eventually(async () => (await finished(run)).length >= n, 15_000, `the run should end ${String(n)} times`);
+      return (await finished(run))[n - 1];
+    },
+    reusedKeys: async (): Promise<string[]> =>
+      (await records()).filter((row) => row.type === "workflow.step.reused").map((row) => (row.data as { key: string }).key),
+  };
+}
 
-  try {
-    host = spawnHost(HOST_SCRIPT, homePath);
-    await host.ready();
-    const client = await connectAsOwner(homePath);
+const script = (second: string) => `export default workflow({ uses: ["rev.*"], output: z.json() }, async () => {
+  const a = await agent("first", { label: "a" });
+  const r1 = await niwa.rev.read({ name: "one" }, { label: "r1" });
+  const b = await agent("${second}", { label: "b" });
+  const r2 = await niwa.rev.read({ name: "two" }, { label: "r2" });
+  const w = await niwa.rev.write({ name: "once" }, { label: "w" });
+  return [a.answer, r1.name, b.answer, r2.name, w.name];
+});`;
 
-    const watcher = await connectAsOwner(homePath);
-    const records: StoredRecord[] = [];
-    const watch = (async () => {
-      for await (const record of watcher.records.since()) {
-        records.push(record);
-      }
-    })().catch(() => undefined);
+test("a changed call and what comes after it run; the unchanged prefix and an effect made before are taken", async () => {
+  const t = await setup();
+  await t.write(script("second"));
+  const run = await t.start();
+  expect(await t.ended(run, 1)).toEqual(["first", "read:one", "second", "read:two", "write:once"]);
+  expect(t.calls).toEqual(["agent:first", "read:one", "agent:second", "read:two", "write:once"]);
 
-    // 1. The script runs: the first call finishes, the second fails and the run pauses.
-    const started = RunOutput.parse(
-      await client.call("workflow.start" as never, { file: SCRIPT } as never),
-    );
+  await t.write(script("second, changed"));
+  const resumed = await t.resume(run);
+  expect(resumed.revision?.reused.map((one) => one.key)).toEqual(["label:a", "label:r1", "label:w"]);
+  expect(resumed.revision?.rerun.map((one) => [one.key, one.reason])).toEqual([
+    ["label:b", "changed"],
+    ["label:r2", "after a change"],
+  ]);
+  expect(await t.ended(run, 2)).toEqual(["first", "read:one", "second, changed", "read:two", "write:once"]);
+  // The changed call and the read after it ran; the write after it was made before, and is not made twice.
+  expect(t.calls.slice(5)).toEqual(["agent:second, changed", "read:two"]);
+  expect(await t.reusedKeys()).toEqual(["label:a", "label:r1", "label:w"]);
 
-    await eventually(
-      () => pausedOf(records).length > 0,
-      20_000,
-      "the run should have paused",
-    );
+  // workflow.inspect says which steps a later start took, and which have an effect.
+  const steps = (await t.inspect(run)).steps;
+  const first = steps.filter((step) => step.key === "label:a");
+  expect(first.map((step) => step.reused === true)).toEqual([true]);
+  expect(steps.find((step) => step.key === "label:w")).toMatchObject({ reused: true, effect: true });
+  expect(steps.find((step) => step.key === "label:r1")?.effect).toBeUndefined();
+}, 30_000);
 
-    // The pause is a request: it offers the choices of the core.
-    const paused = pausedOf(records)[0];
-    expect(paused?.choices).toEqual(["retry", "skip", "cancel"]);
+test("an agent call is its prompt and its harness: another effort takes the recorded answer", async () => {
+  const t = await setup();
+  const source = (effort: string) => `export default workflow({ uses: ["rev.*"], output: z.json() }, async () => {
+    return (await agent("same prompt", { label: "only", effort: "${effort}" })).answer;
+  });`;
+  await t.write(source("low"));
+  const run = await t.start();
+  expect(await t.ended(run, 1)).toBe("same prompt");
+  await t.write(source("high"));
+  const resumed = await t.resume(run);
+  expect(resumed.revision?.reused.map((one) => one.key)).toEqual(["label:only"]);
+  expect(await t.ended(run, 2)).toBe("same prompt");
+  expect(t.calls).toEqual(["agent:same prompt"]);
+}, 30_000);
 
-    // The first call finished; the second failed.
-    expect(counter(homePath, "revision.agent").count()).toBe(2);
+test("the owner asks for the steps from one on to run again: the effects before it and after it are not made twice", async () => {
+  const t = await setup();
+  await t.write(script("second"));
+  const run = await t.start();
+  await t.ended(run, 1);
+  const resumed = await t.resume(run, "label:b");
+  expect(resumed.revision).toBeUndefined();
+  expect(await t.ended(run, 2)).toEqual(["first", "read:one", "second", "read:two", "write:once"]);
+  expect(t.calls.slice(5)).toEqual(["agent:second", "read:two"]);
+  expect(await t.reusedKeys()).toEqual(["label:a", "label:r1", "label:w"]);
+}, 30_000);
 
-    // 2. The script is edited: the first call is the same, the second has another prompt under
-    //    the same key.
-    const edited = `${homePath}/revision-edited.js`;
-    await Bun.write(edited, await Bun.file(EDITED_SCRIPT).text());
+test("the owner asks for a phase to run again: its steps run, and the steps before it are taken", async () => {
+  const t = await setup();
+  await t.write(`export default workflow({ uses: ["rev.*"], phases: [{ title: "Gather" }, { title: "Judge" }], output: z.json() }, async () => {
+    phase("Gather");
+    const one = await niwa.rev.read({ name: "one" }, { label: "one" });
+    phase("Judge");
+    const two = await niwa.rev.read({ name: "two" }, { label: "two" });
+    return [one.at, two.at];
+  });`);
+  const run = await t.start();
+  expect(await t.ended(run, 1)).toEqual([1, 2]);
+  await t.resume(run, "Judge");
+  expect(await t.ended(run, 2)).toEqual([1, 3]);
+  expect(t.calls).toEqual(["read:one", "read:two", "read:two"]);
+}, 30_000);
 
-    // 3. The revision says what it found.
-    const revised = ReviseOutput.parse(
-      await client.call("workflow.revise" as never, { run: started.run, file: edited } as never),
-    );
-
-    // The unchanged call is reused: its key, its input and its recorded result.
-    const reused = revised.revision.reused.find((entry) => entry.key === "label:work:first");
-    expect(reused).toBeDefined();
-    expect((reused?.input as { prompt?: string } | undefined)?.prompt).toBe("Study the core.");
-    expect(reused?.outcome).toBeDefined();
-
-    // The changed input under the old key is shown: it is not rerun.
-    const shown = revised.revision.shown.find((entry) => entry.key === "label:work:second");
-    expect(shown).toBeDefined();
-    expect((shown?.recordedInput as { prompt?: string } | undefined)?.prompt).toBe(
-      "This one will fail.",
-    );
-    expect((shown?.input as { prompt?: string } | undefined)?.prompt).toBe(
-      "This one will fail, differently.",
-    );
-
-    // Nothing was rerun by the revision.
-    expect(revised.revision.rerun.length).toBe(0);
-
-    // 4. The call that was shown was not run again, and no new run was started.
-    expect(counter(homePath, "revision.agent").count()).toBe(2);
-    expect(records.filter((record) => record.type === "workflow.run.started").length).toBe(1);
-
-    // 5. The script is fixed with a new key for the failing call: the first call is reused, the
-    //    new key runs, and the run ends with a complete result.
-    const fixed = `${homePath}/revision-fixed.js`;
-    await Bun.write(fixed, await Bun.file(FIXED_SCRIPT).text());
-    const rerevised = ReviseOutput.parse(
-      await client.call("workflow.revise" as never, { run: started.run, file: fixed } as never),
-    );
-    expect(rerevised.revision.reused.map((entry) => entry.key)).toEqual(["label:work:first"]);
-    expect(rerevised.revision.rerun.map((entry) => entry.key)).toEqual(["label:work:second-fixed"]);
-    expect(rerevised.revision.shown).toEqual([]);
-
-    await eventually(
-      () => records.some((record) => record.type === "workflow.run.finished"),
-      30_000,
-      "the revised run should have finished",
-    );
-    const finished = records.find((record) => record.type === "workflow.run.finished");
-    expect((finished?.data as { outcome?: { result?: unknown } }).outcome?.result).toEqual({
-      first: { answer: "answered: Study the core." },
-      second: { answer: "answered: This one will work." },
+test("a change in one branch of a scope leaves the other branches taken, and what comes after the scope runs", async () => {
+  const t = await setup();
+  const source = (x: string) => `export default workflow({ uses: ["rev.*"], output: z.json() }, async () => {
+    const got = await scope("s", undefined, async (s) => {
+      s.start("x", async () => { await agent("${x}"); return (await niwa.rev.read({ name: "x2" })).at; });
+      s.start("y", async () => { await niwa.rev.read({ name: "y1" }); return (await niwa.rev.read({ name: "y2" })).at; });
+      return await s.rest();
     });
-    // The first call was answered from the journal, not repeated: only the new call ran.
-    expect(counter(homePath, "revision.agent").count()).toBe(3);
+    const after = await niwa.rev.read({ name: "after" });
+    return [got.x.value, got.y.value, after.name];
+  });`;
+  await t.write(source("x1"));
+  const run = await t.start();
+  await t.ended(run, 1);
+  expect([...t.calls].sort()).toEqual(["agent:x1", "read:after", "read:x2", "read:y1", "read:y2"]);
+  const before = t.calls.length;
 
-    await client.close().catch(() => {});
-    await watcher.close().catch(() => {});
-    await watch;
-  } finally {
-    await host?.kill().catch(() => {});
-    await home.cleanup();
-  }
-}, 60_000);
+  await t.write(source("x1, changed"));
+  const resumed = await t.resume(run);
+  expect(resumed.revision?.reused.map((one) => one.key).sort()).toEqual(["@s.y.call-1", "@s.y.call-2"]);
+  expect(Object.fromEntries((resumed.revision?.rerun ?? []).map((one) => [one.key, one.reason]))).toEqual({
+    "@s.x.call-1": "changed",
+    "@s.x.call-2": "after a change",
+    "call-1": "after a change",
+  });
+  await t.ended(run, 2);
+  expect(t.calls.slice(before).sort()).toEqual(["agent:x1, changed", "read:after", "read:x2"]);
+}, 30_000);
 
-test("Workflow resume: an edited script is a revision, and the changed key is shown", async () => {
-  const home = await tempHome();
-  const homePath = home.path;
-  let host: ReturnType<typeof spawnHost> | undefined;
-
-  try {
-    host = spawnHost(HOST_SCRIPT, homePath);
-    await host.ready();
-    const client = await connectAsOwner(homePath);
-
-    const watcher = await connectAsOwner(homePath);
-    const records: StoredRecord[] = [];
-    const watch = (async () => {
-      for await (const record of watcher.records.since()) {
-        records.push(record);
-      }
-    })().catch(() => undefined);
-
-    // 1. The script runs from a file of its own, so the file can be edited in place.
-    const script = `${homePath}/revision-resumed.js`;
-    await Bun.write(script, await Bun.file(SCRIPT).text());
-    const started = RunOutput.parse(
-      await client.call("workflow.start" as never, { file: script } as never),
-    );
-
-    await eventually(
-      () => pausedOf(records).length > 0,
-      20_000,
-      "the run should have paused",
-    );
-    // The first call finished; the second failed.
-    expect(counter(homePath, "revision.agent").count()).toBe(2);
-
-    // 2. The script is edited in place: the second call has another prompt under the same key.
-    await Bun.write(script, await Bun.file(EDITED_SCRIPT).text());
-
-    // 3. The run is resumed, not revised: the resume finds the edit and shows the changed key.
-    const resumed = ResumeOutput.parse(
-      await client.call("workflow.resume" as never, { run: started.run } as never),
-    );
-
-    const shown = resumed.revision?.shown.find((entry) => entry.key === "label:work:second");
-    expect(shown).toBeDefined();
-    expect((shown?.recordedInput as { prompt?: string } | undefined)?.prompt).toBe(
-      "This one will fail.",
-    );
-    expect((shown?.input as { prompt?: string } | undefined)?.prompt).toBe(
-      "This one will fail, differently.",
-    );
-
-    // The unchanged call is reused, and nothing runs again.
-    expect(resumed.revision?.rerun.length).toBe(0);
-    expect(counter(homePath, "revision.agent").count()).toBe(2);
-
-    // 4. The run pauses on the shown key, and no second run was started.
-    await eventually(
-      () => runPausesOf(records).some((pause) => pause.key === "label:work:second"),
-      20_000,
-      "the run should have paused on the shown key",
-    );
-    const pause = runPausesOf(records).find((entry) => entry.key === "label:work:second");
-    expect(pause?.shown?.map((entry) => entry.key)).toEqual(["label:work:second"]);
-    expect(records.filter((record) => record.type === "workflow.run.started").length).toBe(1);
-
-    await client.close().catch(() => {});
-    await watcher.close().catch(() => {});
-    await watch;
-  } finally {
-    await host?.kill().catch(() => {});
-    await home.cleanup();
-  }
-}, 60_000);
+test("a new run of the same script takes nothing: only the starts of one run share their steps", async () => {
+  const t = await setup();
+  await t.write(script("second"));
+  const one = await t.start();
+  await t.ended(one, 1);
+  const two = await t.start();
+  await t.ended(two, 1);
+  expect(t.calls).toEqual([
+    "agent:first", "read:one", "agent:second", "read:two", "write:once",
+    "agent:first", "read:one", "agent:second", "read:two", "write:once",
+  ]);
+  expect(await t.reusedKeys()).toEqual([]);
+}, 30_000);

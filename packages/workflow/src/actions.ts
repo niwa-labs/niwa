@@ -19,7 +19,6 @@ import {
   InstallationId,
   JsonSchemaValue,
   RunId,
-  ShownCall,
   Subscription,
   WorkflowId,
   WorkflowVersion,
@@ -56,11 +55,15 @@ export const StartInput = z.object({
 });
 export const RunInput = z.object({ run: z.string() });
 /** What a resume may say: which run, and with `choice` how to answer its pause. */
+/** Run again the steps from one on: a step key, the key prefix of a branch or a scope, or the title of a phase. */
+const From = z.string().min(1);
 export const ResumeInput = RunInput.extend({
   /** Answer the pause of the run: retry the step it paused on, skip it, or cancel the run. Without it the run is started again from the top. */
   choice: z.enum(["retry", "skip", "cancel"]).optional(),
+  /** Started again from the top, run the steps from this one on instead of taking them from the earlier start. */
+  from: From.optional(),
 });
-export const ReviseInput = z.object({ run: z.string(), file: z.string() });
+export const ReviseInput = z.object({ run: z.string(), file: z.string(), from: From.optional() });
 
 export const RunOutput = z.object({ run: RunId, finished: z.boolean() });
 
@@ -80,7 +83,7 @@ export const RunsInput = z.object({
   limit: z.number().int().positive().optional(),
 });
 
-/** What a revision found: what is reused, what runs again and what is shown. */
+/** What a revision found: the calls taken from the earlier starts of the run, and the ones that run again. */
 export const Revision = z.object({
   reused: z.array(z.object({ key: z.string(), action: z.string(), input: JsonValueSchema, outcome: JsonValueSchema })),
   rerun: z.array(
@@ -88,10 +91,9 @@ export const Revision = z.object({
       key: z.string(),
       action: z.string(),
       input: JsonValueSchema,
-      reason: z.enum(["new key", "unfinished"]),
+      reason: z.enum(["new", "changed", "unfinished", "after a change", "recomputed"]),
     }),
   ),
-  shown: z.array(ShownCall),
   /** Why the edited script could not be read to its end, when it could not. */
   unresolved: z.string().optional(),
 });
@@ -146,7 +148,7 @@ export const workflowStart = actionRef("workflow.start", {
 });
 
 export const workflowResume = actionRef("workflow.resume", {
-  description: "Run a workflow again from the top: the calls that finished are answered from the journal. A script that was edited is a revision: what it would show is found first, and the run pauses on it. With choice (retry, skip or cancel) it answers the pause of the run instead. For whoever started the run, and the owner.",
+  description: "Run a workflow again from the top: the calls along the longest unchanged prefix of the earlier start are taken from it (each marked as taken), and the first new or changed call and everything after it run; a call with an effect that was made before is never made twice. from names a step, a branch or a phase to run again from. A script that was edited is a revision, and the answer says what is taken and what runs. With choice (retry, skip or cancel) it answers the pause of the run instead. For whoever started the run, and the owner.",
   input: ResumeInput,
   output: ResumeOutput,
 });
@@ -164,7 +166,7 @@ export const workflowContinue = actionRef("workflow.continue", {
 });
 
 export const workflowRevise = actionRef("workflow.revise", {
-  description: "Resume an edited workflow script: unchanged calls reuse their results, new calls run, and a changed input under an old key is shown and nothing runs.",
+  description: "Resume a run on an edited script: the calls along the longest unchanged prefix of the earlier start are taken from it, and the first new or changed call and everything after it run; a call with an effect that was made before is never made twice. from names a step, a branch or a phase to run again from.",
   input: ReviseInput,
   output: ReviseOutput,
 });

@@ -44,6 +44,8 @@ export interface CallRequest {
   key: string;
   /** The declared phase the branch of the call is in, when it is in one: the step belongs to it. */
   phase?: string;
+  /** A call before it in its branch ran instead of being taken from an earlier start: it lies after a change. */
+  after?: boolean;
   /** What is asked. */
   request: ScriptRequest;
 }
@@ -52,6 +54,8 @@ export interface CallRequest {
 export interface RunnerDeps {
   /** Do what the script asked and answer it. */
   call(request: CallRequest): Promise<unknown>;
+  /** Whether the call under the key ran instead of being taken from an earlier start of the run. */
+  fresh?(key: string): boolean;
   /** A branch of the script entered a phase (`""` is the script itself): the `ordinal`-th change in that branch, 0 being the phase it was made in. */
   phase(entered: { branch: string; ordinal: number; phase: string }): void;
   /** A branch that was in a phase ended. */
@@ -129,6 +133,7 @@ const Message = z.discriminatedUnion("kind", [
     ordinal: z.number(),
     key: z.string(),
     phase: z.string().optional(),
+    after: z.boolean().optional(),
     request: ScriptRequest,
   }),
   z.object({ kind: z.literal("phase"), branch: z.string(), ordinal: z.number().int().nonnegative(), phase: z.string() }),
@@ -213,7 +218,7 @@ export async function runScript(
     }, QUIET_MS);
   };
 
-  const answer = (ordinal: number, reply: { ok: boolean; value?: unknown; error?: string; name?: string }): void => {
+  const answer = (ordinal: number, reply: { ok: boolean; value?: unknown; error?: string; name?: string; pauses?: boolean; fresh?: boolean }): void => {
     if (stopped) return;
     child.stdin.write(`${JSON.stringify({ ordinal, ...reply })}\n`);
   };
@@ -234,8 +239,14 @@ export async function runScript(
         if (counted) busy += 1;
         if (quiet !== undefined) clearTimeout(quiet);
         calls.push(
-          deps.call({ key: message.key, ...(message.phase === undefined ? {} : { phase: message.phase }), request: message.request }).then(
-            (value) => answer(message.ordinal, { ok: true, value: value ?? null }),
+          deps.call({
+            key: message.key,
+            ...(message.phase === undefined ? {} : { phase: message.phase }),
+            ...(message.after === true ? { after: true } : {}),
+            request: message.request,
+          }).then(
+            // The child is told when the call ran instead of being taken: what comes after it in its branch runs too.
+            (value) => answer(message.ordinal, { ok: true, value: value ?? null, ...(deps.fresh?.(message.key) === true ? { fresh: true } : {}) }),
             (error: unknown) => {
               // A call that suspends is not a failure: the invocation waits, and the call is made
               // again when the answer arrives. The child is stopped once it is quiet, and the suspend is passed on.
@@ -251,6 +262,7 @@ export async function runScript(
                 ...(error instanceof Error ? { name: error.name } : {}),
                 // An error that pauses the run is not the outcome of a branch: the script ends on it.
                 ...(isPausing(error) ? { pauses: true } : {}),
+                ...(deps.fresh?.(message.key) === true ? { fresh: true } : {}),
               });
             },
           ).finally(() => {

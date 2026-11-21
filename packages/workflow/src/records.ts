@@ -144,22 +144,6 @@ export const StepPhase = record(
   }),
 );
 
-/**
- * A call of an edited script that is shown: the call the run recorded, and the one the script
- * makes now. They share a key, and the input differs, so the call is not run again.
- */
-export const ShownCall = z.object({
-  /** The key the call is recorded under. */
-  key: z.string(),
-  /** The action the recorded call went to. */
-  recordedAction: z.string(),
-  /** The input the recorded call was made with. */
-  recordedInput: JsonValueSchema,
-  /** The action the script calls now. */
-  action: z.string(),
-  /** The input the script calls now with. */
-  input: JsonValueSchema,
-});
 
 /**
  * The run paused: something did not complete, and a decision is needed.
@@ -178,8 +162,6 @@ export const RunPaused = record(
     key: z.string().optional(),
     /** The choices an owner may answer with. */
     choices: z.array(z.enum(["retry", "skip", "cancel"])).optional(),
-    /** The calls an edited script shows, when the pause is about them. */
-    shown: z.array(ShownCall).optional(),
   }),
 );
 
@@ -233,8 +215,22 @@ export const RunRequested = record("workflow.run.requested", z.object({
   box: z.boolean().optional(),
   /** The hash of the contract of the script as it was read when the run was asked for. */
   contract: ContractHash.optional(),
+  /** Run again the steps from this one on: a step key, a key prefix of a branch or scope, or the title of a phase. */
+  from: z.string().min(1).optional(),
   ...RunOrigin,
 }));
+
+/** A call of the script was taken from an earlier start of the run instead of being made again. */
+export const StepReused = record(
+  "workflow.step.reused",
+  z.object({
+    run: RunId,
+    /** The key of the call. */
+    key: z.string(),
+    /** The start of the run whose answer it took. */
+    from: z.string(),
+  }),
+);
 
 // The record a script starts on is read from its header, so the script package defines it.
 export { Subscription };
@@ -426,6 +422,7 @@ export const WORKFLOW_TYPES = [
   RunPauseRequested,
   RunContinued,
   RunFinished,
+  StepReused,
   ScopeOpened,
   ScopeBranched,
   ScopeSettled,

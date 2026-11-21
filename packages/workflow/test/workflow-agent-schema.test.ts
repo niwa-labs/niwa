@@ -6,7 +6,8 @@
 //   1. the type checker accepts a typed script and refuses a misuse of the typed answer;
 //   2. the schema reaches the session as JSON Schema, and the call gives the parsed value;
 //   3. an answer that does not pass the schema is never returned: the step fails and the run pauses;
-//   4. a replay gives the recorded value without asking again, and another schema is shown, not rerun.
+//   4. a replay gives the recorded value without asking again; an agent call is its prompt and harness, so another schema
+//      takes the recorded answer, and another prompt asks again.
 
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -220,7 +221,7 @@ test("a schema that JSON Schema cannot say fails in the script, before anything 
   expect(control.asked).toHaveLength(0);
 }, 30_000);
 
-test("a replay gives the recorded value without asking again, and another schema is shown, not rerun", async () => {
+test("a replay gives the recorded value without asking again: another schema takes it, another prompt asks again", async () => {
   const { host, home, control } = await served();
   control.reply = { verdict: "changes", notes: ["x"] };
   const lines = (schema: string) => [
@@ -241,15 +242,22 @@ test("a replay gives the recorded value without asking again, and another schema
   expect(finished[1]?.data).toMatchObject({ outcome: { result: { verdict: "changes", notes: ["x"] } } });
   expect(control.asked).toHaveLength(1);
 
-  // The same call with another schema is another input: it is shown, not asked.
+  // An agent call is its prompt and its harness: with another schema it is the same call, and its recorded answer is taken.
   await writeFile(file, lines('z.object({ verdict: z.string(), notes: z.array(z.string()), more: z.number().optional() })').join("\n"));
   await host.call(RESUME, { run: runReplay });
-  await eventually(
-    async () => (await host.records.read()).some((row) => row.type === "workflow.run.paused"),
-    20_000,
-    "the changed schema should be shown",
-  );
-  const paused = (await host.records.read()).filter((row) => row.type === "workflow.run.paused");
-  expect(JSON.stringify(paused.map((row) => row.data))).toContain("label:review");
+  await eventually(async () => (await host.records.read()).filter((row) => row.type === "workflow.run.finished").length === 3, 20_000, "the revision should finish");
+  const taken = (await host.records.read()).filter((row) => row.type === "workflow.run.finished");
+  expect(taken[2]?.data).toMatchObject({ outcome: { result: { verdict: "changes", notes: ["x"] } } });
   expect(control.asked).toHaveLength(1);
+  expect((await host.records.read()).filter((row) => row.type === "workflow.step.reused").map((row) => (row.data as { key: string }).key)).toEqual([
+    "label:review",
+    "label:review",
+  ]);
+
+  // Another prompt is another call: the session is asked.
+  await writeFile(file, lines('z.object({ verdict: z.string(), notes: z.array(z.string()) })').join("\n").replace("Review the diff", "Review the whole diff"));
+  await host.call(RESUME, { run: runReplay });
+  await eventually(async () => (await host.records.read()).filter((row) => row.type === "workflow.run.finished").length === 4, 20_000, "the changed prompt should run");
+  expect(control.asked).toHaveLength(2);
+  expect(control.asked[1]?.prompt).toContain("Review the whole diff");
 }, 30_000);

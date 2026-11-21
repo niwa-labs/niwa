@@ -37,7 +37,7 @@ const [mode, scriptUrl, argsJson] = process.argv.slice(2);
 
 let calls = 0;
 let outside = 0;
-const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
+const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; branch?: Branch | undefined }>();
 
 /** The branch a call belongs to: its path in the script, and the calls made in it. */
 interface Branch {
@@ -57,6 +57,8 @@ interface Branch {
   phase: string | undefined;
   /** How many times the branch entered a phase: the number of the next change, 0 being the one it was made in. */
   phases: number;
+  /** A call of the branch ran instead of being taken from an earlier start: the calls after it lie after a change. */
+  diverged: boolean;
 }
 
 /** The branch the call is made in. The script itself is the branch of no path. */
@@ -64,6 +66,18 @@ const BRANCH = new AsyncLocalStorage<Branch>();
 
 /** How many groups the script itself has started: the script is the branch of no path. */
 let outsideGroups = 0;
+
+/** A call of the script itself ran instead of being taken from an earlier start. */
+let outsideDiverged = false;
+
+/** Whether the calls of a branch (the script itself when absent) lie after a change. */
+const divergedIn = (branch: Branch | undefined): boolean => (branch === undefined ? outsideDiverged : branch.diverged);
+
+/** The calls of a branch lie after a change from now on. */
+function diverge(branch: Branch | undefined): void {
+  if (branch === undefined) outsideDiverged = true;
+  else branch.diverged = true;
+}
 
 /** The phase the script itself is in, and how many times it entered one. */
 let outsidePhase: string | undefined;
@@ -92,12 +106,14 @@ function inBranch<T>(group: string, name: string, body: () => T | Promise<T>): P
   const own = `${group}.${name}`;
   const path = parent === undefined ? own : `${parent.path}.${own}`;
   const phase = parent === undefined ? outsidePhase : parent.phase;
-  const branch: Branch = { path, ordinal: 0, groups: 0, phase, phases: 0, streams: new Set() };
+  const branch: Branch = { path, ordinal: 0, groups: 0, phase, phases: 0, streams: new Set(), diverged: divergedIn(parent) };
   return BRANCH.run(branch, async () => {
     if (phase !== undefined) say({ kind: "phase", branch: path, ordinal: 0, phase });
     try {
       return await body();
     } finally {
+      // A stage that ran a call leaves the stages after it after a change.
+      if (branch.diverged) diverge(parent);
       if (branch.phase !== undefined) say({ kind: "left", branch: path });
     }
   });
@@ -179,9 +195,10 @@ function request(body: ScriptRequest, label: string | undefined): Promise<unknow
   // A labeled call outside a scope is keyed by its label alone: a cancel of its branch names it while it is in flight.
   const branch = BRANCH.getStore();
   if (branch !== undefined && key.startsWith("label:")) inflightLabels.set(key, branch.path);
+  const after = divergedIn(branch);
   return new Promise((resolve, reject) => {
-    pending.set(ordinal, { resolve, reject });
-    say({ kind: "call", ordinal, key, ...(phase === undefined ? {} : { phase }), request: body });
+    pending.set(ordinal, { resolve, reject, branch });
+    say({ kind: "call", ordinal, key, ...(phase === undefined ? {} : { phase }), ...(after ? { after: true } : {}), request: body });
   }).finally(() => inflightLabels.delete(key));
 }
 
@@ -431,6 +448,8 @@ interface Group {
   branchesCancelled: string | undefined;
   /** An error that pauses the run, met by a branch: the group throws it to whoever reads it. */
   pausedBy: unknown;
+  /** A branch of the group ran a call: once the group closes, what comes after it lies after a change. */
+  diverged: boolean;
   open: boolean;
   requests: number;
 }
@@ -518,7 +537,17 @@ function leave(group: Group): void {
 function inGroup<T>(group: Group, path: string, member: Member | undefined, body: () => T | Promise<T>): Promise<T> {
   const parent = BRANCH.getStore();
   const phase = parent === undefined ? outsidePhase : parent.phase;
-  const branch: Branch = { path, ordinal: 0, groups: 0, phase, phases: 0, group, ...(member === undefined ? {} : { member }), streams: new Set() };
+  const branch: Branch = {
+    path,
+    ordinal: 0,
+    groups: 0,
+    phase,
+    phases: 0,
+    group,
+    ...(member === undefined ? {} : { member }),
+    streams: new Set(),
+    diverged: divergedIn(parent),
+  };
   // The block of a group is the branch it was opened in, as far as phases go: only a member is a branch with a phase of its own.
   const own = member !== undefined;
   return BRANCH.run(branch, async () => {
@@ -527,6 +556,7 @@ function inGroup<T>(group: Group, path: string, member: Member | undefined, body
       return await body();
     } finally {
       await closeStreams(branch.streams);
+      if (branch.diverged) group.diverged = true;
       if (own && branch.phase !== undefined) say({ kind: "left", branch: path });
     }
   });
@@ -734,6 +764,7 @@ async function runGroup<T>(path: string, segments: readonly string[], opts: Scop
     cancelled: undefined,
     branchesCancelled: undefined,
     pausedBy: undefined,
+    diverged: false,
     open: true,
     requests: 0,
   };
@@ -774,6 +805,8 @@ async function runGroup<T>(path: string, segments: readonly string[], opts: Scop
   if (group.pausedBy !== undefined) throw group.pausedBy;
   const outcome = ranOut ? "deadline" : failed ? "failed" : "done";
   await requestAt({ op: "scope-close", scope: path, outcome }, `${path}~close`);
+  // A branch that ran a call leaves what comes after the group after a change.
+  if (group.diverged) diverge(within);
   if (ranOut) {
     if (opts.onDeadline === "fail") throw new DeadlineExceeded(`the scope "${segments.join("/")}" ran out of time`);
     return undefined;
@@ -1085,9 +1118,11 @@ if (mode === "describe") {
       const line = buffer.slice(0, at).trim();
       buffer = buffer.slice(at + 1);
       if (line === "") continue;
-      const answer = JSON.parse(line) as { ordinal: number; ok: boolean; value?: unknown; error?: string; name?: string; pauses?: boolean };
+      const answer = JSON.parse(line) as { ordinal: number; ok: boolean; value?: unknown; error?: string; name?: string; pauses?: boolean; fresh?: boolean };
       const waiter = pending.get(answer.ordinal);
       pending.delete(answer.ordinal);
+      // The call ran instead of being taken from an earlier start: what comes after it in its branch runs too.
+      if (answer.fresh === true && waiter !== undefined) diverge(waiter.branch);
       if (answer.ok) waiter?.resolve(answer.value);
       else {
         const failed = new Error(answer.error ?? "the call failed");

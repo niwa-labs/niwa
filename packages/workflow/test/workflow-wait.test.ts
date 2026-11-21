@@ -6,7 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { actionName, grant, principalOf } from "@niwa-labs/core";
-import { connect, createNiwa, requests, timers, tempHome } from "@niwa-labs/testing";
+import { connect, createNiwa, eventually, requests, timers, tempHome } from "@niwa-labs/testing";
 import type { Host, NiwaApi } from "@niwa-labs/testing";
 import { workflow } from "../src/index.ts";
 import type { RunStatus } from "../src/status.ts";
@@ -127,7 +127,9 @@ test("a run paused for a revision, that only cancel answers, is paused and not f
   const runEdit = ((await host.call(START, { file })) as { run: string }).run;
   expect((await statusOf(host, runEdit, 20_000)).state).toBe("paused");
   await writeFile(file, body(2));
-  await host.call(actionName("workflow.resume"), { run: runEdit });
+  // A retry of the pause meets the edited script: the run waits for a revision or a cancel.
+  await host.call(actionName("workflow.resume"), { run: runEdit, choice: "retry" });
+  await eventually(async () => (await statusOf(host, runEdit, 300)).choices?.length === 1, 10_000, "the run should wait for a revision");
   const shown = await statusOf(host, runEdit, 300);
   expect(shown).toMatchObject({ state: "paused", choices: ["cancel"] });
   const { runs } = (await host.call(RUNS, {})) as { runs: string[] };

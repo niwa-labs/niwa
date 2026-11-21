@@ -105,7 +105,6 @@ import {
   RunRequested,
   RunStarted,
   ScriptRecord,
-  ShownCall,
   SubscriptionInstalled,
   SubscriptionUninstalled,
   WORKFLOW_TYPES,
@@ -118,7 +117,7 @@ import type { EmittedRecord, FlowCall, InstallationId, Subscription, WorkflowId 
 import { builtinOf, declaredBy, dependentsOf, flowActionName, readersOf, versionOf, workflowIdsOf, workflowsOf } from "./registry.ts";
 import { storedEntry, storeVersion } from "./store.ts";
 import type { RegisteredWorkflow } from "./registry.ts";
-import { revise, sameCall } from "./revise.ts";
+import { decide } from "./revise.ts";
 import type { CurrentCall, RecordedCall, RevisionReport } from "./revise.ts";
 import { runScript, stopRun } from "./runner.ts";
 import { StatsFold, workflowStats } from "./stats.ts";
@@ -744,26 +743,16 @@ export function workflow(opts: WorkflowOptions = {}) {
           // the run, so the resume is refused instead.
           await guardResumable(run, ctx);
           // The script is the file the run was started with: an edit to it makes the resume a
-          // revision, and a revision shows what it cannot run.
+          // revision, and the answer says what the new start takes from the earlier ones and what runs.
           const hash = readScript(facts.file)?.hash;
           const edited = hash !== undefined && facts.hash !== undefined && hash !== facts.hash;
+          const requested = { ...requestedOf(run, facts, facts.file, hash), ...(input.from === undefined ? {} : { from: input.from }) };
           if (!edited) {
-            await ctx.emit(RunRequested, requestedOf(run, facts, facts.file, hash));
+            await ctx.emit(RunRequested, requested);
             return { run, finished: false };
           }
-          const revision = await revisionOf(journal(), facts, actionNameOf, boxFor(facts.box), facts.file, run);
-          if (revision.shown.length > 0) {
-            // Something is shown: the run waits for the owner, and nothing runs.
-            await ctx.emit(RunPaused, {
-              run,
-              reason: "the script was edited: the changed call is shown, not rerun",
-              key: revision.shown[0]?.key,
-              choices: ["cancel"],
-              shown: revision.shown,
-            });
-            return { run, finished: false, revision };
-          }
-          await ctx.emit(RunRequested, requestedOf(run, facts, facts.file, hash));
+          const revision = await revisionOf(journal(), facts, actionNameOf, boxFor(facts.box), facts.file, run, input.from);
+          await ctx.emit(RunRequested, requested);
           return { run, finished: false, revision };
         },
       }),
@@ -781,10 +770,8 @@ export function workflow(opts: WorkflowOptions = {}) {
           // The run may only be started again when the invocation that is going has ended.
           await guardResumable(run, ctx);
           const file = resolveFile(opts.root, input.file);
-          const revision = await revisionOf(journal(), facts, actionNameOf, boxFor(facts.box), file, run);
-          if (revision.shown.length === 0) {
-            await ctx.emit(RunRequested, requestedOf(run, facts, file, readScript(file)?.hash));
-          }
+          const revision = await revisionOf(journal(), facts, actionNameOf, boxFor(facts.box), file, run, input.from);
+          await ctx.emit(RunRequested, { ...requestedOf(run, facts, file, readScript(file)?.hash), ...(input.from === undefined ? {} : { from: input.from }) });
           return { run, finished: false, revision };
         },
       }),
@@ -1525,10 +1512,9 @@ export function workflow(opts: WorkflowOptions = {}) {
       /** The titles of the phases the script declares: what `phase(title)` may name. */
       const titles = (described?.phases ?? []).map((phase) => phase.title);
       // The calls the earlier starts of this run finished: a call with the same key and input is
-      // answered from them, and a key with another input is shown instead of run.
+      // taken from them along the longest unchanged prefix (see revise.ts).
       const before = factsOf(journal(), run)?.invocations.filter((invocation) => invocation !== current) ?? [];
       const earlier = recordedCalls(journal(), before);
-      let shownKey: string | undefined;
 
       // The notes of the script are emitted one after another, so a replay finds them in order.
       // Each note has a key of its own, and the key says what the note is about: a run that is
@@ -1563,14 +1549,15 @@ export function workflow(opts: WorkflowOptions = {}) {
         agentName: actionNameOf,
         emits: emitTypesOf(described),
         earlier,
+        ...(data.from === undefined ? {} : { from: data.from }),
         emitted: (key) => {
           // The records an emit writes have the id `<invocation>/emit/<key>`: the latest start that wrote one is the one that counts.
-          const rows = before.flatMap((invocation) => journal().get(recordId(`${invocation}/emit/${key}`)) ?? []);
-          const row = rows.at(-1);
-          return row === undefined ? undefined : { type: row.type, data: row.data };
-        },
-        shown: (key) => {
-          shownKey = key;
+          const found = before.flatMap((invocation) => {
+            const row = journal().get(recordId(`${invocation}/emit/${key}`));
+            return row === undefined ? [] : [{ invocation, row }];
+          });
+          const last = found.at(-1);
+          return last === undefined ? undefined : { type: last.row.type, data: last.row.data, invocation: last.invocation };
         },
         failed: () => {
           stepFailed = true;
@@ -1667,6 +1654,7 @@ export function workflow(opts: WorkflowOptions = {}) {
           log: (text) => note(RunLog, { run, text }, "log"),
           // A cancelled run's calls that are in flight fail because of the cancel: they pause nothing.
           stopped: () => step.abandon(),
+          fresh: (key) => call.fresh(key),
         },
         file,
         args,
@@ -1692,7 +1680,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       // replays the run, and the replay throws the same error again (the end is recorded under
       // `<key>~ended`): there is nothing to retry or skip. The run waits for the owner, who revises
       // the script to catch it or cancels the run, as it does for an edited script.
-      const unanswered = stepFailed || shownKey !== undefined ? undefined : ASK_ENDINGS.get(ended.errorName ?? "");
+      const unanswered = stepFailed ? undefined : ASK_ENDINGS.get(ended.errorName ?? "");
       if (unanswered !== undefined) {
         await step.emit(RunPaused, { run, reason: unanswered, choices: ["cancel"] }, { key: `paused:${digestOf(unanswered)}` });
         return;
@@ -1700,24 +1688,17 @@ export function workflow(opts: WorkflowOptions = {}) {
       const reason = ended.error ?? "the script failed";
       // A step that failed is retried or skipped; an error of the script outside any step has no step
       // to skip, and its key says so, so a run paused before it was told apart replays without a mismatch.
-      const outside = shownKey === undefined && !stepFailed;
+      const outside = !stepFailed;
       await step.emit(
         RunPaused,
-        {
-          run,
-          reason,
-          ...(shownKey !== undefined
-            ? { key: shownKey, choices: ["cancel"] }
-            : { choices: outside ? ["retry", "cancel"] : ["retry", "skip", "cancel"] }),
-        },
+        { run, reason, choices: outside ? ["retry", "cancel"] : ["retry", "skip", "cancel"] },
         { key: `paused:${digestOf(reason)}${outside ? ":script" : ""}` },
       );
       // A script error that no step caused is a failure of the handler, and the core pauses an
       // invocation whose handler fails: the pause is a request (the run offers retry and cancel), and
       // the run waits on it. Without it the invocation would end as done, with the run said to be
-      // paused and nobody to answer. A step that did not complete has paused the invocation
-      // already, and a shown call is a decision for the owner that is written above.
-      if (!stepFailed && shownKey === undefined) throw new Error(reason);
+      // paused and nobody to answer. A step that did not complete has paused the invocation already.
+      if (!stepFailed) throw new Error(reason);
     });
   });
 }
@@ -2063,14 +2044,21 @@ async function revisionOf(
   box: ScriptBox | undefined,
   file: string = facts.file,
   run: string = "unknown",
+  from?: string,
 ): Promise<RevisionReport & { unresolved?: string }> {
   const recorded = recordedCalls(journal, facts.invocations);
-  const plan = await planCalls(file, facts.args, recorded, actionNameOf, run, box);
-  return { ...revise(recorded, plan.calls), ...(plan.error === undefined ? {} : { unresolved: plan.error }) };
+  const plan = await planCalls(file, facts.args, recorded, actionNameOf, run, box, from);
+  return { ...plan.report, ...(plan.error === undefined ? {} : { unresolved: plan.error }) };
 }
 
 /** What a step intent holds that a revision compares. */
-const RecordedIntent = z.object({ key: z.string(), action: z.string(), input: JsonValueSchema.optional() });
+const RecordedIntent = z.object({
+  key: z.string(),
+  action: z.string(),
+  input: JsonValueSchema.optional(),
+  recovery: z.enum(["repeat", "repeat-with-key", "do-not-repeat"]).optional(),
+  invocation: z.string(),
+});
 
 /** What a step outcome holds that a revision reads. */
 const RecordedOutcome = z.object({
@@ -2086,7 +2074,14 @@ function recordedCalls(journal: JournalReader, invocations: string[]): Map<strin
     journal.find({ type: type as never }).filter((row) => wanted.has(String((row.data as { invocation?: unknown }).invocation)));
   for (const row of sources("niwa.step.intent")) {
     const data = RecordedIntent.parse(row.data);
-    calls.set(data.key, { key: data.key, action: data.action, input: data.input ?? null, finished: false });
+    calls.set(data.key, {
+      key: data.key,
+      action: data.action,
+      input: data.input ?? null,
+      finished: false,
+      ...(data.recovery === undefined ? {} : { recovery: data.recovery }),
+      invocation: data.invocation,
+    });
   }
   for (const row of sources("niwa.step.outcome")) {
     const data = RecordedOutcome.parse(row.data);
@@ -2101,7 +2096,8 @@ function recordedCalls(journal: JournalReader, invocations: string[]): Map<strin
 
 /**
  * The calls the edited script makes, read by running it in a disposable process with nothing
- * reaching the outside: a call with a recorded answer gets it, any other call gets null.
+ * reaching the outside. Each call of an action is decided as a run decides it (see revise.ts): one
+ * that is taken gets its recorded answer, any other gets null, and what comes after it runs too.
  */
 async function planCalls(
   file: string,
@@ -2110,24 +2106,35 @@ async function planCalls(
   actionNameOf: (harness: string | undefined) => string,
   run: string,
   box: ScriptBox | undefined,
-): Promise<{ calls: CurrentCall[]; error?: string }> {
-  const calls: CurrentCall[] = [];
+  from: string | undefined,
+): Promise<{ report: RevisionReport; error?: string }> {
+  const report: RevisionReport = { reused: [], rerun: [] };
+  const fresh = new Set<string>();
   let orders = 0;
   const ended = await runScript(
     {
-      call: async ({ key, request }) => {
+      fresh: (key) => fresh.has(key),
+      call: async ({ key, request, phase, after }) => {
         // Only the calls of actions are read: the other requests carry moments the script cannot
         // know before it runs, and they answer as if nothing had come.
         switch (request.op) {
           case "agent":
           case "call": {
-            const call =
+            const call: CurrentCall =
               request.op === "agent"
-                ? { key, action: actionNameOf(request.input.harness), input: jsonOf(request.input) }
+                ? { key, action: actionNameOf(request.input.harness), input: jsonOf(request.input), agent: true }
                 : { key, action: request.action, input: request.input ?? null };
-            calls.push(call);
-            const before = recorded.get(key);
-            return before !== undefined && before.finished && sameCall(before, call) ? before.outcome : null;
+            const decided = decide(recorded.get(key), call, {
+              after: after === true,
+              recompute: from !== undefined && (keyUnder(key, from) || phase === from),
+            });
+            if (decided.taken) {
+              report.reused.push({ key, action: call.action, input: call.input, outcome: decided.outcome });
+              return decided.outcome;
+            }
+            report.rerun.push({ key, action: call.action, input: call.input, reason: decided.reason });
+            fresh.add(key);
+            return null;
           }
           case "wait":
             return { timedOut: true };
@@ -2166,7 +2173,7 @@ async function planCalls(
     `plan:${run}`,
     box,
   );
-  return ended.ok ? { calls } : { calls, error: ended.error ?? "the script failed" };
+  return ended.ok ? { report } : { report, error: ended.error ?? "the script failed" };
 }
 
 export {
@@ -2197,7 +2204,6 @@ export { installationsOf, profileOf, standing, standingAt } from "./subscription
 export type { Installation } from "./subscriptions.ts";
 export { versionOf, workflowsOf } from "./registry.ts";
 export { RunStatus } from "./status.ts";
-export { revise } from "./revise.ts";
 export type { RevisionReport } from "./revise.ts";
 
 export { durationMs } from "./language.ts";

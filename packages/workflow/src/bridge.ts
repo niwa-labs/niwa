@@ -18,12 +18,12 @@ import type { SessionMarked } from "@niwa-labs/sessions/records";
 import { z } from "zod";
 
 import { valueOf } from "./ask.ts";
-import { ScopeClosed, ScopeOpened, ScopeSettled } from "./records.ts";
+import { ScopeClosed, ScopeOpened, ScopeSettled, StepReused } from "./records.ts";
 import type { RunId } from "./records.ts";
 import type { ScriptRequest } from "./language.ts";
 import { holds } from "@niwa-labs/core";
-import { sameCall } from "./revise.ts";
-import type { RecordedCall } from "./revise.ts";
+import { decide } from "./revise.ts";
+import type { CurrentCall, RecordedCall } from "./revise.ts";
 import type { CallRequest } from "./runner.ts";
 
 /** The action the host serves for reading the journal. */
@@ -59,10 +59,10 @@ export interface BridgeDeps {
   emits: ReadonlyMap<string, RecordType<unknown>>;
   /** The calls the earlier starts of the run recorded, by key. */
   earlier: ReadonlyMap<string, RecordedCall>;
-  /** What an earlier start of the run emitted under a key: the type and the data, when it did. */
-  emitted(key: string): { type: string; data: unknown } | undefined;
-  /** A call was recorded with another input: it is shown, not rerun. */
-  shown(key: string): void;
+  /** What an earlier start of the run emitted under a key: the type and the data, and the start that wrote it. */
+  emitted(key: string): { type: string; data: unknown; invocation: string } | undefined;
+  /** Run again the steps from this one on: a step key, the key prefix of a branch or a scope, or the title of a phase. */
+  from?: string;
   /** A step of the script did not complete. */
   failed(): void;
   /** Hold the run to its grant for what the script is about to do: it throws when the grant does not allow it. */
@@ -243,6 +243,8 @@ export interface Bridge {
   (request: CallRequest): Promise<unknown>;
   /** The script process is gone: what waits for the clock on its behalf answers now. */
   gone(): void;
+  /** Whether the call under the key ran instead of being taken from an earlier start of the run. */
+  fresh(key: string): boolean;
 }
 
 /**
@@ -314,40 +316,58 @@ export function bridge(deps: BridgeDeps): Bridge {
     );
   };
 
-  /** What an earlier start of the run recorded under a key, when it was that step and it finished. */
-  const finishedBefore = (key: string, name: string): RecordedCall | undefined => {
-    const before = deps.earlier.get(key);
-    return before !== undefined && before.finished && before.action === name ? before : undefined;
+  /** The calls that ran instead of being taken from an earlier start of the run. */
+  const fresh = new Set<string>();
+
+  /** What a request may take from the earlier starts: whether it lies after a change, and whether the owner asked for it to run again. */
+  interface Lineage {
+    after: boolean;
+    recompute: boolean;
+  }
+  const lineageOf = (key: string, phase: string | undefined, after: boolean | undefined): Lineage => ({
+    after: after === true,
+    recompute: deps.from !== undefined && (keyUnder(key, deps.from) || phase === deps.from),
+  });
+  /** The steps a request makes besides its own lie where it lies. */
+  const NONE: Lineage = { after: false, recompute: false };
+
+  /**
+   * Take a call from the earlier start that made it, or run it.
+   *
+   * A call that is taken is written down as taken, so the journal says where its answer came from. A call
+   * that runs while the run has earlier starts says so to the child: what comes after it runs too.
+   */
+  const takeOrRun = async <T>(key: string, before: RecordedCall | undefined, current: CurrentCall, lineage: Lineage, run: () => Promise<T>): Promise<T> => {
+    const decided = decide(before, current, lineage);
+    if (decided.taken && before !== undefined) {
+      await step.emit(StepReused, { run: deps.runId, key, from: before.invocation }, { key: `reused:${key}` });
+      return decided.outcome as T;
+    }
+    if (deps.earlier.size > 0) fresh.add(key);
+    return run();
   };
 
   /** The clock as a step under a key; an earlier start of the run read it already, and a replay keeps that moment. */
-  const clock = async (key: string): Promise<number> => {
-    const before = finishedBefore(key, NOW_ACTION);
-    return before === undefined ? guarded(() => step.now({ key })) : (before.outcome as number);
-  };
+  const clock = async (key: string, lineage: Lineage = NONE): Promise<number> =>
+    takeOrRun(key, deps.earlier.get(key), { key, action: NOW_ACTION, input: null }, lineage, () => guarded(() => step.now({ key })));
 
-  /** A call of an action: a call recorded with another input is shown, and a finished one is answered. */
+  /** A call of an action, or of an agent: taken from the earlier start while it is the same call, else made. */
   const act = async <I, O, In = I>(
     key: string,
     target: ActionTarget<I, O, In>,
     name: string,
     input: NoInfer<In>,
-    reason?: string,
+    lineage: Lineage,
+    opts: { reason?: string; agent?: boolean } = {},
   ): Promise<O> => {
-    const before = deps.earlier.get(key);
-    if (before !== undefined) {
-      if (!sameCall(before, { action: name, input: jsonOf(input) })) {
-        pausing = true;
-        deps.shown(key);
-        throw pausesRun(new Error(`the call "${key}" was recorded with another input: it is shown, not rerun`));
-      }
-      if (before.finished) return before.outcome as O;
-    }
-    // The run is held to its grant for the call (a rule that asks puts the question to the owner);
-    // the session it starts may see no more than the run does.
-    await authorized(key, "call", name, { input, ...(reason === undefined ? {} : { reason }) });
-    deps.visible(visibleOf(name, input));
-    return guarded(() => step(target, input, { key, as: deps.run, ...(reason === undefined ? {} : { reason }) }));
+    const { reason } = opts;
+    return takeOrRun(key, deps.earlier.get(key), { key, action: name, input: jsonOf(input), agent: opts.agent === true }, lineage, async () => {
+      // The run is held to its grant for the call (a rule that asks puts the question to the owner);
+      // the session it starts may see no more than the run does.
+      await authorized(key, "call", name, { input, ...(reason === undefined ? {} : { reason }) });
+      deps.visible(visibleOf(name, input));
+      return guarded(() => step(target, input, { key, as: deps.run, ...(reason === undefined ? {} : { reason }) }));
+    });
   };
 
   /** The sleeping place of a request: the invocation and the key, so no other sleep shares it. */
@@ -358,18 +378,23 @@ export function bridge(deps: BridgeDeps): Bridge {
   };
 
   /** Ask for a wake at the end of a timeout; the clock is read as a step, so a replay keeps the moment. */
-  const arm = async (key: string, ms: number): Promise<string> => {
+  const arm = async (key: string, ms: number, lineage: Lineage): Promise<string> => {
     const place = placeOf(key);
-    const at = endOf(await clock(`${key}~now`), ms);
+    const at = endOf(await clock(`${key}~now`, lineage), ms);
     await step(timerSleepRequest, { at, key: place }, { key: `${key}~arm` });
     return place;
   };
 
-  const sleep = async (key: string, ms: number): Promise<null> => {
-    // A sleep that ended in an earlier start is over: it is not begun again.
-    if (finishedBefore(key, WAIT_ACTION) !== undefined) return null;
+  const sleep = async (key: string, ms: number, lineage: Lineage): Promise<null> => {
+    // A sleep is the same sleep under the same key: one that ended in an earlier start is over, and is not begun again.
+    const before = deps.earlier.get(key);
+    const same = before?.action === WAIT_ACTION ? before : undefined;
+    return takeOrRun(key, same, { key, action: WAIT_ACTION, input: same?.input ?? null }, lineage, () => sleeping(key, ms, lineage));
+  };
+
+  const sleeping = async (key: string, ms: number, lineage: Lineage): Promise<null> => {
     const place = placeOf(key);
-    const at = endOf(await clock(`${key}~now`), ms);
+    const at = endOf(await clock(`${key}~now`, lineage), ms);
     // The wait begins before the request is written: a wake that is written at once, for a
     // moment that has passed, must not be missed.
     const waiting = step.wait(TimerSlept, { filter: { key: place }, key });
@@ -383,7 +408,17 @@ export function bridge(deps: BridgeDeps): Bridge {
     return null;
   };
 
-  const wait = async (key: string, request: Extract<ScriptRequest, { op: "wait" }>): Promise<unknown> => {
+  const wait = async (key: string, request: Extract<ScriptRequest, { op: "wait" }>, lineage: Lineage): Promise<unknown> => {
+    // A wait is the same wait when it waits for the same type and filter: one that was answered in an earlier start keeps its answer.
+    const before = deps.earlier.get(key);
+    const asked = { type: request.type, filter: request.filter ?? null };
+    const recorded = before?.action === WAIT.name && before.input !== null && typeof before.input === "object" && !Array.isArray(before.input)
+      ? { ...before, input: { type: before.input.type ?? null, filter: before.input.filter ?? null } }
+      : before;
+    return takeOrRun(key, recorded, { key, action: WAIT.name, input: jsonOf(asked) }, lineage, () => waiting(key, request, lineage));
+  };
+
+  const waiting = async (key: string, request: Extract<ScriptRequest, { op: "wait" }>, lineage: Lineage): Promise<unknown> => {
     // A wait reads the journal: it is held to the same right as a read of records.
     await authorized(key, "call", RECORDS_READ);
     const filter = request.filter === undefined ? {} : { filter: request.filter };
@@ -394,22 +429,38 @@ export function bridge(deps: BridgeDeps): Bridge {
     if (request.timeoutMs === undefined) {
       return guarded(() => step(WAIT, { type: request.type, ...filter, ...after }, { key }));
     }
-    const place = await arm(key, request.timeoutMs);
+    const place = await arm(key, request.timeoutMs, lineage);
     return guarded(() => step(WAIT, { type: request.type, ...filter, place, ...after }, { key }));
   };
 
-  const ask = async (key: string, request: Extract<ScriptRequest, { op: "ask" }>): Promise<unknown> => {
-    // An answer the owner gave in an earlier start is the answer: the owner is not asked again.
-    const answered = finishedBefore(key, requestAsk.name);
-    if (answered !== undefined) return valueOf(request.question, AskAnswered.parse(answered.outcome).answer);
+  const ask = async (key: string, request: Extract<ScriptRequest, { op: "ask" }>, lineage: Lineage): Promise<unknown> => {
+    // The same question under the same key is the same ask: an answer the owner gave in an earlier start
+    // is the answer, and the owner is not asked again, even after a change.
+    const before = deps.earlier.get(key);
+    const asked = (call: RecordedCall | undefined): boolean =>
+      call !== undefined && stableJson((call.input as { input?: unknown } | null)?.input ?? null) === stableJson(request.question);
+    const same = before?.action === requestAsk.name && asked(before) ? before : undefined;
+    const ended = deps.earlier.get(`${key}~ended`);
     // An ask that ended with no answer in an earlier start ends the same way: the owner is not asked again.
-    const noAnswer = finishedBefore(`${key}~ended`, ASK_ENDED.name);
-    if (noAnswer !== undefined) throw askError(AskEnd.parse(noAnswer.outcome).ended);
+    if (same !== undefined && !same.finished && ended?.finished === true && ended.action === ASK_ENDED.name && !lineage.recompute) {
+      throw askError(AskEnd.parse(ended.outcome).ended);
+    }
+    const answer = await takeOrRun(
+      key,
+      same,
+      { key, action: requestAsk.name, input: same?.input ?? jsonOf(request.question) },
+      lineage,
+      async () => ({ live: await asking(key, request, lineage) }),
+    );
+    return "live" in (answer as object) ? (answer as { live: unknown }).live : valueOf(request.question, AskAnswered.parse(answer).answer);
+  };
+
+  const asking = async (key: string, request: Extract<ScriptRequest, { op: "ask" }>, lineage: Lineage): Promise<unknown> => {
     // A run may always ask the owner, who can refuse: asking needs nothing in `uses`.
     const deadline =
       request.timeoutMs === undefined
         ? {}
-        : { deadline: timestamp(endOf(await clock(`${key}~now`), request.timeoutMs)) };
+        : { deadline: timestamp(endOf(await clock(`${key}~now`, lineage), request.timeoutMs)) };
     try {
       const { answer } = answeredBy(
         await guarded(() =>
@@ -426,55 +477,47 @@ export function bridge(deps: BridgeDeps): Bridge {
     }
   };
 
-  const call = async ({ key, request }: CallRequest): Promise<unknown> => {
+  const call = async ({ key, request, phase, after }: CallRequest): Promise<unknown> => {
+    const lineage = lineageOf(key, phase, after);
     switch (request.op) {
       case "agent": {
         const target = deps.agentAction(request.input.harness);
         if (target === undefined) {
           throw new Error(`no agent action is configured for "${deps.agentName(request.input.harness)}"`);
         }
-        return act(key, target, target.name, request.input);
+        return act(key, target, target.name, request.input, lineage, { agent: true });
       }
       case "call":
-        return act(key, actionName(request.action), request.action, request.input, request.reason);
+        return act(key, actionName(request.action), request.action, request.input, lineage, {
+          ...(request.reason === undefined ? {} : { reason: request.reason }),
+        });
       case "wait":
-        return wait(key, request);
+        return wait(key, request, lineage);
       case "sleep":
-        return sleep(key, request.ms);
+        return sleep(key, request.ms, lineage);
       case "ask":
-        return ask(key, request);
+        return ask(key, request, lineage);
       case "emit": {
         const type = emitType(deps, request.record);
         const before = deps.emitted(key);
-        if (before !== undefined) {
-          // Written by an earlier start of the run: it is not written twice, and another record under the same key is shown.
-          const now = type.schema.safeParse(request.data);
-          if (before.type !== type.name || !now.success || stableJson(before.data) !== stableJson(now.data)) {
-            pausing = true;
-            deps.shown(key);
-            throw pausesRun(new Error(`the emit "${key}" was recorded with another type or data: it is shown, not written again`));
-          }
-          return null;
-        }
-        // Data the declared schema refuses is the script's error to catch, not a failed step: the child's own parse is not trusted.
-        const data = type.schema.safeParse(request.data);
-        if (!data.success) throw new Error(`emit "${type.name}": the data does not pass the record's schema: ${z.prettifyError(data.error)}`);
-        await authorized(key, "emit", type.name);
-        await guarded(() => step.emit(type, data.data, { key }));
-        return null;
+        // Written by an earlier start of the run with the same type and data: it is not written twice. Another record runs.
+        const now = type.schema.safeParse(request.data);
+        const written: RecordedCall | undefined =
+          before === undefined
+            ? undefined
+            : { key, action: before.type, input: jsonOf(before.data ?? null), finished: true, outcome: null, recovery: "do-not-repeat", invocation: before.invocation };
+        return takeOrRun(key, written, { key, action: type.name, input: jsonOf(now.success ? (now.data ?? null) : null) }, lineage, () => emitNow(key, type, request.data));
       }
       case "read-state":
         await authorized(key, "call", RECORDS_READ);
         return guarded(() => step(own.state, { plugin: request.plugin }, { key }));
       case "read-records":
         // The records, and where the next read or wait goes on: a wait from `next` misses nothing.
-        return act(key, RECORDS_READ, RECORDS_READ, request.query);
+        return act(key, RECORDS_READ, RECORDS_READ, request.query, lineage);
       case "now":
-        return clock(key);
-      case "random": {
-        const before = finishedBefore(key, RANDOM_ACTION);
-        return before === undefined ? guarded(() => step.random({ key })) : before.outcome;
-      }
+        return clock(key, lineage);
+      case "random":
+        return takeOrRun(key, deps.earlier.get(key), { key, action: RANDOM_ACTION, input: null }, lineage, () => guarded(() => step.random({ key })));
       case "scope-open":
         return openScope(request);
       case "scope-settled":
@@ -516,6 +559,15 @@ export function bridge(deps: BridgeDeps): Bridge {
         await step.emit(ScopeClosed, { run: deps.runId, scope: request.scope, outcome: request.outcome }, { key: `scope-closed:${request.scope}` });
         return null;
     }
+  };
+
+  const emitNow = async (key: string, type: RecordType<unknown>, raw: unknown): Promise<null> => {
+    // Data the declared schema refuses is the script's error to catch, not a failed step: the child's own parse is not trusted.
+    const data = type.schema.safeParse(raw);
+    if (!data.success) throw new Error(`emit "${type.name}": the data does not pass the record's schema: ${z.prettifyError(data.error)}`);
+    await authorized(key, "emit", type.name);
+    await guarded(() => step.emit(type, data.data, { key }));
+    return null;
   };
 
   /** The records of one type this run wrote for one group, in the order they were written. */
@@ -587,6 +639,7 @@ export function bridge(deps: BridgeDeps): Bridge {
   };
 
   return Object.assign(call, {
+    fresh: (key: string): boolean => fresh.has(key),
     gone: (): void => {
       for (const answer of [...deadlines]) answer();
     },

@@ -134,22 +134,27 @@ test("a script edited while its run was away pauses the run for a revision, and 
   expect(await resultsOf(second)).toEqual(["new"]);
 }, 30_000);
 
-test("an emit recorded under a key with other data is shown, not written again", async () => {
+test("an emit that is the same on a resume is taken, not written again; one with other data is a change, and is written", async () => {
   const home = await tempHome();
   homes.push(home);
   const niwa = await hostOn(home.path, testClock(START));
-  const file = await write(
-    home.path,
-    `${NOTE}export default workflow({ name: "demo", emits: [Note], output: z.string() }, async () => { await emit(Note, { text: "old" }, { label: "note" }); return "ok"; });`,
-  );
+  const source = (text: string) =>
+    `${NOTE}export default workflow({ name: "demo", emits: [Note], output: z.string() }, async () => { await emit(Note, { text: "${text}" }, { label: "note" }); return "ok"; });`;
+  const file = await write(home.path, source("old"));
   const run = await start(niwa, file);
   await eventually(async () => (await resultsOf(niwa)).length === 1, 10_000, "the run should finish");
 
-  await writeFile(file, `${NOTE}export default workflow({ name: "demo", emits: [Note], output: z.string() }, async () => { await emit(Note, { text: "new" }, { label: "note" }); return "ok"; });`);
   await niwa.call("workflow.resume" as ActionName, { run } as never);
-  await eventually(async () => (await reasonsOf(niwa)).length === 1, 10_000, "the run should pause on the emit");
-  expect((await reasonsOf(niwa))[0]).toContain("label:note");
+  await eventually(async () => (await resultsOf(niwa)).length === 2, 10_000, "the resume should finish");
   expect(await count(niwa, "wf.demo.note")).toBe(1);
+  expect(await count(niwa, "workflow.step.reused")).toBe(1);
+
+  await writeFile(file, source("new"));
+  await niwa.call("workflow.resume" as ActionName, { run } as never);
+  await eventually(async () => (await resultsOf(niwa)).length === 3, 10_000, "the revision should finish");
+  expect(await reasonsOf(niwa)).toEqual([]);
+  const notes = (await niwa.records.read()).filter((row) => row.type === "wf.demo.note").map((row) => (row.data as { text: string }).text);
+  expect(notes).toEqual(["old", "new"]);
 }, 30_000);
 
 test("a label is not the name of a record the run writes itself", async () => {
