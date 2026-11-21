@@ -97,6 +97,7 @@ test("declared values: a declared action is described with its schemas, an undec
       "niwa.records.search",
       "niwa.trace",
       "plugin.install",
+      "plugin.uninstall",
     ]);
 
     // The input is a JSON Schema with the declared property.

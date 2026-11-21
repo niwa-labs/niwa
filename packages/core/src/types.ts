@@ -704,6 +704,7 @@ export const CORE = {
   accessSwitched: "niwa.access.switched",         // { all }
   accessAnswered: "niwa.access.answered",         // { grant, principal, name, target?, scope, request? }
   pluginInstalled: "niwa.plugin.installed",       // { plugin, version, module, hash }
+  pluginUninstalled: "niwa.plugin.uninstalled",   // { plugin, hash }
   subscriptionPosition: "niwa.subscription.position", // { subscription, seq, reason }
   callBegan: "niwa.call.began",                   // { operation, action, digest }
   callSettled: "niwa.call.settled",               // { operation, action, digest, outcome }

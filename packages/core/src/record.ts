@@ -111,6 +111,7 @@ export const CORE_TYPES = {
   accessSwitched: recordTypeName(CORE.accessSwitched),
   accessAnswered: recordTypeName(CORE.accessAnswered),
   pluginInstalled: recordTypeName(CORE.pluginInstalled),
+  pluginUninstalled: recordTypeName(CORE.pluginUninstalled),
   subscriptionPosition: recordTypeName(CORE.subscriptionPosition),
   callBegan: recordTypeName(CORE.callBegan),
   callSettled: recordTypeName(CORE.callSettled),

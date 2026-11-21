@@ -18,6 +18,7 @@ import type { Handler, PluginName, PluginVersion, RecordType } from "@niwa-labs/
 
 /** The name of the action that installs a plugin from a file. */
 export const PLUGIN_INSTALL = actionName("plugin.install");
+export const PLUGIN_UNINSTALL = actionName("plugin.uninstall");
 
 /**
  * Plugin names: lowercase words joined by dashes (`night-digest`), grouped by `/` (`rin/memory`).

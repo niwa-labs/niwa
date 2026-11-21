@@ -170,7 +170,7 @@ import {
 import { AccessControl } from "./access-control.ts";
 import { CallOperations } from "./call-operations.ts";
 import { accessActions } from "./access-actions.ts";
-import { installationOf, pluginInstallAction, removeCopyIfStale, removeStaleCopies } from "./plugin-install.ts";
+import { PluginInstalledData, currentInstallations, installationOf, pluginInstallAction, pluginUninstallAction, removeCopyIfStale, removeStaleCopies, restorePlugin } from "./plugin-install.ts";
 import { COCKPIT_MODULE, handlerSource, pluginVersion, pluginName, sealVersion } from "@niwa-labs/plugin";
 import { catalogOf } from "./cockpit-catalog.ts";
 import { StateStore } from "./state.ts";
@@ -627,6 +627,7 @@ function boundedStop(stopping: Promise<void>): Promise<void> {
 class Niwa implements Host {
   private readonly home: string;
   private readonly plugins = new Map<PluginName, Installed>();
+  private readonly configured = new Set<PluginName>();
   /** Every version of every handler that was installed: work in flight finishes on its own. */
   private readonly pinned = new Map<string, Pinned>();
   private readonly types = new Map<RecordTypeName, AnyType>();
@@ -703,16 +704,49 @@ class Niwa implements Host {
   private readonly mover = this.moveAction();
   private readonly canceller = this.cancelStepsAction();
   private readonly installer = pluginInstallAction({
-    install: (plugin) => this.use(plugin),
-    record: async (caller, data) => {
+    check: (name) => this.checkModuleName(pluginName(name)),
+    recorded: (id) => {
+      const row = this.requireJournal().get(id);
+      return row?.type === CORE_TYPES.pluginInstalled ? PluginInstalledData.parse(row.data) : undefined;
+    },
+    install: async (caller, plugin, data, id) => {
       const journal = this.requireJournal();
+      this.checkModuleName(plugin.name);
       const before = installationOf(journal, data.plugin);
-      const id = newRecordId("plg");
-      this.append([{ id, stream: streamId("plugin"), type: CORE_TYPES.pluginInstalled, schema: 1, data, actor: caller, cause: null, root: id }]);
-      // The file the plugin was installed from before is not the one it is made from now: its copy goes when nothing else is made from it.
+      this.install(plugin, { commit: () => {
+        this.append([{ id, stream: streamId("plugin"), type: CORE_TYPES.pluginInstalled, schema: 1, data: { ...data, version: plugin.version }, actor: caller, cause: null, root: id }]);
+      } });
       if (before !== undefined) await removeCopyIfStale(journal, before);
     },
   });
+  private readonly uninstaller = pluginUninstallAction(
+    () => this.requireJournal(),
+    async (caller, installation, id) => {
+      const name = pluginName(installation.plugin);
+      if (this.configured.has(name)) throw new Error(`"${name}" is configured on this host`);
+      const installed = this.plugins.get(name);
+      if (installed !== undefined) {
+        for (const [other, entry] of this.plugins) {
+          if (other === name) continue;
+          for (const point of entry.readInSetup) {
+            if (installed.offers.some(({ key }) => key.name === point)) {
+              throw new Error(`"${other}" read offers from "${name}" at "${point}" during setup`);
+            }
+          }
+        }
+      }
+      this.requireProviders(name);
+      const data = { plugin: installation.plugin, hash: installation.hash };
+      this.append([{ id, stream: streamId("plugin"), type: CORE_TYPES.pluginUninstalled, schema: 1, data, actor: caller, cause: null, root: id }]);
+      this.unload(name);
+      await removeCopyIfStale(this.requireJournal(), installation);
+    },
+  );
+
+  private checkModuleName(name: PluginName): void {
+    if (this.configured.has(name)) throw new Error(`"${name}" is configured on this host`);
+  }
+
   /** The actions the host registers for itself: observation and the description. */
   private readonly readers = [
     this.recordsReadAction(),
@@ -763,6 +797,7 @@ class Niwa implements Host {
     for (const [index, plugin] of plugins.entries()) {
       try {
         this.install(plugin);
+        this.configured.add(plugin.name);
       } catch (error) {
         throw new PluginInstallFailed(
           plugin.name,
@@ -808,7 +843,7 @@ class Niwa implements Host {
    * that ran to its end is swapped in. Any other outcome puts the shared things back and leaves the
    * installed plugin as it was.
    */
-  private install(plugin: Plugin): void {
+  private install(plugin: Plugin, options: { restoringVersion?: string; commit?: () => void } = {}): void {
     const profiles = this.access.declaredProfiles();
     const keys = this.states.declared();
     // Set when the install is refused: the api of the plugin then changes nothing in the host.
@@ -817,7 +852,7 @@ class Niwa implements Host {
       if (refused) throw new Error(`plugin "${plugin.name}" was not installed: its api changes nothing any more`);
     };
     try {
-      this.stage(plugin, live);
+      this.stage(plugin, live, options);
     } catch (error) {
       refused = true;
       this.access.restoreProfiles(profiles);
@@ -826,7 +861,7 @@ class Niwa implements Host {
     }
   }
 
-  private stage(plugin: Plugin, live: () => void): void {
+  private stage(plugin: Plugin, live: () => void, options: { restoringVersion?: string; commit?: () => void }): void {
     const sources: string[] = [];
     const installed: Installed = {
       source: plugin,
@@ -1007,6 +1042,9 @@ class Niwa implements Host {
     }
     sealVersion(plugin, sources);
     installed.version = plugin.version;
+    if (options.restoringVersion !== undefined && installed.version !== options.restoringVersion) {
+      throw new Error(`the restored version of "${plugin.name}" differs from its recorded version`);
+    }
     // A plugin that read a point when it was installed keeps what it read: a replacement of the plugin that
     // offered there that offers something else is refused, because the reader would go on with the old.
     const replaced = this.plugins.get(plugin.name);
@@ -1043,7 +1081,21 @@ class Niwa implements Host {
         throw new TypeError(`plugin "${plugin.name}" cannot guard core records with "${type.name}"`);
       }
     }
-    this.prepareGuards(plugin.name, installed.types);
+    // A plugin that replaces another takes its services over: the old ones stop, the new ones
+    // start when the host is already serving.
+    this.plugins.set(plugin.name, installed);
+    let guardIndexChanged = false;
+    try {
+      if (options.commit !== undefined) this.requireProviders();
+      this.prepareGuards(plugin.name, installed.types);
+      guardIndexChanged = true;
+      options.commit?.();
+    } catch (error) {
+      if (replaced === undefined) this.plugins.delete(plugin.name);
+      else this.plugins.set(plugin.name, replaced);
+      if (guardIndexChanged) this.prepareGuards(plugin.name, replaced?.types ?? []);
+      throw error;
+    }
     // Earlier versions stay pinned: they were pinned when they were installed.
     for (const entry of installed.handlers) {
       this.pinned.set(pinKey(handlerIdOf(`${plugin.name}/${entry.name}`), plugin.version), {
@@ -1051,10 +1103,8 @@ class Niwa implements Host {
         type: entry.type,
       });
     }
-    // A plugin that replaces another takes its services over: the old ones stop, the new ones
-    // start when the host is already serving.
+    if (options.restoringVersion !== undefined) return;
     this.stopServicesOf(plugin.name);
-    this.plugins.set(plugin.name, installed);
     this.rebuild();
     if (this.journal !== undefined) this.startServicesOf(plugin.name);
   }
@@ -1459,6 +1509,7 @@ class Niwa implements Host {
     // And one more: the way anyone asks what a plugin would do differently over recorded records.
     // And the install of a plugin from a file: its target is the plugin, so a grant can limit it.
     this.actions.set(this.installer.name, this.installer);
+    this.actions.set(this.uninstaller.name, this.uninstaller);
     // And the observation ones: reading what happened is an action, so the surfaces generate
     // their tools and their commands from the same list as everything else.
     for (const reader of this.readers) this.actions.set(reader.name, reader);
@@ -1678,7 +1729,6 @@ class Niwa implements Host {
 
   private async start(): Promise<void> {
     if (this.closed) throw new Error("the host is closed");
-    this.requireProviders();
     const path = socketPath(this.home);
     // The socket is checked before the journal is opened: a living host on this home is refused,
     // and taking the journal from it would be a take-over the owner did not ask for. An explicit
@@ -1692,15 +1742,19 @@ class Niwa implements Host {
       journal.setGuards([...this.types.values()]);
       // The state is a projection of the journal: folded from it here, so a restart sees it.
       this.states.bind({ journal, append: (recs) => this.append(recs) });
-      this.requireActionNeeds();
       this.openDoors(journal);
       // Before anything loads a plugin file again: the copies of files no installation is made from are taken away.
       await removeStaleCopies(journal);
+      for (const installation of currentInstallations(journal).values()) {
+        this.checkModuleName(pluginName(installation.plugin));
+        this.install(await restorePlugin(installation), { restoringVersion: installation.version });
+      }
+      this.requireProviders();
       this.positions.clear();
       this.kept.clear();
       this.active.clear();
       this.activeOf.clear();
-      this.placeSubscriptions(journal);
+      this.rebuild();
       this.resume(journal);
       this.pump(journal);
       rmSync(path, { force: true }); // the old holder's file: this host binds its own
@@ -1739,6 +1793,8 @@ class Niwa implements Host {
       journal.close();
       this.journal = undefined;
       this.doors = undefined;
+      for (const name of this.plugins.keys()) if (!this.configured.has(name)) this.plugins.delete(name);
+      this.rebuild();
       throw error;
     }
   }
@@ -1912,22 +1968,39 @@ class Niwa implements Host {
    * record type no installed plugin declares would wait forever, and the host says so before it
    * serves. A plain type is not checked: its records may come from a client or another host.
    */
-  private requireProviders(): void {
+  private requireProviders(excluding?: PluginName): void {
+    const plugins = [...this.plugins].filter(([name]) => name !== excluding);
+    const names = new Set(plugins.map(([name]) => String(name)));
+    const actions = new Set([
+      this.installer.name, this.uninstaller.name, this.resolver.name, this.mover.name, this.canceller.name,
+      ...this.readers.map((reader) => reader.name), ...this.accessActionList.map((entry) => entry.name),
+      ...plugins.flatMap(([, entry]) => entry.actions.map((declared) => declared.name)),
+    ]);
     // What a plugin offers is read by another: an offer to a reader that is not installed would be lost.
-    for (const [name, entry] of this.plugins) {
+    for (const [name, entry] of plugins) {
       for (const { key } of entry.offers) {
         // The host reads the points that name it: no plugin has to be installed to read them.
-        if (key.reader !== HOST_READER && !this.plugins.has(pluginName(key.reader))) {
+        if (key.reader !== HOST_READER && !names.has(key.reader)) {
           throw new MissingReader(name, key.name, key.reader);
         }
       }
     }
     const declared = new Set<string>();
-    for (const entry of this.plugins.values()) for (const type of entry.types) declared.add(type.name);
-    for (const [name, entry] of this.plugins) {
+    for (const [, entry] of plugins) for (const type of entry.types) declared.add(type.name);
+    let catalog: Set<ActionName> | undefined;
+    for (const [name, entry] of plugins) {
       for (const handler of entry.handlers) {
         if (handler.trigger === undefined || declared.has(handler.type.name) || CORE_TYPE_NAMES.has(handler.type.name)) continue;
         throw new MissingProvider(name, handler.name, handler.type.name, handler.trigger.provider ?? handler.type.provider);
+      }
+      for (const needed of entry.needs.actions) {
+        const action = actionName(needed);
+        if (actions.has(action)) continue;
+        // At startup and during install or removal, use the catalog of the plugin set being checked.
+        catalog ??= new Set(this.catalogued()
+          .filter(({ installed }) => installed.source.name !== excluding)
+          .map(({ action }) => action.name));
+        if (!catalog.has(action)) throw new MissingNeed(name, "action", needed);
       }
       for (const needed of entry.needs.types) {
         if (!declared.has(needed) && !CORE_TYPE_NAMES.has(needed)) throw new MissingNeed(name, "type", needed);
@@ -1938,19 +2011,6 @@ class Niwa implements Host {
           if (declared.has(needed.name) || CORE_TYPE_NAMES.has(needed.name)) continue;
           throw new MissingProvider(name, handler.name, needed.name, needed.provider, "needs");
         }
-      }
-    }
-  }
-
-  /** Catalogs can derive actions from persisted records, once journal and state are available. */
-  private requireActionNeeds(): void {
-    let catalog: Set<ActionName> | undefined;
-    for (const [plugin, entry] of this.plugins) {
-      for (const need of entry.needs.actions) {
-        const name = actionName(need);
-        if (this.actions.has(name)) continue;
-        catalog ??= new Set(this.catalogued().map(({action}) => action.name));
-        if (!catalog.has(name)) throw new MissingNeed(plugin, "action", name);
       }
     }
   }
