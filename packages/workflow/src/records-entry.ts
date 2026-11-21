@@ -58,3 +58,6 @@ export { installationsOf, profileOf, standing, standingAt } from "./subscription
 export type { Installation } from "./subscriptions.ts";
 export { versionOf, workflowsOf } from "./registry.ts";
 export { RunStatus } from "./status.ts";
+
+// Verify that a registered run executed the archived source closure.
+export { storedEntry } from "./store.ts";
