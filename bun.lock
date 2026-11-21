@@ -567,6 +567,9 @@
       "dependencies": {
         "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
+        "@niwa-labs/flow": "workspace:*",
+        "@niwa-labs/flow-code": "workspace:*",
+        "@niwa-labs/flow-eval": "workspace:*",
         "@niwa-labs/git": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",

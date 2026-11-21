@@ -6,6 +6,9 @@
  * any import of its own is, and `node_modules` is the one that holds the packages niwa runs with.
  * A script process reads the child and the packages the child loads; a stored script finds the
  * packages it imports by name through a link to that `node_modules`.
+ *
+ * The script libraries (`@niwa-labs/flow`, `flow-code`, `flow-eval`) are dependencies of this package for
+ * that reason alone: so they are in that `node_modules` and among what a box may read, wherever niwa is laid out.
  */
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
