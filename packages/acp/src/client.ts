@@ -49,6 +49,8 @@ export type RpcOutcome =
       readonly dispatch: Dispatch;
       /** The answer did not come in time. */
       readonly timedOut?: true;
+      /** The call was over its time, the work was cancelled (`overdue`), and the agent did not answer even that in the grace: nobody knows what became of the work. */
+      readonly unconfirmed?: true;
     };
 
 /** How a call waits for its answer. */
@@ -57,10 +59,13 @@ export interface CallOptions {
   readonly timeoutMs?: number | null;
   /**
    * Run when the call is over its time, instead of giving it up at once (a cancel of the work):
-   * the call then waits one more timeout for the agent to answer, and fails with the timeout
-   * either way, so a cancelled answer is never taken for a success.
+   * the call then waits one more timeout (`graceMs`) for the agent to answer, and fails with the
+   * timeout either way, so a cancelled answer is never taken for a success. A call whose grace ran
+   * out without an answer fails `unconfirmed`.
    */
   readonly overdue?: () => void;
+  /** How long a call that was cancelled waits for the agent to answer the cancel. The call's own timeout when absent. */
+  readonly graceMs?: number;
 }
 
 /**
@@ -270,8 +275,8 @@ export class AcpClient {
           // The agent is gone: there is nothing to cancel.
         }
         grace = setTimeout(() => {
-          if (this.#pending.delete(id)) settle(timedOut);
-        }, timeoutMs);
+          if (this.#pending.delete(id)) settle({ ...timedOut, unconfirmed: true });
+        }, options.graceMs ?? timeoutMs);
         grace.unref?.();
       }, timeoutMs);
       timer.unref?.();

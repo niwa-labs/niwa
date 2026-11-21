@@ -70,6 +70,25 @@ test("an overdue call is cancelled, given one more timeout, and fails with the t
   expect(await call).toMatchObject({ ok: false, timedOut: true });
 });
 
+test("a cancelled call waits its own grace for the agent's answer, and fails unconfirmed when none comes", async () => {
+  // The call has a long time of its own (a turn); the grace after the cancel is short.
+  const { acp } = client({ callTimeoutMs: 1_000 });
+  const started = Date.now();
+  const call = acp.request("prompt", {}, { timeoutMs: 10, graceMs: 20, overdue: () => {} });
+  const outcome = await call;
+  expect(outcome).toMatchObject({ ok: false, timedOut: true, unconfirmed: true });
+  expect(Date.now() - started).toBeLessThan(500);
+  expect(acp.waiting).toBe(0);
+
+  // An answer inside the grace is a cancelled call that was confirmed: it is not unconfirmed.
+  const answered = acp.request("prompt", {}, { timeoutMs: 10, graceMs: 200, overdue: () => {} });
+  await Bun.sleep(30);
+  acp.receive('{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}');
+  const confirmed = await answered;
+  expect(confirmed).toMatchObject({ ok: false, timedOut: true });
+  expect(confirmed).not.toHaveProperty("unconfirmed");
+});
+
 test("a request of the agent, a notification, a line that is not JSON and one too long each go to their handler", () => {
   const { acp, requests, notifications, unreadable, overflowed } = client({ maxLineBytes: 128 });
   acp.feed('{"jsonrpc":"2.0","id":"r1","method":"session/request_permission","params":{}}\n');
