@@ -19,11 +19,15 @@ export class FakeHost {
   /** The answers of the actions that are called, by action name. */
   readonly answers = new Map<string, (input: unknown) => unknown>();
   readMode: ReadMode = "allowed";
-  /** How many times each action was called. */
-  readonly calls: string[] = [];
+  /** The actions that were called, with their input. */
+  readonly calls: Array<{ action: string; input: unknown }> = [];
+  /** How many times the host was asked to describe itself. */
+  described = 0;
   /** How many core clients were opened, and how many of them are still open. */
   opened = 0;
   open = 0;
+  /** When set, a read of the journal answers only after it. */
+  readGate: Promise<void> | undefined;
   /** How long closing a client takes. */
   closeMs = 0;
   /** The queries the live subscriptions were opened with. */
@@ -54,12 +58,16 @@ export class FakeHost {
       }
     };
     const api = {
-      describe: async (): Promise<Description> => ({ actions: this.actions, types: [] }),
+      describe: async (): Promise<Description> => {
+        this.described += 1;
+        return { actions: this.actions, types: [] };
+      },
       call: async (action: ActionName | string, input: unknown): Promise<unknown> => {
         const name = String(action);
-        this.calls.push(name);
+        this.calls.push({ action: name, input });
         if (name === "niwa.records.read") {
           refuseUnlessAllowed();
+          await this.readGate;
           return { records: [], next: this.last };
         }
         const answer = this.answers.get(name);

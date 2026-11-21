@@ -22,7 +22,7 @@ import { z } from "zod";
 
 import { actionName, JsonSchemaValue, recordTypeName, seq } from "@niwa-labs/core";
 import type { JsonSchema, Token } from "@niwa-labs/core";
-import { HostError, withWorkingDirectory } from "@niwa-labs/client";
+import { HostError, RECORDS_READ_ACTION, RecordsOutput, withWorkingDirectory } from "@niwa-labs/client";
 import { bind, type Binding, type Connector, type SessionId } from "./bind.ts";
 import {
   OPEN_QUESTIONS,
@@ -70,6 +70,8 @@ export interface McpServerOptions {
   readonly token?: Token;
   /** How the core client of a session is opened; by default, by connecting to the host of the home. */
   readonly connect?: Connector;
+  /** How often a session that may not read the journal looks at its tools again, in milliseconds. */
+  readonly refreshMs?: number;
 }
 
 /** Build the MCP server of one home. */
@@ -77,6 +79,8 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
   // A server serves one transport, so one connection: its fallback session id is its own.
   const connectionId = randomUUID();
   const bindings = new Map<SessionId, Promise<Binding>>();
+  // Ended with the session: what waits between two looks at the tools stops waiting.
+  const stopped = new AbortController();
   const server = new Server(
     { name: "niwa", version: "0.1.0" },
     { capabilities: { tools: { listChanged: true } }, instructions: INSTRUCTIONS },
@@ -112,6 +116,7 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
   let cleanup: Promise<void> | undefined;
   const end = (): Promise<void> => {
     closed = true;
+    stopped.abort();
     void watching?.return?.();
     return (cleanup ??= closeBindings());
   };
@@ -132,34 +137,63 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
     return { tools };
   });
 
-  // The tools of a session change with its open questions and with the registered workflows. When
-  // the connection is up, the server follows the records that open, answer, cancel or expire a
-  // request (and the one that pairs the mark with the session) and the ones that register or
-  // recheck a workflow, recomputes the tools on each, and sends
+  // The tools of a connection change with the registered workflows and the tasks it owes a result for,
+  // and, when the server serves a session, with the questions that session is asked. The server follows
+  // the records that open, answer, cancel or expire any of these, recomputes the tools on each, and sends
   // `notifications/tools/list_changed` only when the fingerprint of the tools is not the last one.
+  //
+  // Following the journal is a read, so it needs the grant to read it. A session that does not have it
+  // looks at its tools again every `refreshMs` instead: it is told later, but it is told.
   let watching: AsyncIterator<unknown> | undefined;
   let closed = false;
-  const watch = async (): Promise<void> => {
-    const { api } = await bindingOf(undefined);
-    const relevant = new Set<string>(TOOL_RECORDS);
-    // Where to follow from: the last such record that exists now. The baseline is read after it,
-    // so a record that lands in between is only read twice, and the second read changes nothing.
-    const past = await api.records.read({ types: TOOL_RECORDS });
-    const from = past.at(-1)?.seq ?? seq(0);
-    lastShown ??= fingerprintOf(await shownTools(api));
-    const live = api.records.since({ from: from })[Symbol.asyncIterator]();
+  const refreshMs = opts.refreshMs ?? REFRESH_MS;
+  const watched = opts.mark === undefined ? [...CATALOG_RECORDS, ...TASK_RECORDS] : TOOL_RECORDS;
+
+  /**
+   * Tell the client when the tools are not the ones it was last given. A client that was given none
+   * has nothing to be told: what it lists first is the baseline.
+   */
+  const refresh = async (api: Binding["api"]): Promise<void> => {
+    const now = fingerprintOf(await shownTools(api));
+    const before = lastShown;
+    lastShown = now;
+    if (before !== undefined && now !== before) await server.sendToolListChanged();
+  };
+
+  const follow = async (api: Binding["api"]): Promise<void> => {
+    // Where to follow from: the end of the journal as the host reads it now, with no record of the
+    // history sent back. The baseline is taken after it, so a record that lands in between is only
+    // seen twice, and the second sight changes nothing.
+    const read = RecordsOutput.parse(await api.call(RECORDS_READ_ACTION, { types: watched, tail: 1 }));
+    const live = api.records.since({ from: seq(read.next), types: watched })[Symbol.asyncIterator]();
     watching = live;
     if (closed) return void live.return?.();
+    // What changed before that position, after the client listed its tools, is not in the feed.
+    await refresh(api);
     for (let next = await live.next(); !next.done; next = await live.next()) {
-      if (!relevant.has(next.value.type)) continue;
-      const now = fingerprintOf(await shownTools(api));
-      if (now === lastShown) continue;
-      lastShown = now;
-      await server.sendToolListChanged();
+      // A list that cannot be made now is made again at the next record.
+      await refresh(api).catch(() => undefined);
+    }
+  };
+
+  const poll = async (api: Binding["api"]): Promise<void> => {
+    await refresh(api);
+    while (!closed) {
+      await pause(refreshMs, stopped.signal);
+      if (!closed) await refresh(api).catch(() => undefined);
+    }
+  };
+
+  const watch = async (): Promise<void> => {
+    const { api } = await bindingOf(undefined);
+    try {
+      await follow(api);
+    } catch (error) {
+      // Only a refusal of the grant is answered by looking again; a host that is gone leaves things as they were.
+      if (error instanceof HostError && error.denied !== undefined) await poll(api);
     }
   };
   server.oninitialized = () => {
-    if (opts.mark === undefined) return;
     // A watch that fails leaves the server as it was: the harness still lists tools on connect.
     void watch().catch(() => undefined);
   };
@@ -211,25 +245,34 @@ async function exactAnswerTool(
   return tools.map((tool, at) => (at === index ? withOpenQuestions(tool, questions) : tool));
 }
 
-/**
- * The tools of a session change with its open questions and with the tasks it owes a result for:
- * these are the records that open or close either, or say which session a mark names.
- */
-const QUESTION_RECORDS = [
-  "session.marked",
-  "request.created",
-  "request.answered",
-  "request.cancelled",
-  "request.expired",
-  "task.created",
-  "task.done",
-].map(recordTypeName);
+/** The records that open or close a question of a session, or say which session a mark names. */
+const QUESTION_RECORDS = ["session.marked", "request.created", "request.answered", "request.cancelled", "request.expired"].map(recordTypeName);
 
-/** The records that add or change a workflow, which is the tool `flow_<id>`. */
-const CATALOG_RECORDS = ["workflow.registered", "workflow.rechecked"].map(recordTypeName);
+/** The records that open or close a task, and so change what the caller owes a result for. */
+const TASK_RECORDS = ["task.created", "task.done"].map(recordTypeName);
 
-/** Every record after which the tools may be other than they were. */
-const TOOL_RECORDS = [...QUESTION_RECORDS, ...CATALOG_RECORDS];
+/** The records that add, check again or promote a workflow, which is the tool `flow_<id>`. */
+const CATALOG_RECORDS = ["workflow.registered", "workflow.rechecked", "workflow.builtin.promoted"].map(recordTypeName);
+
+/** Every record after which the tools of a session may be other than they were. */
+const TOOL_RECORDS = [...QUESTION_RECORDS, ...TASK_RECORDS, ...CATALOG_RECORDS];
+
+/** How often a session that may not read the journal looks at its tools again, in milliseconds. */
+const REFRESH_MS = 3_000;
+
+/** Wait this long, or until the signal says to stop waiting. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 
 /** A short hash of the tools as they are listed: equal when no schema, name or description moved. */
 function fingerprintOf(tools: unknown): string {
