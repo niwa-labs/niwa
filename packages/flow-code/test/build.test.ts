@@ -70,6 +70,53 @@ test("an economy implementation whose author leaves the work uncommitted is not 
   expect(out.sha).toBe(gitIn(out.path, "rev-parse", "HEAD"));
 }, 30_000);
 
+test("a race is won by the first fork whose test passes, while a slower fork is still working", async () => {
+  const build: Reply = (call) => ({ sha: commitFile(dirOf(call), "work.txt", `${String(call.harness)}\n`) });
+  // The first seat never answers: the call must not wait for it.
+  const flow = await codeHost({ slow: build, quick: build }, ["flow", "flow-code"], ["slow"]);
+  hosts.push(flow);
+  const ended = await flow.run(`
+    import { implement } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      const done = await implement("task", {
+        task: "Add work.txt",
+        repo: "$REPO",
+        mode: "race",
+        seats: { author: "slow", cheap: ["slow", "quick"] },
+        test: { cmd: ["sh", "-c", "test -f work.txt"], cwd: "$REPO" },
+      });
+      return { sha: done.sha, path: done.worktree.path, verdict: done.judged.verdict };
+    });`);
+  const out = resultOf(ended) as { sha: string; path: string; verdict: string };
+  expect(out.verdict).toBe("PASS");
+  expect(out.path).toBe(dirOf(flow.calls.quick?.[0] ?? {}));
+  expect(gitIn(out.path, "rev-parse", "HEAD")).toBe(out.sha);
+  // The fork that lost is removed with its worktree: the repository and the winner are what is left.
+  expect(gitIn(flow.repo, "worktree", "list").split("\n")).toHaveLength(2);
+}, 30_000);
+
+test("a race that no fork wins keeps the failure its test showed, whatever the reviewer says", async () => {
+  const build: Reply = (call) => ({ sha: commitFile(dirOf(call), "work.txt", "x\n") });
+  const flow = await host({ a: build, b: build, reviewer: () => ({ verdict: "PASS", findings: [] }) });
+  const ended = await flow.run(`
+    import { implement } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> => {
+      // The test fails the first time it runs in a fork and would pass the second time.
+      const done = await implement("task", {
+        task: "Add work.txt",
+        repo: "$REPO",
+        mode: "race",
+        seats: { author: "a", cheap: ["a", "b"], reviewer: "reviewer" },
+        test: { cmd: ["sh", "-c", "if test -f ran; then exit 0; fi; touch ran; echo flaky boom; exit 1"], cwd: "$REPO" },
+      });
+      return done.judged;
+    });`);
+  const judged = resultOf(ended) as { verdict: string; findings: Array<{ title: string; evidence: string }> };
+  expect(judged.verdict).toBe("FAIL");
+  expect(judged.findings[0]?.evidence).toContain("flaky boom");
+  expect(flow.calls.reviewer ?? []).toEqual([]);
+}, 30_000);
+
 test("a safe implementation the owner declines to start stops before any worktree or agent", async () => {
   const flow = await host({ author: (call) => ({ sha: commitFile(dirOf(call), "work.txt", "done\n") }) });
   const run = await flow.start(`

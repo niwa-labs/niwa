@@ -81,6 +81,18 @@ test("forkSelect refuses a pick that names no build, a name every object has amo
   expect(resultOf(ended)).toBe('forkSelect "race": "constructor" is not a build that succeeded');
 }, 30_000);
 
+test("forkSelect names why each build failed when none succeeded", async () => {
+  const flow = await host({ a: () => ({ sha: "unused" }) });
+  const ended = await flow.run(`
+    import { forkSelect } from "@niwa-labs/flow-code";
+    export default workflow({ output: z.json() }, async (): Promise<any> =>
+      forkSelect("race", { seats: ["a"], repo: "$REPO", build: async () => { throw new Error("the build broke"); }, pick: async () => "a" }).then(
+        () => "picked",
+        (error: Error) => error.message,
+      ));`);
+  expect(resultOf(ended)).toBe('forkSelect "race": no build succeeded (a: the build broke)');
+}, 30_000);
+
 test("review and fix sends blocking findings to the author and stops once the reviewers pass", async () => {
   let reviews = 0;
   const flow = await host({

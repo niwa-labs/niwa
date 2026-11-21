@@ -4,8 +4,8 @@
  * merges, so the branch of a worktree is the result.
  */
 
-import { checkKey, map, script, seatKeys } from "@niwa-labs/flow";
-import type { Seat, SeatOptions } from "@niwa-labs/flow";
+import { checkKey, isFatal, map, script, seatKeys, stream } from "@niwa-labs/flow";
+import type { Seat, SeatOptions, Settled } from "@niwa-labs/flow";
 
 /** A worktree as the git module made it: a checkout of `repo` on its own branch, in a directory niwa keeps. */
 export type Worktree = { id: string; description: string; repo: string; path: string; branch: string; base: string; baseSha: string };
@@ -105,7 +105,7 @@ export async function forkSelect<T>(
     builds.forEach((build, index) => {
       if (build.ok) built.set(keys[index] as string, build.value);
     });
-    if (built.size === 0) throw new Error(`forkSelect "${key}": no build succeeded`);
+    if (built.size === 0) throw new Error(`forkSelect "${key}": no build succeeded (${failures(keys, builds)})`);
     const id = await opts.pick(Object.fromEntries(built));
     if (!built.has(id)) throw new Error(`forkSelect "${key}": "${id}" is not a build that succeeded`);
     const rejected = keys.filter((one) => one !== id);
@@ -115,4 +115,63 @@ export async function forkSelect<T>(
     }
     return { winner: { id, value: built.get(id) as T, worktree: made.get(id) as Worktree }, rejected };
   });
+}
+
+/** Why builds failed, one `seat: reason` after another. */
+function failures(keys: readonly string[], builds: readonly Settled<unknown>[]): string {
+  return builds.flatMap((build, index) => (build.ok ? [] : [`${keys[index] as string}: ${build.error.message}`])).join("; ");
+}
+
+/**
+ * Build the same thing once per seat, each in a worktree of its own, and take the first build that
+ * `passes`, whichever seat is quick: the builds still running are cancelled, and every worktree but
+ * the winner's is removed, commits and all. When no build passes, the first seat's build that
+ * finished is the winner, with `passed: false`, for the caller to judge by what its value says.
+ * A build that threw is no candidate; with none finished the call throws, naming each cause.
+ */
+export async function forkRace<T>(
+  key: string,
+  opts: { seats: readonly Seat[]; repo: string; base?: string; build: (seat: Seat, wt: Worktree) => Promise<T>; passes: (value: T) => boolean },
+): Promise<{ winner: { id: string; value: T; worktree: Worktree; passed: boolean }; rejected: string[] }> {
+  checkKey(key, "the key of a race");
+  const keys = seatKeys(opts.seats, "the key of a seat");
+  if (keys.length === 0) throw new TypeError(`forkRace "${key}": give at least one seat`);
+  const made = new Map<string, Worktree>();
+  const branches = Object.fromEntries(
+    opts.seats.map((seat, index) => [
+      keys[index] as string,
+      async () => {
+        const wt = await makeWorktree({ repo: opts.repo, ...(opts.base === undefined ? {} : { base: opts.base }), description: `fork ${keys[index] as string}` });
+        made.set(keys[index] as string, wt);
+        return opts.build(seat, wt);
+      },
+    ]),
+  );
+  const outcomes = new Map<string, Settled<T>>();
+  let first: string | undefined;
+  const race = stream(key, branches);
+  try {
+    for (let got = await race.next(); got !== null; got = await race.next()) {
+      if (!got.result.ok && isFatal(got.result.error)) throw Object.assign(new Error(got.result.error.message), { name: got.result.error.name });
+      outcomes.set(got.key, got.result);
+      if (got.result.ok && opts.passes(got.result.value)) {
+        first = got.key;
+        break;
+      }
+    }
+  } finally {
+    await race.close();
+  }
+  const finished = keys.find((one) => outcomes.get(one)?.ok === true);
+  const id = first ?? finished;
+  if (id === undefined) {
+    throw new Error(`forkRace "${key}": no build finished (${failures(keys, keys.map((one) => outcomes.get(one) ?? { ok: false as const, error: { name: "Cancelled", message: "cancelled" } }))})`);
+  }
+  const rejected = keys.filter((one) => one !== id);
+  for (const one of rejected) {
+    const wt = made.get(one);
+    if (wt !== undefined) await removeWorktree(wt, true);
+  }
+  const value = (outcomes.get(id) as { ok: true; value: T }).value;
+  return { winner: { id, value, worktree: made.get(id) as Worktree, passed: first !== undefined }, rejected };
 }

@@ -6,10 +6,10 @@
 import { askSeat, checkKey, checkKeys, humanGate, map, script, verify } from "@niwa-labs/flow";
 import type { Judged, Seat, Verdict } from "@niwa-labs/flow";
 import { runCheck } from "@niwa-labs/proc/flow";
-import type { Check } from "@niwa-labs/proc/flow";
+import type { Check, CheckResult } from "@niwa-labs/proc/flow";
 
 import { checkFailed, commitBy, reviewFix, uncommitted } from "./review.ts";
-import { forkSelect, makeWorktree, seatIn, stateOf } from "./worktree.ts";
+import { forkRace, makeWorktree, seatIn, stateOf } from "./worktree.ts";
 import type { Worktree } from "./worktree.ts";
 
 /** How a scenario of a self-test went: passed, failed, held behind a gate it cannot pass, or could not be run. */
@@ -68,6 +68,9 @@ async function judgedBy(test: Check | undefined, label: string): Promise<Judged>
   return check.ok ? { verdict: "PASS", findings: [], method: "check (test)" } : checkFailed("the test", check.summary);
 }
 
+/** A fork of a race: its commit, whether changes are left out of it, and how its test went. */
+type Candidate = { sha: string; dirty: boolean; tested?: CheckResult };
+
 /** The test, run in a worktree. */
 const testIn = (test: Check | undefined, wt: Worktree): Check | undefined => (test === undefined ? undefined : { ...test, cwd: wt.path });
 
@@ -76,7 +79,9 @@ const testIn = (test: Check | undefined, wt: Worktree): Check | undefined => (te
  *
  * - `economy`: the author works once; the test, if given, judges.
  * - `race`: each cheap seat (the author when none) builds in a fork; the first fork whose test
- *   passes wins (the first fork when none does), and the reviewer, if given, judges it.
+ *   passes wins and the others are cancelled and removed, and the reviewer, if given, judges it.
+ *   When no fork passes the first seat's is kept and fails with what its test said, whatever the
+ *   reviewer would say.
  * - `quality`: the author works, then the reviewer (the author when none) reviews and the author fixes.
  * - `safe`: `quality` with the owner's word before the work starts and before it is handed back.
  */
@@ -92,30 +97,30 @@ export async function implement(
       if (go.outcome !== "chosen") throw new ImplementStopped(`the owner did not let the task start (${go.outcome})`);
     }
     if (opts.mode === "race") {
-      const ok = new Map<string, boolean>();
-      const forks = await forkSelect("forks", {
+      const raced = await forkRace("forks", {
         seats: opts.seats.cheap !== undefined && opts.seats.cheap.length > 0 ? opts.seats.cheap : [opts.seats.author],
         repo: opts.repo,
         ...(opts.base === undefined ? {} : { base: opts.base }),
-        build: async (seat, wt) => {
+        build: async (seat, wt): Promise<Candidate> => {
           const built = await commitBy(seat, wt, prompt);
           const test = testIn(opts.test, wt);
-          if (test !== undefined) ok.set(wt.id, (await runCheck("test", test)).ok);
-          return { sha: built.sha, dirty: built.dirty, wt };
+          // The test is run once, for the commit the fork is at; what it said is kept with the build.
+          return { sha: built.sha, dirty: built.dirty, ...(test === undefined ? {} : { tested: await runCheck("test", test) }) };
         },
-        pick: async (candidates) => {
-          const ids = Object.keys(candidates);
-          return ids.find((id) => ok.get((candidates[id] as { wt: Worktree }).wt.id) === true) ?? (ids[0] as string);
-        },
+        passes: (one) => !one.dirty && (one.tested === undefined || one.tested.ok),
       });
-      const { sha, dirty, wt } = forks.winner.value;
+      const { sha, dirty, tested } = raced.winner.value;
+      const wt = raced.winner.worktree;
+      // A winner that did not pass is judged by what its own check said, whoever the reviewer is.
       const judged = dirty
         ? uncommitted()
-        : opts.seats.reviewer === undefined
-          ? ok.get(wt.id) === true
-            ? { verdict: "PASS" as const, findings: [], method: "check (test)" }
-            : await judgedBy(testIn(opts.test, wt), "judge")
-          : await verify("review", { subject: `The work for this task on the branch ${wt.branch} in ${wt.path}, at ${sha}:\n${opts.task}`, by: [seatIn(opts.seats.reviewer, wt.path)] });
+        : tested !== undefined && !tested.ok
+          ? checkFailed("the test", tested.summary)
+          : opts.seats.reviewer !== undefined
+            ? await verify("review", { subject: `The work for this task on the branch ${wt.branch} in ${wt.path}, at ${sha}:\n${opts.task}`, by: [seatIn(opts.seats.reviewer, wt.path)] })
+            : tested !== undefined
+              ? { verdict: "PASS" as const, findings: [], method: "check (test)" }
+              : await judgedBy(undefined, "judge");
       return { sha, worktree: wt, judged };
     }
     const wt = await makeWorktree({ repo: opts.repo, ...(opts.base === undefined ? {} : { base: opts.base }), description: `implement ${key}` });
