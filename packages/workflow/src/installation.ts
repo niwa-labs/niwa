@@ -9,6 +9,9 @@
  *
  * The script libraries (`@niwa-labs/flow`, `flow-code`, `flow-eval`) are dependencies of this package for
  * that reason alone: so they are in that `node_modules` and among what a box may read, wherever niwa is laid out.
+ *
+ * Tasks and history are dependencies of this package for that reason too: a script imports their
+ * query builders and helpers (`@niwa-labs/tasks/records`, `@niwa-labs/history/flow`) by name.
  */
 
 import { existsSync, readFileSync, realpathSync } from "node:fs";
