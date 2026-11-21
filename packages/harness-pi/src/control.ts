@@ -78,6 +78,7 @@ import type {
   StartOptions,
   StartedSession,
   ToolsMode,
+  TurnOutcome,
   VisibleActions,
 } from "@niwa-labs/harness";
 import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
@@ -248,6 +249,25 @@ interface PendingDialog {
   readonly raw: PiJson;
 }
 
+/**
+ * How a run ended, by how its last answer stopped: pi's `stop` is a run that finished, an error, an
+ * abort or a cut for length is one that did not, and a run with no answer, or one that stopped in
+ * a way this snapshot does not know, proves nothing.
+ */
+function outcomeOfRun(messages: readonly { readonly role: string; readonly stopReason?: string | undefined }[]): TurnOutcome {
+  const answer = messages.findLast((message) => message.role === "assistant");
+  switch (answer?.stopReason) {
+    case "stop":
+      return "completed";
+    case "error":
+    case "aborted":
+    case "length":
+      return "failed";
+    default:
+      return "unknown";
+  }
+}
+
 /** The model pi says it runs, as `--model` takes it: `provider/id`, or the id alone when pi names no provider. */
 function runningModel(state: PiSessionState): ModelName | undefined {
   const model = state.model;
@@ -296,6 +316,8 @@ class LiveSession {
   settling: ReturnType<typeof setTimeout> | undefined;
   /** Whether the held turn is waiting for a compaction pi began, and the run that may follow it. */
   compacting = false;
+  /** How the last run of the open turn ended, as that run's last answer said; the turn ends with it. */
+  runOutcome: TurnOutcome | undefined;
   /** What stderr said, kept for the error that explains a death. */
   stderrTail = "";
   /** The answers of pi that are waited for. */
@@ -957,6 +979,7 @@ export class PiControl implements PiSessionControl {
         return;
       }
       case "agent_end": {
+        session.runOutcome = outcomeOfRun(event.messages);
         if (event.willRetry === true) {
           // pi runs the same request again by itself: the turn goes on, and the session is not idle between the tries.
           session.holding = true;
@@ -971,7 +994,7 @@ export class PiControl implements PiSessionControl {
       }
       case "agent_settled": {
         // pi says nothing more is coming, or gave up the retry it announced (an abort): the turn held open ends here.
-        if (session.holding || session.settling !== undefined) this.#endTurn(session);
+        if (session.holding || session.settling !== undefined) this.#endTurn(session, event.aborted ? "failed" : "unknown");
         else session.emit({ kind: "activity", at: Date.now(), detail: event.type });
         return;
       }
@@ -989,7 +1012,7 @@ export class PiControl implements PiSessionControl {
         // pi runs the request again after the compaction (an overflow it recovered from): the turn is
         // still open until that run ends. A compaction that does not, ends the turn it was held for.
         if (event.willRetry && !event.aborted) session.holding = true;
-        else this.#endTurn(session);
+        else this.#endTurn(session, event.aborted ? "failed" : "unknown");
         return;
       }
       // Everything else is a step of the run, or something pi says about its session. Each is a sign
@@ -1039,14 +1062,19 @@ export class PiControl implements PiSessionControl {
     session.compacting = true;
   }
 
-  /** The turn that is open ends: nothing of it is in flight any more. */
-  #endTurn(session: LiveSession): void {
+  /**
+   * The turn that is open ends: nothing of it is in flight any more. It ended as its last run said;
+   * when no run said, `unaccounted` is what pi's closing word (an abort) proves.
+   */
+  #endTurn(session: LiveSession, unaccounted: TurnOutcome = "unknown"): void {
+    const outcome = session.runOutcome ?? unaccounted;
+    session.runOutcome = undefined;
     clearTimeout(session.settling);
     session.settling = undefined;
     session.compacting = false;
     session.holding = false;
     session.busy = false;
-    session.emit({ kind: "turn-ended", turn: session.turn, at: Date.now() });
+    session.emit({ kind: "turn-ended", turn: session.turn, at: Date.now(), outcome });
   }
 
   /**

@@ -379,3 +379,44 @@ test("everything niwa writes is a command pi has or an answer to a dialog", asyn
     await side.dispose();
   }
 });
+
+const reply = (stopReason: string, extra: object = {}) => ({
+  type: "agent_end",
+  messages: [
+    { role: "user", content: "go" },
+    { role: "assistant", content: [{ type: "text", text: "hi" }], stopReason, ...extra },
+  ],
+  willRetry: false,
+});
+
+async function outcomeOfRun(lines: unknown[], last: unknown): Promise<unknown[]> {
+  env("FAKE_LINES", lines);
+  env("FAKE_END", last === null ? "null" : last);
+  const side = pi();
+  try {
+    const run = await watched(side);
+    await run.send();
+    await run.ended();
+    return run.events.flatMap((event) => (event.kind === "turn-ended" ? [event.outcome] : []));
+  } finally {
+    await side.dispose();
+  }
+}
+
+test("a run that stopped by itself ends its turn as completed", async () => {
+  expect(await outcomeOfRun([], reply("stop"))).toEqual(["completed"]);
+});
+
+test("a run that ended in an error or was aborted ends its turn as failed", async () => {
+  expect(await outcomeOfRun([], reply("error", { errorMessage: "overloaded" }))).toEqual(["failed"]);
+  expect(await outcomeOfRun([], reply("aborted"))).toEqual(["failed"]);
+});
+
+test("a run that says nothing of how it stopped ends its turn as unknown", async () => {
+  expect(await outcomeOfRun([], { type: "agent_end", messages: [], willRetry: false })).toEqual(["unknown"]);
+});
+
+test("a retry pi gave up leaves the turn failed, and a retry that went through leaves it as the last run said", async () => {
+  expect(await outcomeOfRun([{ ...reply("error"), willRetry: true }, { type: "agent_settled", aborted: true }], null)).toEqual(["failed"]);
+  expect(await outcomeOfRun([{ ...reply("error"), willRetry: true }, { type: "agent_start" }], reply("stop"))).toEqual(["completed"]);
+});
