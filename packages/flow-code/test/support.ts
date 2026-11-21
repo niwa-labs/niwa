@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import { z } from "zod";
 
+import { procRun } from "@niwa-labs/proc/records";
 import { connect, createNiwa, eventually, git, ownerTokenOf, plugin, requests, stubAction, tempDir, tempHome, timers, workflow } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 
@@ -67,13 +68,14 @@ export interface CodeHost {
 
 const PACKAGES = join(import.meta.dir, "..", "..");
 
-/** `proc.run` as a test needs it: the command runs in its cwd, with no box. */
+/** `proc.run` as a test needs it: the command runs in its cwd, with no box, on the input the real action takes. */
 function fakeProc(home: string) {
   return plugin("fake-proc", (api) =>
     api.action(
       stubAction("proc.run", {
         home,
-        input: z.looseObject({ cmd: z.array(z.string()), cwd: z.string() }),
+        // Held to the input of the real action: a helper that calls it another way fails here as it would there.
+        input: procRun.input,
         output: z.any(),
         recovery: "repeat",
         result: ({ cmd, cwd }) => {
