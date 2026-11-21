@@ -10,6 +10,8 @@
  * complete is an error, never a success.
  */
 
+import { existsSync } from "node:fs";
+
 import { z } from "zod";
 
 import { assertNever, timestamp } from "@niwa-labs/core";
@@ -52,7 +54,7 @@ import {
   HarnessIdSchema,
   sessionId as makeSessionId,
 } from "@niwa-labs/harness";
-import { LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
+import { LIVE_PROCESS_REFUSAL, sandboxOf, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess } from "@niwa-labs/sandbox";
 
 import { incomingOf, incomingOfDrifted } from "./incoming.ts";
@@ -64,6 +66,15 @@ import { refusalOf } from "./refusals.ts";
 import type { Reply } from "./refusals.ts";
 import { approvalOf, elicitationOf, userAnswerOf, userQuestionsOf } from "./reverse.ts";
 import type { ReversedRequest } from "./reverse.ts";
+
+/** macOS ships a public CA bundle that a read-closed nono box can use without the Keychain. */
+function boxedCertificate(plan: Pick<StartOptions, "env" | "box">): Record<string, string> {
+  if (process.platform !== "darwin" || !plan.box || sandboxOf(plan.box.sandbox).name !== "nono") return {};
+  const env = { ...plan.box.spec.env, ...plan.env };
+  if (env["CODEX_CA_CERTIFICATE"] !== undefined || env["SSL_CERT_FILE"] !== undefined) return {};
+  const certificate = "/etc/ssl/cert.pem";
+  return existsSync(certificate) ? { CODEX_CA_CERTIFICATE: certificate } : {};
+}
 
 /** What a Codex session takes at launch: a model, an effort that is sent with every turn, and a working mode. */
 export const CODEX_LAUNCH: LaunchCapabilities = {
@@ -642,6 +653,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       // Its own process group, so a stop reaches everything Codex started and nothing else.
       detached: true,
       env: {
+        ...boxedCertificate(plan),
         ...plan.env,
         ...(options.home === undefined ? {} : { CODEX_HOME: options.home }),
         DISABLE_AUTOUPDATER: "1",

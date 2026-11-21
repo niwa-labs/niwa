@@ -16,7 +16,8 @@ import type { SessionId } from "@niwa-labs/harness";
 import { codexControl } from "../src/control.ts";
 import type { CodexControlOptions, CodexSessionControl } from "../src/control.ts";
 import { codex, codexKind } from "../src/index.ts";
-import { eventually, tempDir } from "@niwa-labs/testing";
+import { onBoxManifest } from "@niwa-labs/sandbox";
+import { eventually, tempDir, unconfined } from "@niwa-labs/testing";
 
 const THREAD = "11111111-2222-3333-4444-555555555555";
 
@@ -1210,4 +1211,19 @@ test("an effort Codex does not take is refused before the process is started", a
   expect(failure).toBeInstanceOf(Unsupported);
   expect(String(failure)).toContain("effort \"max\" is not one of low, medium, high, xhigh");
   expect(await requests()).toEqual([]);
+});
+
+test.skipIf(process.platform !== "darwin")("a macOS nono launch uses the system CA file and preserves a supplied CA", async () => {
+  const values: (string | undefined)[] = [];
+  const off = onBoxManifest(({ spec }) => { values.push(spec.env["CODEX_CA_CERTIFICATE"]); });
+  try {
+    const codex = control();
+    for (const env of [{}, { SSL_CERT_FILE: "/chosen/roots.pem" }] as Record<string, string>[]) {
+      const box = { sandbox: unconfined("nono"), spec: { cwd: dir, env } };
+      await codex.start({ prompt: promptFromText(""), cwd: dir, env: { FAKE_DIR: dir }, box });
+    }
+    expect(values).toEqual(["/etc/ssl/cert.pem", undefined]);
+  } finally {
+    off();
+  }
 });
