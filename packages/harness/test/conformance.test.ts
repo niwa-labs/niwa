@@ -192,6 +192,24 @@ test("the reading suite fails a side that reads again from the start when given 
   expect(failures(report).some((name) => name.includes("from a locator"))).toBe(true);
 });
 
+test("the reading suite fails a side whose records mark insertions or images outside their content, or mark a plain read as started over", async () => {
+  const report = await run(
+    altered((toy) => ({
+      async *read(id: SessionId, from?: Locator) {
+        for await (const record of toy.read(id, from)) {
+          yield record.kind === "user"
+            ? ({ ...record, inserted: [{ from: 0, to: record.text.length + 5, origin: "harness" }], images: [{ at: record.text.length + 1 }], reanchored: true } as SessionRecord)
+            : record;
+        }
+      },
+    })),
+  );
+  const failed = failures(report);
+  expect(failed.some((name) => name.includes("inserted lies inside its text"))).toBe(true);
+  expect(failed.some((name) => name.includes("image mark lies inside"))).toBe(true);
+  expect(failed.some((name) => name.includes("not marked as one that started over"))).toBe(true);
+});
+
 test("the reading suite fails a side that says empty for what it did not scan", async () => {
   const report = await run(altered(() => ({ coverage: async () => ({ status: "empty" }) })));
   expect(failures(report).some((name) => name.includes("never read"))).toBe(true);
@@ -350,6 +368,35 @@ test("the control suite fails a side that refuses a question to a busy session i
   };
   const report = await controlConformance("toy", { instance, control })();
   expect(failures(report).some((name) => name.includes("a question to a busy session is answered"))).toBe(true);
+});
+
+test("the control suite fails a side whose handled receipt names a turn", async () => {
+  const control: SessionControl = {
+    async start() {
+      return { session: sid("toy-1"), first: { status: "started", turn: 1 } };
+    },
+    async resume() {},
+    async send() {
+      return { status: "handled", turn: 2 };
+    },
+    async interrupt() {},
+    async ask<T>() {
+      return { session: sid("toy-1"), value: "ok" as T, at: 0 as never };
+    },
+    async *life() {
+      yield { kind: "turn-started", turn: 1 };
+      yield { kind: "turn-ended", turn: 1 };
+    },
+    async state() {
+      return "idle";
+    },
+  };
+  const instance: Harness = {
+    ...toyInstance,
+    sides: { control: { start: true, resume: true, send: true, interrupt: false, ask: false, structuredOutput: false, launch: { model: false, effort: [], modes: [] } } },
+  };
+  const report = await controlConformance("toy", { instance, control })();
+  expect(failures(report).some((name) => name.includes("handled names no turn"))).toBe(true);
 });
 
 test("the control suite fails a side that never reports the end of a turn", async () => {

@@ -142,6 +142,16 @@ async function checkScenario(
   );
   check(at("every record is whole"), finished.every((record) => !record.incomplete));
   check(
+    at("a read from the start is not marked as one that started over"),
+    finished.every((record) => record.reanchored !== true),
+  );
+  check(at("what a user message says is inserted lies inside its text"), finished.every(insertionsHold));
+  check(at("an image mark lies inside the content it stood in"), finished.every(imageMarksHold));
+  check(
+    at("the paths of an edit call begin with its target"),
+    finished.every((record) => record.kind !== "tool-call" || record.paths === undefined || record.paths[0] === record.target),
+  );
+  check(
     at("locators are distinct"),
     new Set(finished.map((record) => record.locator)).size === finished.length,
   );
@@ -260,6 +270,21 @@ async function checkUnknown(
   check("broken: the unknown record keeps its raw data", unknown.raw !== undefined);
   const raw = await reading.raw(session, unknown.locator);
   check("broken: raw gives the harness's own record", raw !== undefined && reading.rawSchema.safeParse(raw).success);
+}
+
+/** The ranges a user message marks as inserted lie inside its text and do not overlap. */
+function insertionsHold(record: SessionRecord): boolean {
+  if (record.kind !== "user" || record.inserted === undefined) return true;
+  const ranges = [...record.inserted].sort((a, b) => a.from - b.from);
+  return ranges.every((range, index) => range.to <= record.text.length && (index === 0 || ranges[index - 1]!.to <= range.from));
+}
+
+/** The images of a user message stand within its text, and those of a result within its output. */
+function imageMarksHold(record: SessionRecord): boolean {
+  if (record.kind === "user") return (record.images ?? []).every((image) => image.at <= record.text.length);
+  if (record.kind !== "tool-result" || record.images === undefined) return true;
+  const size = Array.isArray(record.output) ? record.output.length : typeof record.output === "string" ? record.output.length : 0;
+  return record.images.every((image) => image.at <= size);
 }
 
 /** The refusals: what a side declares it implements, and what it does not it is refused. */

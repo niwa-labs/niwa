@@ -160,7 +160,10 @@ export function controlConformance(
         wait.cancel();
       } else {
         check("send: the receipt says what happened", DeliveryReceiptSchema.safeParse(receipt).success);
-        await attempt("send: the turn it began has ended", check, () => wait.ended);
+        check("send: a receipt that says the message was handled names no turn", receipt.status !== "handled" || receipt.turn === undefined);
+        // A message the harness handled itself began no turn: there is no end to wait for.
+        if (receipt.status === "handled") wait.cancel();
+        else await attempt("send: the turn it began has ended", check, () => wait.ended);
       }
       signs.push(...wait.seen);
     }
