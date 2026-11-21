@@ -494,7 +494,7 @@ export class PiControl implements PiSessionControl {
       // An extension of pi took the message as a command of its own: no run began, and none will
       // for it. It reached the session, and it names no turn.
       case "handled":
-        return { status: "delivered", at };
+        return { status: "handled", at };
       // The caller does not wait for the end of the run; the signs of life report it.
       case "started":
         return { status: "started", turn: before + 1, at };

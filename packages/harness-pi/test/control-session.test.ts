@@ -176,14 +176,14 @@ test("a prompt pi refuses because it is working is queued the way the caller ask
   expect((await prompts()).map((prompt) => prompt.streamingBehavior)).toEqual([undefined, "steer", undefined, "followUp"]);
 });
 
-test("a message an extension handled starts no turn and is delivered with no turn named", async () => {
+test("a message an extension handled starts no turn and is receipted as handled with no turn named", async () => {
   process.env.FAKE_PROMPT = "handled";
   const pi = side({ callTimeoutMs: 2_000 });
   const { session, first } = await pi.start({ prompt: promptFromText("/command") });
-  expect(first).toMatchObject({ status: "delivered" });
+  expect(first).toMatchObject({ status: "handled" });
   expect(first?.turn).toBeUndefined();
   const receipt = await pi.send(session, "/command again");
-  expect(receipt.status).toBe("delivered");
+  expect(receipt.status).toBe("handled");
   expect(receipt.turn).toBeUndefined();
   expect(await pi.state(session)).toBe("idle");
 });

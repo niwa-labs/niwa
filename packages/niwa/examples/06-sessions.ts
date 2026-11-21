@@ -65,7 +65,7 @@ if (!verdict.safe) console.log(verdict.why);
 
 // Sending to a session that is busy returns an honest receipt.
 const { receipt } = await niwa.call(sessionSend, { session, message: "Also check the tests." });
-// receipt.status is "delivered" | "queued" | "started"
+// receipt.status is "delivered" | "queued" | "started" | "handled"
 
 // What a harness cannot do is refused explicitly, never silently ignored.
 // "Can harness X do Y" is an action too: `harness.supports`.

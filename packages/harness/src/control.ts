@@ -113,10 +113,11 @@ export interface ZcodeMcpOptions {
 
 /**
  * What happened to a message sent into a session: `delivered` into the running turn, `queued`
- * after the current turn, or `started` a new turn. A busy session queues by default.
+ * after the current turn, `started` a new turn, or `handled` by the harness itself with no turn
+ * (a command it answers on its own). A busy session queues by default.
  */
 export const DeliveryReceiptSchema = z.object({
-  status: z.enum(["delivered", "queued", "started"]),
+  status: z.enum(["delivered", "queued", "started", "handled"]),
   turn: z.number().int().positive().optional(),
   at: z.number().int().nonnegative().optional(),
 });

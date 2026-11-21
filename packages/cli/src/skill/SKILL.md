@@ -71,7 +71,7 @@ harness's own subagents. Your private todo list is not a niwa task.
    the answer you want. Pass `cwd` (the working directory); `model`, `effort` and `mode`
    (`ask`, `auto`, `full`) when you need other than the instance's. In `visible.actions` list only
    the actions it needs.
-3. `session.start` returns the session id `s-...` and a receipt (delivered, queued or started). A
+3. `session.start` returns the session id `s-...` and a receipt (delivered, queued, started or handled). A
    receipt is not the answer. Read the session (`session.read`) for the reply.
 4. To continue, `session.send` or `session.resume` the same `s-...`. A new session loses the
    context.
