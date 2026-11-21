@@ -62,7 +62,7 @@ const editor = (id: string, title: string, prefill?: string): DialogStep => ({
  * A fake `pi --mode rpc`. In its first run it plays `script`, waiting for the client's response to
  * a dialog where the script says so, and then ends the run. An `abort` ends the run at once. With
  * `second` it plays that script in its second run. With `early` it asks a dialog before it names
- * its session. It logs every `extension_ui_response`.
+ * its session. It logs every `extension_ui_response`, and the type of every frame it reads, in order.
  */
 async function fakePi(script: readonly Step[], early?: DialogStep, second: readonly Step[] = []): Promise<string> {
   const path = join(dir, "pi");
@@ -72,6 +72,7 @@ async function fakePi(script: readonly Step[], early?: DialogStep, second: reado
 import { appendFileSync } from "node:fs";
 const log = (value) => appendFileSync(${JSON.stringify(dir)} + "/replies.log", JSON.stringify(value) + "\\n");
 const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
+const wire = (frame) => appendFileSync(${JSON.stringify(dir)} + "/frames.log", frame.type + "\\n");
 const scripts = [${JSON.stringify(script)}, ${JSON.stringify(second)}];
 const early = ${JSON.stringify(early?.out ?? null)};
 const replies = new Map();
@@ -99,6 +100,7 @@ for await (const chunk of process.stdin) {
   for (let at = buffer.indexOf("\\n"); at !== -1; at = buffer.indexOf("\\n")) {
     const frame = JSON.parse(buffer.slice(0, at));
     buffer = buffer.slice(at + 1);
+    wire(frame);
     if (frame.type === "get_state") {
       if (early !== null) out(early);
       out({ type: "response", id: frame.id, command: "get_state", success: true, data: { sessionId: "pi-s1" } });
@@ -135,6 +137,10 @@ const repliesOf = async (): Promise<Reply[]> =>
     .split("\n")
     .filter((line) => line !== "")
     .map((line) => JSON.parse(line) as Reply);
+
+/** The type of every frame the fake pi has read, in the order it read them. */
+const framesOf = async (): Promise<string[]> =>
+  (await readFile(join(dir, "frames.log"), "utf8").catch(() => "")).split("\n").filter((line) => line !== "");
 
 const repliesCount = async (count: number): Promise<void> => eventually(async () => (await repliesOf()).length >= count);
 
@@ -264,7 +270,7 @@ test("an interrupt aborts the question and cancels the dialog", async () => {
   await repliesCount(1);
   expect(await repliesOf()).toEqual([{ type: "extension_ui_response", id: "d1", cancelled: true }]);
   // The dialog is let go of before pi is told to abort, and it is answered once.
-  const wire = side.frames.map((frame) => frame.type);
+  const wire = await framesOf();
   expect(wire.indexOf("extension_ui_response")).toBeLessThan(wire.indexOf("abort"));
   expect(wire.filter((type) => type === "extension_ui_response").length).toBe(1);
 });
@@ -275,10 +281,10 @@ test("pi's own timeout of a dialog aborts the question: nobody waits for the ans
     aborted = request.signal;
     return waitsForAbort(request);
   });
-  const { side } = await startedWith(given, [select("d1", "Quick?", ["Yes", "No"], { timeout: 150 }), { ms: 400 }]);
+  await startedWith(given, [select("d1", "Quick?", ["Yes", "No"], { timeout: 150 }), { ms: 400 }]);
   await eventually(() => aborted?.aborted === true);
   await Bun.sleep(100);
-  expect(side.frames.some((frame) => frame.type === "extension_ui_response")).toBe(false);
+  expect((await framesOf()).includes("extension_ui_response")).toBe(false);
 });
 
 test("the end of pi's process aborts the question that was open", async () => {

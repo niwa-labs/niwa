@@ -15,7 +15,7 @@ import { EVENT_FIXTURES, UI_FIXTURES } from "./wire-fixtures.ts";
 /**
  * A fake pi. FAKE_STATE is the `data` of its answer to `get_state`. On a `prompt` it answers, then
  * writes the lines of FAKE_LINES, and ends the run with FAKE_END. A line it reads that is an
- * `extension_ui_response` is logged.
+ * `extension_ui_response` is logged, and every frame it reads is kept in `frames.log`.
  */
 const FAKE = `#!/usr/bin/env bun
 import { appendFileSync } from "node:fs";
@@ -28,6 +28,7 @@ process.stdin.on("data", (chunk) => {
   for (let nl = buffer.indexOf("\\n"); nl !== -1; nl = buffer.indexOf("\\n")) {
     const frame = JSON.parse(buffer.slice(0, nl));
     buffer = buffer.slice(nl + 1);
+    appendFileSync(process.env.FAKE_DIR + "/frames.log", JSON.stringify(frame) + "\\n");
     if (frame.type === "get_state") {
       if (process.env.FAKE_BARE_STATE) send({ type: "response", id: frame.id, data: { sessionId: "s1" } });
       else send({ type: "response", id: frame.id, command: "get_state", success: true, data: JSON.parse(process.env.FAKE_STATE ?? '{"sessionId":"s1"}') });
@@ -233,8 +234,12 @@ test("everything niwa writes is a command pi has or an answer to a dialog", asyn
     const run = await watched(side);
     await run.send();
     await run.ended();
-    expect(side.frames.length).toBeGreaterThan(0);
-    for (const frame of side.frames) {
+    const frames = (await readFile(join(dir, "frames.log"), "utf8"))
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as { type: string });
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
       const known = frame.type === "extension_ui_response" ? PiUiResponseSchema.safeParse(frame) : PiCommandSchema.safeParse(frame);
       expect(known.success).toBe(true);
     }

@@ -227,8 +227,6 @@ class LiveSession {
   stderrTail = "";
   /** The answers of pi that are waited for. */
   readonly pending = new Map<RequestId, (settled: Settled) => void>();
-  /** The frames pi was told, kept for the tests. */
-  readonly frames: PiOutgoing[] = [];
   /** The part of the wire that has not ended in a line yet. */
   buffer = "";
   /** The number of the next request. */
@@ -313,11 +311,6 @@ export class PiControl implements PiSessionControl {
   /** What this side can do. */
   get capabilities(): typeof PI_CONTROL_CAPABILITIES {
     return PI_CONTROL_CAPABILITIES;
-  }
-
-  /** The frames pi was told, for the tests that look at the wire. */
-  get frames(): readonly PiOutgoing[] {
-    return [...this.#owned].flatMap((session) => session.frames);
   }
 
   // -- the side -------------------------------------------------------------
@@ -844,7 +837,6 @@ export class PiControl implements PiSessionControl {
 
   /** Writes a frame to pi. */
   #write(session: LiveSession, frame: PiOutgoing): void {
-    session.frames.push(frame);
     session.child.stdin.write(`${JSON.stringify(frame)}\n`);
   }
 
