@@ -151,23 +151,33 @@ test("a paused run is resolved as part of the resume, and one new run starts", a
       "the resume should have started one new run",
     );
 
-    // The old invocation was resolved: it is done, and the run has one new invocation.
-    const invocations = ofType(seen, "niwa.invocation.admitted").map(
-      (record) => (record.data as { invocation?: string }).invocation ?? "",
+    const forRun = (record: StoredRecord) => (record.data as { run: string }).run === started.run;
+    const requests = ofType(seen, "workflow.run.requested").filter(forRun);
+    const starts = ofType(seen, "workflow.run.started").filter(forRun);
+    expect(requests).toHaveLength(2);
+    expect(starts).toHaveLength(2);
+    const admissions = ofType(seen, "niwa.invocation.admitted").map(
+      row => row.data as { handler: string; record: string; invocation: string },
     );
-    expect(invocations.length).toBe(2);
+    // Each request admits the script once. Cleanup handlers can subscribe to the same requests.
+    const invocations = starts.map(({ actor }, index) => {
+      if (actor.kind !== "handler") throw new Error("the script start has no handler");
+      const admitted = admissions.filter(entry => entry.handler === actor.handler && entry.record === requests[index]?.id);
+      expect(admitted.map(entry => entry.invocation)).toEqual([actor.invocation]);
+      return actor.invocation;
+    });
     const states = invocations.map(
       (invocation) => statesOf(seen).filter((s) => s.invocation === invocation).at(-1)?.state,
     );
     // The old invocation was resolved by the resume: it is over.
     expect(states[0]).toBe("done");
     // The new invocation is the one that goes on: it is running or paused, not done.
-    expect(states[1]).not.toBe("done");
+    expect(["running", "paused"]).toContain(states[1]);
 
     // The resolution of the old invocation was written: the pause was answered with a cancel.
     const resolutions = ofType(seen, "niwa.invocation.resolved");
     expect(resolutions.length).toBe(1);
-    expect((resolutions[0]?.data as { choice?: string }).choice).toBe("cancel");
+    expect(resolutions[0]?.data).toMatchObject({ invocation: invocations[0], choice: "cancel" });
 
     await client.close().catch(() => {});
   } finally {
