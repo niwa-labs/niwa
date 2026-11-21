@@ -12,10 +12,16 @@
 
 import type { Dispatch } from "@niwa-labs/harness";
 
+/**
+ * The id of a request: a number or a string, and `null` where a snapshot of the protocol allows
+ * it. A request has an id when the member is present, whatever its value.
+ */
+export type RequestId = number | string | null;
+
 /** One JSON-RPC message, either way: what is present says which it is. */
 export interface RpcFrame {
   readonly jsonrpc?: string;
-  readonly id?: number | string | null;
+  readonly id?: RequestId;
   readonly method?: string;
   readonly params?: unknown;
   readonly result?: unknown;
@@ -23,7 +29,7 @@ export interface RpcFrame {
 }
 
 /** A request the agent makes of the client: it must be answered, or the agent waits forever. */
-export type AgentRequest = RpcFrame & { readonly id: number | string; readonly method: string };
+export type AgentRequest = RpcFrame & { readonly id: RequestId; readonly method: string };
 
 /** A notification of the agent. */
 export type AgentNotification = RpcFrame & { readonly method: string };
@@ -69,6 +75,10 @@ export interface AcpClientOptions {
 }
 
 const DEFAULT_MAX_LINE_BYTES = 16 * 1024 * 1024;
+
+function isRequestId(id: unknown): id is RequestId {
+  return id === null || typeof id === "number" || typeof id === "string";
+}
 
 /** A failure to write, as its reason. */
 function reasonOf(error: unknown): string {
@@ -125,15 +135,26 @@ export class AcpClient {
       return;
     }
     if (frame.jsonrpc !== undefined && frame.jsonrpc !== "2.0") return;
-    const hasId = frame.id !== undefined && frame.id !== null;
+    if (frame.method !== undefined && typeof frame.method !== "string") {
+      this.#options.onUnreadable(line, new Error("the method of the frame is not a string"));
+      return;
+    }
+    // What is present says what a frame is, not what its values are: an id of `null` is still an id.
+    const hasId = Object.hasOwn(frame, "id");
     if (frame.method !== undefined && hasId) {
+      if (!isRequestId(frame.id)) {
+        this.#options.onUnreadable(line, new Error("the id of the request is neither a number, a string nor null"));
+        return;
+      }
       this.#options.onRequest(frame as AgentRequest);
       return;
     }
     if (frame.method === undefined && hasId) {
-      const settle = this.#pending.get(Number(frame.id));
+      // Our ids are numbers: an answer is of the call whose id it repeats, and no other.
+      if (typeof frame.id !== "number") return;
+      const settle = this.#pending.get(frame.id);
       if (settle === undefined) return;
-      this.#pending.delete(Number(frame.id));
+      this.#pending.delete(frame.id);
       if (frame.error !== undefined) {
         const code = frame.error.code;
         settle({
@@ -216,12 +237,12 @@ export class AcpClient {
   }
 
   /** The answer to a request of the agent. */
-  reply(id: number | string, result: unknown): void {
+  reply(id: RequestId, result: unknown): void {
     this.#options.write(JSON.stringify({ jsonrpc: "2.0", id, result }));
   }
 
   /** The refusal of a request of the agent, so it never waits on the client. */
-  refuse(id: number | string, code: number, message: string): void {
+  refuse(id: RequestId, code: number, message: string): void {
     this.#options.write(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
   }
 

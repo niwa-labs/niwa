@@ -65,7 +65,7 @@ import { LIVE_PROCESS_REFUSAL, homePath, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess, HarnessNeeds } from "@niwa-labs/sandbox";
 
 import { AcpClient, acpVariant, answerText, readVariant } from "@niwa-labs/acp";
-import type { AgentNotification, AgentRequest, RpcOutcome, UnknownVariant } from "@niwa-labs/acp";
+import type { AgentNotification, AgentRequest, RequestId, RpcOutcome, UnknownVariant } from "@niwa-labs/acp";
 
 import {
   NCODE_ACP_PROTOCOL,
@@ -718,12 +718,12 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   }
 
   /** Refuse a request of the agent, so it never waits on this side. */
-  function refuse(session: AcpSession, requestId: number | string, method: string): void {
+  function refuse(session: AcpSession, requestId: RequestId, method: string): void {
     session.client.refuse(requestId, -32601, `niwa does not serve ${method}`);
   }
 
   /** A request of the agent: a permission or a questionnaire is answered, anything else refused. */
-  function answerRequest(session: AcpSession, requestId: number | string, message: AgentRequest): void {
+  function answerRequest(session: AcpSession, requestId: RequestId, message: AgentRequest): void {
     const read = readVariant(McodeAgentRequest, message, protocol, acpVariant);
     if (!read.ok) {
       emitUnknown(session, read.unknown);
@@ -844,7 +844,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
    */
   async function answerPermission(
     session: AcpSession,
-    requestId: number | string,
+    requestId: RequestId,
     asked: Acp.RequestPermissionRequest,
     params: Record<string, unknown> | undefined,
   ): Promise<void> {
@@ -881,7 +881,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
    */
   async function answerElicitation(
     session: AcpSession,
-    requestId: number | string,
+    requestId: RequestId,
     params: Record<string, unknown> | undefined,
     handler: ReverseHandler,
   ): Promise<void> {
@@ -913,7 +913,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   async function reverseAnswer(
     session: AcpSession,
     handler: ReverseHandler,
-    requestId: number | string,
+    requestId: RequestId,
     questions: readonly Question[],
     method: string,
     raw: unknown,
@@ -940,7 +940,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   }
 
   /** Answer a request of the agent, once. */
-  function replyTo(session: AcpSession, requestId: number | string, result: Record<string, unknown>): void {
+  function replyTo(session: AcpSession, requestId: RequestId, result: Record<string, unknown>): void {
     session.client.reply(requestId, result);
   }
 

@@ -94,3 +94,34 @@ test("a reply and a refusal answer the agent's request by its id", () => {
     { jsonrpc: "2.0", method: "session/cancel", params: { sessionId: "s" } },
   ]);
 });
+
+test("an answer settles the call of its own id only: a string that reads as the number is another id", async () => {
+  const { acp, unreadable } = client({ callTimeoutMs: 50 });
+  const call = acp.request("a", {});
+  acp.receive('{"jsonrpc":"2.0","id":"1","result":{"x":1}}');
+  expect(acp.waiting).toBe(1);
+  expect(unreadable).toEqual([]);
+  expect(await call).toMatchObject({ ok: false, timedOut: true });
+});
+
+test("a frame with a method and an id is a request even when the id is null, and without an id it is a notification", () => {
+  const { acp, requests, notifications, written } = client();
+  acp.receive('{"jsonrpc":"2.0","id":null,"method":"session/request_permission","params":{}}');
+  acp.receive('{"jsonrpc":"2.0","method":"session/update","params":{}}');
+  expect(requests.map((request) => request.id)).toEqual([null]);
+  expect(notifications.map((notification) => notification.method)).toEqual(["session/update"]);
+  acp.refuse(null, -32601, "not served");
+  acp.reply(null, {});
+  expect(written).toEqual([
+    { jsonrpc: "2.0", id: null, error: { code: -32601, message: "not served" } },
+    { jsonrpc: "2.0", id: null, result: {} },
+  ]);
+});
+
+test("a request whose id is neither a string, a number nor null is unreadable", () => {
+  const { acp, requests, unreadable } = client();
+  acp.receive('{"jsonrpc":"2.0","id":{"a":1},"method":"m","params":{}}');
+  acp.receive('{"jsonrpc":"2.0","id":true,"method":"m","params":{}}');
+  expect(requests).toEqual([]);
+  expect(unreadable).toHaveLength(2);
+});
