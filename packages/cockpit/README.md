@@ -27,9 +27,11 @@ and reported.
 
 ## One copy of the libraries
 
-The build has one entry for each shared module: React, React DOM, the JSX runtime, TanStack Query,
-the SDK, the kit and zod. The page carries an import map that names them, and a client module is
-built with those names left as imports, so the app and every module read the same copy.
+The build has one entry for each shared module: React, its JSX and compiler runtimes, React DOM,
+TanStack Query, the SDK, the kit and zod (both `zod` and `zod/v4`, default export included). The
+page carries an import map that names exactly these, and a client module is built with exactly
+these specifiers left as imports, so the app and every module read the same copy. Any other
+subpath of one of these packages is refused when the module is built.
 
 The page allows scripts only from its own origin, and no `eval`: a classic script ahead of the
 modules makes zod check the plain way instead of compiling its checks.
