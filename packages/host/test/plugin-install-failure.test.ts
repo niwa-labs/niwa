@@ -65,3 +65,57 @@ test("a replacement whose setup throws leaves the profile and the state of the i
     await h.close();
   }
 });
+
+test("a setup that returns a promise is refused, and what it does after its first await changes nothing", async () => {
+  const h = await hosted((api) => {
+    api.declare(Ping);
+    api.profile("mine", () => ["task.*"]);
+  });
+  try {
+    const installed = h.niwa.installed(pluginName("p"));
+    const late = Promise.withResolvers<void>();
+    const asynchronous = plugin(
+      "p",
+      (api) => {
+        const setup = async (): Promise<void> => {
+          await Promise.resolve();
+          try {
+            api.profile("mine", () => ["*"]);
+          } catch {
+            // The api of a plugin that was refused does not change the host any more.
+          }
+          late.resolve();
+        };
+        // A promise is what an async setup returns, whatever the declared type of the setup says.
+        return setup() as unknown as void;
+      },
+      { version: "v2" },
+    );
+    expect(() => h.niwa.use(asynchronous)).toThrow(/setup .*promise/);
+    await late.promise;
+
+    expect(h.niwa.installed(pluginName("p"))).toBe(installed);
+    expect(await profileRules(h.owner)).toEqual(["call:task.*"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a handler whose name contains a slash is refused, and the installed plugin stays", async () => {
+  const h = await hosted((api) => api.declare(Ping));
+  try {
+    const installed = h.niwa.installed(pluginName("p"));
+    const slashed = plugin(
+      "p",
+      (api) => {
+        api.declare(Ping);
+        api.on(Ping, { id: "a/b" }, () => {});
+      },
+      { version: "v2" },
+    );
+    expect(() => h.niwa.use(slashed)).toThrow(/handler "a\/b".*"\/"/);
+    expect(h.niwa.installed(pluginName("p"))).toBe(installed);
+  } finally {
+    await h.close();
+  }
+});

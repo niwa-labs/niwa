@@ -690,7 +690,7 @@ class Niwa implements Host {
       readInSetup: new Set(),
     };
     let inSetup = true;
-    plugin.setup({
+    const returned: unknown = plugin.setup({
       declare: (...types: AnyType[]) => {
         // A trigger is a view of a type, not a type: declaring one would replace the type it narrows.
         for (const type of types) {
@@ -750,6 +750,11 @@ class Niwa implements Host {
         // A filtered type is a trigger: it names its handlers after what it watches, so two
         // triggers of the same type are two different handlers.
         const name = options.id ?? type.handlerId ?? type.name;
+        if (name.includes("/")) {
+          throw new TypeError(
+            `plugin "${plugin.name}" names a handler "${name}": a handler id is the name of the plugin, a "/" and the handler's own name, so the name has none`,
+          );
+        }
         // The journal holds the handler id, not the function: two with one id could not be told apart.
         if (installed.handlers.some((entry) => entry.name === name)) {
           throw new Error(
@@ -805,6 +810,13 @@ class Niwa implements Host {
     });
 
     inSetup = false;
+    if (isThenable(returned)) {
+      // What the promise does later is nobody's to see: it must not fail the process on its own.
+      Promise.resolve(returned).catch(() => undefined);
+      throw new TypeError(
+        `plugin "${plugin.name}" has an asynchronous setup: a setup runs to its end before the plugin is installed, so it must not return a promise`,
+      );
+    }
     // The version of a plugin without an explicit one covers the handlers it registered, wherever
     // they are defined: the setup has run, so they are known now.
     sealVersion(plugin, sources);
@@ -2526,6 +2538,11 @@ function refuse(connection: Connection, id: number, error: unknown): void {
 /** The host: create it with a home directory. */
 export function createNiwa(opts: HostOptions): Host {
   return new Niwa(opts);
+}
+
+/** Does a value behave as a promise? */
+function isThenable(value: unknown): boolean {
+  return (typeof value === "object" || typeof value === "function") && value !== null && typeof (value as { then?: unknown }).then === "function";
 }
 
 /** `~` at the start of a home is the home of the user. */
