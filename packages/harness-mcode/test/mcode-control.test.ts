@@ -317,6 +317,14 @@ for await (const chunk of Bun.stdin.stream()) {
       // Like real mcode: one prompt at a time per session.
       if (active !== undefined) { send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Invalid params: A prompt is already active for this session." } }); continue; }
       if (message.params.prompt[0].text === "die") process.exit(3);
+      // "orphan" ends its turn and exits, leaving a grandchild that holds the agent's stdout open: the
+      // process is gone and its input is closed, but the pipe of its output has not closed yet.
+      if (message.params.prompt[0].text === "orphan") {
+        send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+        Bun.spawn(["sleep", "300"], { stdout: "inherit", stderr: "inherit", stdin: "ignore" });
+        setTimeout(() => process.exit(0), 50);
+        continue;
+      }
       active = message.id;
       // "hang" never ends on its own; a cancel ends it, a little later, as cancelled.
       if (message.params.prompt[0].text === "hang") continue;
@@ -1521,3 +1529,21 @@ test("a binary of the other lineage is refused in the handshake, before a sessio
   await upstreamSide.dispose();
   expect(existsSync(join(dir, "sessions.log"))).toBe(false);
 });
+
+test("a message to an agent that has exited but whose output has not closed yet is not sent", async () => {
+  control = await fakeControl();
+  const before = directChildren();
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  const agent = directChildren().find((child) => !before.some((old) => old.pid === child.pid));
+  expect(agent).toBeDefined();
+  expect((await control.send(id, "orphan")).status).toBe("started");
+  // The process is gone; the grandchild keeps the pipe of its output open, so the session has not
+  // been told it ended.
+  for (let i = 0; i < 100 && directChildren().some((child) => child.pid === agent?.pid); i += 1) await Bun.sleep(50);
+  expect(directChildren().some((child) => child.pid === agent?.pid)).toBe(false);
+  expect(await control.state(id)).not.toBe("unknown");
+  await expect(control.send(id, "again")).rejects.toMatchObject({ code: "InputNotSent" });
+  await control.dispose();
+  control = undefined;
+});
+
