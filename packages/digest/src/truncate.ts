@@ -25,16 +25,27 @@ export function cutMarker(length: number, kept: number, source: string): string 
   return `…⟨cut ${String(length - kept)} of ${String(length)} chars, whole at ${source}⟩…`;
 }
 
+/** The marker when the full one does not fit: how much was cut, and nothing of where; the entry's source says where. */
+function shortMarker(length: number, kept: number): string {
+  return `…⟨cut ${String(length - kept)}⟩…`;
+}
+
 /**
- * `text` with its middle cut so that it holds about `keep` characters, the marker among them. A text
- * that fits is returned as it is, and so is one the cut would not make shorter. The cut moves to a
- * line break when one is near, so a kept line is whole.
+ * `text` with its middle cut so that it holds at most `keep` characters, the marker among them. A
+ * text that fits is returned as it is, and so is one the cut would not make shorter. The cut moves
+ * to a line break when one is near, so a kept line is whole. Where the marker with its source does
+ * not fit, a short one that only counts stands in; where not even that fits, the text is cut at
+ * its end.
  */
 export function cutMiddle(text: string, { keep, source }: CutOptions): string {
   if (text.length <= keep) return text;
-  const marker = cutMarker(text.length, keep, source);
-  const room = keep - marker.length;
-  if (room < 16) return text.length > marker.length ? `${text.slice(0, Math.max(0, room))}${marker}` : text;
+  // The longest the marker can be: the count of what is removed has at most the digits of the length.
+  const room = keep - cutMarker(text.length, 0, source).length;
+  if (room < 16) {
+    const short = keep - shortMarker(text.length, 0).length;
+    if (short < 1) return cutEnd(text, keep);
+    return `${text.slice(0, short)}${shortMarker(text.length, short)}`;
+  }
   const failed = FAILURE.test(text.slice(-FAILURE_SCAN));
   let head = Math.floor(room * (failed ? 0.3 : 0.7));
   let tail = room - head;

@@ -163,3 +163,17 @@ test("a record read again in another key order, with an absent field or without 
   expect(sourceOf({ ...unknown, raw: undefined } as unknown as SessionRecord)).toEqual(sourceOf(unknown));
   expect(sourceOf({ ...record, target: "pwd" })).not.toEqual(sourceOf(record));
 });
+
+test("a cut says how much it removed, and fits the size asked for", () => {
+  const text = "line of text\n".repeat(40);
+  const sizes = [5, 12, 20, 30, 45, 60, 80, 100, 150];
+  for (const keep of sizes) {
+    const out = cutMiddle(text, { keep, source: "L12345" });
+    expect(out.length).toBeLessThanOrEqual(keep);
+    const marker = /…⟨cut (\d+)(?: of (\d+) chars, whole at L12345)?⟩…/.exec(out);
+    if (marker === null) continue;
+    expect(Number(marker[1])).toBe(text.length - out.replace(marker[0], "").length);
+  }
+  // The marker with its source does not fit in 20, the one that only counts does.
+  expect(/cut \d+⟩/.test(cutMiddle(text, { keep: 20, source: "L12345" }))).toBe(true);
+});
