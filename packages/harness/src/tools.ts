@@ -62,16 +62,17 @@ export interface ToolShape {
 }
 
 /**
- * The first string among `keys` of an input, trimmed to one line: the target a kind takes from
- * the input of a tool whose shape it knows.
+ * The first string among `keys` of an input: the target a kind takes from the input of a tool
+ * whose shape it knows. It is trimmed to one line, unless `exact`: a path names a file by every
+ * character, and two files that differ in their whitespace stay two.
  */
-export function targetOf(input: unknown, keys: readonly string[]): string | undefined {
+export function targetOf(input: unknown, keys: readonly string[], exact = false): string | undefined {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return undefined;
   for (const key of keys) {
     const value = Object.getOwnPropertyDescriptor(input, key)?.value;
-    if (typeof value === "string" && value.trim().length > 0) return value.replace(/\s+/g, " ").trim();
+    if (typeof value === "string" && value.trim().length > 0) return exact ? value : value.replace(/\s+/g, " ").trim();
     if (Array.isArray(value) && value.every((part) => typeof part === "string") && value.length > 0) {
-      return value.join(" ").replace(/\s+/g, " ").trim();
+      return exact ? value.join(" ") : value.join(" ").replace(/\s+/g, " ").trim();
     }
   }
   return undefined;
@@ -98,6 +99,8 @@ export function shapeOf(
 ): ToolShape {
   const entry = Object.hasOwn(table, name) ? table[name] : undefined;
   if (entry === undefined) return { category: isMcp(name) ? "mcp" : "other" };
-  const target = entry.target === undefined ? undefined : targetOf(input, entry.target);
+  // What a read or an edit points at is a path.
+  const exact = entry.category === "read" || entry.category === "edit";
+  const target = entry.target === undefined ? undefined : targetOf(input, entry.target, exact);
   return target === undefined ? { category: entry.category } : { category: entry.category, target };
 }
