@@ -154,3 +154,12 @@ test("a nested session and a permission are entries of the digest", () => {
   );
   expect(entries).toMatchObject([{ kind: "nested", child }, { kind: "permission", tool: "Bash", outcome: "denied" }]);
 });
+
+test("a record read again in another key order, with an absent field or without its raw data, has the same digest", () => {
+  const record: SessionRecord = { kind: "tool-call", callId: "c", name: "Bash", category: "shell", target: "ls", input: { b: 1, a: 2 } as never, locator: at(1), incomplete: false };
+  const again = { locator: at(1), incomplete: false, input: { a: 2, b: 1 }, target: "ls", category: "shell", name: "Bash", callId: "c", kind: "tool-call", at: undefined } as unknown as SessionRecord;
+  expect(sourceOf(again)).toEqual(sourceOf(record));
+  const unknown: SessionRecord = { kind: "unknown", raw: { whatever: true }, locator: at(2), incomplete: false };
+  expect(sourceOf({ ...unknown, raw: undefined } as unknown as SessionRecord)).toEqual(sourceOf(unknown));
+  expect(sourceOf({ ...record, target: "pwd" })).not.toEqual(sourceOf(record));
+});

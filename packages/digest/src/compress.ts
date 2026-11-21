@@ -36,9 +36,27 @@ export interface Compressed {
   readonly omitted: number;
 }
 
-/** The source of an entry: the record's locator and a digest of the record. */
+/** A value as JSON with its keys sorted and its undefined members left out: the same value always reads the same. */
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((each) => (each === undefined ? "null" : canonical(each))).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const members = Object.entries(value)
+      .filter(([, each]) => each !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, each]) => `${JSON.stringify(key)}:${canonical(each)}`);
+    return `{${members.join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * The source of an entry: the record's locator and a digest of the record. The digest is of the
+ * record as the common model says it, its keys in order and without the harness's raw data, so the
+ * same record read again through `session.read` has the same digest.
+ */
 export function sourceOf(record: SessionRecord): Source {
-  const digest = createHash("sha256").update(JSON.stringify(record)).digest("hex").slice(0, 12);
+  const { raw: _raw, ...said } = record as SessionRecord & { raw?: unknown };
+  const digest = createHash("sha256").update(canonical(said)).digest("hex").slice(0, 12);
   return { locator: record.locator, digest };
 }
 
