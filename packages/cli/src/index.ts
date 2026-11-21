@@ -32,6 +32,7 @@ import {
   STOP_ACTION,
   StatusOutput,
   TracedRecordsOutput,
+  withWorkingDirectory,
 } from "@niwa-labs/client";
 import type { ActionDescription, Seq, Token } from "@niwa-labs/core";
 import type { NiwaApi } from "@niwa-labs/client";
@@ -340,7 +341,7 @@ async function runAction(
   args: CliArgs,
   format: Format,
 ): Promise<CliResult> {
-  const input = inputOf(action, await withStdinJson(args.args, () => Bun.stdin.text()));
+  const input = withWorkingDirectory(action.input, inputOf(action, await withStdinJson(args.args, () => Bun.stdin.text())));
   const result = await api.call(action.name, input);
   return { output: renderAnswer(result, format), code: 0 };
 }

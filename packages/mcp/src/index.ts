@@ -20,8 +20,8 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 
 import { actionName, JsonSchemaValue, recordTypeName, seq } from "@niwa-labs/core";
-import type { Token } from "@niwa-labs/core";
-import { HostError } from "@niwa-labs/client";
+import type { JsonSchema, Token } from "@niwa-labs/core";
+import { HostError, withWorkingDirectory } from "@niwa-labs/client";
 import { bind, type Binding, type SessionId } from "./bind.ts";
 import {
   OPEN_QUESTIONS,
@@ -288,7 +288,9 @@ async function callTool(
   }
   const action = catalog.actions.get(name);
   if (action === undefined) throw new Error(`there is no tool "${name}"`);
-  return api.call(action, args);
+  // The session works where its server was started: an action that takes a directory is told so when the model names none.
+  const input = catalog.tools.find((tool) => tool.name === name)?.inputSchema;
+  return api.call(action, withWorkingDirectory(input as JsonSchema | undefined, args));
 }
 
 /** Run the MCP server of one home over stdio. */

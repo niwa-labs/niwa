@@ -82,7 +82,8 @@ Registered workflows:
   new version of that workflow. A version is the hash of the script and the local files it imports. A registered
   script says what it is in workflow({ description }). workflow.list and workflow.get show the workflows.
 - workflow.start { id, args } runs the latest version and answers the id of the run (run-…); workflow.start { file }
-  runs a script once without registering it.
+  runs a script once without registering it. A run belongs to a directory, the project it is for: the CLI and the MCP
+  server pass their working directory, and workflow.start { directory } names another one.
 - Every registered workflow is the action flow.<id>: it runs the workflow to its end and answers its output. A script
   calls it as niwa.flow["wf-a3f9c2"](input) with "flow.wf-a3f9c2" in uses. When a workflow changes its contract, the
   ones that call it are checked again; one that no longer passes is broken and does not start until a version passes.
