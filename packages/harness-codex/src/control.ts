@@ -39,6 +39,7 @@ import type {
 } from "@niwa-labs/harness";
 import {
   InputNotSent,
+  InputPossiblySent,
   inputFailure,
   DEFAULT_TURN_TIMEOUT_MS,
   describeToolsMode,
@@ -937,6 +938,10 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       try {
         return { session: id, first: await deliver(session, text), mode };
       } catch (error) {
+        // The first message may have been taken: the thread is named and its turn may run, so the
+        // start answers with the session and no receipt. The caller keeps the id; a start that
+        // threw would be tried again, and that would make a second thread and say the prompt twice.
+        if (error instanceof InputPossiblySent) return { session: id, mode };
         // The first message was refused: the thread was never given its work, and a session
         // nobody holds the id of could not be stopped later.
         sessions.delete(session.nativeId);

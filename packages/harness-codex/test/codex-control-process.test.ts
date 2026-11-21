@@ -337,13 +337,15 @@ test("the answer of a turn is still read when its message carries a field the sn
   expect(signs.find((sign) => sign.kind === "unknown-variant")).toMatchObject({ variant: "item/completed" });
 });
 
-test("a child that dies with the first prompt unanswered fails it as possibly sent and leaves no orphan", async () => {
+test("a child that dies with the first prompt unanswered leaves a named session without a receipt and no orphan", async () => {
   process.env.FAKE_MODE = "die";
   const codex = control();
-  const failure = await codex.start({ prompt: promptFromText("go") }).catch((error: unknown) => error);
-  // turn/start was written and never answered: Codex may have begun the turn.
-  expect(failure).toBeInstanceOf(InputPossiblySent);
-  expect(String(failure)).toContain("exited");
+  // turn/start was written and never answered: Codex may have begun the turn, so the thread it
+  // named is answered with, and the prompt is not a failure the caller would send again.
+  const started = await codex.start({ prompt: promptFromText("go") });
+  expect(String(started.session.native)).toBe(THREAD);
+  expect(started.first).toBeUndefined();
+  expect(await codex.state(started.session)).toBe("unknown");
   expect(await grandchildGone()).toBe(true);
   await codex.dispose();
 });
@@ -400,6 +402,26 @@ test("a turn Codex neither answered nor announced closes the session, and what w
   expect(await first).toBeInstanceOf(InputPossiblySent);
   expect(await asked).toBeInstanceOf(Error);
   expect(await codex.state(id)).toBe("unknown");
+  expect(await grandchildGone()).toBe(true);
+  await codex.dispose();
+});
+
+test("a start whose first turn may have been taken answers with the session, so a retry cannot make a second thread", async () => {
+  process.env.FAKE_MODE = "silent";
+  const codex = control({ callTimeoutMs: 300 });
+  const started = await codex.start({ prompt: promptFromText("go") });
+  expect(String(started.session.native)).toBe(THREAD);
+  expect(started.first).toBeUndefined();
+  // The prompt reached Codex once, and the session is told apart from one that never was.
+  expect(await startedTurns()).toEqual(["go"]);
+  expect(await codex.state(started.session)).toBe("unknown");
+  await codex.dispose();
+});
+
+test("a start whose first turn Codex refused leaves no session behind", async () => {
+  process.env.FAKE_MODE = "refuse-turn";
+  const codex = control();
+  expect(await codex.start({ prompt: promptFromText("go") }).catch((error: unknown) => error)).toBeInstanceOf(InputNotSent);
   expect(await grandchildGone()).toBe(true);
   await codex.dispose();
 });
