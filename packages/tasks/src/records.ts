@@ -9,7 +9,7 @@
  * The kind of work is an open label: a plain string, never a closed list in the core.
  */
 
-import { Address, EntityDescription, JsonValueSchema, idSchema, queryOf, record } from "@niwa-labs/core";
+import { Address, EntityDescription, JsonValueSchema, idSchema, principalSchema, queryOf, record } from "@niwa-labs/core";
 import type { Id, TypeQuery } from "@niwa-labs/core";
 import { z } from "zod";
 
@@ -66,7 +66,7 @@ export type TaskContract = z.infer<typeof TaskContract>;
  *
  * The record holds the whole contract, so the task can be read without knowing anything else.
  */
-export const TaskCreated = record("task.created", TaskContract);
+export const TaskCreated = record("task.created", TaskContract.extend({ initiator: principalSchema.optional() }));
 
 /**
  * A task was updated.

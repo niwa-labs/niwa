@@ -14,25 +14,19 @@
  * imports no sessions module and names no harness kind.
  */
 
-import { actionName, jsonOf } from "@niwa-labs/core";
-import type { ActionName, Address, Step, StoredRecord } from "@niwa-labs/core";
+import { action, actionName, jsonOf } from "@niwa-labs/core";
+import type { Address, Step, StoredRecord } from "@niwa-labs/core";
 import { z } from "zod";
 
 import { trigger } from "@niwa-labs/plugin";
-import type { Trigger } from "@niwa-labs/plugin";
+import type { PluginApi, Trigger } from "@niwa-labs/plugin";
 import { MessageSent, render } from "@niwa-labs/messages/records";
 import type { Message } from "@niwa-labs/messages/records";
 
 import type { TaskLedger } from "./ledger.ts";
 import { TaskRefusal, decide, fitsRecord } from "./owner.ts";
-import { TaskDone } from "./records.ts";
+import { TaskCreated, TaskDone } from "./records.ts";
 import type { TaskOutcome } from "./records.ts";
-
-/** The name of the action that starts a session. */
-export const SESSION_START: ActionName = actionName("session.start");
-
-/** The name of the action that asks a session for an answer by schema. */
-export const SESSION_ASK: ActionName = actionName("session.ask");
 
 /** The prefix of the address of an executor: "executor:<harness>". */
 const EXECUTOR_PREFIX = "executor:";
@@ -86,7 +80,19 @@ export function forExecutor(message: Message): boolean {
  */
 export function executorHandler(
   ledger: TaskLedger,
+  authorize: PluginApi["authorize"],
 ): (message: Message, step: Step, record: StoredRecord) => Promise<void> {
+  const check = action("task.executor.authorize", {
+    description: "Checks the task creator's permission before each executor call.",
+    input: z.object({ name: z.enum(["session.start", "session.ask"]), input: z.unknown() }),
+    output: z.boolean(),
+    recovery: "repeat",
+    effect: "read",
+    run: async ({ name, input }, ctx) => {
+      await authorize(ctx.caller, "call", name, { input });
+      return true;
+    },
+  });
   return async (message, step, record) => {
     if (!forExecutor(message)) return;
     if (message.task === undefined) {
@@ -104,6 +110,13 @@ export function executorHandler(
     if (ledger.assignment(task)?.id !== record.id) {
       throw new TaskRefusal("not-the-assignment", `the message is not the assignment of the task "${task}"`);
     }
+    const creation = ledger.created(task);
+    const creator = creation?.actor;
+    if (creator === undefined) throw new TaskRefusal("unknown", "the task has no creation record");
+    const initiator = creator.kind === "client" ? creator.principal : TaskCreated.schema.parse(creation?.data).initiator;
+    if (creator.kind === "client" && initiator === undefined) {
+      throw new TaskRefusal("unbound", "the task creator has no authenticated principal");
+    }
     const contract = before.contract;
     const declared = contract.result;
 
@@ -116,8 +129,25 @@ export function executorHandler(
       await step.emit(TaskDone, { task, outcome: kept });
     };
 
-    const started = await attempted<{ session: string }>(step, SESSION_START, {
+    // Each authorization is its own durable step. Replaying a completed
+    // launch never repeats the owner's permission question.
+    const call = async <O>(name: "session.start" | "session.ask", input: unknown, key: string):
+      Promise<{ ok: true; value: O } | { ok: false; reason: string }> => {
+      const options = initiator === undefined ? { key } : { key, as: initiator };
+      if (initiator !== undefined) {
+        const checked = await step.outcome(check, { name, input }, { key: `${key}:permission`, as: initiator });
+        if (checked.status !== "completed") return { ok: false, reason: checked.status === "failed" ? checked.error : checked.status };
+      }
+      const target = actionName(name);
+      const outcome = await step.outcome<unknown, O>(target, input, options);
+      if (outcome.status === "completed") return { ok: true, value: outcome.value };
+      if (outcome.status === "failed") return { ok: false, reason: outcome.error || "it failed" };
+      if (outcome.status === "denied") return { ok: false, reason: outcome.reason };
+      return { ok: true, value: await step<unknown, O>(target, input, options) };
+    };
+    const started = await call<{ session: string }>("session.start", {
       harness,
+      visible: { actions: ["submit-answer"] },
       prompt: render({
         id: message.id,
         from: contract.askedBy,
@@ -133,7 +163,7 @@ export function executorHandler(
     }, "start");
     if (!started.ok) return end({ status: "failure", reason: `the session could not be started: ${started.reason}` });
 
-    const answered = await attempted<{ value: unknown }>(step, SESSION_ASK, {
+    const answered = await call<{ value: unknown }>("session.ask", {
       session: started.value.session,
       prompt: "Give the result of the task.",
       schema: declared ?? RESULT_SCHEMA,
@@ -142,23 +172,6 @@ export function executorHandler(
 
     await end(outcomeOf(answered.value.value, declared !== undefined));
   };
-}
-
-/** What a call of the session came to: its value, or the reason it ended without one. */
-type Attempt<O> = { readonly ok: true; readonly value: O } | { readonly ok: false; readonly reason: string };
-
-/**
- * Make a call of the session and tell what it came to.
- *
- * A call that ended in an error is over: it is a refusal of the session, and the code goes on with
- * the reason. A call that was cut off, denied or cancelled has no answer that is final, so it is
- * made as a plain step, which waits for the owner to decide what happens to it.
- */
-async function attempted<O>(step: Step, action: ActionName, input: unknown, key: string): Promise<Attempt<O>> {
-  const outcome = await step.outcome<unknown, O>(action, input, { key });
-  if (outcome.status === "completed") return { ok: true, value: outcome.value };
-  if (outcome.status === "failed") return { ok: false, reason: outcome.error.length === 0 ? "it failed" : outcome.error };
-  return { ok: true, value: await step<unknown, O>(action, input, { key }) };
 }
 
 /**

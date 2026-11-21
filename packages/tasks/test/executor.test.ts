@@ -12,10 +12,11 @@
 
 import { expect, test } from "bun:test";
 
-import { CORE_TYPES, seq } from "@niwa-labs/core";
+import { CORE_TYPES, grant, principalOf, seq } from "@niwa-labs/core";
 import type { RecordTypeName, StoredRecord } from "@niwa-labs/core";
 import { MessageSent, messageSendRef } from "@niwa-labs/messages/records";
 import {
+  connect,
   createNiwa,
   eventually,
   harnessId,
@@ -131,11 +132,11 @@ function installation(): Harness {
 }
 
 /** A host with the messages module, the sessions module and the tasks module over the fake. */
-async function serve(control: FakeControl, home: string): Promise<Host> {
+async function serve(control: FakeControl, home: string, options?: Parameters<typeof tasks>[0]): Promise<Host> {
   const niwa = createNiwa({ home });
   niwa.use(messages({ bind: () => undefined }));
   niwa.use(sessions({ harnesses: [{ instance: installation(), control }] }));
-  niwa.use(tasks());
+  niwa.use(tasks(options));
   await niwa.serve();
   return niwa;
 }
@@ -479,3 +480,41 @@ test("the executor: a session that cannot be started ends the task as failed", a
     await home.cleanup();
   }
 }, 30_000);
+
+
+test("the executor checks the creating client's grant against its assigned harness", async () => {
+  const home = await tempHome();
+  const control = new FakeControl();
+  const niwa = await serve(control, home.path, { messages: { bind: (caller) =>
+    caller.kind === "client" && caller.principal !== undefined ? { kind: "client", id: caller.principal.id } : undefined,
+  } });
+  const clients = [];
+  try {
+    for (const [label, harness] of [["denied", "different"], ["allowed", HARNESS]] as const) {
+      const principal = principalOf("client", label);
+      const token = niwa.issueToken(principal, { grant: grant(["task.create", `session.start@${harness}`, "session.ask"]) });
+      const client = await connect({ home: home.path, id: label, token });
+      clients.push(client);
+      const { id } = await client.call(taskCreate, {
+        kind: "change", description: DESCRIPTION, text: TEXT,
+        askedBy: { kind: "client", id: label }, responsible: executor(HARNESS), reportTo: REPORTER,
+      });
+      const { outcome } = await niwa.call(taskResult, { task: id });
+      if (label === "denied") {
+        expect(outcome).toMatchObject({ status: "failure" });
+        expect(control.starts).toBe(0);
+      } else {
+        expect(outcome.status).toBe("result");
+        const granted = await recordsOf(niwa, CORE_TYPES.accessGranted);
+        expect(granted.some((r) => {
+          const g = r.data as { principal: { kind: string }; parent?: { principal: { id: string } } };
+          return g.principal.kind === "session" && g.parent?.principal.id === label;
+        })).toBe(true);
+      }
+    }
+  } finally {
+    for (const client of clients) await client.close();
+    await niwa.close();
+    await home.cleanup();
+  }
+}, 30000);

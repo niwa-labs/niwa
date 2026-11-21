@@ -124,7 +124,7 @@ export function tasks(opts: TasksOptions = {}): Plugin {
     // An assignment for an executor is work to do: the executor starts a session, asks it for
     // the result and ends the task with what the session said.
     // Each task is worked on by its own session, for as long as it takes.
-    api.on(ExecutorAssignment, { concurrency: Number.POSITIVE_INFINITY }, executorHandler(ledger));
+    api.on(ExecutorAssignment, { concurrency: Number.POSITIVE_INFINITY }, executorHandler(ledger, api.authorize));
 
     // The updates go where the task says to report: from the responsible party to that address.
     api.on(TaskUpdated, async (data, step) => {
@@ -272,7 +272,7 @@ export function taskActions(ledger: TaskLedger, ids: IdIndex<"task">, bind: Call
     async run(input, ctx) {
       const contract: TaskContract = { ...input, askedBy: askedBy(ctx.caller, input.askedBy), id: ids.issue(birthOf(ctx)) };
       decide(ledger.state(contract.id), { kind: "create", contract });
-      await ctx.emit(TaskCreated, contract);
+      await ctx.emit(TaskCreated, { ...contract, ...(ctx.caller.kind === "client" ? { initiator: ctx.caller.principal } : {}) });
       return { id: contract.id };
     },
     async check(operation) {
