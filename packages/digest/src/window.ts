@@ -124,6 +124,10 @@ export async function readWindow(records: AsyncIterable<SessionRecord>, options:
   // The last group read is whole only when the reading ended by itself; it may not fit.
   if (!full && !take()) full = true;
   const exhausted = !full;
-  const compressed = compress(taken, options.mode, { ...(options.files === undefined ? {} : { files: options.files }), resultChars });
+  const compressed = compress(taken, options.mode, {
+    ...(options.files === undefined ? {} : { files: options.files }),
+    resultChars,
+    more: !exhausted,
+  });
   return { view: compressed.view, next: exhausted ? null : upto, upto, files: compressed.files, omitted: compressed.omitted };
 }

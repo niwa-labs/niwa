@@ -84,7 +84,12 @@ export const BriefSchema = z.object({
   asked: z.array(SaidSchema),
   /** The last message of the agent in each turn. */
   answered: z.array(SaidSchema),
-  /** The paths edit calls named, each once. */
+  /**
+   * The last message of the agent in a turn that goes on past what was read: the turn's answer
+   * unless more follows, which the next window shows. Absent when what was read ends a turn.
+   */
+  tentative: SaidSchema.optional(),
+  /** The paths edit calls named, each once, left out when the call's result says it failed. */
   changed: z.array(z.string()),
   /** How many calls of each category were made. */
   calls: z.partialRecord(ToolCategorySchema, z.number().int().positive()),

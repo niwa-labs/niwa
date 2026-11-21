@@ -26,6 +26,11 @@ export interface CompressOptions {
   readonly files?: FileIndex;
   /** How much of a call's result a digest keeps. */
   readonly resultChars?: number;
+  /**
+   * Whether the reading goes on past these records, so the last turn may not be over. A brief then
+   * gives the agent's last message as `tentative`, not as the answer of the turn.
+   */
+  readonly more?: boolean;
 }
 
 /** A compressed reading, and the file index as it stands after it. */
@@ -113,7 +118,7 @@ export function compress(records: readonly SessionRecord[], mode: DigestMode, op
       return { view: { mode, entries }, files: files.index(), omitted };
     }
     case "brief": {
-      const { brief, omitted } = briefOf(records);
+      const { brief, omitted } = briefOf(records, options.more ?? false);
       return { view: { mode, brief }, files: files.index(), omitted };
     }
   }
@@ -196,10 +201,13 @@ function namedTarget(category: ToolCategory, target: string, changed: boolean, f
   return isPath ? files.name(target, changed) : files.refer(target);
 }
 
-function briefOf(records: readonly SessionRecord[]): { brief: Brief; omitted: number } {
+function briefOf(records: readonly SessionRecord[], more: boolean): { brief: Brief; omitted: number } {
   const asked: Brief["asked"] = [];
   const answered: Brief["answered"] = [];
-  const changed: string[] = [];
+  /** The edit calls, in order, with the path each named. */
+  const edits: Array<{ callId: string; path: string }> = [];
+  /** The calls whose result says they failed. */
+  const refused = new Set<string>();
   const calls: Partial<Record<ToolCategory, number>> = {};
   let failed = 0;
   let checklist: Brief["checklist"];
@@ -228,11 +236,14 @@ function briefOf(records: readonly SessionRecord[]): { brief: Brief; omitted: nu
         break;
       case "tool-call":
         calls[record.category] = (calls[record.category] ?? 0) + 1;
-        if (record.category === "edit" && record.target !== undefined && !changed.includes(record.target)) changed.push(record.target);
+        if (record.category === "edit" && record.target !== undefined) edits.push({ callId: record.callId, path: record.target });
         last = "working";
         break;
       case "tool-result":
-        if (record.ok === false) failed += 1;
+        if (record.ok === false) {
+          failed += 1;
+          refused.add(record.callId);
+        }
         last = "working";
         break;
       case "checklist":
@@ -248,9 +259,13 @@ function briefOf(records: readonly SessionRecord[]): { brief: Brief; omitted: nu
         break;
     }
   }
-  if (answer !== undefined) answered.push(answer);
+  // A turn the reading goes on into is not over: its last message may be followed by more.
+  const tentative = more ? answer : undefined;
+  if (answer !== undefined && !more) answered.push(answer);
+  // What a call that was refused did not change; a call whose result is not read yet may have.
+  const changed = [...new Set(edits.filter((edit) => !refused.has(edit.callId)).map((edit) => edit.path))];
   return {
-    brief: { asked, answered, changed, calls, failed, ...(checklist === undefined ? {} : { checklist }), outcome: last },
+    brief: { asked, answered, changed, calls, failed, ...(tentative === undefined ? {} : { tentative }), ...(checklist === undefined ? {} : { checklist }), outcome: last },
     omitted,
   };
 }

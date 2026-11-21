@@ -218,3 +218,33 @@ test("a message is cut only of the tags harnesses wrap their insertions in, and 
   expect(entriesOf(compress([only], "digest").view)).toMatchObject([{ kind: "user", text: "<user-card>Ada</user-card>" }]);
   expect(briefOf(compress([only], "brief").view)!.asked).toHaveLength(1);
 });
+
+test("only the changes that were not refused are in a brief", () => {
+  const records = [
+    call(1, "a", "edit", "/r/refused.ts", {}),
+    result(2, "a", "denied", false),
+    call(3, "b", "edit", "/r/done.ts", {}),
+    result(4, "b", "ok"),
+    call(5, "c", "edit", "/r/again.ts", {}),
+    result(6, "c", "no", false),
+    call(7, "d", "edit", "/r/again.ts", {}),
+    call(8, "e", "edit", "/r/waiting.ts", {}),
+  ];
+  expect(briefOf(compress(records, "brief").view)!.changed).toEqual(["/r/done.ts", "/r/again.ts", "/r/waiting.ts"]);
+});
+
+test("a window that ends inside a turn gives its last message as one the turn may still replace", async () => {
+  const records = [user(1, "go"), assistant(2, "checking"), call(3, "c", "shell", "ls", {}), result(4, "c", "x"), assistant(5, "fixed")];
+  const whole = briefOf((await readWindow(stream(records), { mode: "brief", budget: 10_000 })).view)!;
+  expect(whole.answered.map((said) => said.text)).toEqual(["fixed"]);
+  expect(whole.tentative).toBeUndefined();
+  const first = await readWindow(stream(records), { mode: "brief", budget: 34 });
+  expect(first.next).not.toBeNull();
+  const brief = briefOf(first.view)!;
+  expect(brief.answered).toEqual([]);
+  expect(brief.tentative?.text).toBe("checking");
+  // A turn that a message from the person closes is answered.
+  const closed = briefOf(compress([user(1, "go"), assistant(2, "done"), user(3, "more")], "brief", { more: true }).view)!;
+  expect(closed.answered.map((said) => said.text)).toEqual(["done"]);
+  expect(closed.tentative).toBeUndefined();
+});
