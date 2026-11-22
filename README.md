@@ -120,6 +120,23 @@ The first command checks the script. The second starts one run and waits for
 its result. The run and its timer wake remain in the journal. Open the workflow
 runs in Cockpit or use `niwa log` to see the recorded activity.
 
+### Install or update the local CLI and MCP
+
+From the checkout you want to install, stage a copy with the locked production
+dependencies, then activate its printed path. The copy includes the working
+files in the workspace packages and lives outside the checkout.
+
+```sh
+release="$(bun scripts/install-client.ts stage)" &&
+  bun scripts/install-client.ts activate "$release"
+```
+
+The default launcher is `~/.local/bin/niwa`. Point stdio MCP clients at that
+absolute path with the argument `mcp`. The same launcher accepts the usual
+`--home` and `NIWA_HOME` settings. Activation checks both entry points before
+replacing the launcher. It leaves the host running. To switch back, activate
+the previous release path.
+
 ### Add a coding agent installation
 
 With Codex installed and signed in on this machine, restart the host with the

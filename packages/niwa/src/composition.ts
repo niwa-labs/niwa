@@ -66,12 +66,15 @@ export interface DefaultCompositionOptions {
  */
 export function defaultComposition(options: DefaultCompositionOptions): Plugin[] {
   const boxes = options.sandbox ?? sandbox();
+  const client = process.env.NIWA_CLIENT_BIN;
   const made = sessions({
     harnesses: options.harnesses,
     sandbox: boxes,
     worktreeFor: registeredWorktree,
     ...(options.box?.sessions === undefined ? {} : { box: options.box.sessions }),
-    niwaMcp: { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
+    niwaMcp: client
+      ? { command: client, args: ["--home", options.home, "mcp"] }
+      : { command: process.execPath, args: [NIWA_CLI, "--home", options.home, "mcp"] },
   });
   const agents = agentsModule({
     ...options.agents,
