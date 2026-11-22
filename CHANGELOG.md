@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 — 2026-11-22
 
 - Use `tools: "niwa-only"` on Ncode installations whose ACP executable
   supports both external-tool switches. Cold resumes keep the session's
@@ -12,12 +12,12 @@
 - Override a harness kind's network allowlist for one installation in
   `host.ts` with `kind.bind({ id, boxProfile: { net: ["llm.example.org"] } })`.
   An omitted list inherits the kind's defaults. An empty list clears them.
+  Set `boxProfile.listen` to grant a loopback listener to one installation.
 - Start or resume OpenCode sessions in a Niwa box with the official
   `@opencode/server@2.3.2` over inherited pipes. The worker shares the
   installation's SQLite history and follows the box's outbound policy for
   provider traffic. Direct unboxed SDK launches use the configured OpenCode v2
   executable. See the [adapter guide](packages/harness-opencode/README.md).
-
 - Use [`@niwa-labs/upstream-map`](packages/upstream-map/README.md) to check
   and update the Git range map of an upstream snapshot from a downstream
   package, with optional generation of script texts.

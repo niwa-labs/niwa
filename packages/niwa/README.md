@@ -3,7 +3,39 @@
 The umbrella package: the `niwa` command and the standard composition of the host, the base
 plugins and the surfaces.
 
-## Install and start
+## Install from npm
+
+Install Bun so the `niwa` command can run, then install the package in the
+directory where you want to keep your host configuration.
+
+```sh
+npm install @niwa-labs/niwa
+```
+
+Create `host.ts` in that directory.
+
+```ts
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { defaultComposition, HarnessInstanceRegistry } from "@niwa-labs/niwa";
+
+export default defaultComposition({
+  home: process.env.NIWA_HOME ?? join(homedir(), ".niwa"),
+  harnesses: new HarnessInstanceRegistry(),
+});
+```
+
+```sh
+npx niwa serve -d ./host.ts
+npx niwa status
+npx niwa web
+```
+
+Open the local login link printed by `niwa web`. The host stores its journal in
+`~/.niwa` by default. Set `NIWA_HOME` to choose another persistent directory and
+run `npx niwa stop` to stop the host.
+
+## Run from source
 
 Clone the Niwa checkout and install its workspace dependencies with Bun.
 
@@ -13,18 +45,9 @@ cd niwa
 bun install
 ```
 
-Create `host.ts` in the checkout root.
-
-```ts
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { defaultComposition, HarnessInstanceRegistry } from "./packages/niwa/src/index.ts";
-
-export default defaultComposition({
-  home: process.env.NIWA_HOME ?? join(homedir(), ".niwa"),
-  harnesses: new HarnessInstanceRegistry(),
-});
-```
+Create the same `host.ts` in the checkout root and import
+`defaultComposition` and `HarnessInstanceRegistry` from
+`./packages/niwa/src/index.ts`. Run the checked-out CLI.
 
 ```sh
 bun packages/niwa/bin/niwa.ts serve -d ./host.ts
@@ -32,10 +55,9 @@ bun packages/niwa/bin/niwa.ts status
 bun packages/niwa/bin/niwa.ts web
 ```
 
-Open the local login link printed by `niwa web`. The host stores its journal in
-`~/.niwa` by default. Set `NIWA_HOME` to choose another persistent directory.
 Run `bun packages/niwa/bin/niwa.ts stop` to stop the host. For agent
-configuration and optional plugins, see the [Niwa configuration guide](../../README.md#run-from-source).
+configuration and optional plugins, see the
+[Niwa configuration guide](https://github.com/niwa-labs/niwa/blob/main/README.md#run-from-source).
 
 ## Override an installation's network profile
 
@@ -49,7 +71,8 @@ The same profile can set `listen: { host: "127.0.0.1", port: 0 }` for a
 loopback listener on a port chosen by the OS. `listen: null` removes the
 listener, subject to the harness's transport requirements. Each field can be
 overridden independently. For a provider configuration and a complete
-composition, see the [OpenCode example](../harness-opencode/README.md#use-your-own-provider-in-hostts).
+composition, see the
+[OpenCode example](https://github.com/niwa-labs/niwa/blob/main/packages/harness-opencode/README.md#use-your-own-provider-in-hostts).
 
 ## Package contents
 

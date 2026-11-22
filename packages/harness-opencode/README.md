@@ -1,7 +1,6 @@
 # OpenCode v2 for Niwa
 
-Register a v2 installation in the host composition. This adapter is available
-from the Niwa source tree. The published umbrella version 0.0.0 predates it.
+Register an OpenCode v2 installation in the Niwa host composition.
 
 ```ts
 import { HarnessInstanceRegistry, opencodeKind } from "@niwa-labs/niwa";

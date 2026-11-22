@@ -72,7 +72,7 @@ test("a stored script imports the script libraries by name, and its manifest nam
   const { home, id, version, outcome } = await registerAndRun(false);
   expect(outcome).toEqual({ status: "done", result: { doubled: [2, 4, 6], verdict: "PASS", revealed: ["one", "two"] } });
   const manifest = JSON.parse(readFileSync(join(home, "workflows", id, `${version}.json`), "utf8")) as { imports: Record<string, string | null> };
-  expect(manifest.imports).toEqual({ "@niwa-labs/flow": "0.0.0", "@niwa-labs/flow-code": "0.0.0", "@niwa-labs/flow-eval": "0.0.0" });
+  expect(manifest.imports).toEqual({ "@niwa-labs/flow": "0.1.0", "@niwa-labs/flow-code": "0.1.0", "@niwa-labs/flow-eval": "0.1.0" });
 }, 60_000);
 
 test("a script process in a box may read the script libraries", () => {

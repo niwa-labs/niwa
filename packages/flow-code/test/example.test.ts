@@ -68,7 +68,7 @@ test("the example fixes, verifies and fixes again until both verifiers pass, fro
 
   const { id, version } = (await flow.host.call("workflow.register" as never, { file: join(src, "fix-and-verify.ts") } as never)) as { id: string; version: string };
   const manifest = JSON.parse(readFileSync(join(flow.home, "workflows", id, `${version}.json`), "utf8")) as { imports: Record<string, string | null> };
-  expect(manifest.imports).toEqual({ "@niwa-labs/flow": "0.0.0", "@niwa-labs/flow-code": "0.0.0" });
+  expect(manifest.imports).toEqual({ "@niwa-labs/flow": "0.1.0", "@niwa-labs/flow-code": "0.1.0" });
 
   const { run } = (await flow.host.call("workflow.start" as never, { id, args: { task: "Handle empty input", repo: flow.repo }, limits: { deadline: 7_200_000 } } as never)) as { run: string };
   const ended = (await flow.host.call("workflow.wait" as never, { run, timeoutMs: 30_000 } as never)) as never;
