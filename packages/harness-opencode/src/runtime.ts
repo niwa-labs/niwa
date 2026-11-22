@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SOURCE = fileURLToPath(new URL("./pipe-worker.ts", import.meta.url));
+const BUILD = fileURLToPath(new URL("../scripts/build-runtime.ts", import.meta.url));
+export const OPENCODE_BUILD_DIRECTORY = dirname(SOURCE);
 export const PACKED_RUNTIME = fileURLToPath(new URL("../dist/opencode-runtime", import.meta.url));
 const ENTRY = "pipe-worker.js";
 const BUN_FLAGS = ["--config=/dev/null", "--no-env-file", "--no-install"];
@@ -12,10 +14,9 @@ const BUN_FLAGS = ["--config=/dev/null", "--no-env-file", "--no-install"];
 export function buildOpenCodeWorker(output: string, metafile?: string): void {
   const build = Bun.spawnSync({
     cmd: [
-      process.execPath, "build", ...BUN_FLAGS, "--target=bun", "--splitting", "--external=@anthropic-ai/claude-agent-sdk", `--outdir=${output}`,
-      ...(metafile === undefined ? [] : [`--metafile=${metafile}`]), SOURCE,
+      process.execPath, ...BUN_FLAGS, BUILD, SOURCE, output, ...(metafile === undefined ? [] : [metafile]),
     ],
-    cwd: output,
+    cwd: OPENCODE_BUILD_DIRECTORY,
     env: { HOME: output, TMPDIR: output, PATH: "/usr/bin:/bin" },
     stdin: "ignore",
     stdout: "ignore",

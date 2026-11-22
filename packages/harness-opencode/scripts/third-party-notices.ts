@@ -37,12 +37,12 @@ function extraLicense(root: string, pkg: PackageManifest): string | undefined {
 }
 
 /** Include the notices of packages whose code and assets Bun actually placed in the bundle. */
-export function writeThirdPartyNotices(output: string, metafile: string): void {
+export function writeThirdPartyNotices(output: string, metafile: string, buildDirectory: string): void {
   const metadata = JSON.parse(readFileSync(metafile, "utf8")) as BuildMetadata;
   const roots = new Set<string>();
   for (const result of Object.values(metadata.outputs)) {
     for (const [file, info] of Object.entries(result.inputs)) {
-      const root = packageOf(resolve(output, file));
+      const root = packageOf(resolve(buildDirectory, file));
       if (info.bytesInOutput > 0 && root !== undefined) roots.add(root);
     }
   }

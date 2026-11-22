@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { PACKED_RUNTIME, buildOpenCodeWorker } from "../src/runtime.ts";
+import { OPENCODE_BUILD_DIRECTORY, PACKED_RUNTIME, buildOpenCodeWorker } from "../src/runtime.ts";
 import { writeThirdPartyNotices } from "./third-party-notices.ts";
 
 const parent = dirname(PACKED_RUNTIME);
@@ -10,7 +10,7 @@ const output = mkdtempSync(join(parent, ".opencode-runtime-"));
 const metafile = join(output, "build-inputs.json");
 try {
   buildOpenCodeWorker(output, metafile);
-  writeThirdPartyNotices(output, metafile);
+  writeThirdPartyNotices(output, metafile, OPENCODE_BUILD_DIRECTORY);
   rmSync(metafile);
   rmSync(PACKED_RUNTIME, { recursive: true, force: true });
   renameSync(output, PACKED_RUNTIME);
