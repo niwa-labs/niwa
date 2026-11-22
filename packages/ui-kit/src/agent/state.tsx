@@ -43,7 +43,7 @@ export function isSettled(state: WorkState): boolean {
 
 const RING: Readonly<Record<WorkState, string>> = {
   pending: "border-state-idle border-dashed",
-  running: "border-state-running border-t-transparent animate-spin",
+  running: "border-state-running border-t-transparent motion-safe:animate-spin",
   waiting: "border-state-waiting bg-state-waiting/30",
   done: "border-state-done bg-state-done",
   failed: "border-state-failed bg-state-failed",

@@ -70,3 +70,5 @@ export {
   type StopImpact,
 } from "./agent/plan-impact.ts";
 export { PhasePlan, type PhasePlanPhase, type PhasePlanProps, type PhasePlanStep } from "./agent/phase-plan.tsx";
+export { ActivityLabel, MiniPhaseTrack, ExecutionTrack, PhaseSequence, type Activity, type ExecutionPhase, type ExecutionStep } from "./agent/execution-track.tsx";
+export { PageHeading, PageSection } from "./ui/page-layout.tsx";

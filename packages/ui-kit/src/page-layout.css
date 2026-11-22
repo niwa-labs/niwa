@@ -1,0 +1,39 @@
+.desk-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
+}
+.desk-page h1 {
+  font-size: clamp(32px, 4vw, 60px);
+  line-height: 1.1;
+  font-weight: 720;
+  letter-spacing: -0.055em;
+  overflow-wrap: anywhere;
+}
+.desk-heading,
+.desk-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+.desk-heading {
+  justify-content: space-between;
+  gap: 1rem;
+}
+.desk-section {
+  min-width: 0;
+  border-top: 2px solid var(--border);
+  padding-top: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+.desk-section h2 {
+  font-size: 22px;
+  font-weight: 680;
+  letter-spacing: -0.035em;
+  margin: 0 0 0.65rem;
+}
+.desk-section header h2 {
+  margin: 0 auto 0 0;
+}

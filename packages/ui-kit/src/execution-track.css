@@ -1,0 +1,323 @@
+.nw-sequence,
+.nw-track,
+.nw-branches {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.nw-sequence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 10px 0 14px;
+}
+.nw-sequence li,
+.nw-phase-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.nw-sequence li {
+  align-items: flex-start;
+  font: 13px/1.35 system-ui;
+}
+.nw-sequence li > div {
+  padding-top: 3px;
+}
+.nw-sequence small,
+.nw-track small {
+  display: block;
+  color: var(--muted-foreground);
+  font: 12px/1.45 system-ui;
+}
+.nw-node {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  font: 12px var(--font-mono, monospace);
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--state-done);
+}
+.nw-node[data-state="pending"] {
+  color: var(--muted-foreground);
+  opacity: 0.65;
+}
+.nw-node[data-state="running"] {
+  color: var(--state-running);
+  background: color-mix(in srgb, var(--state-running) 18%, var(--card));
+}
+.nw-node[data-state="waiting"] {
+  color: var(--state-waiting);
+}
+.nw-node:is([data-state="failed"], [data-state="stopped"]) {
+  color: var(--destructive);
+}
+.nw-track {
+  display: flex;
+  overflow-x: auto;
+  padding: 10px 0;
+}
+.nw-phase {
+  position: relative;
+  flex: 1 0 125px;
+  min-width: 0;
+}
+.nw-phase:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 13px;
+  left: 15px;
+  right: 0;
+  height: 2px;
+  background: var(--border);
+}
+.nw-phase-title {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  padding-right: 7px;
+  background: var(--card);
+  font: 12px var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+.nw-phase-title .nw-node[data-state="running"] {
+  width: 29px;
+  height: 29px;
+}
+.nw-branches {
+  position: relative;
+  margin: 7px 5px 0 12px;
+  padding-left: 9px;
+  border-left: 1px solid var(--border);
+}
+.nw-branch {
+  position: relative;
+  padding: 3px 4px;
+  overflow-wrap: anywhere;
+}
+.nw-branch::before {
+  content: "";
+  position: absolute;
+  width: 8px;
+  height: 1px;
+  left: -9px;
+  top: 12px;
+  background: var(--muted-foreground);
+}
+.nw-branches:has(> [data-activity="working"], > [data-activity="timer"]) {
+  border-color: var(--state-running);
+}
+.nw-step {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  max-width: 100%;
+  font: 500 13px/1.35 system-ui;
+}
+.nw-step > i {
+  flex: none;
+  font: 16px/1 system-ui;
+  color: var(--muted-foreground);
+}
+.nw-branch:is([data-kind="question"], [data-kind="agent"]) .nw-step > i {
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 6px;
+  background: var(--state-running);
+  color: var(--background);
+  font: 700 13px/1 system-ui;
+}
+.nw-branch[data-kind="question"] .nw-step > i {
+  background: var(--state-waiting);
+}
+.nw-step > em {
+  font-style: normal;
+  color: var(--muted-foreground);
+}
+.nw-branch[data-activity="working"] .nw-step > em {
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border: 2px solid var(--border);
+  border-top-color: var(--state-running);
+  border-radius: 50%;
+}
+.nw-track[data-detail="true"] {
+  display: block;
+}
+.nw-track[data-detail="true"] .nw-phase {
+  padding: 0 0 16px 14px;
+  border-left: 1px solid var(--border);
+  margin-left: 10px;
+}
+.nw-track[data-detail="true"] .nw-phase::before {
+  display: none;
+}
+.nw-track[data-detail="true"] .nw-phase-title {
+  margin-left: -27px;
+  background: var(--popover);
+}
+.nw-track .nw-fork {
+  color: var(--state-running);
+  margin: 5px 0 0 12px;
+}
+.nw-prompt {
+  white-space: pre-wrap;
+}
+.nw-duration {
+  position: relative;
+  height: 4px;
+  margin: 6px 0;
+  background: var(--border);
+}
+.nw-duration i {
+  position: absolute;
+  height: 100%;
+  min-width: 2px;
+  max-width: 100%;
+  background: var(--state-done);
+}
+.nw-branch[data-activity="working"] .nw-duration i {
+  background: var(--state-running);
+}
+.nw-countdown {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.nw-activity[data-activity]::before {
+  content: "";
+  display: inline-block;
+  width: 0.55em;
+  height: 0.55em;
+  margin-right: 0.4em;
+  border-radius: 50%;
+  background: var(--motion-color, var(--state-running));
+  vertical-align: 0.08em;
+}
+.nw-activity[data-activity="human"] {
+  --motion-color: var(--state-waiting);
+}
+.nw-activity[data-activity="timer"] {
+  --motion-color: #9fd3c7;
+}
+.nw-activity[data-activity="paused"] {
+  --motion-color: #f0c674;
+}
+.nw-activity[data-activity="starting"]::before {
+  background: none;
+  border: 2px solid var(--muted-foreground);
+  border-top-color: transparent;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .nw-branch:is([data-activity="working"], [data-activity="timer"])::before,
+  .nw-phase:has(+ .nw-phase .nw-branch:is([data-activity="working"], [data-activity="timer"]))::before {
+    height: 3px;
+    background:
+      linear-gradient(90deg, transparent, #76cfff, #e3faff, transparent) -50% 0/38% 100% no-repeat,
+      #43627b;
+    animation: nw-across 1.8s linear infinite;
+  }
+  .nw-branches:has(.nw-branch:is([data-activity="working"], [data-activity="timer"]))::before,
+  .nw-track[data-detail="true"]
+    .nw-phase:has(+ .nw-phase .nw-branch:is([data-activity="working"], [data-activity="timer"]))::after {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 -2px;
+    width: 3px;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent, #9ce1ff, transparent) 0 -60%/100% 36% no-repeat;
+    animation: nw-down 1.8s linear infinite;
+  }
+  .nw-phase:has(.nw-branch[data-activity="working"]) .nw-node {
+    animation: nw-pulse 2.5s ease-out infinite;
+  }
+  .nw-branch[data-activity="working"] .nw-step > em {
+    animation: nw-spin 1.6s linear infinite;
+  }
+  .nw-activity[data-activity="working"]::before {
+    animation: nw-ring 1.4s ease-out infinite;
+  }
+  .nw-activity[data-activity="human"]::before {
+    animation: nw-blink 1.1s ease-in-out infinite;
+  }
+  .nw-activity[data-activity="timer"]::before {
+    animation: nw-breathe 3s ease-in-out infinite;
+  }
+  .nw-activity[data-activity="paused"]::before {
+    animation: nw-blink 2s steps(2, jump-none) infinite;
+  }
+  .nw-activity[data-activity="starting"]::before {
+    animation: nw-spin 0.9s linear infinite;
+  }
+}
+@keyframes nw-across {
+  to {
+    background-position: 150% 0;
+  }
+}
+@keyframes nw-down {
+  to {
+    background-position: 0 160%;
+  }
+}
+@keyframes nw-pulse {
+  50% {
+    box-shadow: 0 0 0 3px #41637b;
+  }
+}
+@keyframes nw-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@keyframes nw-ring {
+  from {
+    box-shadow: 0 0 0 0 var(--state-running);
+  }
+  to {
+    box-shadow: 0 0 0 0.5em transparent;
+  }
+}
+@keyframes nw-blink {
+  50% {
+    opacity: 0.25;
+  }
+}
+@keyframes nw-breathe {
+  50% {
+    transform: scale(0.6);
+    opacity: 0.6;
+  }
+}
+
+.nw-mini {
+  display: inline-flex;
+  gap: 3px;
+}
+.nw-mini i {
+  width: 9px;
+  height: 5px;
+  background: var(--border);
+}
+.nw-mini [data-state="done"] {
+  background: var(--state-done);
+}
+.nw-mini [data-state="current"] {
+  background: var(--state-running);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .nw-mini [data-activity="timer"] {
+    width: 18px;
+    background:
+      linear-gradient(90deg, transparent, #e3faff, transparent) -50% 0/50% 100% no-repeat,
+      #497b96;
+    animation: nw-across 1.8s linear infinite;
+  }
+}
