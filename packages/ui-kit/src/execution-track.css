@@ -59,7 +59,7 @@
 }
 .nw-track {
   display: flex;
-  overflow-x: auto;
+  flex-wrap: wrap;
   padding: 10px 0;
 }
 .nw-phase {
@@ -153,21 +153,12 @@
   border-top-color: var(--state-running);
   border-radius: 50%;
 }
-.nw-track[data-detail="true"] {
-  display: block;
-}
-.nw-track[data-detail="true"] .nw-phase {
-  padding: 0 0 16px 14px;
-  border-left: 1px solid var(--border);
-  margin-left: 10px;
-}
-.nw-track[data-detail="true"] .nw-phase::before {
-  display: none;
-}
-.nw-track[data-detail="true"] .nw-phase-title {
-  margin-left: -27px;
-  background: var(--popover);
-}
+.nw-track-inspect { display: block; overflow: visible; }
+.nw-phase-index { display:flex; flex-wrap:wrap; gap:5px; list-style:none; margin:0 0 12px; padding:0; }
+.nw-phase-index .nw-phase { flex: 1 1 9rem; }
+.nw-phase-index .nw-phase::before { display:none; }
+.nw-phase-index .nw-phase-title { width:100%; height:100%; align-items:flex-start; text-align:left; padding:7px; border:1px solid var(--border); border-radius:5px; }
+.nw-phase-index .nw-phase-title[aria-pressed="true"] { background:var(--accent); border-color:var(--ring); }
 .nw-track .nw-fork {
   color: var(--state-running);
   margin: 5px 0 0 12px;
@@ -228,9 +219,7 @@
       #43627b;
     animation: nw-across 1.8s linear infinite;
   }
-  .nw-branches:has(.nw-branch:is([data-activity="working"], [data-activity="timer"]))::before,
-  .nw-track[data-detail="true"]
-    .nw-phase:has(+ .nw-phase .nw-branch:is([data-activity="working"], [data-activity="timer"]))::after {
+  .nw-branches:has(.nw-branch:is([data-activity="working"], [data-activity="timer"]))::before {
     content: "";
     position: absolute;
     inset: 0 auto 0 -2px;
@@ -301,10 +290,11 @@
   }
 }
 
-.nw-mini {
-  display: inline-flex;
-  gap: 3px;
-}
+.nw-mini {display:inline-flex; flex-wrap:wrap; gap:4px 12px; font-size:12px; color:var(--muted-foreground)}
+.nw-mini > span {display:inline-flex; align-items:center; gap:4px; overflow-wrap:anywhere}
+.nw-mini i {flex:none}
+.nw-loose-steps h3 {font-size:13px;font-weight:600}
+.nw-phase-index .nw-phase[data-activity="working"] .nw-node {color:var(--state-running)}
 .nw-mini i {
   width: 9px;
   height: 5px;

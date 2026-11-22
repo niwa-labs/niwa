@@ -12,9 +12,11 @@ The shared React components of the cockpit, on Tailwind 4 and Base UI.
 - Agent blocks: `IdChip`, `StateRing`, `ToolCall`, `Markdown` (streaming, highlighted code),
   `DiffView`, `Transcript` (virtualised, follows the bottom while the reader is there).
 - `PhaseSequence` shows the declared plan, including phases still ahead.
-  `ExecutionTrack` shows observed steps within phases. Its overview scrolls
-  horizontally. The detail view shows overlapping branches, timestamps and
-  duration bars on a shared scale within each phase. Pass timestamps in epoch
+  `ExecutionTrack` takes the full ordered phase plan and the observed steps.
+  Its detail view shows every declared phase up front. It follows the active
+  phase until the reader selects another. Steps outside the plan can be
+  passed as `looseSteps`. Phase details include overlapping branches, timestamps
+  and duration bars on a shared scale. Pass timestamps in epoch
   milliseconds and pass a link as a step title to enable navigation.
 - `ActivityLabel` and `MiniPhaseTrack` can be used on lists and plugin pages.
   The kit owns motion and honours reduced motion. The plugin maps its own

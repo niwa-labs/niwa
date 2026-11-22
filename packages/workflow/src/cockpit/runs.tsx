@@ -1,7 +1,7 @@
 /** The runs of the host, in blocks by the directory they were started for. */
 
 import { useCall, EntityLink, PageLink } from "@niwa-labs/cockpit-sdk";
-import { Badge, StateRing, cn, formatAgo, type WorkState } from "@niwa-labs/ui-kit";
+import { Badge, MiniPhaseTrack, StateRing, cn, formatAgo, type WorkState } from "@niwa-labs/ui-kit";
 
 import { runsAction, type RunEntry } from "./actions.ts";
 import { groupByDirectory, type RunGroup } from "./groups.ts";
@@ -20,6 +20,7 @@ function RunRow({ entry }: { entry: RunEntry }) {
           {entry.name}
         </PageLink>
       </div>
+      {!!entry.phases?.length && <MiniPhaseTrack phases={entry.phases}/>}
       <div className="flex min-w-0 flex-wrap items-center gap-2 pl-4 text-xs text-muted-foreground">
         <EntityLink entity={{ kind: "run", id: entry.run }} short />
         {entry.requests > 0 && <Badge variant="secondary">Ожидают ответа: {entry.requests}</Badge>}
@@ -57,7 +58,7 @@ export function RunBlock({ group }: { group: RunGroup }) {
 
 /** The runs grouped by directory. Reads again when a record of a workflow run arrives. */
 export function Runs({ limit = 200, className }: { limit?: number; className?: string }) {
-  const runs = useCall(runsAction, { limit }, { refreshOn: { types: ["workflow.run.*"] } });
+  const runs = useCall(runsAction, { limit }, { refreshOn: { types: ["workflow.run.*", "workflow.phase.*"] } });
   if (runs.isPending) return <p className="text-sm text-muted-foreground">Loading runs…</p>;
   if (runs.isError) return <p role="alert" className="text-sm text-destructive">The runs could not be read: {runs.error.message}</p>;
   const groups = groupByDirectory(runs.data.entries);

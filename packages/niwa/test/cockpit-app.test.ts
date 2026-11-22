@@ -302,6 +302,34 @@ run("the cockpit app in a browser", () => {
     }
   }, 60_000);
 
+  test("all header phases are visible before the first phase entry", async () => {
+    const file = join(workDir, "declared-plan.js");
+    await writeFile(file, `export default workflow({
+      phases: [{ title: "Read", detail: "Read three sources" }, { title: "Verify", detail: "Compare the findings" }]
+    }, async () => {
+      await ask.confirm("Begin reading?");
+      phase("Read");
+      await now();
+      phase("Verify");
+    });`);
+    const { run } = await host.call(workflowStart, { file });
+    const page = await open("/runs/" + run);
+    try {
+      const plan = page.getByRole("list", { name: "План фаз" });
+      await plan.getByRole("button", { name: /Compare the findings/ }).waitFor();
+      expect(await plan.locator("button").allTextContents()).toEqual(["○ReadRead three sources", "○VerifyCompare the findings"]);
+      expect(await plan.locator('[data-state="pending"]').count()).toBe(2);
+      await page.getByRole("region", { name: "Шаги вне фаз" }).getByRole("link", { name: /Ответить/ }).waitFor();
+      await page.goto(web.url + "/runs");
+      const row = page.locator('[data-slot="run-row"]').filter({has: page.locator('a[href="/runs/' + run + '"]')}).first();
+      await row.getByLabel("Фазы").waitFor();
+      expect(await row.getByLabel("Фазы").innerText()).toContain("Verify");
+    } finally {
+      await page.context().close();
+      await host.call(workflowCancel, { run });
+    }
+  }, 60_000);
+
   test("parallel sleeps have independent countdowns and animated paths that honour reduced motion", async () => {
     const file = join(workDir, "parallel-timers.js");
     await writeFile(file, `export default workflow({phases:[{title:"Prepare"},{title:"Check"},{title:"Report"}]}, async () => {
@@ -321,7 +349,13 @@ run("the cockpit app in a browser", () => {
       expect(await motion()).toEqual(expect.arrayContaining(["nw-breathe","nw-across","nw-down"]));
       await page.emulateMedia({ reducedMotion:"reduce" });
       expect(await motion()).toEqual([]);
-      expect(await page.locator(".nw-step").count()).toBe(3);
+      const plan = page.getByRole("list", { name: "План фаз" });
+      expect(await plan.getByRole("button").count()).toBe(3);
+      expect(await page.locator(".nw-step").count()).toBe(2);
+      await plan.getByRole("button", { name: /Report/ }).click();
+      await page.getByText("Фаза ещё не началась").waitFor();
+      await plan.getByRole("button", { name: /Prepare/ }).click();
+      expect(await page.locator(".nw-step").count()).toBe(1);
       await page.locator(".nw-step a").first().click();
       await page.locator('#record-title').filter({ hasText:"Начат шаг" }).waitFor();
       expect(await violations(page)).toEqual([]);

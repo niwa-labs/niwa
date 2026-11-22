@@ -111,7 +111,7 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
         </p>
       </header>
       <RunCommands run={run} state={status.state} workflow={origin.workflow} />
-      <InspectedTrack inspection={inspection.data} detail />
+      <InspectedTrack key={run} inspection={inspection.data} detail />
       {status.outcome?.status === "done" && status.outcome.result !== undefined && <details open><summary>Результат</summary><DataValue value={status.outcome.result}/></details>}
       {viewer.owner && origin.sourceSeq && <a className="text-sm underline" target="_blank" rel="noreferrer" href={"/api/source?seq=" + origin.sourceSeq}>Открыть исходник этого запуска ↗</a>}
       <details className="nw-plan-controls"><summary>Управление фазами и шагами</summary>

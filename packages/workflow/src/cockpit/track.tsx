@@ -4,7 +4,6 @@ import {
   ActivityLabel,
   DataValue,
   ExecutionTrack,
-  PhaseSequence,
   type Activity,
   type ExecutionPhase,
   type ExecutionStep,
@@ -104,21 +103,14 @@ export function InspectedTrack({ inspection, detail = false }: { inspection: Ins
       steps: p.steps.map((s) => executionStep(s, status, timers, answerStep)),
     };
   });
-  const visible = [...phases];
-  if (inspection.steps.length)
-    visible.unshift({
-      id: "unphased",
-      title: phases.length ? "Вне фаз" : "Шаги",
-      state: status.state === "finished" ? (status.outcome?.status === "done" ? "done" : "stopped") : "running",
-      activity: open.some((s) => !s.phase) ? activity : undefined,
-      steps: inspection.steps.map((s) => executionStep(s, status, timers, answerStep)),
-    });
+  const looseSteps = inspection.steps.map(s => executionStep(s, status, timers, answerStep));
   const why = describeRun(status, activity, open);
   return (
     <>
-      {visible.length ? (
+      {phases.length || looseSteps.length ? (
         <ExecutionTrack
-          phases={visible}
+          phases={phases}
+          looseSteps={looseSteps}
           detail={detail}
           observedAt={inspection.observedAt ? Date.parse(inspection.observedAt) : undefined}
         />
@@ -160,7 +152,7 @@ export function RunTrack({ entry }: { entry: RunEntry }) {
   }));
   return (
     <>
-      {!!phases.length && <PhaseSequence phases={phases} />}
+      {!!phases.length && <ExecutionTrack phases={phases} />}
       <p>{entry.requests ? <PageLink to="/requests">Ждут ответа · {entry.requests}</PageLink> : inspection.error?.message ?? runSummary(entry)}</p>
     </>
   );

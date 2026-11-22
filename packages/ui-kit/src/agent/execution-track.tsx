@@ -31,7 +31,7 @@ export function MiniPhaseTrack({
   return (
     <span className="nw-mini" aria-label="Фазы">
       {phases.map((p) => (
-        <i key={p.title} data-state={p.state} data-activity={p.activity} title={p.title + " · " + p.state} />
+        <span key={p.title}><i data-state={p.state} data-activity={p.activity} aria-label={WORK_STATE_LABEL[p.state === "ahead" ? "pending" : p.state === "current" ? "running" : "done"]} />{p.title}</span>
       ))}
     </span>
   );
@@ -137,50 +137,65 @@ function Branch({ step, full, first, last }: { step: ExecutionStep; full: boolea
   );
 }
 
-/** Same execution in a horizontal overview or a vertical inspection with aligned time bars. */
-export function ExecutionTrack({
-  phases,
-  detail = false,
-  observedAt,
-}: {
+function PhaseSteps({ steps, detail, observedAt }: {
+  steps: ExecutionStep[];
+  detail: boolean;
+  observedAt?: number | undefined;
+}) {
+  if (!steps.length) return null;
+  const first = steps.reduce((start, step) => Math.min(start, step.start), Infinity);
+  const last = steps.reduce((end, step) => Math.max(end, step.end ?? observedAt ?? step.start), first);
+  let latestEnd = -Infinity;
+  const parallel = detail && [...steps].sort((a, b) => a.start - b.start).some(step => {
+    if (latestEnd > step.start) return true;
+    latestEnd = Math.max(latestEnd, step.end ?? Infinity);
+    return false;
+  });
+  return <>
+    {parallel && <small className="nw-fork">⑂ Параллельные ветки</small>}
+    <ul className="nw-branches">
+      {steps.map(step => <Branch key={step.id} step={step} full={detail} first={first} last={last} />)}
+    </ul>
+  </>;
+}
+
+/** Keep the declared plan above the step history, even when the first phase has long prompts. */
+function DetailedTrack({ phases, observedAt }: { phases: ExecutionPhase[]; observedAt?: number | undefined }) {
+  const [picked, setPicked] = useState<string>();
+  const current = phases.find(p => p.state === "running" || p.state === "waiting" || p.state === "failed");
+  const selected = phases.find(p => p.id === picked) ?? current ?? phases.find(p => p.steps.length) ?? phases[0];
+  return <section className="nw-track nw-track-inspect" data-detail="true" aria-label="Ход выполнения">
+    <ol className="nw-phase-index" aria-label="План фаз">
+      {phases.map(p => <li key={p.id} className="nw-phase" data-activity={p.activity}>
+        <button type="button" className="nw-phase-title" aria-pressed={p.id === selected?.id}
+          onClick={() => setPicked(p.id === picked ? undefined : p.id)}>
+          <Node phase={p}/><span>{p.title}{p.detail && <small>{p.detail}</small>}</span>
+        </button>
+      </li>)}
+    </ol>
+    {selected && (selected.steps.length
+      ? <PhaseSteps steps={selected.steps} observedAt={observedAt} detail />
+      : <small>{selected.state === "pending" ? "Фаза ещё не началась" : "Шагов пока нет"}</small>)}
+  </section>;
+}
+
+export function ExecutionTrack({ phases, looseSteps = [], detail = false, observedAt }: {
+  looseSteps?: ExecutionStep[];
   phases: ExecutionPhase[];
   detail?: boolean;
   observedAt?: number | undefined;
 }) {
-  return (
-    <ol className="nw-track" data-detail={detail} aria-label="Ход выполнения">
-      {phases.map((p) => {
-        const first = p.steps.reduce((min, s) => Math.min(min, s.start), Infinity);
-        const last = p.steps.reduce((max, s) => Math.max(max, s.end ?? observedAt ?? s.start), first);
-        // Compare starts in order. A gap between sequential steps is not a parallel fork.
-        let latestEnd = -Infinity;
-        const parallel =
-          detail &&
-          [...p.steps]
-            .sort((a, b) => a.start - b.start)
-            .some((s) => {
-              if (latestEnd > s.start) return true;
-              latestEnd = Math.max(latestEnd, s.end ?? Infinity);
-              return false;
-            });
-        return (
-          <li className="nw-phase" key={p.id} data-activity={p.activity}>
-            <div className="nw-phase-title">
-              <Node phase={p} />
-              {p.title}
-              {detail && p.detail && <small>{p.detail}</small>}
-            </div>
-            {parallel && <small className="nw-fork">⑂ Параллельные ветки</small>}
-            {p.steps.length > 0 && (
-              <ul className="nw-branches">
-                {p.steps.map((s) => (
-                  <Branch key={s.id} step={s} full={detail} first={first} last={last} />
-                ))}
-              </ul>
-            )}
-          </li>
-        );
-      })}
-    </ol>
-  );
+  return <>
+    {phases.length > 0 && (detail ? <DetailedTrack phases={phases} observedAt={observedAt} /> :
+    <ol className="nw-track" data-detail="false" aria-label="Ход выполнения">
+      {phases.map(p => <li className="nw-phase" key={p.id} data-activity={p.activity}>
+        <div className="nw-phase-title"><Node phase={p} />{p.title}</div>
+        <PhaseSteps steps={p.steps} detail={false} observedAt={observedAt} />
+      </li>)}
+    </ol>)}
+    {looseSteps.length > 0 && <section className="nw-loose-steps" aria-label="Шаги вне фаз">
+      <h3>{phases.length ? "Шаги вне фаз" : "Шаги"}</h3>
+      <PhaseSteps steps={looseSteps} detail={detail} observedAt={observedAt} />
+    </section>}
+  </>;
 }
