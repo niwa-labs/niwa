@@ -12,20 +12,20 @@ import type { HarnessDetection, InstanceOptions, KindCapabilities, SideCapabilit
 
 import { DEFAULT_BINARIES, MCODE_LAUNCH, mcodeControl } from "./control.ts";
 import type { McodeControlOptions, MinimaxLineage } from "./control.ts";
-import { versionedPrograms } from "../ncode/launcher.ts";
+import { distributionPrograms, externalToolsProgram, ncodeLauncher, versionedPrograms } from "../ncode/launcher.ts";
 import { durablePathOf } from "./durable.ts";
 import { DEFAULT_PROFILE, homeOfProfile } from "./paths.ts";
 import { McodeReading } from "./reading.ts";
 
 /**
- * The sides a MiniMax Code instance has by default.
+ * The sides a MiniMax Code instance has, with tool isolation only after detection.
  *
  * The reading side lists and reads the files MiniMax Code writes; it does not follow a session
  * while it grows. The control side starts, resumes, sends, interrupts and asks; the agent is
  * asked for JSON that matches the schema and the control side validates the answer: `ask` returns
  * a value that passed the schema.
  */
-export function minimaxSides(): SideCapabilities {
+export function minimaxSides(niwaOnly = false): SideCapabilities {
   return {
     reading: { list: true, read: true, watch: false },
     control: {
@@ -36,7 +36,7 @@ export function minimaxSides(): SideCapabilities {
       ask: true,
       structuredOutput: true,
       launch: MCODE_LAUNCH,
-      tools: { niwaOnly: false, allow: false },
+      tools: { niwaOnly, allow: false },
     },
   };
 }
@@ -44,7 +44,8 @@ export function minimaxSides(): SideCapabilities {
 /**
  * What the two kinds declare they can serve. The upstream build is proved against a live
  * MiniMax Code; of the fork, only a start with a permission answered is proved live, and the rest
- * is taken from the code it shares with the upstream build.
+ * is taken from the code it shares with the upstream build. The fork can provide tool isolation
+ * when the selected launcher advertises both ACP options.
  */
 export function minimaxCapabilities(lineage: MinimaxLineage): KindCapabilities {
   const proved = lineage === "upstream" ? VERIFIED : ADMITTED;
@@ -58,7 +59,7 @@ export function minimaxCapabilities(lineage: MinimaxLineage): KindCapabilities {
       ask: proved,
       structuredOutput: proved,
       launch: { model: proved, effort: MCODE_LAUNCH.effort, modes: MCODE_LAUNCH.modes },
-      tools: { niwaOnly: UNSUPPORTED, allow: UNSUPPORTED },
+      tools: { niwaOnly: lineage === "fork" ? ADMITTED : UNSUPPORTED, allow: UNSUPPORTED },
     },
     insert: NO_INSERT,
   };
@@ -97,7 +98,9 @@ const profileNamed = (options: McodeInstanceOptions): string | undefined => opti
 
 /** The kind of `spec`. Each installation is bound to its own home, the home of its profile unless it names one. */
 export function minimaxKind(spec: MinimaxKindSpec) {
-  return defineHarnessKind<McodeInstanceOptions>({
+  const binaryOf = (options: McodeInstanceOptions): string =>
+    options.control?.binary ?? options.binary?.path ?? DEFAULT_BINARIES[spec.lineage];
+  const kind = defineHarnessKind<McodeInstanceOptions>({
     name: spec.name,
     capabilities: minimaxCapabilities(spec.lineage),
     implements: ["reading", "control"],
@@ -110,11 +113,14 @@ export function minimaxKind(spec: MinimaxKindSpec) {
     profile: {
       status: spec.lineage === "fork" ? "verified" : "admitted",
       of: (options) => (context) => {
-        const launcher = context.bin(options.control?.binary ?? DEFAULT_BINARIES[spec.lineage]);
+        const launcher = context.bin(binaryOf(options));
         const versioned = spec.lineage === "fork" && launcher[0] !== undefined
           ? versionedPrograms(launcher[0], context)
           : undefined;
-        return { read: [...launcher, ...(versioned ?? context.bin("node"))], write: [options.home] };
+        const distribution = spec.lineage === "fork" && launcher[0] !== undefined && versioned === undefined
+          ? distributionPrograms(launcher[0], context)
+          : [];
+        return { read: [...launcher, ...(versioned ?? [...distribution, ...context.bin("node")])], write: [options.home] };
       },
     },
     bind: (options) => ({
@@ -122,6 +128,7 @@ export function minimaxKind(spec: MinimaxKindSpec) {
       control: mcodeControl({
         harness: options.id,
         ...(options.control ?? {}),
+        binary: binaryOf(options),
         ...(options.model === undefined ? {} : { model: options.model }),
         home: options.home,
         ...profileOf(options, spec.lineage),
@@ -129,6 +136,23 @@ export function minimaxKind(spec: MinimaxKindSpec) {
       }),
     }),
   });
+  if (spec.lineage === "upstream") return kind;
+  return {
+    ...kind,
+    bind(options: McodeInstanceOptions) {
+      const launcher = ncodeLauncher(binaryOf(options));
+      const supported = launcher !== undefined && externalToolsProgram(launcher) !== undefined;
+      const sides = options.sides ?? minimaxSides(supported);
+      const control = sides.control;
+      return kind.bind({
+        ...options,
+        ...(launcher === undefined ? {} : { control: { ...options.control, binary: launcher.path } }),
+        sides: !supported && control?.tools?.niwaOnly === true
+          ? { ...sides, control: { ...control, tools: { ...control.tools, niwaOnly: false } } }
+          : sides,
+      });
+    },
+  };
 }
 
 /**

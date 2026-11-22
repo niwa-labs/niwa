@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Use `tools: "niwa-only"` on Ncode installations whose ACP executable
+  supports both external-tool switches. Cold resumes keep the session's
+  isolation. Older Ncode builds and upstream MCode refuse that mode.
 - Register an OpenCode v2 installation with `opencodeKind` to browse its
   sessions and transcripts in Niwa. Local history reads open SQLite read-only.
   Discovery checks the executable's major version. The adapter uses the

@@ -162,6 +162,33 @@ Other installations keep their own profiles. The
 [OpenCode guide](packages/harness-opencode/README.md) shows a complete
 provider configuration.
 
+## Niwa and Ncode
+
+Niwa coordinates workflows and tool access. Ncode runs coding sessions over
+ACP, with session-scoped MCP tools, paged `session/history`, reconnect status
+for active turns and queues, and an **Always deny** option for permissions
+that can be saved.
+
+- **Session tools.** Start with `tools: "niwa-only"` and grant the session
+  the Niwa actions it needs, such as `task.list`. Ncode exposes only the MCP
+  tools supplied by the host for that session.
+- **Resume and history.** Cold resume loads the same session in a new process
+  with its tool restrictions. Niwa checks for an active turn on reconnect
+  and reads past messages and tool calls from Ncode's local session store.
+- **Permissions.** Choose `ask`, `auto`, or `full` when opening a session.
+  Niwa restores that mode on cold resume and shows decisions reported over ACP.
+  An approval prompt can ask the owner to allow a tool once.
+- **Questions and answers.** Ncode can send a questionnaire to the owner
+  through Niwa requests. A workflow's `session.ask` receives JSON over ACP
+  and validates it against the answer schema.
+
+For example, a pull-request review workflow can pass a pinned Git diff to
+Ncode and ask a separate session to verify a finding before deciding whether
+to request changes.
+
+[Ncode and Niwa](https://github.com/niwa-labs/ncode#niwa-and-ncode) ·
+[Niwa adapter guide](packages/harness-mcode/README.md)
+
 ## What the standard host includes
 
 | Packages | What they do |

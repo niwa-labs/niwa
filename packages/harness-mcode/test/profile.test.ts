@@ -59,6 +59,25 @@ test("a versioned ncode launcher reads only its current package and pinned Node"
   }
 });
 
+test("a direct Ncode distribution grants its own runtime files without granting its checkout", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ncode-dist-")));
+  try {
+    const dist = join(root, "dist");
+    const launcher = join(dist, "cli.js");
+    mkdirSync(dist);
+    writeFileSync(join(dist, "package.json"), JSON.stringify({ name: "@niwa-labs/ncode", bin: { ncode: "cli.js" } }));
+    writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
+    const binding = ncodeKind.bind({ id: "ncode-dev", home: join(root, "account"), control: { binary: launcher } });
+    const resolve = () => resolveProfile(binding.profile!, "ncode-dev", { home: root, env: { PATH: "/absent" } });
+    expect(resolve().read).toEqual([launcher, dist]);
+    expect(resolve().write).toEqual([join(root, "account")]);
+    writeFileSync(join(dist, "package.json"), JSON.stringify({ name: "unrelated", bin: { ncode: "cli.js" } }));
+    expect(resolve().read).toEqual([launcher]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 const fork = process.env["NIWA_MCODE_LINEAGE"] === "fork";
 const binary = (fork ? process.env["NCODE_BIN"] ?? process.env["MCODE_BIN"] : process.env["MCODE_BIN"]) ?? (fork ? "ncode" : "mcode");
 const present = live && Bun.which(binary) !== null && (await nono().available());

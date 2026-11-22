@@ -15,12 +15,14 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
 import {
+  HarnessInstanceRegistry,
+  HarnessKindRegistry,
   Unsupported,
   harnessId,
   modelName,
@@ -250,6 +252,17 @@ test("the model option is the one the session advertises", () => {
 const FAKE_AGENT = `#!/usr/bin/env bun
 const decoder = new TextDecoder();
 const { appendFileSync, existsSync, readFileSync } = await import("node:fs");
+if (process.argv.slice(2).join(" ") === "acp --help") {
+  const help = new URL("tool-help", import.meta.url);
+  if (existsSync(help)) {
+    appendFileSync(new URL("probe.log", import.meta.url), JSON.stringify({
+      cwd: process.cwd(), path: process.env.PATH, sessionEnv: process.env.NIWA_ID !== undefined,
+      nodeOptions: process.env.NODE_OPTIONS !== undefined, sentinel: process.env.PROBE_SENTINEL !== undefined,
+    }) + "\\n");
+    process.stdout.write(readFileSync(help, "utf8"));
+  }
+  process.exit(0);
+}
 let buffer = "";
 let active;
 let model;
@@ -597,6 +610,116 @@ test("a start or a resume with a tool allowance is refused by name: mcode's ACP 
   ).rejects.toMatchObject({ code: "Unsupported" });
   expect(existsSync(join(dir, "sessions.log"))).toBe(false);
 });
+
+const ISOLATED_ARGV = ["acp", "--no-builtin-tools", "--session-mcp-only"];
+const TOOL_HELP = "Options:\n  --no-builtin-tools    Disable native tools\n  --session-mcp-only    Use the client's MCP servers\n";
+
+test("the registry advertises isolation only for a fork executable with both ACP flags", async () => {
+  control = await fakeControl({ lineage: "fork" });
+  const binary = join(dir, "mcode");
+  const kinds = new HarnessKindRegistry();
+  kinds.register(ncodeKind);
+  kinds.register(mcodeKind);
+  expect(ncodeKind.capabilities.control.tools.niwaOnly).toMatchObject({ supported: true, status: "admitted" });
+  expect(mcodeKind.capabilities.control.tools.niwaOnly.supported).toBe(false);
+
+  const installations = new HarnessInstanceRegistry(kinds);
+  for (const [harness, help, supported] of [
+    ["old-fork", "", false],
+    ["one-flag", "  --no-builtin-tools\n  mention --session-mcp-only in a description\n", false],
+    ["new-fork", TOOL_HELP, true],
+  ] as const) {
+    await writeFile(join(dir, "tool-help"), help);
+    const bound = ncodeKind.bind({ id: harness, control: { binary } });
+    installations.register(bound);
+    expect(installations.resolve(harness).sides.control?.tools).toEqual({ niwaOnly: supported, allow: false });
+    if (!supported) {
+      await expect(bound.control!.start({ prompt: promptFromText(""), cwd: dir, tools: "niwa-only" }))
+        .rejects.toMatchObject({ code: "Unsupported" });
+      await expect(bound.control!.resume(sessionId(harnessId(harness), "fake-1"), { cwd: dir, tools: "niwa-only" }))
+        .rejects.toMatchObject({ code: "Unsupported" });
+    }
+  }
+  const upstream = mcodeKind.bind({ id: "upstream", control: { binary } });
+  installations.register(upstream);
+  expect(installations.resolve("upstream").sides.control?.tools).toEqual({ niwaOnly: false, allow: false });
+  await expect(upstream.control!.start({ prompt: promptFromText(""), cwd: dir, tools: "niwa-only" }))
+    .rejects.toMatchObject({ code: "Unsupported" });
+  await expect(upstream.control!.resume(sessionId(harnessId("upstream"), "fake-1"), { cwd: dir, tools: "niwa-only" }))
+    .rejects.toMatchObject({ code: "Unsupported" });
+  expect(existsSync(join(dir, "argv.log"))).toBe(false);
+});
+
+test("an isolated fork starts and cold-resumes with both gates and the supplied MCP servers", async () => {
+  control = await fakeControl({ lineage: "fork" });
+  await writeFile(join(dir, "tool-help"), TOOL_HELP);
+  const servers = [{ name: "niwa", command: "bun", args: ["mcp"], env: {} }];
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: "niwa-only", servers });
+  await control.resume(id); // Warm with no mode keeps the existing policy.
+  await expect(control.resume(id, { tools: "all" })).rejects.toMatchObject({ code: "Unsupported" });
+  await control.stop(id);
+  await control.resume(id, { cwd: dir, tools: "niwa-only", servers });
+  expect(await argvOf()).toEqual([ISOLATED_ARGV, ISOLATED_ARGV]);
+  const sessions = await sessionRequestsOf();
+  expect(sessions[0]?.mcpServers).toMatchObject(servers.map(({ name, command, args }) => ({ name, command, args })));
+  expect(sessions[1]?.mcpServers).toMatchObject(servers.map(({ name, command, args }) => ({ name, command, args })));
+  await control.stop(id);
+  await writeFile(join(dir, "tool-help"), "");
+  await expect(control.resume(id, { cwd: dir, tools: "niwa-only" })).rejects.toMatchObject({ code: "Unsupported" });
+  expect(await argvOf()).toHaveLength(2);
+});
+
+test("the isolation probe uses the host launcher and never the session cwd or environment", async () => {
+  control = await fakeControl({ lineage: "fork" });
+  // The fixture's interpreter is independent of PATH. Check the actual environment below.
+  const binary = join(dir, "mcode");
+  await writeFile(binary, FAKE_AGENT.replace("#!/usr/bin/env bun", `#!${process.execPath}`));
+  await writeFile(join(dir, "tool-help"), TOOL_HELP);
+  const workspace = join(dir, "workspace");
+  await mkdir(workspace);
+  await writeFile(join(workspace, "fork"), "");
+  const guestPath = join(workspace, "bin");
+  const started = await control.start({
+    prompt: promptFromText(""), cwd: workspace, tools: "niwa-only",
+    env: { PATH: guestPath, NIWA_ID: "session-marker", PROBE_SENTINEL: "session-owned", NODE_OPTIONS: "--no-warnings" },
+  });
+  const probes = (await readFile(join(dir, "probe.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const selected = (await readFile(join(workspace, "argv.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  expect(probes).toEqual([{
+    cwd: await realpath(dir),
+    path: expect.not.stringContaining(guestPath), sessionEnv: false, nodeOptions: false, sentinel: false,
+  }]);
+  expect(selected).toEqual([ISOLATED_ARGV]);
+  expect(await control.state(started.session)).toBe("idle");
+});
+
+test("an all-tools fork receives no isolation flags and cannot be warm-restricted", async () => {
+  control = await fakeControl({ lineage: "fork" });
+  await writeFile(join(dir, "tool-help"), TOOL_HELP);
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: "all" });
+  await expect(control.resume(id, { tools: "niwa-only" })).rejects.toMatchObject({ code: "Unsupported" });
+  await expect(control.resume(id, { tools: { allow: [] } })).rejects.toMatchObject({ code: "Unsupported" });
+  await expect(control.start({ cwd: dir, prompt: promptFromText(""), tools: "niwa-only", visible: { actions: [], disabledTools: ["shell"] } }))
+    .rejects.toMatchObject({ code: "Unsupported" });
+  await control.stop(id);
+  await control.resume(id, { cwd: dir, tools: "all" });
+  expect(await argvOf()).toEqual([["acp"], ["acp"]]);
+});
+
+for (const first of ["all", "niwa-only"] as const) {
+  test(`parallel cold resumes with different policies cannot share the ${first} process`, async () => {
+    control = await fakeControl({ lineage: "fork" });
+    await writeFile(join(dir, "tool-help"), TOOL_HELP);
+    const id = sessionId(harnessId("mcode-fake"), "fake-1");
+    const other = first === "all" ? "niwa-only" : "all";
+    const results = await Promise.allSettled([
+      control.resume(id, { cwd: dir, tools: first }),
+      control.resume(id, { cwd: dir, tools: other }),
+    ]);
+    expect(results).toMatchObject([{ status: "fulfilled" }, { status: "rejected", reason: { code: "Unsupported" } }]);
+    expect(await argvOf()).toEqual([first === "all" ? ["acp"] : ISOLATED_ARGV]);
+  });
+}
 
 test("every mcode session is a process of its own, in process mode, with the environment of its session", async () => {
   control = await fakeControl();

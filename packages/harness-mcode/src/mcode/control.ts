@@ -84,6 +84,7 @@ import type {
   TurnStatusResult as TurnStatus,
 } from "../ncode/protocol.ts";
 import { homeOfProfile } from "./paths.ts";
+import { externalToolsProgram, NCODE_EXTERNAL_TOOL_FLAGS, ncodeLauncher } from "../ncode/launcher.ts";
 import { inputOpen, writeLine } from "./transport.ts";
 import { formFields, formSteps, isQuestionnaire, permissionAsk } from "./reverse.ts";
 import { Acp, EXTENSIONS_META, MCODE_ACP_PROTOCOL, McodeAgentNotification, McodeAgentRequest, McodeInitializeMeta } from "./protocol.ts";
@@ -457,6 +458,7 @@ class AcpSession {
   constructor(
     readonly child: AgentProcess,
     readonly cwd: string,
+    readonly niwaOnly: boolean,
     readonly turnTimeoutMs: number,
     /** How long a cancelled turn may take to answer before it is given up on. */
     readonly cancelGraceMs: number,
@@ -708,6 +710,7 @@ class AcpSession {
 export function mcodeControl(options: McodeControlOptions): McodeSessionControl {
   const lineage = options.lineage ?? "upstream";
   const binary = options.binary ?? DEFAULT_BINARIES[lineage];
+  const launcher = lineage === "fork" ? ncodeLauncher(binary) : undefined;
   const permissions = options.permissions ?? "allow";
   const callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   const cancelGraceMs = options.cancelGraceMs ?? callTimeoutMs;
@@ -726,31 +729,23 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   const launching = new Set<Promise<AcpSession>>();
   let disposed = false;
 
-  /**
-   * mcode's ACP has no way to switch one of its tools off for a session, so a session that asks
-   * for it is refused by name, never started with the tools silently left on.
-   */
-  function refuseDisabledTools(
-    ability: string,
-    visible: VisibleActions | undefined,
-    tools?: ToolsMode,
-  ): void {
-    if (tools !== undefined && tools !== "all") {
+  /** Both lineages refuse per-tool policies. Only the fork can take the two isolation flags. */
+  function checkTools(ability: string, visible: VisibleActions | undefined, tools?: ToolsMode): void {
+    if (typeof tools === "object" || (tools === "niwa-only" && lineage !== "fork")) {
+      const detail = lineage === "fork"
+        ? "ncode's ACP takes no exact tool flag"
+        : "mcode's ACP takes no tool flag, and its --permission policy belongs to `mcode exec`";
+      throw new Unsupported(harnessId, "control", ability, `${describeToolsMode(tools)}: ${detail}`);
+    }
+    const disabled = visible?.disabledTools ?? [];
+    if (disabled.length > 0) {
       throw new Unsupported(
         harnessId,
         "control",
         ability,
-        `${describeToolsMode(tools)}: mcode's ACP takes no tool flag, and its --permission policy belongs to \`mcode exec\``,
+        `mcode cannot switch off its tools (${disabled.map((tool) => `"${tool}"`).join(", ")})`,
       );
     }
-    const disabled = visible?.disabledTools ?? [];
-    if (disabled.length === 0) return;
-    throw new Unsupported(
-      harnessId,
-      "control",
-      ability,
-      `mcode cannot switch off its tools (${disabled.map((tool) => `"${tool}"`).join(", ")})`,
-    );
   }
 
   function unavailable(ability: string, detail: string): Unavailable {
@@ -1053,7 +1048,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
    * `mcoded`, which no wrapper reaches and which could not tell one session's environment from
    * another's.
    */
-  async function startProcess(cwd: string, plan: Pick<StartOptions, "env" | "box">): Promise<AcpSession> {
+  async function startProcess(ability: "start" | "resume", cwd: string, plan: Pick<StartOptions, "env" | "box" | "tools">): Promise<AcpSession> {
     if (options.profile !== undefined && !PROFILE_SUPPORT[lineage]) {
       throw new Unsupported(
         harnessId,
@@ -1062,7 +1057,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
         `the ${lineage} build of MiniMax Code takes no --profile (it would exit on it); drop the profile "${options.profile}" or use the fork`,
       );
     }
-    const launch = launchProcess(cwd, plan);
+    const launch = launchProcess(ability, cwd, plan);
     launching.add(launch);
     try {
       return await launch;
@@ -1071,15 +1066,30 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     }
   }
 
-  async function launchProcess(cwd: string, plan: Pick<StartOptions, "env" | "box">): Promise<AcpSession> {
+  async function launchProcess(ability: "start" | "resume", cwd: string, plan: Pick<StartOptions, "env" | "box" | "tools">): Promise<AcpSession> {
     const args = ["acp"];
+    const niwaOnly = plan.tools === "niwa-only";
+    let program = binary;
+    const env: Record<string, string> = { MCODE_DISABLE_TELEMETRY: "1", MCODE_SERVER_MODE: "off", ...plan.env };
+    if (niwaOnly) {
+      // Recheck the bound path on every launch. A launcher can have been replaced since binding.
+      // Only the host's PATH may resolve the interpreter of a launcher with an env shebang.
+      const isolated = launcher === undefined ? undefined : externalToolsProgram(launcher);
+      if (launcher === undefined || isolated === undefined) {
+        throw new Unsupported(harnessId, "control", ability, "niwa-only requires an Ncode executable with both --no-builtin-tools and --session-mcp-only");
+      }
+      program = isolated;
+      env.PATH = launcher.searchPath;
+      env.MCODE_SERVER_MODE = "off";
+      args.push(...NCODE_EXTERNAL_TOOL_FLAGS);
+    }
     if (options.profile !== undefined) args.push("--profile", options.profile);
     const child = await spawnAgent({
       harness: harnessId,
-      program: binary,
+      program,
       args,
       cwd,
-      env: { MCODE_DISABLE_TELEMETRY: "1", MCODE_SERVER_MODE: "off", ...plan.env },
+      env,
       detached: true,
       box: plan.box,
     });
@@ -1090,7 +1100,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       await Promise.race([closed, sleep(stopGraceMs)]);
       throw unavailable("start", "the control side is closed");
     }
-    const session = new AcpSession(child, cwd, turnTimeoutMs, cancelGraceMs);
+    const session = new AcpSession(child, cwd, niwaOnly, turnTimeoutMs, cancelGraceMs);
     owned.add(session);
 
     // A write to a dead child is reported by the closing child, not thrown as an unhandled event.
@@ -1487,12 +1497,16 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   async function resume(id: SessionId, resumeOptions?: ResumeOptions): Promise<void> {
     for (;;) {
       if (disposed) throw unavailable("resume", "the control side is closed");
-      refuseDisabledTools("resume", resumeOptions?.visible, resumeOptions?.tools);
+      checkTools("resume", resumeOptions?.visible, resumeOptions?.tools);
       const session = sessions.get(id.native);
       const text = resumeOptions?.prompt === undefined ? "" : promptText(resumeOptions.prompt);
       // A session that is still live is resumed by resuming its own process: the agent keeps
       // its context, and the prompt is another turn of it.
       if (session !== undefined && !session.ended && !session.stopping) {
+        const requested = resumeOptions?.tools;
+        if (requested !== undefined && (requested === "niwa-only") !== session.niwaOnly) {
+          throw new Unsupported(harnessId, "control", "resume", "cannot change the tool mode of a running Ncode process");
+        }
         if (resumeOptions?.box !== undefined) {
           throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
         }
@@ -1534,7 +1548,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   ): Promise<void> {
     const mode = modeOf(resumeOptions?.mode, options.mode, MCODE_LAUNCH);
     requireLaunch(harnessId, MCODE_LAUNCH, { mode });
-    const fresh = await startProcess(resumeOptions?.cwd ?? lastCwd ?? process.cwd(), resumeOptions ?? {});
+    const fresh = await startProcess("resume", resumeOptions?.cwd ?? lastCwd ?? process.cwd(), resumeOptions ?? {});
     fresh.reverse = resumeOptions?.reverse;
     try {
       const nativeId = await handshake(fresh, resumeOptions?.model ?? defaultModel, defaultEffort, mode, id.native, resumeOptions?.servers);
@@ -1554,13 +1568,13 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   return {
     async start(startOptions: StartOptions): Promise<StartedSession> {
       if (disposed) throw unavailable("start", "the control side is closed");
-      refuseDisabledTools("start", startOptions.visible, startOptions.tools);
+      checkTools("start", startOptions.visible, startOptions.tools);
       const model = startOptions.model ?? defaultModel;
       const effort = startOptions.effort ?? defaultEffort;
       const mode = modeOf(startOptions.mode, options.mode, MCODE_LAUNCH);
       requireLaunch(harnessId, MCODE_LAUNCH, { model, effort, mode });
       const cwd = startOptions.cwd ?? process.cwd();
-      const session = await startProcess(cwd, startOptions);
+      const session = await startProcess("start", cwd, startOptions);
       session.reverse = startOptions.reverse;
       let nativeId: string;
       try {
