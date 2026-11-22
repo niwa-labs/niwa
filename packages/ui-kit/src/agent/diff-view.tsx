@@ -38,6 +38,7 @@ export function DiffView(props: DiffViewProps) {
     diffStyle: props.layout ?? "unified",
     overflow: props.wrap === true ? ("wrap" as const) : ("scroll" as const),
     themeType: "system" as const,
+    preferredHighlighter: "highlights" as const,
   };
   const fileClassName = "block min-w-0 overflow-hidden rounded-lg border text-xs";
   if (props.patch !== undefined) {

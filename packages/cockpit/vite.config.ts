@@ -6,6 +6,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
+import { highlightCatalog } from "./scripts/highlight-catalog.ts";
 import { NOTICE_ASSET, thirdPartyNotices } from "./scripts/third-party-notices.ts";
 import { entryName, entrySource, SHARED_MODULES } from "./src/shared-modules.ts";
 
@@ -50,7 +51,7 @@ function noEval(): Plugin {
 
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
-  plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss(), sharedModules(), noEval(), thirdPartyNotices()],
+  plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss(), sharedModules(), noEval(), highlightCatalog(), thirdPartyNotices()],
   resolve: { dedupe: ["react", "react-dom", "@tanstack/react-query", "zod"] },
   build: {
     outDir: "dist/app",

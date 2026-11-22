@@ -88,6 +88,7 @@ export const BUILD_SOURCES: readonly string[] = [
   join(PACKAGE_ROOT, "index.html"),
   join(PACKAGE_ROOT, "vite.config.ts"),
   join(PACKAGE_ROOT, "scripts", "third-party-notices.ts"),
+  join(PACKAGE_ROOT, "scripts", "highlight-catalog.ts"),
   join(PACKAGE_ROOT, "notices"),
   join(PACKAGE_ROOT, "package.json"),
   join(PACKAGE_ROOT, "..", "ui-kit", "src"),

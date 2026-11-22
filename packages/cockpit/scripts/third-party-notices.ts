@@ -3,6 +3,8 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import type { Plugin } from "vite";
 
+import { GRAMMARS, SHIKI_THEMES } from "./highlight-catalog.ts";
+
 export const NOTICE_ASSET = "assets/THIRD-PARTY-LICENSES.txt";
 
 const require = createRequire(import.meta.url);
@@ -15,6 +17,22 @@ function manifestAt(root: string): { name: string; version: string } {
 
 function upstreamNotice(file: string): string {
   return readFileSync(new URL(file, NOTICE_DIRECTORY), "utf8");
+}
+
+/** Preserve the license text of each retained entry from the pinned upstream notice. */
+function catalogNotices(file: string, assets: ReadonlySet<string>): string {
+  const remaining = new Set(assets);
+  const selected = upstreamNotice(file).split(/^={20,}$/m).flatMap((section) => {
+    const files = /^Files:\s+(.+)$/m.exec(section)?.[1];
+    if (!files) return [];
+    const matches = files.split(", ").filter((name) => remaining.has(name.replace(/\.json$/, "")));
+    if (!matches.length) return [];
+    if (!/^SPDX:\s+MIT\s*$/m.test(section)) throw new Error("Review upstream license in " + file + " for " + matches.join(", "));
+    for (const name of matches) remaining.delete(name.replace(/\.json$/, ""));
+    return [section.trim().replace(/^Files:.+$/m, "Files:   " + matches.join(", "))];
+  });
+  if (remaining.size) throw new Error("Missing upstream attribution in " + file + " for " + [...remaining].join(", "));
+  return selected.join("\n\n" + "=".repeat(105) + "\n\n");
 }
 
 /** Vite collects a license per JavaScript package. Also carry CSS and transitive attribution. */
@@ -57,11 +75,16 @@ export function thirdPartyNotices(): Plugin {
             if (version !== SHIKI_VERSION) throw new Error(`Update Cockpit's upstream notices for ${name}@${version}`);
           }
           if (name === "@shikijs/langs") {
-            notices.set("tm-grammars - 1.32.22 (NOTICE)", upstreamNotice("tm-grammars-1.32.22.NOTICE"));
+            const grammars = new Set(GRAMMARS);
+            grammars.delete("toml");
+            grammars.delete("yaml");
+            notices.set("tm-grammars - 1.32.22 (NOTICE excerpt)", catalogNotices("tm-grammars-1.32.22.NOTICE", grammars));
+            notices.set("VS Code grammar attributions", upstreamNotice("vscode-grammar-attribution.NOTICE"));
+            notices.set("YAML and TOML TextMate bundle licenses", upstreamNotice("textmate-bundle-grants.NOTICE"));
             notices.set("TextMate grammar and theme source revisions", upstreamNotice("textmate-source-revisions.txt"));
           }
           if (name === "@shikijs/themes") {
-            notices.set("tm-themes - 1.12.12 (NOTICE)", upstreamNotice("tm-themes-1.12.12.NOTICE"));
+            notices.set("tm-themes - 1.12.12 (NOTICE excerpt)", catalogNotices("tm-themes-1.12.12.NOTICE", SHIKI_THEMES));
           }
           if (name === "@shikijs/engine-oniguruma" && files.has("dist/wasm-inlined.mjs")) {
             notices.set("vscode-oniguruma - 1.7.0 (LICENSE.txt)", upstreamNotice("vscode-oniguruma-1.7.0.LICENSE.txt"));

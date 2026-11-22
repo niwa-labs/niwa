@@ -62,3 +62,10 @@ for the upstream copies used by the build.
 ```sh
 bun run build   # in this package: writes dist/app, the app that packing ships
 ```
+## Code highlighting
+
+The installed Cockpit highlights common Markdown code fences locally, including
+JavaScript, TypeScript, JSX, TSX, JSON, YAML, TOML, Bash, Python, Go, Rust,
+and diffs. Other fences remain readable and copyable as code. File diffs use
+Pierre Highlights and have their own language support. Both work offline
+after installation.

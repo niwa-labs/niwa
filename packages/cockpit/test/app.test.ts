@@ -173,11 +173,22 @@ test("the production app carries permission and attribution for its bundled code
   expect(report).toContain("Copyright (c) Tailwind Labs, Inc.");
   expect(report).toMatch(/## @pierre\/highlights - .+ \(NOTICE\.md\)/);
   expect(report).toMatch(/## @pierre\/theme - .+ \(NOTICE\.md\)/);
+  expect(report).toContain("Copyright (c) 2015 - present Microsoft Corporation");
+  expect(report).toContain("Copyright (c) 2020 Primer");
+  expect(report).not.toMatch(/^Files:.*(?:ada|ahk2|aurora-x|bird2|glsl|hcl|terraform)\.json/m);
+  const files = JSON.parse(readFileSync(join(output, ".vite", "manifest.json"), "utf8")) as Record<string, { file: string }>;
+  const assets = Object.values(files).map((entry) => entry.file);
+  for (const language of ["typescript", "tsx", "javascript", "jsx", "json", "yaml", "shellscript", "python", "diff"]) {
+    expect(assets.some((file) => file.startsWith("assets/" + language + "-"))).toBe(true);
+  }
+  expect(assets.filter((file) =>
+    /^assets\/(?:ada|ahk2|aurora-x|bird2|dax|dream-maker|glsl|gnuplot|hcl|nginx|org|racket|tcl|terraform)-/.test(file)
+  )).toEqual([]);
 
   for (const file of [
     "textmate-source-revisions.txt",
-    "tm-grammars-1.32.22.NOTICE",
-    "tm-themes-1.12.12.NOTICE",
+    "textmate-bundle-grants.NOTICE",
+    "vscode-grammar-attribution.NOTICE",
     "vscode-oniguruma-1.7.0.LICENSE.txt",
     "vscode-oniguruma-1.7.0.NOTICES.txt",
   ]) {
