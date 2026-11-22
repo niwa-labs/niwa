@@ -157,6 +157,73 @@ async function spawnFake(box: () => LaunchedBox): Promise<AgentProcess> {
   return await spawnAgent({ harness: "t", program: "unused", args: [], cwd: "/", box: { sandbox: "nono", spec: { cwd: "/" } } });
 }
 
+test("boxed input waits for its sink before forwarding the next write or EOF", async () => {
+  const writing = Promise.withResolvers<void>();
+  const firstWrite = Promise.withResolvers<void>();
+  const exit = Promise.withResolvers<number>();
+  const accepted: string[] = [];
+  const adapter = fake(() => ({
+    pid: 1,
+    stdin: {
+      write(data) {
+        accepted.push(Buffer.from(data).toString());
+        if (accepted.length === 1) {
+          writing.resolve();
+          return firstWrite.promise;
+        }
+      },
+      end() { accepted.push("EOF"); },
+    },
+    stdout: new ReadableStream({ start: (controller) => controller.close() }),
+    stderr: new ReadableStream({ start: (controller) => controller.close() }),
+    exited: exit.promise,
+    kill: () => undefined,
+  }));
+  const child = spawnAgentNow({ harness: "t", program: "unused", args: [], cwd: "/", box: { sandbox: adapter, spec: { cwd: "/" } } });
+  const completed: string[] = [];
+  child.stdin.write("first", () => completed.push("first"));
+  child.stdin.write("second", () => completed.push("second"));
+  const finished = new Promise<void>((resolve) => child.stdin.end(resolve));
+  expect(accepted).toEqual([]);
+  await writing.promise;
+  expect(accepted).toEqual(["first"]);
+  expect(completed).toEqual([]);
+  expect(child.stdin.writableLength).toBe("firstsecond".length);
+  firstWrite.resolve();
+  await finished;
+  expect(accepted).toEqual(["first", "second", "EOF"]);
+  expect(completed).toEqual(["first", "second"]);
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+  exit.resolve(0);
+  await closed;
+});
+
+test("exit fails boxed input in flight and buffers before sandbox cleanup completes", async () => {
+  const sink = Promise.withResolvers<void>();
+  const processEnded = Promise.withResolvers<number>();
+  const cleanupDone = Promise.withResolvers<number>();
+  let attempts = 0;
+  const child = await spawnFake(() => ({
+    pid: 1,
+    stdin: { write: () => { attempts++; return sink.promise; }, end: () => undefined },
+    stdout: new ReadableStream({ start: (controller) => controller.close() }),
+    stderr: new ReadableStream({ start: (controller) => controller.close() }),
+    ended: processEnded.promise,
+    exited: cleanupDone.promise,
+    kill: () => undefined,
+  }));
+  const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+  const pending = ["first", "second"].map((text) => new Promise((resolve) => child.stdin.write(text, resolve)));
+  expect(attempts).toBe(1);
+  processEnded.resolve(0);
+  for (const error of await Promise.all(pending)) expect(error).toMatchObject({ code: "EPIPE" });
+  expect(attempts).toBe(1);
+  // The sink may still fail once it observes the closed pipe. Its rejection is consumed.
+  sink.reject(new Error("the underlying sink closed"));
+  cleanupDone.resolve(0);
+  await closed;
+});
+
 test("a box's output is read at the pace of its reader", async () => {
   const chunk = 8192;
   const chunks = 2000;

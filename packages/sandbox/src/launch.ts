@@ -13,8 +13,8 @@ import type { ChildProcessByStdio } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
-import type { Readable, Writable } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
+import type { Readable } from "node:stream";
 
 import { nono } from "./nono.ts";
 import { BoxRefused, listenRefusal, requireSandbox } from "./sandbox.ts";
@@ -180,6 +180,12 @@ interface Outcome {
 type EndListener = (code: number | null, signal: NodeJS.Signals | null) => void;
 type Listener = Parameters<EventEmitter["on"]>[1];
 
+type BoxInput = LaunchedBox["stdin"];
+interface InputOperation {
+  send(input: BoxInput): unknown;
+  finish(error?: Error): void;
+}
+
 /**
  * The process of a boxed launch, in the shape of a child process: streams, an exit, a kill.
  *
@@ -188,7 +194,10 @@ type Listener = Parameters<EventEmitter["on"]>[1];
  * event that will not come again.
  */
 class BoxedProcess extends EventEmitter implements AgentProcess {
-  readonly stdin = new PassThrough();
+  readonly stdin = new Writable({
+    write: (chunk: Buffer, _encoding, finish) => this.#writeInput({ send: (input) => input.write(chunk), finish }),
+    final: (finish) => this.#writeInput({ send: (input) => input.end(), finish }),
+  });
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
   exitCode: number | null = null;
@@ -200,6 +209,14 @@ class BoxedProcess extends EventEmitter implements AgentProcess {
   #exited: Outcome | undefined;
   #closed: Outcome | undefined;
   #failure: Error | undefined;
+  #input: InputOperation | undefined;
+
+  constructor() {
+    super();
+    // The callback and stream still report the error to readers. A caller that just writes and
+    // watches the process exit need not install a second, otherwise-unhandled error listener.
+    this.stdin.on("error", () => {});
+  }
 
   get pid(): number | undefined {
     return this.#box?.pid;
@@ -242,13 +259,45 @@ class BoxedProcess extends EventEmitter implements AgentProcess {
   attach(box: LaunchedBox): void {
     this.#box = box;
     if (this.#unsent !== undefined) box.kill(this.#unsent);
-    this.stdin.on("data", (chunk: Buffer) => box.stdin.write(chunk));
-    this.stdin.on("end", () => box.stdin.end());
+    if (this.#input !== undefined) void this.#sendInput(this.#input, box.stdin);
+    // Do not hold the input callbacks behind a sandbox's cleanup or a blocked sink write.
+    void (box.ended ?? box.exited).then(
+      () => this.#closeInput(Object.assign(new Error("The boxed process closed its input"), { code: "EPIPE" })),
+      (error: unknown) => this.#closeInput(error instanceof Error ? error : new Error(String(error))),
+    );
     const drained = Promise.all([pump(box.stdout, this.stdout), pump(box.stderr, this.stderr)]).then(() => undefined, () => undefined);
     void box.exited.then(
       async (code) => this.#end(code, (await box.signaled) ?? null, undefined, drained),
       (error: unknown) => this.#end(null, null, error, drained),
     );
+  }
+
+  #writeInput(operation: InputOperation): void {
+    this.#input = operation;
+    if (this.#box !== undefined) void this.#sendInput(operation, this.#box.stdin);
+  }
+
+  /** Writable runs one operation at a time. Keep its callback pending until the real sink accepts it. */
+  async #sendInput(operation: InputOperation, input: BoxInput): Promise<void> {
+    try {
+      await operation.send(input);
+    } catch (error) {
+      this.#finishInput(operation, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    this.#finishInput(operation);
+  }
+
+  #finishInput(operation: InputOperation, error?: Error): void {
+    // The sink may settle after exit has already failed this operation.
+    if (this.#input !== operation) return;
+    this.#input = undefined;
+    operation.finish(error);
+  }
+
+  #closeInput(error: Error): void {
+    if (this.#input !== undefined) this.#finishInput(this.#input, error);
+    else this.stdin.destroy();
   }
 
   /**
@@ -276,6 +325,7 @@ class BoxedProcess extends EventEmitter implements AgentProcess {
     // Kept before anyone is told, so a listener that comes later is told the same.
     this.#failure = failure;
     this.#closed = { code: null, signal: null };
+    this.#closeInput(failure);
     this.stdout.end();
     this.stderr.end();
     setImmediate(() => {
