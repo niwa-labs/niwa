@@ -164,20 +164,14 @@ provider configuration.
 
 ## Niwa and Ncode
 
-Ncode's ACP offers session-scoped MCP tools, paged `session/history`,
-active-turn and queue status after reconnect, and an **Always deny** option
-when a permission decision can be saved. Choose Ncode for Niwa sessions that
-need a narrow set of host-supplied tools and can resume work after a restart.
+Niwa coordinates workflows and tool access. Ncode runs coding sessions over
+ACP, with session-scoped MCP tools, paged `session/history`, reconnect status
+for active turns and queues, and an **Always deny** option for permissions
+that can be saved.
 
-Check `niwa harness.list` for `capabilities.control.tools.niwaOnly: true` on
-the selected Ncode installation. This mode requires both a compatible Ncode
-executable and an updated Niwa adapter. The published `@niwa-labs/niwa@0.0.0`
-predates it.
-
-- **Session tools.** Install a version whose `ncode acp --help` lists both
-  `--no-builtin-tools` and `--session-mcp-only`. Start with `tools: "niwa-only"`
-  and grant the session the Niwa actions it needs, such as `task.list`.
-  Ncode exposes only the MCP tools supplied by the host for that session.
+- **Session tools.** Start with `tools: "niwa-only"` and grant the session
+  the Niwa actions it needs, such as `task.list`. Ncode exposes only the MCP
+  tools supplied by the host for that session.
 - **Resume and history.** Cold resume loads the same session in a new process
   with its tool restrictions. Niwa checks for an active turn on reconnect
   and reads past messages and tool calls from Ncode's local session store.
