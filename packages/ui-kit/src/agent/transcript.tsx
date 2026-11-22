@@ -23,6 +23,8 @@ export type TranscriptProps<T> = {
   overscan?: number | undefined;
   /** Shown when there are no items. */
   empty?: ReactNode;
+  onReachStart?: (() => void) | undefined;
+  preserveScrollAnchor?: boolean;
   className?: string | undefined;
 };
 
@@ -33,11 +35,14 @@ export function Transcript<T>({
   estimateSize = () => 72,
   overscan = 6,
   empty,
+  onReachStart,
+  preserveScrollAnchor,
   className,
 }: TranscriptProps<T>) {
   const stick = useStickToBottom({ initial: "instant", resize: "smooth" });
   const virtualizer = useVirtualizer({
     count: items.length,
+    anchorTo: preserveScrollAnchor ? "end" : "start",
     getScrollElement: () => stick.scrollRef.current,
     estimateSize,
     overscan,
@@ -49,7 +54,16 @@ export function Transcript<T>({
 
   return (
     <div data-slot="transcript" className={cn("relative flex min-h-0 flex-1 flex-col", className)}>
-      <div ref={stick.scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" role="log" aria-live="polite">
+      <div ref={stick.scrollRef}
+        onScroll={event => {
+          const view = event.currentTarget;
+          if (!preserveScrollAnchor) return;
+          if (view.scrollTop < 80 && view.scrollHeight - view.clientHeight > 80) onReachStart?.();
+        }}
+        onWheel={event => {
+          if (event.deltaY < 0 && event.currentTarget.scrollTop < 80) onReachStart?.();
+        }}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain" role="log" aria-live="polite">
         {items.length === 0 ? (
           <div className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground">{empty}</div>
         ) : (
@@ -61,6 +75,7 @@ export function Transcript<T>({
                 <div
                   key={row.key}
                   data-index={row.index}
+                  data-transcript-key={preserveScrollAnchor ? String(row.key) : undefined}
                   ref={virtualizer.measureElement}
                   className="absolute inset-x-0 top-0"
                   style={{ transform: `translateY(${row.start}px)` }}

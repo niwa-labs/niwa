@@ -1,6 +1,6 @@
 /** The sessions of the host and the transcript of one of them. */
 
-import { EntityLink, PageLink, useCall, type PageProps } from "@niwa-labs/cockpit-sdk";
+import { EntityLink, PageLink, useAction, useCall, type PageProps } from "@niwa-labs/cockpit-sdk";
 import {
   FileRef,
   Markdown,
@@ -17,9 +17,10 @@ import {
   type WorkState,
 } from "@niwa-labs/ui-kit";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { HomeTileProps } from "@niwa-labs/cockpit-sdk";
-import { listAction, readAction, type SessionEntry } from "./actions.ts";
+import { listAction, readAction, sessionStateAction, type SessionEntry, type TranscriptRecord } from "./actions.ts";
+import { SessionSandboxBadge } from "@niwa-labs/cockpit-sdk";
 import { itemsOf, type TranscriptItem } from "./transcript.ts";
 
 const RING: Readonly<Record<SessionEntry["state"], WorkState>> = { running: "running", idle: "waiting", ended: "done", unknown: "pending" };
@@ -53,6 +54,7 @@ function SessionRow({ entry }: { entry: SessionEntry }) {
           </time>
         )}
       </div>
+      {entry.id && <div className="pl-4 empty:hidden"><SessionSandboxBadge session={entry.ref} /></div>}
       {entry.cwd && <div className="min-w-0 pl-4 text-xs"><FileRef path={entry.cwd} /></div>}
     </li>
   );
@@ -123,12 +125,73 @@ function SessionResults({ managedOnly }: { managedOnly: boolean }) {
   );
 }
 
-function Item({ item }: { item: TranscriptItem }) {
+function shellCommand(name: string, input: unknown): string | undefined {
+  if (!/^(bash|sh|shell|terminal|exec_command)$/i.test(name)) return undefined;
+  const command = typeof input === "string" ? input
+    : input && typeof input === "object" && "command" in input ? input.command
+    : input && typeof input === "object" && "cmd" in input ? input.cmd : undefined;
+  return typeof command === "string" ? command : undefined;
+}
+
+function runningToolTitle(name: string, input: unknown): string {
+  const title = `Выполняется · ${name}`;
+  const command = shellCommand(name, input);
+  const program = typeof command === "string" ? /^\s*([\w./+-]+)(?:\s|$)/.exec(command)?.[1]?.split("/").at(-1) : undefined;
+  return program && program !== name ? `${title} · ${program}` : title;
+}
+
+const targetLabels: Readonly<Record<string, string>> = {
+  read: "Чтение файла", edit: "Изменение файлов", search: "Поиск", web: "Веб-запрос",
+  plan: "План", subagent: "Поручение агенту", mcp: "Вызов MCP", other: "Параметры",
+};
+
+function ActiveTool({ item }: { item: Extract<TranscriptItem, { kind: "tool" }> }) {
+  const fields = item.input && typeof item.input === "object" ? Object.entries(item.input) : [];
+  const description = fields.find(([key]) => key === "description")?.[1];
+  const command = shellCommand(item.category === "shell" ? "shell" : item.name, item.input)
+    ?? (item.category === "shell" ? item.target : undefined);
+  const steps = item.category === "plan" ? fields.find(([key]) => ["plan", "todos", "items"].includes(key))?.[1] : undefined;
+  const checklist = Array.isArray(steps) ? steps.flatMap(step => {
+    if (typeof step === "string") return [step];
+    const title = step?.step ?? step?.content ?? step?.text;
+    return typeof title === "string" ? [`${["completed", "done"].includes(step.status ?? step.state) ? "✓" : "•"} ${title}`] : [];
+  }).join("\n") : undefined;
+  const target = checklist || (item.paths?.length ? item.paths.join("\n") : item.target);
+  const label = targetLabels[item.category ?? "other"] ?? "Параметры";
+  const keys = fields.map(([key]) => key).filter(key => key !== "description");
+  const fallback = keys.length ? keys.join(", ") : undefined;
+  return (
+    <div data-slot="active-tool" className="mt-1.5 min-w-0 space-y-1">
+      {typeof description === "string" && description.trim() && <p className="text-sm wrap-anywhere text-foreground">{description}</p>}
+      {command ? (
+        <pre data-slot="active-command" aria-label="Текущая команда" className="max-h-32 overflow-auto rounded-md border bg-muted px-3 py-2 text-xs leading-relaxed text-foreground">
+          <code className="block whitespace-pre-wrap wrap-anywhere font-mono">{command}</code>
+        </pre>
+      ) : (target || fallback) && (
+        <div className="max-h-32 overflow-auto rounded-md border px-3 py-2 text-xs">
+          <span className="mr-2 text-muted-foreground">{target ? label : "Параметры"}</span>
+          <span className="whitespace-pre-wrap wrap-anywhere font-mono">{target ?? fallback}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Item({ item, active }: { item: TranscriptItem; active: boolean }) {
   if (item.kind === "tool") {
     return (
       <div className="px-4 py-1">
-        <ToolCall name={item.name} state={item.state} input={item.input} output={item.output} />
+        <ToolCall name={item.name} title={item.state === "running" ? runningToolTitle(item.name, item.input) : undefined} state={item.state} input={item.input} output={item.output} />
+        {active && <ActiveTool item={item} />}
       </div>
+    );
+  }
+  if (item.kind === "note" && item.collapsible) {
+    return (
+      <details className="px-4 py-1 text-xs text-muted-foreground">
+        <summary className="cursor-pointer font-medium">{item.label}</summary>
+        <div className="mt-1 whitespace-pre-wrap wrap-anywhere">{item.text}</div>
+      </details>
     );
   }
   if (item.kind === "note") {
@@ -157,11 +220,47 @@ export function SessionPage({ params }: PageProps<"/sessions/$sessionId">) {
 }
 
 function SessionTranscript({ id }: { id: string }) {
-  const [anchors, setAnchors] = useState<string[]>([]);
-  const before = anchors.at(-1);
-  const read = useCall(readAction, { session: id, window: { limit: 200, ...(before && { before }) } }, { refreshOn: { types: ["session.*"] } });
+  const read = useCall(readAction, { session: id, window: { limit: 200 } }, { refreshOn: { types: ["session.*"] } });
+  const session = useCall(sessionStateAction, { id }, { refreshOn: { types: ["session.turn-started", "session.turn-ended", "session.ended"] } });
+  const earlier = useAction(readAction);
+  const loading = useRef(false);
+  const [history, setHistory] = useState<{ records: TranscriptRecord[]; hasEarlier: boolean }>();
+  const tail = read.data;
+  const [lastTail, setLastTail] = useState(tail);
+  if (tail !== lastTail) {
+    setLastTail(tail);
+    const boundary = tail?.records[0]?.locator;
+    const overlap = boundary && lastTail?.records.findIndex(record => record.locator === boundary);
+    if (typeof overlap === "number" && overlap > 0) {
+      setHistory({ records: [...(history?.records ?? []), ...lastTail!.records.slice(0, overlap)], hasEarlier: history?.hasEarlier ?? !!lastTail?.page?.hasEarlier });
+    } else if (overlap === -1) {
+      setHistory(undefined);
+    }
+  }
+  const records = useMemo(() => [...(history?.records ?? []), ...(tail?.records ?? [])], [history, tail]);
+  const items = useMemo(() => itemsOf(records), [records]);
+  const last = items.at(-1);
+  const activeKey = last?.kind === "tool" && last.state === "running" && session.data?.state === "running" ? last.key : undefined;
+  const before = records[0]?.locator;
+  const canLoad = !!before && (history?.hasEarlier ?? tail?.page?.hasEarlier);
+  async function loadEarlier() {
+    if (!canLoad || !before || loading.current) return;
+    loading.current = true;
+    try {
+      const page = await earlier.mutateAsync({ session: id, window: { limit: 200, before } });
+      if (page.coverage?.status === "unavailable") throw new Error(page.coverage.reason);
+      setHistory(current => ({
+        records: [...page.records, ...(current?.records ?? [])],
+        hasEarlier: !!page.page?.hasEarlier && !!page.records[0]?.locator && page.records[0].locator !== before,
+      }));
+    } catch {
+      // A subsequent scroll to the top retries the same window.
+    } finally {
+      loading.current = false;
+    }
+  }
   return (
-    <div data-slot="session-page" className="flex h-full min-h-0 min-w-0 flex-col">
+    <div data-slot="session-page" className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header className="flex min-w-0 items-center gap-2 border-b px-4 py-3">
         <PageLink to="/sessions" className="text-sm text-muted-foreground hover:underline">
           Sessions
@@ -176,15 +275,15 @@ function SessionTranscript({ id }: { id: string }) {
         <p role="alert" className="p-4 text-sm text-destructive">The transcript could not be read: {read.error.message}</p>
       ) : (
         <Transcript
-          items={itemsOf(read.data.records)}
+          items={items}
+          onReachStart={canLoad ? loadEarlier : undefined}
+          preserveScrollAnchor={!!(history || tail?.page?.hasEarlier)}
           itemKey={(item) => item.key}
-          renderItem={(item) => <Item item={item} />}
+          renderItem={(item) => <Item item={item} active={item.key === activeKey} />}
           empty="Nothing has been said in this session yet."
-          className="min-h-80"
         />
       )}
-      <div className="desk-tools">{read.data?.page?.hasEarlier && read.data.records[0]?.locator && <button onClick={() => setAnchors(a => [...a, read.data.records[0]!.locator!])}>← Предыдущие сообщения</button>}
-        {before && <button onClick={() => setAnchors(a => a.slice(0, -1))}>Следующие сообщения →</button>}</div>
+      {earlier.isError && <p role="alert">Не удалось загрузить историю. Прокрутите вверх, чтобы повторить.</p>}
     </div>
   );
 }

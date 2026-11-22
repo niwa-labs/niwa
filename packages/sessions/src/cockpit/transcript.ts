@@ -4,8 +4,18 @@ import type { TranscriptRecord } from "./actions.ts";
 
 export type TranscriptItem =
   | { kind: "turn"; key: string; role: "user" | "assistant"; text: string; model?: string | undefined }
-  | { kind: "tool"; key: string; name: string; input: unknown; output: unknown; state: "running" | "done" | "failed" }
-  | { kind: "note"; key: string; label: string; text: string };
+  | { kind: "tool"; key: string; name: string; category?: string | undefined; target?: string | undefined; paths?: string[] | undefined; input: unknown; output: unknown; state: "running" | "done" | "failed" }
+  | { kind: "note"; key: string; label: string; text: string; collapsible?: boolean };
+
+function userText(record: Extract<TranscriptRecord, { kind: "user" }>): string {
+  let text = "";
+  let cursor = 0;
+  for (const { from, to } of [...(record.inserted ?? [])].sort((a, b) => a.from - b.from)) {
+    if (from > cursor) text += record.text.slice(cursor, from);
+    cursor = Math.max(cursor, to);
+  }
+  return text + record.text.slice(cursor);
+}
 
 /**
  * The items of a transcript, in order. A tool result joins the call it answers by the call's id, wherever it lies after it; a
@@ -15,17 +25,25 @@ export function itemsOf(records: readonly TranscriptRecord[]): TranscriptItem[] 
   const items: TranscriptItem[] = [];
   const open = new Map<string, Extract<TranscriptItem, { kind: "tool" }>>();
   records.forEach((record, index) => {
-    const key = record.locator ?? `#${String(index)}`;
+    const key = record.kind === "tool-call" || record.kind === "tool-result"
+      ? `tool:${record.callId}`
+      : record.locator ?? `#${String(index)}`;
     switch (record.kind) {
-      case "user":
+      case "user": {
+        const text = userText(record);
+        if (text.trim() !== "" || !record.inserted?.length || record.images?.length) {
+          items.push({ kind: "turn", key, role: "user", text: text.trim() === "" && record.images?.length ? "[image]" : text });
+        }
+        return;
+      }
       case "assistant":
-        items.push({ kind: "turn", key, role: record.kind, text: record.text, ...(record.kind === "assistant" ? { model: record.model } : {}) });
+        items.push({ kind: "turn", key, role: "assistant", text: record.text, model: record.model });
         return;
       case "thinking":
-        items.push({ kind: "note", key, label: "Thinking", text: record.redacted ? "Kept sealed by the harness." : record.text });
+        items.push({ kind: "note", key, label: "Thinking", collapsible: !record.redacted && !!record.text, text: record.redacted ? "Kept sealed by the harness." : record.text });
         return;
       case "tool-call": {
-        const tool: Extract<TranscriptItem, { kind: "tool" }> = { kind: "tool", key, name: record.name, input: record.input, output: undefined, state: "running" };
+        const tool: Extract<TranscriptItem, { kind: "tool" }> = { kind: "tool", key, name: record.name, category: record.category, target: record.target, paths: record.paths, input: record.input, output: undefined, state: "running" };
         open.set(record.callId, tool);
         items.push(tool);
         return;
@@ -56,7 +74,7 @@ export function itemsOf(records: readonly TranscriptRecord[]): TranscriptItem[] 
         items.push({ kind: "note", key, label: "Nested session", text: `${record.child.harness}/${record.child.native}` });
         return;
       case "unknown":
-        items.push({ kind: "note", key, label: "Unrecognised record", text: "" });
+        if (!record.metadata) items.push({ kind: "note", key, label: "Unrecognised record", text: "" });
         return;
     }
   });

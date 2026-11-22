@@ -84,6 +84,9 @@ const INSERTION_TAGS: Readonly<Record<string, InsertionOrigin>> = {
   turn_aborted: "harness",
 };
 
+// Codex writes the repository instructions immediately before its environment block.
+const STARTUP_INSTRUCTIONS = /^# AGENTS\.md instructions(?: for [^\r\n]+)?\r?\n\r?\n<INSTRUCTIONS>\r?\n[\s\S]*?\r?\n<\/INSTRUCTIONS>$/;
+
 export interface CodexReadingOptions {
   /** The id of the installation this side serves. */
   readonly harness: HarnessId;
@@ -776,6 +779,10 @@ export class CodexReading implements SessionReading {
         return [{ kind: "compaction", summary: compactionSummary(payload), ...stamped }];
       case "realtime_item":
         return this.#realtimeRecords(payload, state, stamped, parsed);
+      case "world_state":
+      case "token_usage_record":
+      case "inter_agent_communication_metadata":
+        return [metadataRecord(parsed, stamped)];
       default:
         // Anything else the format grows is kept whole, and never fails the read.
         return [unknownRecord(parsed, stamped)];
@@ -792,9 +799,17 @@ export class CodexReading implements SessionReading {
     const kind = payload["type"];
     if (kind === "message") {
       const role = payload["role"];
-      const { text, images } = messageOf(payload["content"]);
+      const content = payload["content"];
+      const { text, images } = messageOf(content);
       if (role === "user") {
-        return [{ kind: "user", text, inserted: insertedRanges(text, INSERTION_TAGS), ...(images.length > 0 ? { images } : {}), ...base }];
+        const inserted = insertedRanges(text, INSERTION_TAGS);
+        const preamble = Array.isArray(content) && content.length > 1 ? textsOf(content.slice(0, 1)) : "";
+        const environment = inserted[0];
+        if (environment?.from === preamble.length + 1 && STARTUP_INSTRUCTIONS.test(preamble) &&
+          text.startsWith(`${preamble}\n<environment_context>`)) {
+          inserted[0] = { ...environment, from: 0 };
+        }
+        return [{ kind: "user", text, inserted, ...(images.length > 0 ? { images } : {}), ...base }];
       }
       if (role === "assistant") {
         return [
@@ -806,10 +821,10 @@ export class CodexReading implements SessionReading {
           },
         ];
       }
-      // A message the owner did not send and the model did not say: the harness talking to
-      // itself. It is neither the owner's word nor the model's answer, so it is kept whole.
+      if (role === "developer" || role === "system") return [metadataRecord(raw, base)];
       return [unknownRecord(raw, base)];
     }
+    if (kind === "additional_tools") return [metadataRecord(raw, base)];
     if (kind === "function_call" || kind === "custom_tool_call") {
       const callId = payload["call_id"];
       const name = payload["name"];
@@ -933,6 +948,10 @@ export class CodexReading implements SessionReading {
 
 function unknownRecord(raw: unknown, base: RecordBase): Unlocated {
   return { kind: "unknown", raw, ...base };
+}
+
+function metadataRecord(raw: unknown, base: RecordBase): Unlocated {
+  return { kind: "unknown", metadata: true, raw, ...base };
 }
 
 function reasonOf(error: unknown): string {

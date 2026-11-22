@@ -236,6 +236,8 @@ export const NestedRecordSchema = z.object({
 export const UnknownRecordSchema = z.object({
   kind: z.literal("unknown"),
   raw: z.unknown(),
+  /** Identified as technical metadata by the harness reader. Kept for full and raw reads. */
+  metadata: z.literal(true).optional(),
   ...recordBase,
 });
 

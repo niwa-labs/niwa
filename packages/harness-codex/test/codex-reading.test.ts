@@ -511,3 +511,33 @@ test("a message marks what Codex inserted, and a result and a message keep their
   expect(result).toMatchObject({ kind: "tool-result", output: "shown", images: [{ at: 5, mime: "image/png" }] });
   expect(JSON.stringify([user, result])).not.toContain("AAAA");
 });
+
+test("Codex startup instructions and recognised metadata retain their raw history", async () => {
+  const preamble = "# AGENTS.md instructions for /work/x\n\n<INSTRUCTIONS>\nBe kind.\n</INSTRUCTIONS>";
+  const environment = "<environment_context>\n  <cwd>/work/x</cwd>\n</environment_context>";
+  const startup = {
+    type: "message", role: "user",
+    content: [preamble, environment, "Fix the build"].map((text) => ({ type: "input_text", text })),
+  };
+  rollout(NATIVE, meta(NATIVE) +
+    record(1, "response_item", { type: "additional_tools", role: "developer" }) +
+    message(2, "developer", "Developer instructions") +
+    record(3, "response_item", startup) +
+    record(4, "world_state", { full: true }) +
+    record(5, "token_usage_record", {}) +
+    record(6, "inter_agent_communication_metadata", {}) +
+    record(7, "a_future_type", { value: 1 }) +
+    message(8, "user", preamble));
+
+  const side = reading();
+  const records = await all(side.read(ID));
+  expect(records.map((r) => r.kind === "unknown" && r.metadata ? "metadata" : r.kind))
+    .toEqual(["metadata", "metadata", "user", "metadata", "metadata", "metadata", "unknown", "user"]);
+  const injected = `${preamble}\n${environment}\n`;
+  expect(records[2]).toMatchObject({
+    kind: "user", text: injected + "Fix the build", inserted: [{ from: 0, to: injected.length, origin: "harness" }],
+  });
+  expect(records[7]).toMatchObject({ kind: "user", text: preamble, inserted: [] });
+  expect(await side.raw(ID, records[2]!.locator)).toMatchObject({ payload: startup });
+  expect(await side.raw(ID, records[3]!.locator)).toMatchObject({ type: "world_state", payload: { full: true } });
+});

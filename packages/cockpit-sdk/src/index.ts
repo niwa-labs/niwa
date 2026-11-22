@@ -106,3 +106,4 @@ export {
   type SlotProps,
 } from "./slots.tsx";
 export { callKey, useAction, useCall, useProjection, useStreamStatus, type UseCallOptions } from "./hooks.ts";
+export { SessionSandboxBadge } from "./sandbox-badge.tsx";

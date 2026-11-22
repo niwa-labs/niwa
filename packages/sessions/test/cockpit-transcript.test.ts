@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 
-import type { TranscriptRecord } from "../src/cockpit/actions.ts";
+import { TranscriptRecord } from "../src/cockpit/actions.ts";
 import { itemsOf } from "../src/cockpit/transcript.ts";
 
 test("turns keep their order and say who spoke", () => {
@@ -13,6 +13,28 @@ test("turns keep their order and say who spoke", () => {
   expect(items).toMatchObject([
     { kind: "turn", role: "user", text: "hi", key: "1" },
     { kind: "turn", role: "assistant", text: "hello", model: "m" },
+  ]);
+});
+
+test("chat hides marked metadata and injected text, while preserving the messages and tool output", () => {
+  const records = [
+    { kind: "unknown", metadata: true },
+    { kind: "user", text: "startup", inserted: [{ from: 0, to: 7, origin: "harness" }] },
+    { kind: "user", text: "before startup after", inserted: [{ from: 7, to: 15, origin: "harness" }] },
+    { kind: "user", text: "context", inserted: [{ from: 0, to: 7, origin: "harness" }], images: [{ at: 7, mime: "image/png" }] },
+    { kind: "user", text: "# AGENTS.md instructions copied for review" },
+    { kind: "tool-call", callId: "c", name: "exec", input: { cmd: "bun test" } },
+    { kind: "tool-result", callId: "c", output: "ok" },
+    { kind: "assistant", text: "Done" },
+    { kind: "unknown" },
+  ].map((record) => TranscriptRecord.parse(record));
+  expect(itemsOf(records)).toMatchObject([
+    { kind: "turn", role: "user", text: "before after", key: "#2" },
+    { kind: "turn", role: "user", text: "[image]" },
+    { kind: "turn", role: "user", text: "# AGENTS.md instructions copied for review" },
+    { kind: "tool", name: "exec", input: { cmd: "bun test" }, output: "ok" },
+    { kind: "turn", role: "assistant", text: "Done" },
+    { kind: "note", label: "Unrecognised record" },
   ]);
 });
 
