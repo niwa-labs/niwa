@@ -73,10 +73,14 @@ harness's own subagents. Your private todo list is not a niwa task.
    the actions it needs. The session runs in a box: the host's default (its project and the
    toolchains) and its own installation's profile. `box: {"allow": ["bun", {"write": "../out"}]}`
    gives it more, within your `box.*` rules; `box: {"only": [{"read": "."}]}` gives it less.
-3. `session.start` returns the session id `s-...` and a receipt (delivered, queued, started or handled). A
-   receipt is not the answer. Read the session (`session.read`) for the reply.
+3. `session.start` returns the session id `s-...`, a receipt (delivered, queued, started or handled) and,
+   when the prompt began a turn, a `handle`. A receipt is not the answer: wait for that exact turn with
+   `session.turn-wait` and the handle (a timeout leaves the turn running, so the same handle waits again),
+   or read the session (`session.read`).
 4. To continue, `session.send` or `session.resume` the same `s-...`. A new session loses the
-   context.
+   context. To wait for several turns at once, `session.turn-wait-many` with `handles`, `until: "first"`
+   (any outcome, a failure included) or `"all"`, and `timeoutMs`: the answer lists what settled and what is
+   still pending, each by its input index, and times out without disturbing any turn.
 5. If that session needs a permission or asks a question, the request comes to you as its starter.
    `request.open` lists what waits; answer with `request.answer`. An unanswered request leaves the
    session waiting.
@@ -124,7 +128,9 @@ read them.
 
 1. `workflow.guide` returns the language guide, the generated typings and the actions you may call.
    It is the reference; nothing here replaces it.
-2. Write the script to a file.
+2. Write the script to a file. When the work has distinct stages, consider grouping related
+   steps into named phases so the owner can follow progress in Cockpit. For example, research,
+   implementation and review can each form a phase. A single-step workflow can omit phases.
 3. Run `workflow.check --file <file>` until it is clean.
 4. `workflow.start` runs a script: once from a file (`workflow.start --file <file>`), or a registered
    workflow by its id. To keep one: `workflow.register --file <file>` gives `wf-...`, then
@@ -141,7 +147,7 @@ read them.
 
 Rules that scripts break most often:
 - Label every step whose result must survive an edit of the script.
-- Declare the phases in the header, `phases: [{ title: "Review" }, { title: "Fix" }]`, and enter
+- When using phases, declare them in the header, `phases: [{ title: "Review" }, { title: "Fix" }]`, and enter
   each by calling `phase("Review")` in the body. A phase belongs to the branch that entered it (a
   `parallel` branch may be in another phase); steps take no phase option.
 - Use `now()` and `random()` (recorded reads), not `Date.now()` and `Math.random()`, and no direct
@@ -151,6 +157,10 @@ Rules that scripts break most often:
   after the answer. For several turns with one model, use `const review = session({ harness, box })`,
   then `await review.ask(prompt, { schema, label })` for each turn and `await review.end()` when done.
   Choose a schema whenever you branch on an answer. Turns replay from the journal.
+- For turns sent to several sessions at once, keep the handles (`const turn = await s.send(prompt)`),
+  then `await turns.first([a, b], { timeout })` or `await turns.all([a, b], { timeout })`: one deadline
+  for the group, `{ done, pending, timedOut }` back, and no turn disturbed. Put `session.turn-wait-many`
+  in `uses`.
 - Put the required session actions in `uses`. `workflow.guide` lists them and the box options
   the caller's grant can permit. Helpers started by a run's session belong to the run too.
 - Use `agent("rin").tell(text)` to send a message to the persistent agent's inbox.
@@ -169,10 +179,18 @@ Rin is the owner's main agent. If the host has her, `rin.*` actions are in the a
 their descriptions say what she takes (notes, commitments, judging). If they are absent, she is not
 on this host.
 
-When the owner asks you to load Rin (or another agent: "load the reviewer"), run
-`niwa agent attach [<agent>]` from your shell; without a name it attaches the host's default agent.
-It finds your session from your environment, prints the agent's briefing, and from then on the agent
-learns what this session does at its pauses. Under mcode, add `--session <id>`. What you say to the
+When the owner asks you to load Rin or become her external session, run `niwa agent attach rin`
+from this session's shell. Use the same command with another agent's name to attach to that agent.
+Omit the name to attach to the host's default agent. Under mcode, pass `--session <id>`.
+If several installations match your harness kind, pass `--harness <installation>`.
+
+Read the full briefing printed by attach and use it as your starting context before continuing
+the owner's work. It includes the agent's state, waiting inbox items, open tasks it assigned,
+pending questions for the owner, recent facts, and any briefing sections supplied by plugins.
+Empty sections are omitted. To refresh this context while attached, run
+`niwa agent.briefing --agent rin` (or use the attached agent's name). Reading the briefing does
+not call the model. After attach returns, the host watches the external session and delivers
+digests of new activity at its pauses. What you say to the
 agent yourself (`agent.tell`) is your word, not the owner's.
 
 ## When it does not work
