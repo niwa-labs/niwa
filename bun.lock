@@ -603,6 +603,13 @@
         "react-dom": "^19.3.1",
       },
     },
+    "packages/upstream-map": {
+      "name": "@niwa-labs/upstream-map",
+      "version": "0.0.0",
+      "dependencies": {
+        "zod": "^4.6.7",
+      },
+    },
     "packages/web": {
       "name": "@niwa-labs/web",
       "version": "0.0.0",
@@ -850,6 +857,8 @@
     "@niwa-labs/timer": ["@niwa-labs/timer@workspace:packages/timer"],
 
     "@niwa-labs/ui-kit": ["@niwa-labs/ui-kit@workspace:packages/ui-kit"],
+
+    "@niwa-labs/upstream-map": ["@niwa-labs/upstream-map@workspace:packages/upstream-map"],
 
     "@niwa-labs/web": ["@niwa-labs/web@workspace:packages/web"],
 

@@ -16,6 +16,10 @@
   `session.start` requires a sandbox, whose default policy blocks the
   OpenCode server's local listener. See the [adapter guide](packages/harness-opencode/README.md).
 
+- Use [`@niwa-labs/upstream-map`](packages/upstream-map/README.md) to check
+  and update the Git range map of an upstream snapshot from a downstream
+  package, with optional generation of script texts.
+
 ## 0.0.0 — 2026-11-22
 
 Initial public npm release of [`@niwa-labs/niwa`](https://www.npmjs.com/package/@niwa-labs/niwa/v/0.0.0),
