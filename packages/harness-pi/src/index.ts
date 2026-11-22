@@ -12,7 +12,7 @@
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 import { ADMITTED, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
 import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
@@ -125,7 +125,14 @@ export const piKind = defineHarnessKind<PiInstanceOptions>({
   profile: {
     status: "verified",
     of: ({ home, sessionsRoot, control }) => ({ home: user, env, bin }) => {
-      const launcher = bin(control?.binary ?? "pi");
+      const path = control?.env?.["PATH"];
+      // The launcher and its env-node shebang use the installation's PATH at launch.
+      const executable = (name: string) => {
+        if (path === undefined || isAbsolute(name)) return bin(name);
+        const found = Bun.which(name, { PATH: path });
+        return found === null ? [] : bin(found);
+      };
+      const launcher = executable(control?.binary ?? "pi");
       const installs = launcher
         .filter((path) => basename(dirname(path)) === "bin")
         .map((path) => join(dirname(dirname(path)), "install"))
@@ -133,7 +140,7 @@ export const piKind = defineHarnessKind<PiInstanceOptions>({
       // The install and the runtime are programs too: through `bin`, so no other box finds them closed.
       const runtime = join(env["XDG_DATA_HOME"] ?? join(user, ".local", "share"), "pi-node");
       return {
-        read: [...launcher, ...installs.flatMap((install) => bin(install)), ...bin(runtime), ...bin("node")],
+        read: [...launcher, ...installs.flatMap((install) => bin(install)), ...bin(runtime), ...executable("node")],
         write: [home, ...(sessionsRoot === undefined ? [] : [sessionsRoot])],
       };
     },

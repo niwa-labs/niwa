@@ -13,9 +13,9 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, 
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { profileConformance } from "@niwa-labs/harness";
-import { nono, resolveProfile } from "@niwa-labs/sandbox";
-import { live } from "@niwa-labs/testing";
+import { profileConformance, promptFromText } from "@niwa-labs/harness";
+import { admit, nono, resolveProfile, sandbox } from "@niwa-labs/sandbox";
+import { live, unconfined } from "@niwa-labs/testing";
 
 import { piKind } from "../src/index.ts";
 
@@ -44,6 +44,45 @@ test("an installation's profile is its launcher, the install the launcher runs, 
 });
 
 const present = live && Bun.which("pi") !== null && (await nono().available());
+
+test("a boxed Pi launcher and its env-node runtime use the installation PATH", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "pi-runtime-")));
+  const shims = join(root, "shims");
+  const runtime = join(root, "runtime");
+  const shim = join(shims, "node");
+  const node = join(runtime, "node");
+  const launcher = join(runtime, "pi");
+  const path = [runtime, shims].join(":");
+  const binding = piKind.bind({ id: "pi-runtime", home: join(root, "agent"), control: { env: { PATH: path } } });
+  const control = binding.control!;
+  try {
+    mkdirSync(shims);
+    mkdirSync(runtime);
+    writeFileSync(shim, "#!/bin/sh\necho proto plugin::offline >&2\nexit 1\n", { mode: 0o755 });
+    symlinkSync(process.execPath, node);
+    writeFileSync(launcher, `#!/usr/bin/env node
+for await (const line of console) {
+  const { id, type } = JSON.parse(line);
+  console.log(JSON.stringify({ type: "response", id, command: type, success: true, data: { sessionId: "ready" } }));
+}
+`, { mode: 0o755 });
+    const profile = resolveProfile(binding.profile!, binding.instance.id, { home: root, env: { PATH: shims } });
+    expect(profile.programs).toEqual([launcher, node, realpathSync(process.execPath)]);
+    expect(profile.read).not.toContain(shim);
+
+    const adapter = unconfined("nono");
+    const boxes = sandbox({ adapter });
+    boxes.install(binding.instance.id, binding.profile!);
+    const plan = boxes.plan({ owner: binding.instance.id, cwd: root, defaults: { allow: [] }, network: false });
+    const { spec } = admit(plan, adapter, () => undefined, { env: { PATH: shims } });
+    expect(spec.read).toEqual(expect.arrayContaining(profile.programs));
+    const { session } = await control.start({ prompt: promptFromText(""), box: { sandbox: adapter, spec }, cwd: root });
+    expect(session.native).toBe("ready");
+  } finally {
+    await control.dispose?.();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 /** An agent directory of the test's own: the real one's settings, less its packages, and its extensions. */
 function agentHome(): string {
