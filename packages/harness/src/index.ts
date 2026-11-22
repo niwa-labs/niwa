@@ -14,8 +14,8 @@ import type { HarnessDetection } from "./discover.ts";
 import type { KindOptions } from "./options.ts";
 import type { HarnessSide, SideCapabilities } from "./capabilities.ts";
 import { CapabilityExceeded, KindCapabilitiesSchema, excessOf, narrowSides, sidesOf } from "./declaration.ts";
-import { LoopbackListenSchema } from "@niwa-labs/sandbox";
-import type { BoxProfile, LoopbackListen, ProfilePaths } from "@niwa-labs/sandbox";
+import { LoopbackListenSchema, UnixSocketBindSchema } from "@niwa-labs/sandbox";
+import type { BoxProfile, LoopbackListen, ProfilePaths, UnixSocketBind } from "@niwa-labs/sandbox";
 import type { KindCapabilities } from "./declaration.ts";
 
 /**
@@ -41,12 +41,14 @@ export interface InstanceOptions {
    * Use `boxProfile.net` to replace the default list.
    */
   readonly net?: readonly string[];
-  /** The installation's overrides for the network fields of its kind's box profile. */
+  /** The installation's overrides for its kind's network and Unix socket permissions. */
   readonly boxProfile?: {
     /** The outbound host list, including any explicit `*.example.com` patterns. Omit to inherit. */
     readonly net?: readonly string[];
     /** Replace the local listener. Omit to inherit or pass null to remove it. */
     readonly listen?: LoopbackListen | null;
+    /** Replace the Unix socket bind list. Omit to inherit or pass an empty list to clear it. */
+    readonly unixSocketBind?: readonly UnixSocketBind[];
   };
   /**
    * What the installation claims: what was found on the machine, which may narrow what the kind
@@ -143,15 +145,16 @@ const BoxProfileHostSchema = z.union([
 const BoxProfileOverrideSchema = z.strictObject({
   net: z.array(BoxProfileHostSchema).optional(),
   listen: LoopbackListenSchema.nullable().optional(),
+  unixSocketBind: UnixSocketBindSchema.array().optional(),
 });
 
-/** Apply only the network fields the owner named, preserving the kind's filesystem paths. */
+/** Apply the fields the owner named, preserving the kind's filesystem paths. */
 function withProfileOverrides(
   profile: BoxProfile,
   extraHosts: readonly string[] | undefined,
   override: z.output<typeof BoxProfileOverrideSchema> | undefined,
 ): BoxProfile {
-  if (override?.net === undefined && override?.listen === undefined && !extraHosts?.length) return profile;
+  if (override?.net === undefined && override?.listen === undefined && override?.unixSocketBind === undefined && !extraHosts?.length) return profile;
   const apply = (paths: ProfilePaths): ProfilePaths => {
     const { listen: defaultListen, ...rest } = paths;
     const listen = override?.listen === undefined ? defaultListen : override.listen;
@@ -160,6 +163,7 @@ function withProfileOverrides(
       ...rest,
       ...(net === undefined ? {} : { net }),
       ...(listen == null ? {} : { listen }),
+      ...(override?.unixSocketBind === undefined ? {} : { unixSocketBind: override.unixSocketBind }),
     };
   };
   return typeof profile === "function" ? (context) => apply(profile(context)) : apply(profile);

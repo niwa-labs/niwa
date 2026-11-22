@@ -25,7 +25,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
 import type { BoxPolicy, Sandbox, SandboxManifest } from "./sandbox.ts";
-import { BoxRefused, SandboxUnavailable } from "./sandbox.ts";
+import { BoxRefused, SandboxUnavailable, socketBindRefusals } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
@@ -215,10 +215,37 @@ export interface NonoOptions {
   readonly platform?: NodeJS.Platform;
 }
 
+const UNIX_SOCKET_DIR_BIND = "--allow-unix-socket-dir-bind";
+
+function checkedBindDirs(spec: BoxSpec, platform: NodeJS.Platform): string[] {
+  if (spec.unixSocketBind.length === 0) return [];
+  if (platform !== "darwin") {
+    throw new BoxRefused([{ code: "adapter", message: `nono on ${platform} cannot guarantee direct-child Unix socket bind permissions` }], "nono");
+  }
+  const writable = spec.write.map(expanded);
+  return distinct(spec.unixSocketBind.map(expanded)).map((dir) => {
+    let directory = false;
+    try {
+      directory = statSync(dir).isDirectory();
+    } catch {
+      // nono must be able to resolve the directory before starting the command.
+    }
+    if (!directory) {
+      throw new BoxRefused([{ code: "adapter", message: `Unix socket bind requires an existing directory: ${dir}` }], "nono");
+    }
+    // nono's flag implies a filesystem write grant. Require that access independently.
+    if (!writable.some((root) => covers(root, dir))) {
+      throw new BoxRefused([{ code: "adapter", message: `Unix socket bind directory ${dir} requires a separate filesystem write grant` }], "nono");
+    }
+    return dir;
+  });
+}
+
 export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
   const binary = options.binary ?? Bun.which("nono") ?? undefined;
   const platform = options.platform ?? process.platform;
   let probed: Promise<boolean> | undefined;
+  let supportsSocketBind: boolean | undefined;
   const system = systemReads(platform).map(expanded);
 
   const manifest = (given: BoxSpec): NonoManifest => {
@@ -229,6 +256,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     // Relative paths are read from the box's working directory, which is where nono is run: the same
     // place for the flags and for the check below.
     const spec = anchoredSpec(given);
+    const bindDirs = checkedBindDirs(spec, platform);
     // A socket is granted for reading as well, so it is a place the box may read; so is every place
     // the profile grants on its own.
     const granted = [
@@ -246,7 +274,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     });
     if (carved.length > 0) throw new BoxRefused(carved, "nono");
     const net = spec.net.length === 0 ? ["--block-net"] : spec.net.flatMap((host) => ["--allow-domain", host]);
-    return {
+    const config: NonoManifest = {
       sandbox: "nono",
       cwd: spec.cwd,
       env: spec.env,
@@ -255,6 +283,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
         devices: systemWrites(platform),
         read: { only: distinct([...[spec.cwd, ...spec.read, ...spec.write, ...spec.sockets].map(homeExpanded), ...systemReads(platform)]) },
         net: spec.net,
+        ...(bindDirs.length === 0 ? {} : { unixSocketBind: bindDirs }),
       },
       profile: profileFor(platform),
       flags: [
@@ -263,10 +292,27 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
         ...spec.read.flatMap((path) => grant(path, "read")),
         ...spec.write.flatMap((path) => grant(path, "write")),
         ...spec.sockets.flatMap((path) => ["--allow-unix-socket", path]),
+        ...bindDirs.flatMap((dir) => [UNIX_SOCKET_DIR_BIND, dir]),
         ...net,
       ],
     };
+    const refusals = socketBindRefusals(spec, config);
+    if (refusals.length > 0) throw new BoxRefused(refusals, "nono");
+    return config;
   };
+
+  function requireSocketBindFlag() {
+    if (!binary) throw new SandboxUnavailable("nono", "the nono binary is not on PATH");
+    supportsSocketBind ??= (() => {
+      const help = Bun.spawnSync([binary, "run", "--help"], {
+        cwd: TRUSTED_DIRECTORY, env: { ...launcherEnv() }, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 10_000,
+      });
+      return help.exitCode === 0 && help.stdout.toString().split("\n").some((line) =>
+        line.trimStart().startsWith(`${UNIX_SOCKET_DIR_BIND} `),
+      );
+    })();
+    if (!supportsSocketBind) throw new BoxRefused([{ code: "adapter", message: `the installed nono does not support ${UNIX_SOCKET_DIR_BIND}` }], "nono");
+  }
 
   /**
    * The wrapper's own command, up to the one it runs, and the clean-up of the profile file it names.
@@ -309,6 +355,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     },
     async launch(spec, argv, options) {
       const config = manifest(spec);
+      if (config.policy.unixSocketBind?.length) requireSocketBindFlag();
       const wrapper = await wrapped(config);
       try {
         return spawnBox("nono", wrapper.command, { cwd: config.cwd, env: config.env, argv: proxyCommand(spec.net, argv) }, launcherEnv(), TRUSTED_DIRECTORY, wrapper.cleanup, options);

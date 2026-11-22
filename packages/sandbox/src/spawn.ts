@@ -5,6 +5,7 @@ import { constants } from "node:os";
 
 import { BoxRefused, SandboxUnavailable } from "./sandbox.ts";
 import type { LaunchOptions, LaunchedBox, SandboxName } from "./sandbox.ts";
+import { EnvNameSchema } from "./spec.ts";
 
 /** Where a wrapper finds the system's tools: the host's choice, never the spec's. */
 export const SYSTEM_PATH = "/usr/bin:/bin";
@@ -83,8 +84,11 @@ export function insideBox(
     throw new BoxRefused([{ code: "adapter", message: `the program ${JSON.stringify(program)} would be read by env as a variable` }], sandbox);
   }
   const names = Object.keys(guest.env);
+  if (names.some((name) => !EnvNameSchema.safeParse(name).success)) {
+    throw new BoxRefused([{ code: "adapter", message: "invalid boxed environment variable name" }], sandbox);
+  }
   const unset = [...Object.keys(launcher), ...SHELL_ADDED].filter((name) => !(name in guest.env)).flatMap((name) => ["-u", name]);
-  // The names are checked by the spec: letters, digits and `_` only.
+  // Only validated names are interpolated in the shell script.
   const script = [
     'cd -- "$1" || exit 126',
     "shift",
@@ -137,7 +141,8 @@ export function spawnBox(
 ): LaunchedBox {
   if (missing(wrapper[0], launcher)) throw new SandboxUnavailable(sandbox, `${wrapper[0] ?? "the wrapper"} is not there`);
   requireDirectory(guest.cwd);
-  const stage = insideBox(sandbox, launcher, guest, guest.argv);
+  const env = options.privateEnv === undefined ? guest.env : { ...guest.env, ...options.privateEnv };
+  const stage = insideBox(sandbox, launcher, { cwd: guest.cwd, env }, guest.argv);
   const argv = [...wrapper, ...stage.command];
   let child: ReturnType<typeof Bun.spawn<"pipe", "pipe", "pipe">>;
   try {

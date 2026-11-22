@@ -149,6 +149,22 @@ test("a direct boxed launch must confirm its exact TCP listener before probing o
   expect(spawned).toBe(false);
 });
 
+test("a direct boxed launch refuses an adapter that drops its Unix socket bind grant", async () => {
+  const adapter = {
+    ...fake(() => { throw new Error("must not spawn"); }),
+    available: async () => { throw new Error("must not probe"); },
+  };
+  const launch = {
+    harness: "broker", program: "/bin/sh", args: [],
+    box: { sandbox: adapter, spec: { cwd: "/", unixSocketBind: ["/broker"] } },
+  };
+  await expect(spawnAgent(launch)).rejects.toThrow(/exact requested Unix socket bind directories/);
+  const child = spawnAgentNow(launch);
+  const error = await new Promise<Error>((resolve) => child.once("error", resolve));
+  expect(error).toBeInstanceOf(BoxRefused);
+  expect(error.message).toMatch(/exact requested Unix socket bind directories/);
+});
+
 const bytes = (size: number) => new Uint8Array(size).fill(97);
 const inert = { write: () => undefined, end: () => undefined };
 

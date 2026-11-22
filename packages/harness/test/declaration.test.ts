@@ -270,9 +270,9 @@ test("an installation's profile is its kind's, from its own options, with the ho
   });
 });
 
-test("a host can replace or clear either network field without changing a kind's directories", () => {
+test("a host can replace or clear individual permissions without changing a kind's directories", () => {
   const listen = { host: "127.0.0.1", port: 0 } as const;
-  const inherited = { read: ["/opt/tool"], write: ["/tmp/state"], net: ["api.example.com"], listen };
+  const inherited = { read: ["/opt/tool"], write: ["/tmp/state"], net: ["api.example.com"], listen, unixSocketBind: ["sessionTemp"] as const };
   const kind = defineHarnessKind({
     name: "probe-profile",
     capabilities: DECLARED,
@@ -294,8 +294,12 @@ test("a host can replace or clear either network field without changing a kind's
     listen: { host: "::1", port: 3000 },
   });
   expect(paths({ id: "clear-listener", boxProfile: { listen: null } })).toEqual({
-    read: inherited.read, write: inherited.write, net: inherited.net,
+    read: inherited.read, write: inherited.write, net: inherited.net, unixSocketBind: inherited.unixSocketBind,
   });
+  expect(paths({ id: "replace-bind", boxProfile: { unixSocketBind: [{ dir: "/tmp/state" }] } })).toEqual({
+    ...inherited, unixSocketBind: [{ dir: "/tmp/state" }],
+  });
+  expect(paths({ id: "clear-bind", boxProfile: { unixSocketBind: [] } })).toEqual({ ...inherited, unixSocketBind: [] });
   expect(paths({ id: "pattern", boxProfile: { net: ["*.example.com"] } })).toEqual({ ...inherited, net: ["*.example.com"] });
   for (const host of ["*", "*.", "*.sub.*.example.com", "https://proxy.example.com/v1", "proxy.example.com:443"]) {
     expect(() => paths({ id: "invalid-host", boxProfile: { net: [host] } })).toThrow(/use a hostname, IP address, or subdomain pattern/);

@@ -8,6 +8,8 @@
 
 import { LoopbackListenSchema, listenerName, sameListener } from "./spec.ts";
 import type { BoxSpec, LoopbackListen } from "./spec.ts";
+import { covers, realPlace } from "./profile.ts";
+import { anchoredSpec } from "./paths.ts";
 
 export type SandboxName = "srt" | "nono" | "gondolin" | "boxlite";
 export type SandboxClass = "process" | "vm";
@@ -27,6 +29,8 @@ export interface BoxPolicy {
   readonly net: readonly string[];
   /** The sole host-reachable inbound TCP listener the sandbox applies. */
   readonly listen?: LoopbackListen;
+  /** Directories where the adapter applies direct-child Unix socket bind permissions. */
+  readonly unixSocketBind?: readonly string[];
 }
 
 /** The full configuration a sandbox will be given for one spec. A pure value of the spec. */
@@ -69,6 +73,8 @@ export interface LaunchedBox {
 export interface LaunchOptions {
   /** The process leads its own process group, so a signal to the group reaches everything it started. */
   readonly detached?: boolean;
+  /** Trusted process-only environment, outside the manifest and spawn events. */
+  readonly privateEnv?: Readonly<Record<string, string>>;
 }
 
 export interface Sandbox<M extends SandboxManifest = SandboxManifest> {
@@ -117,6 +123,27 @@ export function listenRefusal(spec: BoxSpec, manifest: SandboxManifest): BoxRefu
       ? "the sandbox applies an unrequested TCP loopback listener"
       : `the sandbox does not confirm an exact listener on ${listenerName(spec.listen)} for ${spec.listen.from}`,
   };
+}
+
+/** An adapter must report the exact requested directory set and preserve closed paths. */
+export function socketBindRefusals(given: BoxSpec, manifest: SandboxManifest): BoxRefusal[] {
+  const applied = manifest.policy?.unixSocketBind ?? [];
+  if (given.unixSocketBind.length === 0 && applied.length === 0) return [];
+  const spec = anchoredSpec(given);
+  const wanted = new Set(spec.unixSocketBind.map((dir) => realPlace(dir)));
+  const reasons: BoxRefusal[] = [];
+  if (new Set(applied).size !== wanted.size || applied.some((dir) => !wanted.has(dir))) {
+    reasons.push({ code: "adapter", message: "the sandbox does not confirm the exact requested Unix socket bind directories" });
+  }
+  for (const path of spec.closed) {
+    const closed = realPlace(path);
+    for (const dir of wanted) {
+      if (covers(closed, dir) || covers(dir, closed)) {
+        reasons.push({ code: "closed", message: `Unix socket bind directory ${dir} overlaps closed path ${closed}` });
+      }
+    }
+  }
+  return reasons;
 }
 
 /**

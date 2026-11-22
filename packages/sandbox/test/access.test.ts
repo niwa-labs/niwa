@@ -64,6 +64,60 @@ function host() {
 
 const LOOPBACK = { host: "127.0.0.1", port: 0 } as const;
 
+test("socket bind comes from selected profiles and resolves only to named directories", () => {
+  const temp = at("socket-temp");
+  const explicit = at("socket-explicit");
+  const alias = at("socket-alias");
+  mkdirSync(temp);
+  mkdirSync(explicit);
+  symlinkSync(explicit, alias);
+  const made = sandbox({ profiles: { broker: {
+    write: [explicit],
+    unixSocketBind: ["sessionTemp", { dir: alias }, { dir: explicit }, { dir: temp }],
+  } } });
+  const input = { cwd: at("work"), defaults: { allow: [] }, network: false } as const;
+  expect(planSpec(made.plan(input)).unixSocketBind).toEqual([]);
+  const request = { allow: ["broker"] };
+  const missingTemp = made.plan({ ...input, request });
+  expect(missingTemp.refusals).toEqual([{ code: "adapter", message: expect.stringContaining("no private session temp") }]);
+  const plan = made.plan({ ...input, request, sessionTemp: temp, writes: [{ path: temp, from: "temp" }] });
+  const adapter = nono({ platform: "darwin" });
+  expect(() => admit(plan, adapter, () => undefined)).toThrow(/box.use@broker/);
+  const socket = at("host.sock");
+  const admitted = admit(plan, adapter, (rule) => rule, { sockets: [socket] });
+  const expected = [temp, explicit].map((dir) => ({ dir, from: "profile:broker" }));
+  expect(BoxManifestSchema.parse(boxManifest(plan, admitted.rules, admitted.manifest))).toMatchObject({
+    unixSocketBind: expected,
+    policy: { unixSocketBind: [temp, explicit], net: [] },
+  });
+  expect(planSpec(plan).listen).toBeUndefined();
+  expect(adapter.manifest(admitted.spec).flags).toEqual(expect.arrayContaining([
+    "--allow-unix-socket", socket, "--allow-unix-socket-dir-bind", temp, explicit, "--block-net",
+  ]));
+  expect(adapter.manifest(admitted.spec).flags.filter((flag) => flag === "--allow-unix-socket-dir-bind")).toHaveLength(2);
+  expect(() => admit(plan, srt({ platform: "darwin" }), (rule) => rule)).toThrow(/srt cannot restrict Unix socket bind/);
+  expect(() => admit(plan, nono({ platform: "linux" }), (rule) => rule)).toThrow(/cannot guarantee direct-child/);
+});
+
+test("socket bind cannot add ordinary write access or overlap closed paths", () => {
+  const work = at("work");
+  const adapter = nono({ platform: "darwin" });
+  expect(() => adapter.manifest(boxSpec({ cwd: work, unixSocketBind: [work] }))).toThrow(/separate filesystem write grant/);
+  const spec = { cwd: work, write: [work], unixSocketBind: [work] };
+  expect(() => adapter.manifest(boxSpec({ ...spec, closed: [at("work", "closed")] }))).toThrow(/closed/);
+  expect(() => adapter.manifest(boxSpec({ ...spec, closed: [root] }))).toThrow(/closed/);
+  expect(() => adapter.manifest(boxSpec({ ...spec, unixSocketBind: [at("codex", "auth.json")] }))).toThrow(/existing directory/);
+  expect(adapter.manifest(boxSpec({ ...spec, unixSocketBind: [] })).flags).not.toContain("--allow-unix-socket-dir-bind");
+});
+
+test("nono refuses socket bind before invoking a wrapper without the scoped flag", async () => {
+  const dir = at("work");
+  const adapter = nono({ platform: "darwin", binary: "/usr/bin/true" });
+  await expect(adapter.launch(boxSpec({ cwd: dir, write: [dir], unixSocketBind: [dir] }), ["/bin/sh"])).rejects.toThrow(
+    /installed nono does not support --allow-unix-socket-dir-bind/,
+  );
+});
+
 test("a TCP listener comes only from a selected profile and retains its origin", () => {
   const made = sandbox({ profiles: { service: { listen: LOOPBACK } } });
   made.install("server", { listen: LOOPBACK, net: ["registry.example"] });
@@ -386,10 +440,34 @@ test("a box that writes its directory gets what git keeps of it outside: a workt
   git(["worktree", "add", "-qb", "fixture", tree]);
   const input = { cwd: tree, defaults: { allow: ["project"] }, network: false } as const;
   const worktree = { id: "wt1", path: tree, repo: main };
+  const common = join(main, ".git");
+  const admin = join(common, "worktrees", "wt1");
   for (const binding of [undefined, { ...worktree, id: "unrelated" }]) {
     const denied = host().plan({ ...input, ...(binding && { worktree: binding }) });
     expect(denied.refusals[0]?.code).toBe("not-granted");
+    if (!binding) expect(denied.refusals[0]?.message).toContain(JSON.stringify({ read: admin }));
     expect(denied.paths.some((need) => need.from === "repository")).toBe(false);
+  }
+  const adminOnly = host().plan({ ...input, request: { allow: [{ read: admin }] } });
+  expect(adminOnly.refusals[0]?.message).toContain("common Git directory " + common + " needs explicit read access");
+  const unapproved = host().plan({ ...input, request: { allow: [{ read: admin }] }, holdsRule: () => false });
+  expect(unapproved.refusals[0]?.message).toContain("checkout Git directory " + admin);
+  expect(unapproved.refusals[0]?.message).not.toContain("common Git directory");
+  for (const request of [{ allow: [{ read: common }] }, { only: [{ write: "." }, { read: common }] }, { only: [{ read: "." }, { read: common }] }]) {
+    const external = host().plan({ ...input, request, holdsRule: () => true });
+    expect(external.refusals).toEqual([]);
+    expect(external.rules).toContain("box.read@" + common);
+    expect(external.paths.filter((need) => need.from === "repository" || need.path.startsWith(common)))
+      .toEqual([{ path: common, mode: "read", from: "call" }]);
+    expect(() => admit(external, srt(), () => undefined)).toThrow("box.read@" + common);
+    const confined = admit(external, nono(), (rule) => rule);
+    expect(confined.manifest.policy.read).toEqual({ only: expect.arrayContaining([common]) });
+    expect(confined.manifest.policy.write.some((path) => path.startsWith(common))).toBe(false);
+  }
+  for (const path of [join(tree, ".git"), admin, join(admin, "commondir")]) {
+    const closed = sandbox().plan({ ...input, request: { allow: [{ read: common }] },
+      closed: [{ path, from: "niwa" }] });
+    expect(closed.refusals).toEqual([{ code: "closed", message: expect.stringContaining(path) }]);
   }
   const explicit = host().plan({ ...input, request: { allow: [{ write: join(main, ".git") }] } });
   expect(explicit.refusals).toEqual([]);
@@ -409,6 +487,22 @@ test("a box that writes its directory gets what git keeps of it outside: a workt
   mkdirSync(join(main, "pkg"));
   const inner = host().plan({ cwd: join(main, "pkg"), defaults: { allow: ["project"] }, network: false });
   expect(inner.paths).not.toContainEqual({ path: join(main, ".git"), mode: "write", from: "repository" });
+
+  const outside = at("outside-git");
+  mkdirSync(outside);
+  writeFileSync(join(admin, "commondir"), outside + "\n");
+  const separate = host().plan({ ...input, request: { allow: [{ read: admin }] } });
+  expect(separate.refusals[0]?.message).toContain(JSON.stringify({ read: outside }));
+  const both = host().plan({ ...input, request: { allow: [{ read: admin }, { read: outside }] } });
+  expect(both.refusals).toEqual([]);
+  expect(both.paths.some((need) => need.from === "repository")).toBe(false);
+  writeFileSync(join(outside, "commondir"), "/ungranted\n");
+  const alias = join(common, "worktrees", "alias");
+  symlinkSync(outside, alias);
+  writeFileSync(join(tree, ".git"), "gitdir: " + alias + "\n");
+  const redirected = host().plan({ ...input, request: { allow: [{ read: common }] } });
+  expect(redirected.refusals[0]?.message).toContain("cannot verify checkout pointer");
+  expect(redirected.refusals[0]?.message).not.toContain("/ungranted");
 });
 
 test("the toolchains read what each profile of the catalog reads, and nothing it writes, nor anything of a host's profile", () => {
@@ -431,7 +525,9 @@ test("the cwd and required writes respect installation boundaries", () => {
   const cwd = at("pi", "workspace");
   const input = { cwd, defaults: { allow: [] }, network: false, writes: [{ path: cwd, from: "cwd" }] };
   expect(host().plan({ ...input, owner: "pi" }).refusals).toEqual([]);
-  expect(host().plan({ ...input, owner: "codex-sol" }).refusals[0]?.code).toBe("closed");
+  expect(host().plan({ ...input, owner: "codex-sol" }).refusals[0]).toMatchObject({
+    code: "closed", message: expect.stringContaining("Choose a cwd outside that home, or start the owning harness pi"),
+  });
 });
 
 

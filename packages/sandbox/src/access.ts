@@ -27,9 +27,9 @@ import { z } from "zod";
 import { covers, homeExpanded, linkPlace, programPaths, realPlace, resolveProfile } from "./profile.ts";
 import type { BoxProfile, ResolvedProfile } from "./profile.ts";
 import { catalog } from "./profiles.ts";
-import { BoxRefused, listenRefusal } from "./sandbox.ts";
+import { BoxRefused, listenRefusal, socketBindRefusals } from "./sandbox.ts";
 import type { BoxPolicy, BoxRefusal, Sandbox, SandboxManifest } from "./sandbox.ts";
-import { EnvNameSchema, ListenNeedSchema, LoopbackListenSchema, boxSpec, listenerName, sameListener } from "./spec.ts";
+import { EnvNameSchema, ListenNeedSchema, LoopbackListenSchema, UnixSocketBindDirSchema, boxSpec, listenerName, sameListener } from "./spec.ts";
 import type { BoxSpec, ListenNeed } from "./spec.ts";
 import type { BoxSandboxName } from "./launch.ts";
 
@@ -107,6 +107,7 @@ export interface BoxPlan {
   readonly net: readonly { readonly host: string; readonly from: Origin }[];
   /** A required host-reachable TCP listener and the profile that supplied it. */
   readonly listen?: ListenNeed;
+  readonly unixSocketBind?: readonly { readonly dir: string; readonly from: Origin }[];
   /** Guaranteed closed. */
   readonly closed: readonly { readonly path: string; readonly from: Origin }[];
   readonly skipped: readonly Skipped[];
@@ -136,10 +137,14 @@ export interface PlanInput {
   readonly defaults: BoxAccess | BoxAccessInput;
   /** What the call asked for. */
   readonly request?: BoxAccess | BoxAccessInput | undefined;
+  /** Checks a caller's rule before the planner inspects external Git metadata. Admission still checks every rule. */
+  readonly holdsRule?: (rule: string) => boolean;
   /** The installation whose profile the box takes as its own, whatever the request says. */
   readonly owner?: string;
   /** Places the box writes whatever the request says, with where each came from. */
   readonly writes?: readonly { readonly path: string; readonly from: Origin }[];
+  /** The private directory allocated for this launch and passed as its TMPDIR. */
+  readonly sessionTemp?: string;
   /** Places closed to the box besides the profiles' and the built-in list (niwa's own). */
   readonly closed?: readonly { readonly path: string; readonly from: Origin }[];
   /** Whether this box may use networking at all, including outbound hosts and inbound listeners. */
@@ -255,6 +260,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
   const paths: PathNeed[] = [];
   const net: { host: string; from: Origin }[] = [];
   let listen: ListenNeed | undefined;
+  const unixSocketBind = new Map<string, { dir: string; from: Origin }>();
 
   const resolved = new Map<string, ResolvedProfile>();
   const profileOf = (name: string, profile: BoxProfile): ResolvedProfile => {
@@ -264,10 +270,9 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
       // A program keeps the name it is found by: a link stays a link beside its target.
       const place = (path: string) => (given.programs.includes(path) ? linkPlace(path, home) : realPlace(path, home));
       found = {
+        ...given,
         read: [...new Set(given.read.map(place))],
         write: [...new Set(given.write.map(place))],
-        net: given.net,
-        ...(given.listen === undefined ? {} : { listen: given.listen }),
         programs: [...new Set(given.programs.flatMap((path) => [place(path), path]))],
       };
       resolved.set(name, found);
@@ -302,6 +307,15 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
         code: "adapter",
         message: `${from} requires a listener on ${endpoint}; ${listen.from} already requires a different listener on ${listenerName(listen)}`,
       });
+    }
+    for (const entry of profile.unixSocketBind ?? []) {
+      const dir = entry === "sessionTemp" ? input.sessionTemp : entry.dir;
+      if (dir === undefined) {
+        refusals.push({ code: "adapter", message: `${from} requires Unix socket bind in sessionTemp, but no private session temp directory was allocated` });
+        continue;
+      }
+      const place = realPlace(UnixSocketBindDirSchema.parse(dir), home);
+      if (!unixSocketBind.has(place)) unixSocketBind.set(place, { dir: place, from });
     }
     takenPaths.push(...profile.read, ...profile.write);
   };
@@ -370,6 +384,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     if (!free && !rules.includes(rule)) rules.push(rule);
   };
 
+  const metadataAccess: PathNeed[] = [];
   for (const { item, from } of request.items) {
     const fromCall = from === "call";
     if (item === "project") {
@@ -415,13 +430,17 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
       const entry = always.find((one) => covers(one.path, place));
       const given = defaultPlaces(mode).filter((one) => entry === undefined || covers(entry.path, one));
       const free = given.some((one) => covers(one, place));
-      if (fromCall) needs(free, `box.${mode}@${placeTarget(place)}`);
+      const rule = `box.${mode}@${placeTarget(place)}`;
+      if (fromCall) needs(free, rule);
+      if (!fromCall || free || input.holdsRule?.(rule) !== false) metadataAccess.push({ path: place, mode, from });
     }
   }
   for (const write of input.writes ?? []) paths.push({ path: realPlace(write.path, home), mode: "write", from: write.from });
-  if (paths.some((need) => need.mode === "write" && covers(need.path, cwd))) {
+  const writesProject = paths.some((need) => need.mode === "write" && covers(need.path, cwd));
+  const readsProject = metadataAccess.some((need) => covers(need.path, cwd));
+  if (closedAt(cwd) === undefined && (writesProject || (input.worktree === undefined && readsProject))) {
     try {
-      for (const need of repositoryOf(cwd, input.worktree, paths)) {
+      for (const need of repositoryOf(cwd, input.worktree, metadataAccess, (path) => closedAt(path) !== undefined)) {
         if (!paths.some((one) => one.mode === "write" && covers(one.path, need.path))) paths.push(need);
       }
     } catch (error) {
@@ -432,7 +451,12 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
 
   for (const place of new Set([cwd, ...paths.map((one) => realPlace(one.path))])) {
     const inside = closedAt(place);
-    if (inside) refusals.push({ code: "closed", message: `${place} lies in ${inside.path}, closed by ${inside.from}` });
+    if (inside) {
+      const how = place !== cwd ? "" : inside.from.startsWith("harness:")
+        ? `. Choose a cwd outside that home, or start the owning harness ${inside.from.slice("harness:".length)}`
+        : ". Choose a cwd outside the closed path";
+      refusals.push({ code: "closed", message: `${place} lies in ${inside.path}, closed by ${inside.from}${how}` });
+    }
   }
 
   // Opening a closed place for reading cannot also make an overlapping write reachable.
@@ -453,6 +477,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     paths: distinctNeeds(paths),
     net: distinctHosts(net),
     ...(listen === undefined ? {} : { listen }),
+    ...(unixSocketBind.size === 0 ? {} : { unixSocketBind: [...unixSocketBind.values()] }),
     closed,
     skipped,
     rules,
@@ -490,10 +515,34 @@ function gitPointer(path: string): string {
   }
 }
 
-/** External metadata of a linked checkout. Only a host registration can add a path. */
-export function repositoryOf(dir: string, registered?: PlanInput["worktree"], authorized: readonly PathNeed[] = []): PathNeed[] {
-  const refuse = (): never => {
-    throw new BoxRefused([{ code: "not-granted", message: `no matching Git worktree registration or explicit access for ${dir}` }]);
+/** External metadata of a linked checkout. Only a host registration can add a path to the box. */
+export function repositoryOf(
+  dir: string,
+  registered?: PlanInput["worktree"],
+  authorized: readonly PathNeed[] = [],
+  isClosed: (path: string) => boolean = () => false,
+): PathNeed[] {
+  const refuse = (why: string): never => {
+    throw new BoxRefused([{ code: "not-granted", message: `Git metadata for ${dir}: ${why}` }]);
+  };
+  const requireOpen = (path: string, label: string) => {
+    if (isClosed(path)) {
+      throw new BoxRefused([{ code: "closed", message: `Git metadata for ${dir}: ${label} ${path} is closed. Choose a checkout whose Git metadata the box may read` }]);
+    }
+  };
+  const checkDirectory = (path: string, label: string) => {
+    requireOpen(path, label);
+    const grant = authorized.find((need) => covers(need.path, path));
+    if (grant === undefined) {
+      return refuse(`${label} ${path} needs explicit read access. After verifying it, add ${JSON.stringify({ read: path })} to box.allow or box.only and authorize box.read@${placeTarget(path)} if required`);
+    }
+    // Check from the granted root down. A symlink cannot redirect inspection outside the grant.
+    const directories = [path];
+    for (let dir = path; dir !== grant.path;) {
+      dir = dirname(dir);
+      directories.push(dir);
+    }
+    return directories.reverse().every((dir) => lstatSync(dir).isDirectory());
   };
   for (let at = dir; ; at = dirname(at)) {
     const dot = join(at, ".git");
@@ -501,39 +550,49 @@ export function repositoryOf(dir: string, registered?: PlanInput["worktree"], au
     try {
       entry = lstatSync(dot, { throwIfNoEntry: false });
     } catch {
-      return refuse();
+      return refuse(`cannot inspect ${dot}`);
     }
     const expected = registered?.path === at ? registered : undefined;
     if (expected || entry) {
       if (entry?.isDirectory() && !expected) return [];
-      if (!entry?.isFile() || entry.size > 8192) return refuse();
+      const invalid = () => refuse(`cannot verify ${expected ? "registered checkout" : "checkout pointer"} at ${dot}. From the checkout, run git rev-parse --path-format=absolute --git-dir --git-common-dir`);
+      if (!entry?.isFile() || entry.size > 8192) return invalid();
       try {
+        if (!expected) requireOpen(dot, "checkout pointer");
         const name = /^gitdir: ([^\r\n]+)\r?\n?$/.exec(gitPointer(dot))?.[1];
-        if (!name) return refuse();
+        if (!name || name.includes("\0")) return invalid();
         const pointed = resolve(at, name);
         if (!expected) {
-          if (authorized.some((need) => need.mode === "write" && covers(need.path, realPlace(pointed)))) return [];
-          return refuse();
+          if (!checkDirectory(pointed, "checkout Git directory")) return invalid();
+          const commonFile = join(pointed, "commondir");
+          requireOpen(commonFile, "Git common directory pointer");
+          if (lstatSync(commonFile, { throwIfNoEntry: false }) === undefined) return [];
+          const name = /^([^\r\n\0]+)\r?\n?$/.exec(gitPointer(commonFile))?.[1];
+          if (!name) return invalid();
+          const common = resolve(pointed, name);
+          if (!checkDirectory(common, "common Git directory")) return invalid();
+          return [];
         }
         const { id, repo } = expected;
-        if (!isAbsolute(repo) || basename(id) !== id || !id || id === "." || id === "..") return refuse();
+        if (!isAbsolute(repo) || basename(id) !== id || !id || id === "." || id === "..") return invalid();
         const common = join(repo, ".git");
         const admin = join(common, "worktrees", id);
-        if (pointed !== admin || realPlace(admin) !== admin || !statSync(admin).isDirectory()) return refuse();
+        if (pointed !== admin || realPlace(admin) !== admin || !statSync(admin).isDirectory()) return invalid();
         const pointer = (file: string) => {
           return resolve(admin, gitPointer(join(admin, file)).trimEnd());
         };
-        if (pointer("gitdir") !== dot || pointer("commondir") !== common) return refuse();
+        if (pointer("gitdir") !== dot || pointer("commondir") !== common) return invalid();
         const paths: PathNeed[] = [{ path: admin, mode: "write", from: "repository" }, { path: common, mode: "read", from: "repository" }];
         for (const part of ["objects", "refs", "logs"]) {
           const path = join(common, part);
           const stat = lstatSync(path, { throwIfNoEntry: false });
-          if (stat && !stat.isDirectory()) return refuse();
+          if (stat && !stat.isDirectory()) return invalid();
           paths.push({ path, mode: "write", from: "repository" });
         }
         return paths;
-      } catch {
-        return refuse();
+      } catch (error) {
+        if (error instanceof BoxRefused) throw error;
+        return invalid();
       }
     }
     if (dirname(at) === at) return [];
@@ -575,6 +634,7 @@ export function planSpec(plan: BoxPlan, extra: { readonly env?: Readonly<Record<
     ...(plan.listen === undefined ? {} : { listen: plan.listen }),
     env: { ...extra.env },
     sockets: [...(extra.sockets ?? [])],
+    unixSocketBind: (plan.unixSocketBind ?? []).map((grant) => grant.dir),
   });
 }
 
@@ -585,6 +645,7 @@ export const BoxPolicySchema = z.object({
   read: z.union([z.object({ only: z.array(z.string()) }), z.object({ except: z.array(z.string()) })]),
   net: z.array(z.string()),
   listen: LoopbackListenSchema.optional(),
+  unixSocketBind: z.array(UnixSocketBindDirSchema).optional(),
 });
 
 /**
@@ -603,6 +664,7 @@ export const BoxManifestSchema = z.object({
   paths: z.array(z.object({ path: z.string(), mode: z.enum(["read", "write"]), from: z.string() })),
   net: z.array(z.object({ host: z.string(), from: z.string() })),
   listen: ListenNeedSchema.optional(),
+  unixSocketBind: z.array(z.object({ dir: UnixSocketBindDirSchema, from: z.string() })).optional(),
   closed: z.array(z.object({ path: z.string(), from: z.string() })),
   skipped: z.array(z.object({ place: z.string(), from: z.string(), why: z.string() })),
   rules: z.array(z.string()),
@@ -621,6 +683,7 @@ export function boxManifest(plan: BoxPlan, rules: readonly string[], made: Sandb
     paths: [...plan.paths],
     net: [...plan.net],
     ...(plan.listen === undefined ? {} : { listen: { ...plan.listen } }),
+    ...(plan.unixSocketBind === undefined ? {} : { unixSocketBind: [...plan.unixSocketBind] }),
     closed: [...plan.closed],
     skipped: [...plan.skipped],
     rules: [...rules],
@@ -630,6 +693,7 @@ export function boxManifest(plan: BoxPlan, rules: readonly string[], made: Sandb
       read: "only" in policy.read ? { only: [...policy.read.only] } : { except: [...policy.read.except] },
       net: [...policy.net],
       ...(policy.listen === undefined ? {} : { listen: { ...policy.listen } }),
+      ...(policy.unixSocketBind === undefined ? {} : { unixSocketBind: [...policy.unixSocketBind] }),
     },
     env: Object.keys(made.env).map((name) => EnvNameSchema.parse(name)),
   };
@@ -663,6 +727,7 @@ export function admit(
     manifest = sandbox.manifest(spec);
     const listener = listenRefusal(spec, manifest);
     if (listener !== undefined) reasons.push(listener);
+    reasons.push(...socketBindRefusals(spec, manifest));
   } catch (error) {
     if (!(error instanceof BoxRefused)) throw error;
     reasons.push(...error.reasons);

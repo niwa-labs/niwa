@@ -58,6 +58,47 @@ function closed(sandbox: Sandbox): boolean {
 
 const CURL = (url: string) => `curl -sS -m 10 -o /dev/null -w '%{http_code}' ${url}`;
 
+const socketAdapter = nono();
+test.skipIf(!live || process.platform !== "darwin")("nono binds only directly in requested Unix socket directories", async () => {
+  expect(await socketAdapter.available()).toBe(true);
+  const root = await realpath(await mkdtemp(join(tmpdir(), "s")));
+  try {
+    const temp = join(root, "t");
+    const explicit = join(root, "e");
+    const nested = join(temp, "n");
+    await mkdir(nested, { recursive: true });
+    await mkdir(explicit);
+    const host = makeHost();
+    host.install("broker", { unixSocketBind: ["sessionTemp", { dir: explicit }] });
+    const input = { cwd: root, defaults: { allow: [] }, network: true, sessionTemp: temp, writes: [{ path: root, from: "host" }] } as const;
+    const socketPaths = [temp, explicit, nested, root].map((dir) => join(dir, "x"));
+    const program = `
+      const { createServer } = require("node:net");
+      for (const path of process.argv.slice(1)) {
+        const result = await new Promise((resolve) => {
+          const server = createServer();
+          server.once("error", (error) => resolve(error.code));
+          server.listen(path, () => server.close(() => resolve("bound")));
+        });
+        console.log(result);
+      }
+    `;
+    for (const owner of ["broker", "plain"]) {
+      const plan = host.plan({ ...input, owner });
+      const { spec } = admit(plan, socketAdapter, () => undefined);
+      const child = await socketAdapter.launch(spec, [process.execPath, "-e", program, ...socketPaths]);
+      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      const results = stdout.trim().split("\n");
+      const expected = owner === "broker" ? [true, true, false, false] : [false, false, false, false];
+      expect(results.map((result) => result === "bound")).toEqual(expected);
+      for (const [index, bound] of expected.entries()) if (!bound) expect(results[index]).toMatch(/^(EPERM|EACCES)$/);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 for (const sandbox of [srt(), nono()]) {
   const present = live && (await sandbox.available());
   describe(sandbox.name, () => {

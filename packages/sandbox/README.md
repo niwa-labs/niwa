@@ -2,7 +2,16 @@
 
 Process boxes (srt and nono), `BoxSpec`, launching a process inside a box, and how a box gets its access.
 
-- A **profile** is the access a program needs: `{ read?, write?, net?, listen? }`, or a function of
+A box profile may request Unix socket bind with
+`unixSocketBind: ["sessionTemp", { dir: "/absolute/socket-dir" }]`.
+`sessionTemp` names the launch's private `TMPDIR`. Explicit directories can
+also use `~/`. Each must exist at launch and have a separate filesystem write
+grant. macOS nono grants bind and connect for socket files directly in those
+directories. The exact-path connect list (`sockets`) and TCP listeners
+(`listen`) are separate. srt and Niwa's Linux nono adapter refuse scoped Unix
+socket bind requests.
+
+- A **profile** is the access a program needs: `{ read?, write?, net?, listen?, unixSocketBind? }`, or a function of
   `{ home, env, bin }` (`bin(name)` gives the program's path, its real path and its package root).
   `@niwa-labs/sandbox/profiles` is the catalog: `git`, `node`, `bun`, `npm`, `cargo`, `uv`.
 - `sandbox({ adapter?, profiles?, closed? })` is a host's sandbox: the catalog, the host's own
@@ -25,6 +34,40 @@ Process boxes (srt and nono), `BoxSpec`, launching a process inside a box, and h
   `BoxRefused`, every reason at once.
 - Widening beyond the host's default needs a rule of the caller's grant: `box.use@<profile>`,
   `box.read@<path>`, `box.write@<path>`, `box.net@<host>`.
-- `BoxManifest` records the request and its origins, resolved paths, outbound hosts, the listener
-  and the profile that supplied it, what was closed and left out, the rules taken, and the policy
-  the sandbox applies.
+- `BoxManifest` records the request and its origins, resolved paths, outbound hosts, the TCP
+  listener and Unix socket bind grants with their profile origins, what was closed and left out,
+  the rules taken, and the policy the sandbox applies.
+
+## External Git worktrees
+
+A linked checkout has a checkout-specific Git directory (holding its HEAD and index) and a
+common Git directory (holding its objects, refs and config). From a trusted shell, find both paths
+for the intended checkout before granting access:
+
+```sh
+git -C "$checkout" rev-parse --path-format=absolute --git-dir --git-common-dir
+```
+
+For example, if the command prints `/home/dev/repo/.git/worktrees/review` and
+`/home/dev/repo/.git`, one read entry for the latter covers both. If the directories are
+separate, include a read entry for each canonical directory. An external MCP client can start
+`session.start` with `harness: "codex-luna"`, the linked checkout as `cwd`, and this box:
+
+```json
+{"only":["toolchains",{"write":"/home/dev/review"},{"read":"/home/dev/repo/.git"}]}
+```
+
+The caller needs `box.read@/home/dev/repo/.git` when the host default does not already provide
+that read access. The checkout write and toolchains also need authorization when outside the
+default. With the normal session default, `{"allow":[{"read":"/home/dev/repo/.git"}]}` adds
+the same metadata access. Use a checkout `read` entry if the session only reads source.
+
+`git log` needs read access to the Git metadata. A Go build can put its cache and output in the
+session's writable `TMPDIR` using `GOCACHE="$TMPDIR/go-cache" go build -o "$TMPDIR/app" .`.
+If the Go installation is outside the readable toolchain paths, grant read access to its
+installation directory too. Git operations that update the index, refs or objects need separate
+write authorization for the metadata they change.
+
+The external checkout pointers validate coverage of the requested paths. Only a verified host
+registration supplies additional Git paths automatically. If a cwd is inside another harness's
+closed home, choose a cwd outside that home or start the harness that owns it.

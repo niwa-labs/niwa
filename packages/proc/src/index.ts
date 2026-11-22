@@ -237,11 +237,14 @@ export function proc(options: ProcOptions = {}): Plugin {
           ctx.signal?.throwIfAborted();
           // The temp files go inside the directory, where the box lets the command write.
           const temp = join(cwd, `.niwa-tmp-${randomUUID()}`);
+          const rights = api.rights(ctx.caller);
+          const held = (needed: string) => rights === "unlimited" ? needed : coveringRule(rights, needed);
           const plan = await beforeStart(async () => boxes.plan({
             cwd,
             worktree: options.worktreeFor?.(api, cwd),
             defaults: boxDefault,
             request: input.box,
+            holdsRule: (needed) => held(needed) !== undefined,
             writes: [
               { path: cwd, from: "cwd" },
               { path: temp, from: "temp" },
@@ -249,10 +252,9 @@ export function proc(options: ProcOptions = {}): Plugin {
             closed: [...closedPlacesOf(home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
             network: false,
           }));
-          const rights = api.rights(ctx.caller);
           const env = { ...baseEnv(), TMPDIR: temp, TMP: temp, TEMP: temp, ...input.env };
           const admitted = await beforeStart(async () =>
-            admit(plan, sandbox, (needed) => (rights === "unlimited" ? needed : coveringRule(rights, needed)), { env }),
+            admit(plan, sandbox, held, { env }),
           );
           await beforeStart(async () => heldPolicy(sandbox, admitted.manifest, admitted.spec));
           const box = boxManifest(plan, admitted.rules, admitted.manifest);

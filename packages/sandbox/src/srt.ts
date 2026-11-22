@@ -124,6 +124,9 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
     if (given.listen !== undefined) {
       throw new BoxRefused([{ code: "adapter", message: "srt cannot restrict a TCP loopback listener to the requested address and port" }], "srt");
     }
+    if (given.unixSocketBind.length > 0) {
+      throw new BoxRefused([{ code: "adapter", message: "srt cannot restrict Unix socket bind to the requested directories" }], "srt");
+    }
     const spec = anchoredSpec(given);
     const reasons: BoxRefusal[] = [];
     // On Linux srt cannot filter a socket by its path: the list is ignored, and the box would run

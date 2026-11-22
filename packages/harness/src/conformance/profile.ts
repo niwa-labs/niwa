@@ -57,14 +57,14 @@ export async function profileConformance(binding: HarnessBinding, options: Profi
   host.install(instance.id, profile);
   // A temp directory of the session's own, as every box has: the shared temp areas are closed.
   const temp = realpathSync(mkdtempSync(join(tmpdir(), "niwa-profile-")));
-  const plan = host.plan({ cwd: options.cwd, defaults: { allow: [] }, owner: instance.id, writes: [{ path: temp, from: "temp" }], network: true });
-  const adapter = await requireSandbox(nono());
-  const admitted = admit(plan, adapter, () => undefined);
-  const env = { TMPDIR: temp };
-  const { session } = await control.start({ prompt: promptFromText(""), cwd: options.cwd, env, box: { sandbox: adapter, spec: admitted.spec } });
-  const seen: LifeEvent[] = [];
   const turnMs = options.turnMs ?? 180_000;
   try {
+    const plan = host.plan({ cwd: options.cwd, defaults: { allow: [] }, owner: instance.id, sessionTemp: temp, writes: [{ path: temp, from: "temp" }], network: true });
+    const adapter = await requireSandbox(nono());
+    const admitted = admit(plan, adapter, () => undefined);
+    const env = { TMPDIR: temp };
+    const { session } = await control.start({ prompt: promptFromText(""), cwd: options.cwd, env, box: { sandbox: adapter, spec: admitted.spec } });
+    const seen: LifeEvent[] = [];
     const watcher = (async () => {
       for await (const event of control.life(session)) {
         seen.push(event);

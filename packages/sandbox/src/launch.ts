@@ -17,7 +17,7 @@ import { PassThrough, Writable } from "node:stream";
 import type { Readable } from "node:stream";
 
 import { nono } from "./nono.ts";
-import { BoxRefused, listenRefusal, requireSandbox } from "./sandbox.ts";
+import { BoxRefused, listenRefusal, requireSandbox, socketBindRefusals } from "./sandbox.ts";
 import type { LaunchedBox, Sandbox, SandboxManifest, SandboxName } from "./sandbox.ts";
 import { boxSpec } from "./spec.ts";
 import type { BoxSpec, BoxSpecInput } from "./spec.ts";
@@ -51,6 +51,8 @@ export interface AgentLaunch {
   readonly cwd?: string;
   /** Added to the inherited environment: the session's `NIWA_ID` and what the harness sets for itself. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Resolve trusted environment additions after box admission, outside specs and events. */
+  readonly privateEnv?: () => Readonly<Record<string, string>>;
   /** Names removed from the inherited environment before the additions go on. */
   readonly unset?: readonly string[];
   /** The process leads its own process group, so a stop reaches everything it started. */
@@ -385,7 +387,9 @@ async function admitBox(launch: AgentLaunch, request: BoxRequest, probeAfterMani
   const spec = boxedSpec(launch, request);
   const manifest = sandbox.manifest(spec);
   const listener = listenRefusal(spec, manifest);
-  if (listener !== undefined) throw new BoxRefused([listener], sandbox.name);
+  const refusals = socketBindRefusals(spec, manifest);
+  if (listener !== undefined) refusals.push(listener);
+  if (refusals.length > 0) throw new BoxRefused(refusals, sandbox.name);
   if (probeAfterManifest) await requireSandbox(sandbox);
   const record: BoxRecord = {
     harness: launch.harness,
@@ -403,6 +407,7 @@ function argvOf(launch: AgentLaunch): string[] {
 }
 
 function spawnPlain(launch: AgentLaunch): PipedProcess {
+  if (launch.privateEnv !== undefined) throw new TypeError("Private launch environment requires a box");
   announce(launch, argvOf(launch), undefined);
   return spawn(launch.program, [...launch.args], {
     cwd: launch.cwd,
@@ -410,6 +415,11 @@ function spawnPlain(launch: AgentLaunch): PipedProcess {
     stdio: ["pipe", "pipe", "pipe"],
     detached: launch.detached ?? false,
   });
+}
+
+function boxLaunchOptions(launch: AgentLaunch) {
+  const privateEnv = launch.privateEnv?.();
+  return { detached: launch.detached ?? false, ...(privateEnv === undefined ? {} : { privateEnv }) };
 }
 
 /** A child process started with pipes. */
@@ -429,13 +439,14 @@ function spawned(child: PipedProcess): Promise<PipedProcess> {
 /** The funnel: every agent process is started here. Any refusal is typed and comes before the process. */
 export async function spawnAgent(launch: AgentLaunch): Promise<AgentProcess> {
   if (launch.box === undefined) return await spawned(spawnPlain(launch));
-  const needsListener = launch.box.spec.listen !== undefined;
-  // The manifest can refuse unsupported listeners without probing the runtime.
-  if (!needsListener) await requireBox(launch.box);
-  const { sandbox, spec } = await admitBox(launch, launch.box, needsListener);
+  const needsBind = launch.box.spec.listen !== undefined || Boolean(launch.box.spec.unixSocketBind?.length);
+  // The manifest can refuse unsupported bindings without probing the runtime.
+  if (!needsBind) await requireBox(launch.box);
+  const { sandbox, spec } = await admitBox(launch, launch.box, needsBind);
+  const options = boxLaunchOptions(launch);
   announce(launch, argvOf(launch), sandbox.name);
   const child = new BoxedProcess();
-  child.attach(await sandbox.launch(spec, argvOf(launch), { detached: launch.detached ?? false }));
+  child.attach(await sandbox.launch(spec, argvOf(launch), options));
   return child;
 }
 
@@ -451,8 +462,9 @@ export function spawnAgentNow(launch: AgentLaunch): AgentProcess {
   const child = new BoxedProcess();
   void admitBox(launch, request)
     .then(({ sandbox, spec }) => {
+      const options = boxLaunchOptions(launch);
       announce(launch, argvOf(launch), sandbox.name);
-      return sandbox.launch(spec, argvOf(launch), { detached: launch.detached ?? false });
+      return sandbox.launch(spec, argvOf(launch), options);
     })
     .then((box) => child.attach(box), (error: unknown) => child.fail(error));
   return child;

@@ -11,11 +11,13 @@
 //   5. the host's sandbox chooses the adapter; a box the adapter cannot hold is refused with every reason
 
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { actionName } from "@niwa-labs/core";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { actionName, grant, principalOf } from "@niwa-labs/core";
 import { connect, token } from "@niwa-labs/client";
 import { createNiwa } from "@niwa-labs/host";
 import type { Host } from "@niwa-labs/host";
@@ -28,7 +30,7 @@ import { BoxRefused, boxSpec, sandbox, spawnAgent, useSandbox } from "@niwa-labs
 import type { LaunchedBox, Sandbox } from "@niwa-labs/sandbox";
 import { SessionBoxManifest, sessions } from "@niwa-labs/sessions";
 import type { SessionsOptions } from "@niwa-labs/sessions";
-import { tempDir, tempHome } from "@niwa-labs/testing";
+import { tempDir, tempHome, unconfined } from "@niwa-labs/testing";
 
 const START = actionName("session.start");
 
@@ -175,6 +177,107 @@ test("what a start asks beyond the default is held to the caller's box rules, an
   expect(strings(narrow.write)).not.toContain(dir);
   expect(strings(narrow.read)).toContain(dir);
 });
+
+test("an external MCP client starts Codex Luna in an external linked checkout with read-only Git metadata", async () => {
+  const root = await workdir();
+  const repo = join(root, "repo");
+  const cwd = join(root, "linked");
+  const privateHome = join(root, "another-harness");
+  await mkdir(repo);
+  await mkdir(privateHome);
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], {
+      cwd: repo, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    });
+    expect(result.exitCode, result.stderr.toString()).toBe(0);
+    return result.stdout.toString().trim();
+  };
+  git("init", "-q");
+  await writeFile(join(repo, "go.mod"), "module example.invalid/fixture\n\ngo 1.20\n");
+  await writeFile(join(repo, "main.go"), "package main\n\nfunc main() {}\n");
+  git("add", "go.mod", "main.go");
+  git("update-ref", "HEAD", git("commit-tree", git("write-tree"), "-m", "external fixture"));
+  git("worktree", "add", "-q", "--detach", cwd);
+  const common = join(repo, ".git");
+  const admin = join(common, "worktrees", "linked");
+  const go = Bun.which("go");
+  let output = "";
+  class WorktreeControl extends Recording {
+    override async start(options: StartOptions) {
+      const { cwd, box, env } = options;
+      const temp = env?.["TMPDIR"];
+      if (!cwd || !box || !temp) throw new Error("the session must provide a cwd, box and TMPDIR");
+      const child = await spawnAgent({
+        harness: "codex-luna",
+        program: "/bin/sh",
+        args: ["-ec", [
+          "git log -1 --format=%s",
+          'if [ -n "$1" ]; then "$1" build -buildvcs=true -o "$TMPDIR/fixture" .; echo go-build-ok; fi',
+        ].join("\n"), "fixture", go ?? ""],
+        cwd,
+        env: {
+          ...env,
+          GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1",
+          GOCACHE: join(temp, "go-cache"),
+          GOENV: "off", GOPROXY: "off", GOTELEMETRY: "off", GOTOOLCHAIN: "local", GOWORK: "off",
+        },
+        box,
+      });
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { output += String(chunk); });
+      child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code) => code === 0 ? resolve() : reject(new Error(stderr)));
+      });
+      const result = await super.start(options);
+      return { session: { ...result.session, harness: harnessId("codex-luna") } };
+    }
+  }
+  const control = new WorktreeControl();
+  const host = await served([
+    { instance: instance("codex-luna"), control },
+    { instance: instance("other"), control: new Recording(), profile: { write: [privateHome] } },
+  ], { sandbox: sandbox({ adapter: unconfined() }) });
+  const client = async (id: string, rules: string[]) => {
+    const api = new Client({ name: id, version: "0.1.0" });
+    cleanups.push(() => api.close());
+    await api.connect(new StdioClientTransport({
+      command: process.execPath,
+      args: [new URL("../bin/niwa.ts", import.meta.url).pathname, "--home", host.homePath, "mcp"],
+      env: { NIWA_ID: host.issueToken(principalOf("client", id), { grant: grant(["session.start", ...rules]) }) },
+      cwd,
+    }));
+    return api;
+  };
+  const start = (api: Client, args: Record<string, unknown> = {}) => api.callTool({
+    name: "session_start",
+    arguments: { harness: "codex-luna", prompt: "Run git log and build the fixture", cwd, ...args },
+  });
+  const limited = await client("limited", ["box.read@" + admin]);
+  const denied = await start(limited, { box: { allow: [{ read: common }] } });
+  expect(denied.isError).toBe(true);
+  expect(JSON.stringify(denied)).toContain("box.read@" + common);
+  const partial = await start(limited, { box: { allow: [{ read: admin }] } });
+  expect(partial.isError).toBe(true);
+  expect(JSON.stringify(partial)).toContain("common Git directory " + common);
+  const blocked = await start(limited, { cwd: privateHome });
+  expect(blocked.isError).toBe(true);
+  expect(JSON.stringify(blocked)).toContain("Choose a cwd outside that home, or start the owning harness other");
+  expect(control.starts).toHaveLength(0);
+
+  const approved = await client("approved", ["box.read@" + common]);
+  const result = await start(approved, { box: { only: ["toolchains", { write: cwd }, { read: common }] } });
+  expect(result.isError, JSON.stringify(result)).not.toBe(true);
+  expect(output.trim().split("\n")).toEqual(["external fixture", ...(go ? ["go-build-ok"] : [])]);
+  const records = await host.records.read({ types: [SessionBoxManifest.name] });
+  expect(records).toHaveLength(1);
+  const manifest = SessionBoxManifest.schema.parse(records[0]?.data);
+  expect(manifest.paths).toContainEqual({ path: common, mode: "read", from: "call" });
+  expect(manifest.paths.some((need) => need.from === "repository")).toBe(false);
+  expect(manifest.policy.write.some((path) => path.startsWith(common))).toBe(false);
+  expect(manifest.rules).toEqual(["box.read@" + common]);
+}, 60_000);
 
 test("the manifest is recorded before the process, with the request, the paths and the rules by origin, and the environment by name", async () => {
   const dir = await workdir();

@@ -6,6 +6,7 @@
  * did not take). The environment is only what is listed; `process.env` is never inherited.
  */
 
+import { isAbsolute } from "node:path";
 import { z } from "zod";
 
 /** A path as the grant wrote it. A leading `~` is expanded by the sandbox, not here, so the spec is a pure value; the working directory's is expanded once when paths are anchored to it. */
@@ -29,6 +30,17 @@ export type LoopbackListen = Readonly<z.output<typeof LoopbackListenSchema>>;
 
 export const ListenNeedSchema = LoopbackListenSchema.extend({ from: z.string().min(1) });
 export type ListenNeed = Readonly<z.output<typeof ListenNeedSchema>>;
+
+/** Profile paths accept absolute paths and the same home shorthand as other profile paths. */
+export const UnixSocketBindDirSchema = z.string().refine(
+  (dir) => !dir.includes("\0") && (isAbsolute(dir) || dir === "~" || dir.startsWith("~/")),
+  "a Unix socket bind directory must be absolute or under ~ and contain no NUL",
+);
+export const UnixSocketBindSchema = z.union([
+  z.literal("sessionTemp"),
+  z.strictObject({ dir: UnixSocketBindDirSchema }),
+]);
+export type UnixSocketBind = "sessionTemp" | { readonly dir: string };
 
 export function sameListener(one: LoopbackListen, another: LoopbackListen): boolean {
   return one.host === another.host && one.port === another.port;
@@ -69,6 +81,8 @@ export const BoxSpecSchema = z.object({
   env: z.record(EnvNameSchema, z.string()).default({}),
   /** Unix sockets the process may connect to (niwa's own socket must be reachable inside). */
   sockets: z.array(BoxPathSchema).default([]),
+  /** Directories in which the process may bind directly contained Unix sockets. */
+  unixSocketBind: z.array(UnixSocketBindDirSchema).default([]),
 });
 
 /** What the caller writes. */
