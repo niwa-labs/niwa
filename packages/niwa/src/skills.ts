@@ -7,6 +7,7 @@ import type { KindSkills } from "@niwa-labs/harness";
 import { claudeCodeSkills } from "@niwa-labs/harness-claude";
 import { codexSkills } from "@niwa-labs/harness-codex";
 import { mcodeSkills, ncodeSkills } from "@niwa-labs/harness-mcode";
+import { opencodeSkills } from "@niwa-labs/harness-opencode";
 import { piSkills } from "@niwa-labs/harness-pi";
 import { zcodeSkills } from "@niwa-labs/harness-zcode";
 
@@ -15,6 +16,7 @@ export const KINDS_WITH_SKILLS: readonly KindSkills[] = [
   codexSkills,
   mcodeSkills,
   ncodeSkills,
+  opencodeSkills,
   piSkills,
   zcodeSkills,
 ];

@@ -12,6 +12,7 @@
  * - `codex` — Codex, over `codex app-server`;
  * - `mcode` — MiniMax Code (the published build), over the Agent Client Protocol;
  * - `ncode` — the owner's fork of MiniMax Code, over the same protocol and the same files;
+ * - `opencode` — OpenCode v2, over its per-session HTTP server through the typed client;
  * - `pi` — pi, read from its files, with an insert side and no control side;
  * - `zcode` — ZCode, read from its SQLite database and driven over `zcode app-server`.
  */
@@ -36,5 +37,8 @@ export type { PiInstanceOptions, PiOptions, PiReadingOptions } from "@niwa-labs/
 
 export { ZCODE_OPTIONS, zcode, zcodeKind, zcodeSides } from "@niwa-labs/harness-zcode";
 export type { ZcodeInstanceOptions, ZcodeMcpOptions, ZcodeOptions, ZcodePermissionPolicy, ZcodeReadingOptions } from "@niwa-labs/harness-zcode";
+
+export { OPENCODE_OPTIONS, opencode, opencodeKind, opencodeSides } from "@niwa-labs/harness-opencode";
+export type { OpenCodeControlOptions, OpenCodeInstanceOptions, OpenCodeOptions, OpenCodePermissionPolicy, OpenCodeReadingOptions } from "@niwa-labs/harness-opencode";
 
 export { KINDS_WITH_SKILLS } from "./skills.ts";

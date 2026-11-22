@@ -17,6 +17,7 @@ const KINDS = {
   codex: { kind: "codexKind", shorthand: "codex", sides: "codexSides" },
   mcode: { kind: "mcodeKind", shorthand: "mcode", sides: "mcodeSides" },
   ncode: { kind: "ncodeKind", shorthand: "ncode", sides: "ncodeSides" },
+  opencode: { kind: "opencodeKind", shorthand: "opencode", sides: "opencodeSides" },
   pi: { kind: "piKind", shorthand: "pi", sides: "piSides" },
   zcode: { kind: "zcodeKind", shorthand: "zcode", sides: "zcodeSides" },
 } as const;

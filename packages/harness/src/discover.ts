@@ -23,7 +23,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -63,6 +63,13 @@ export const HarnessDetectionSchema = z.object({
   envVar: z.string().min(1).optional(),
   /** The directory the installation keeps its state in. `~` is the home of the user. */
   home: z.string().min(1),
+  /** An environment variable naming the parent of the state directory. Empty values use `home`. */
+  homeFromEnv: z.object({
+    variable: z.string().min(1),
+    subdirectory: z.string().min(1),
+  }).optional(),
+  /** The major version of the executable when the kind speaks only one major protocol. */
+  majorVersion: z.number().int().positive().optional(),
 });
 export type HarnessDetection = z.output<typeof HarnessDetectionSchema>;
 
@@ -143,7 +150,11 @@ async function discoverKind(kind: HarnessKindDefinition, env: DiscoverEnv): Prom
   if (detection === undefined) {
     return { reason: "the kind does not say how it is found" };
   }
-  const home = homeOf(detection.home, env);
+  const homeFromEnv = detection.homeFromEnv;
+  const base = homeFromEnv === undefined ? undefined : env[homeFromEnv.variable];
+  const home = homeFromEnv !== undefined && base
+    ? resolve(base, homeFromEnv.subdirectory)
+    : homeOf(detection.home, env);
 
   if (detection.binary === undefined && detection.bundled === undefined) {
     // A kind that is a library has no binary: the home is all there is to find.
@@ -167,8 +178,17 @@ async function discoverKind(kind: HarnessKindDefinition, env: DiscoverEnv): Prom
     }
     binary = { path, version: (await readVersion(path, env)) ?? UNKNOWN_VERSION };
   }
+  if (detection.majorVersion !== undefined && majorVersionOf(binary.version) !== detection.majorVersion) {
+    return { reason: `the binary "${binary.path}" reports "${binary.version}". This kind requires version ${detection.majorVersion}.x` };
+  }
   if (!(await isDirectory(home))) return { reason: `the home "${home}" is not there` };
   return { proposal: { kind: kind.kind, binary, home } };
+}
+
+/** The major in either a bare version or a program's version line, such as `opencode v2.3.2`. */
+function majorVersionOf(version: string): number | undefined {
+  const major = /(?:^|\s)v?(\d+)\.\d+\.\d+\b/.exec(version)?.[1];
+  return major === undefined ? undefined : Number(major);
 }
 
 /** The home of the installation: `~` is the home of the user, as the environment says it. */

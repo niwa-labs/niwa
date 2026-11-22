@@ -28,6 +28,7 @@
     "@niwa-labs/harness-claude": "workspace:*",
     "@niwa-labs/harness-codex": "workspace:*",
     "@niwa-labs/harness-mcode": "workspace:*",
+    "@niwa-labs/harness-opencode": "workspace:*",
     "@niwa-labs/harness-pi": "workspace:*",
     "@niwa-labs/harness-zcode": "workspace:*",
     "@niwa-labs/history": "workspace:*",

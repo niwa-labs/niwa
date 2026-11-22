@@ -5,6 +5,8 @@ workflow runs, messages, requests and tasks in a journal. The CLI, web Cockpit
 and stdio MCP server connect to the same host. Plugins add actions, record
 types, workflows and Cockpit pages.
 
+See the [changelog](CHANGELOG.md) for released versions and changes on main.
+
 ## Install from npm
 
 Install Bun and run `npm install @niwa-labs/niwa` in your project. The package
@@ -142,6 +144,23 @@ project directory, start a session on that installation with
 The installation ID is also the name a workflow passes to `ask()` or
 `session()`. Other [harness kinds](packages/niwa/src/kinds.ts) have their own
 installation requirements and capabilities.
+
+Each harness kind declares the network hosts its sandboxed sessions need.
+For an installation that uses your own provider, set the provider URL in its
+native configuration and give that installation the matching host in `host.ts`.
+
+```ts
+const gateway = new URL("https://llm.example.org/v1");
+harnesses.register(codexKind.bind({
+  id: "codex-gateway",
+  boxProfile: { net: [gateway.hostname] },
+}));
+```
+
+Omit `boxProfile.net` to inherit the kind's hosts, or use `[]` to clear them.
+Other installations keep their own profiles. The
+[OpenCode guide](packages/harness-opencode/README.md) shows a complete
+provider configuration.
 
 ## What the standard host includes
 

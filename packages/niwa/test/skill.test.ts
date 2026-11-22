@@ -114,7 +114,7 @@ test("a file with no stamp is not niwa's: it is modified", () => {
 
 test("status reports each path once with the kinds that read it; absent when nothing is there", () => {
   expect(run("status").output.split("\n").sort()).toEqual(
-    [`absent ${claudeFile()} (claude-code)`, `absent ${sharedFile()} (codex, mcode, ncode, pi, zcode)`].sort(),
+    [`absent ${claudeFile()} (claude-code)`, `absent ${sharedFile()} (codex, mcode, ncode, opencode, pi, zcode)`].sort(),
   );
   run("install", "--harness", "all");
   expect(run("status").output).toContain(`current ${claudeFile()} (claude-code)`);

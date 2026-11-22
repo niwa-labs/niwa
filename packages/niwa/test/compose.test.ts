@@ -32,8 +32,8 @@ test("niwa web takes no port, --port N or --port=N, and refuses anything else", 
   expect(portOf(["--port", "1", "2"])).toBeUndefined();
 });
 
-test("the kinds that read skills are the six harness kinds that have a place for them", () => {
-  expect(niwa.KINDS_WITH_SKILLS.map((skills) => skills.kind)).toEqual(["claude-code", "codex", "mcode", "ncode", "pi", "zcode"]);
+test("the kinds that read skills are the seven harness kinds that have a place for them", () => {
+  expect(niwa.KINDS_WITH_SKILLS.map((skills) => skills.kind)).toEqual(["claude-code", "codex", "mcode", "ncode", "opencode", "pi", "zcode"]);
 });
 
 test("the package re-exports the foundation, the plugins and the kinds", () => {
@@ -87,3 +87,37 @@ test("a proc.run of the default composition finds every harness installation's p
     await home.cleanup();
   }
 }, 60_000);
+
+test("the host composition installs separate outbound profiles and keeps the network-off policy", async () => {
+  const home = await tempHome();
+  try {
+    const work = join(home.path, "work");
+    mkdirSync(work);
+    const primary = join(home.path, "primary");
+    const second = join(home.path, "second");
+    const loopback = { host: "127.0.0.1", port: 0 } as const;
+    const harnesses = new niwa.HarnessInstanceRegistry();
+    harnesses.register(niwa.codexKind.bind({
+      id: "codex-primary", home: primary, boxProfile: { net: ["proxy.example.com"], listen: loopback },
+    }));
+    harnesses.register(niwa.codexKind.bind({
+      id: "codex-secondary", home: second, boxProfile: { net: [] },
+    }));
+    const boxes = openBoxes();
+    niwa.defaultComposition({ home: home.path, harnesses, sandbox: boxes });
+
+    const plan = (owner: string, network: boolean) => boxes.plan({ cwd: work, defaults: { allow: [] }, owner, network });
+    const replacements = plan("codex-primary", true);
+    expect(replacements.net).toEqual([{ host: "proxy.example.com", from: "harness:codex-primary" }]);
+    expect(replacements.listen).toEqual({ ...loopback, from: "harness:codex-primary" });
+    expect(replacements.closed).toContainEqual({ path: join(realpathSync(home.path), "second"), from: "harness:codex-secondary" });
+    expect(plan("codex-secondary", true).net).toEqual([]);
+    const offline = plan("codex-primary", false);
+    expect(offline.net).toEqual([]);
+    expect(offline.listen).toBeUndefined();
+    expect(offline.refusals.map((refusal) => refusal.code)).toContain("no-network");
+    expect(offline.skipped).toContainEqual({ place: "proxy.example.com", from: "harness:codex-primary", why: "this box reaches no network" });
+  } finally {
+    await home.cleanup();
+  }
+});
