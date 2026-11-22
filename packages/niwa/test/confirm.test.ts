@@ -90,7 +90,7 @@ async function serve(again?: { home: Awaited<ReturnType<typeof tempHome>>; root:
 
 /** The client of the owner, connected to the host. */
 async function connectOwner(path: string) {
-  const { connect } = await import("niwa");
+  const { connect } = await import("@niwa-labs/niwa");
   return connectAsOwner(path, OWNER_CLIENT);
 }
 

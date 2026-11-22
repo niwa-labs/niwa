@@ -1,0 +1,33 @@
+Pinned source locations for the listed grammars and theme, from the
+metadata of tm-grammars 1.32.22 and tm-themes 1.12.12. The applicable
+licenses and attribution are in the corresponding NOTICE sections.
+
+ada
+https://github.com/AdaCore/ada_language_server/blob/e984d2233630f0a3ea422e86bfa97b36f80fe038/integration/vscode/ada/advanced/ada.tmLanguage.json
+
+ahk2
+https://github.com/thqby/vscode-autohotkey2-lsp/blob/60b30aa89671198bca0d3ba9777008f8c2b2983e/syntaxes/ahk2.tmLanguage.json
+
+bird2
+https://github.com/bird-chinese-community/BIRD-tm-language-grammar/blob/42fec06af41a569aa4c7d055ed9751603354b5e4/grammars/bird2.tmLanguage.json
+
+gnuplot
+https://github.com/MarioSchwalbe/vscode-gnuplot/blob/c62c1a61c9b6b4658b43d76c397dc2ad43523b6a/syntaxes/gnuplot.tmLanguage
+
+hcl
+https://github.com/hashicorp/syntax/blob/2ec7cd10c9d6134e836bf85eb0f5aa010512bff4/syntaxes/hcl.tmGrammar.json
+
+nginx
+https://github.com/hangxingliu/vscode-nginx-conf-hint/blob/49159c02fd09dce264ded7802c9499a0f09646f5/src/syntax/nginx.tmLanguage
+
+org
+https://github.com/vscode-org-mode/vscode-org-mode/blob/98f123a97eca8d0cc1d9e3f313dc2a8be8f25d46/syntaxes/org.tmLanguage.json
+
+racket
+https://github.com/Eugleo/magic-racket/blob/1b850db7f6e7c3ba8a1b47fe2781800a21f669a8/syntaxes/racket.tmLanguage.json
+
+terraform
+https://github.com/hashicorp/syntax/blob/cc2b4d4fe389f14b8a13937f4e0d7b2811b57588/syntaxes/terraform.tmGrammar.json
+
+aurora-x
+https://github.com/marqu3ss/Aurora-X/blob/118727efadf48872adcd81f6c00be580097d6592/themes/Aurora%20X-color-theme.json

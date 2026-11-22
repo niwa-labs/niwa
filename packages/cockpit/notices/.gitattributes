@@ -1,0 +1,4 @@
+# Keep upstream notice and license files byte-for-byte.
+*.NOTICE -text -whitespace
+apache-2.0.txt -text -whitespace
+vscode-oniguruma-*.txt -text -whitespace

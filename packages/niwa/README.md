@@ -1,4 +1,4 @@
-# niwa
+# @niwa-labs/niwa
 
 The umbrella package: the `niwa` command and the standard composition of the host, the base
 plugins and the surfaces.

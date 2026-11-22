@@ -1,5 +1,6 @@
 {
   "name": "niwa-workspace",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "workspaces": [

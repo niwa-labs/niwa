@@ -50,6 +50,12 @@ and the import map that `serveWeb` takes as `app`.
 - An installed package has no sources. It serves `dist/app`, which packing builds (`prepack`) and
   ships, and needs neither Vite nor the plugins of its build.
 
+The built app includes third-party code, grammars and themes under their own
+licenses. The build writes their attributions to
+`dist/app/assets/THIRD-PARTY-LICENSES.txt`, which also ships in the package
+archive. See the [notice sources in the Niwa repository](https://github.com/niwa-labs/niwa/blob/main/packages/cockpit/notices/README.md)
+for the upstream copies used by the build.
+
 ```sh
 bun run build   # in this package: writes dist/app, the app that packing ships
 ```

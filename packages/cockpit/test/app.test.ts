@@ -10,7 +10,8 @@ import { definePlugin, HostCallError } from "@niwa-labs/cockpit-sdk";
 import { createMemoryHistory } from "@tanstack/react-router";
 
 import { bootCockpit, DEFAULT_BACKLOG, startFailure } from "../src/boot.tsx";
-import { ARTIFACT, BUILD_SOURCES, cockpitApp, fingerprint, importsOf, PACKAGE_ROOT, SHARED_MODULES } from "../src/index.ts";
+import { NOTICE_ASSET } from "../scripts/third-party-notices.ts";
+import { ARTIFACT, BUILD_SOURCES, buildCockpit, cockpitApp, fingerprint, importsOf, PACKAGE_ROOT, SHARED_MODULES } from "../src/index.ts";
 import { parseSearch, stringifySearch } from "../src/router.tsx";
 import { entryName } from "../src/shared-modules.ts";
 import { fetching, json, module } from "./support.ts";
@@ -162,6 +163,27 @@ test("packing builds the app and ships it, with the entry that serves it and not
   expect(readFileSync(join(PACKAGE_ROOT, "scripts", "build.ts"), "utf8")).toContain("outDir: ARTIFACT");
   expect(ARTIFACT).toBe(join(PACKAGE_ROOT, "dist", "app"));
 });
+
+test("the production app carries permission and attribution for its bundled code and assets", async () => {
+  const output = await buildCockpit({ outDir: folder() });
+  const report = readFileSync(join(output, NOTICE_ASSET), "utf8");
+  expect(report).toContain("## react - ");
+  expect(report).toContain("Copyright (c) Meta Platforms, Inc. and affiliates.");
+  expect(report).toMatch(/## tailwindcss - .+ \(MIT\)/);
+  expect(report).toContain("Copyright (c) Tailwind Labs, Inc.");
+  expect(report).toMatch(/## @pierre\/highlights - .+ \(NOTICE\.md\)/);
+  expect(report).toMatch(/## @pierre\/theme - .+ \(NOTICE\.md\)/);
+
+  for (const file of [
+    "textmate-source-revisions.txt",
+    "tm-grammars-1.32.22.NOTICE",
+    "tm-themes-1.12.12.NOTICE",
+    "vscode-oniguruma-1.7.0.LICENSE.txt",
+    "vscode-oniguruma-1.7.0.NOTICES.txt",
+  ]) {
+    expect(report).toContain(readFileSync(join(PACKAGE_ROOT, "notices", file), "utf8"));
+  }
+}, 30_000);
 
 test("a login that is missing is said in words, any other failure with its reason", () => {
   expect(startFailure(new HostCallError(401, "no cookie"))).toContain("You are not logged in");

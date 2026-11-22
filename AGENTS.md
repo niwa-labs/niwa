@@ -4,11 +4,11 @@ The niwa platform, published as `@niwa-labs/*` packages under one shared version
 the foundation (`core`, `plugin`, `client`, `host`), the packages that need no
 host (script language, flow helpers, the harness model and every harness kind,
 `digest`, `sandbox`, `ui-kit`), the base plugins, script libraries, the cockpit
-and its SDK, the surfaces, `testing` and the `niwa` umbrella.
+and its SDK, the surfaces, `testing` and the `@niwa-labs/niwa` umbrella.
 
 ## Layout
 
-- `packages/<name>/` is the package `@niwa-labs/<name>` (`packages/niwa/` is the umbrella `niwa`).
+- `packages/<name>/` is the package `@niwa-labs/<name>`.
   `src/index.ts` is its root entry; `src/records.ts` (record types and action
   references), `src/flow.ts` (script helpers) and `src/journal.ts` back the
   extra entries of the packages that export them.

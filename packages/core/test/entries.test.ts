@@ -97,7 +97,7 @@ test("nothing leaves the package: no file outside src and no other niwa package"
       if (edge.spec.startsWith(".")) {
         const target = normalize(join(dirname(file), edge.spec));
         if (!target.startsWith(SRC + "/")) violations.push(`${relative(SRC, file)} -> ${edge.spec}`);
-      } else if (edge.spec === "niwa" || edge.spec.startsWith("niwa/") || edge.spec.startsWith("@niwa-labs/")) {
+      } else if (edge.spec.startsWith("@niwa-labs/")) {
         violations.push(`${relative(SRC, file)} -> ${edge.spec}`);
       }
     }

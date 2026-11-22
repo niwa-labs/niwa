@@ -6,6 +6,7 @@ import tailwindcss from "@tailwindcss/vite";
 import react, { reactCompilerPreset } from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
+import { NOTICE_ASSET, thirdPartyNotices } from "./scripts/third-party-notices.ts";
 import { entryName, entrySource, SHARED_MODULES } from "./src/shared-modules.ts";
 
 const PREFIX = "virtual:shared/";
@@ -49,12 +50,13 @@ function noEval(): Plugin {
 
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
-  plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss(), sharedModules(), noEval()],
+  plugins: [react(), babel({ presets: [reactCompilerPreset()] }), tailwindcss(), sharedModules(), noEval(), thirdPartyNotices()],
   resolve: { dedupe: ["react", "react-dom", "@tanstack/react-query", "zod"] },
   build: {
     outDir: "dist/app",
     emptyOutDir: true,
     manifest: true,
+    license: { fileName: NOTICE_ASSET },
     sourcemap: false,
     rollupOptions: {
       input: {
