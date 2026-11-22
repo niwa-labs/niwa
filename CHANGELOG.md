@@ -9,12 +9,11 @@
 - Override a harness kind's network allowlist for one installation in
   `host.ts` with `kind.bind({ id, boxProfile: { net: ["llm.example.org"] } })`.
   An omitted list inherits the kind's defaults. An empty list clears them.
-- In a trusted SDK application, start or resume an OpenCode session in
-  `auto` or `full` mode, send or interrupt a turn, and request a
-  schema-validated answer. The adapter forwards tool permission requests
-  and supported interactive forms to the operator. The host's
-  `session.start` requires a sandbox, whose default policy blocks the
-  OpenCode server's local listener. See the [adapter guide](packages/harness-opencode/README.md).
+- Start or resume OpenCode sessions in a Niwa box with the official
+  `@opencode/server@2.3.2` over inherited pipes. The worker shares the
+  installation's SQLite history and follows the box's outbound policy for
+  provider traffic. Direct unboxed SDK launches use the configured OpenCode v2
+  executable. See the [adapter guide](packages/harness-opencode/README.md).
 
 - Use [`@niwa-labs/upstream-map`](packages/upstream-map/README.md) to check
   and update the Git range map of an upstream snapshot from a downstream

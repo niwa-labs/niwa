@@ -1,10 +1,9 @@
 /**
- * The control side for OpenCode: how niwa starts, steers and stops sessions of opencode v2 over
- * the HTTP server of one `opencode serve --stdio` child per session, spoken to through the typed
- * client of `@opencode/client` (pinned exactly: the protocol version lock).
+ * The control side for OpenCode. One child per session serves the pinned `@opencode/client`
+ * over inherited pipes in a box or via `opencode serve --stdio` on unboxed launches.
  *
- * The child announces itself with one JSON line on stdout — `{"url": ...}` — and stays up while
- * its stdin is open. Shutdown closes stdin, then signals the process group if needed.
+ * The child stays up while its stdin is open. Shutdown closes stdin, then signals the process
+ * group if needed.
  * Every HTTP call carries a Basic authorization of a random password the child was
  * given, and answers within the call timeout; the turns are admitted by `session.prompt`, which
  * returns as soon as the message is taken, never when the turn ends — the end comes as a
@@ -17,6 +16,7 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { mkdir } from "node:fs/promises";
 
 import { z } from "zod";
 import { ClientError, OpenCode } from "@opencode/client";
@@ -61,16 +61,19 @@ import type {
   StartedSession,
   VisibleActions,
 } from "@niwa-labs/harness";
-import { BoxSpecSchema, LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
+import { BoxSpecSchema, LIVE_PROCESS_REFUSAL, sandboxOf, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess, BoxRequest } from "@niwa-labs/sandbox";
 
-import { boxedEnvironment, matchesListener } from "./box.ts";
+import { boxedEnvironment, matchesListener, writesRuntime } from "./box.ts";
 import { MODE_PERMISSIONS, OPENCODE_MODES, hasModePermissions, requireOpenCodeMode } from "./permissions.ts";
 import type { OpenCodeMode } from "./permissions.ts";
+import { OpenCodePipe, OpenCodePipeUnsent } from "./pipe-client.ts";
+import { OPENCODE_RUNTIME_VERSION, PIPE_ORIGIN, PROXY_CLOSE_ENV } from "./pipe-wire.ts";
 import { eventAction, OPENCODE_PROTOCOL } from "./protocol.ts";
 import type { OpenCodeForm, PermissionAskedData, ServerEvent, ToolNames, TurnEnd } from "./protocol.ts";
 import { policyDecision, readForm, readPermission } from "./reverse.ts";
 import type { PermissionDecision } from "./reverse.ts";
+import { opencodeWorker } from "./runtime.ts";
 import {
   MAX_LINE_BYTES,
   STORAGE_ENV_NAMES,
@@ -95,7 +98,7 @@ export type OpenCodePermissionPolicy = "allow" | "deny";
 export interface OpenCodeControlOptions {
   /** The harness instance id: half of a session's identity. */
   readonly harness: string;
-  /** The `opencode` binary, resolved through PATH when it is a bare name. */
+  /** The CLI executable for unboxed launches or a box with an explicitly granted listener. */
   readonly binary?: string;
   /**
    * The OpenCode installation's state directory, ending in `opencode`. Without it a child uses
@@ -208,6 +211,7 @@ function isAbort(error: unknown): boolean {
  */
 function isConnectFailure(error: unknown): boolean {
   for (let at = error; at instanceof Error; at = (at as Error & { readonly cause?: unknown }).cause) {
+    if (at instanceof OpenCodePipeUnsent) return true;
     const code = (at as NodeJS.ErrnoException).code;
     if (code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "EHOSTUNREACH" || code === "ENETUNREACH") {
       return true;
@@ -232,8 +236,7 @@ function dispatchOf(error: unknown): { readonly dispatch: Dispatch; readonly det
 
 class LiveSession {
   nativeId = "";
-  /** The server's URL and the client of it, once the child has announced itself. */
-  url: string | undefined;
+  /** The client of the server, once the child is ready. */
   client: ReturnType<typeof OpenCode.make> | undefined;
   /** The turns niwa has started; the running one, if any, has this number. */
   turn = 0;
@@ -278,7 +281,7 @@ class LiveSession {
   private unwatched: LifeEvent[] | undefined = [];
   private readonly turnWaiters: Array<(end: TurnOutcome | undefined) => void> = [];
 
-  constructor(readonly child: AgentProcess) {}
+  constructor(readonly child: AgentProcess, readonly boxedPipe: boolean) {}
 
   watch(watcher: Watcher): () => void {
     const watchers = this.watchers;
@@ -773,7 +776,27 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
   /** Ends the input and lets the child drain, then SIGTERM to the process group, then SIGKILL. */
   function stopSession(session: LiveSession): Promise<void> {
     session.stopping = true;
-    return session.stopPromise ??= stopServer(serverChildOf(session), stopGraceMs).finally(() => session.end());
+    return session.stopPromise ??= closeSession(session).finally(() => session.end());
+  }
+
+  async function closeSession(session: LiveSession): Promise<void> {
+    // An active execution left on EOF is eligible for upstream crash recovery on the next boot.
+    // On an orderly close ask the worker to interrupt and settle it before ending the pipe.
+    if (session.boxedPipe && session.busy && !session.ended && session.client !== undefined && stopGraceMs > 0) {
+      const turn = session.expectTurn(stopGraceMs);
+      try {
+        if (!session.interrupting) {
+          const signal = AbortSignal.any([AbortSignal.timeout(stopGraceMs), session.events.signal]);
+          await session.client.session.interrupt({ sessionID: session.nativeId }, { signal });
+        }
+        await turn.done;
+      } catch {
+        // A broken pipe or a missed deadline proceeds to the stop ladder.
+      } finally {
+        turn.cancel();
+      }
+    }
+    await stopServer(serverChildOf(session), stopGraceMs);
   }
 
   function failSession(session: LiveSession, reason: string): void {
@@ -794,11 +817,8 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
 
   async function launchSession(cwd: string, plan: Pick<StartOptions, "env" | "box" | "servers">, ability: "start" | "resume"): Promise<LiveSession> {
     if (disposed) throw unavailable(ability, "the control side is disposed");
-    const parsed = BoxSpecSchema.shape.listen.safeParse(plan.box?.spec.listen);
-    const listener = parsed.success ? parsed.data : undefined;
-    if (plan.box !== undefined && listener === undefined) {
-      throw new Unsupported(harnessId, "control", ability, "OpenCode's server requires a declared TCP loopback listener");
-    }
+    const listener = BoxSpecSchema.shape.listen.parse(plan.box?.spec.listen);
+    const pipeBox = listener === undefined ? plan.box : undefined;
     const env = { ...options.env, ...plan.env, ...storageEnv, ...installationEnv };
     const confined = plan.box === undefined ? undefined : boxedEnvironment(plan.box, env, cwd);
     if (confined !== undefined && confined.missing.length > 0) {
@@ -808,12 +828,20 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
     if (storageIssue !== undefined) throw unavailable(ability, storageIssue);
     const password = randomBytes(24).toString("hex");
     const config = configOf(plan.servers, env["OPENCODE_CONFIG_CONTENT"] ?? plan.box?.spec.env?.["OPENCODE_CONFIG_CONTENT"]);
+    const worker = pipeBox === undefined ? undefined : opencodeWorker();
+    if (pipeBox !== undefined && worker !== undefined && writesRuntime(pipeBox, worker.root, cwd)) {
+      throw new Unsupported(harnessId, "control", ability, "the boxed OpenCode runtime needs a read-only grant");
+    }
+    if (worker !== undefined && confined !== undefined) {
+      // The sandbox grants the app directories individually. Their XDG ancestors may not exist yet.
+      await Promise.all(confined.directories.map((path) => mkdir(path, { recursive: true, mode: 0o700 })));
+    }
     const args = ["serve", "--stdio"];
     if (listener !== undefined) args.push("--hostname", listener.host, "--port", String(listener.port));
     const child = await spawnAgent({
       harness: harnessId,
-      program: binary,
-      args,
+      program: worker === undefined ? binary : process.execPath,
+      args: worker?.args ?? args,
       cwd,
       ...(plan.box === undefined ? {} : { box: plan.box }),
       // Its own process group, so a stop reaches everything opencode started and nothing else.
@@ -825,10 +853,11 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
         // The password the server asks of every call, and the session's MCP servers as a config
         // document, the only place opencode v2 takes them.
         OPENCODE_PASSWORD: password,
+        ...(pipeBox === undefined ? {} : { [PROXY_CLOSE_ENV]: sandboxOf(pipeBox.sandbox).name === "nono" ? "1" : "0" }),
         ...(config === undefined ? {} : { OPENCODE_CONFIG_CONTENT: config }),
       },
     });
-    const session = new LiveSession(child);
+    const session = new LiveSession(child, worker !== undefined);
     owned.add(session);
 
     let settleReady: ((url: string) => void) | undefined;
@@ -842,7 +871,7 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
     };
     // `refuseReady` settles through `done` itself: the timer only has to say its word.
     const timer = setTimeout(
-      () => refuseReady?.(`the server did not announce its address within ${callTimeoutMs} ms${session.stderrTail === "" ? "" : `: ${session.stderrTail.trim()}`}`),
+      () => refuseReady?.(`the server did not ${worker === undefined ? "announce its address" : "report readiness"} within ${callTimeoutMs} ms${session.stderrTail === "" ? "" : `: ${session.stderrTail.trim()}`}`),
       callTimeoutMs,
     );
     const ready = new Promise<string>((resolve, reject) => {
@@ -850,28 +879,37 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
       refuseReady = (detail) => done(() => reject(unavailable(ability, detail)));
     });
 
-    let buffer = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      buffer += chunk;
-      for (let newline = buffer.indexOf("\n"); newline !== -1; newline = buffer.indexOf("\n")) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        if (line === "") continue;
-        // The announcement is one JSON line with a string `url`; anything else is noise before it.
-        const url = announcementIn(line);
-        if (url !== undefined) {
+    const pipe = worker === undefined ? undefined : new OpenCodePipe(child, (error) => {
+      // Let the process close deliver its exit status and stderr during startup.
+      if (settled && !session.stopping && !hasExited(session)) failSession(session, messageOf(error));
+    });
+    if (pipe === undefined) listenForAddress();
+    else void pipe.ready.then(() => settleReady?.(PIPE_ORIGIN), (error: unknown) => {
+      if (!hasExited(session)) refuseReady?.(`${messageOf(error)}${session.stderrTail === "" ? "" : `: ${session.stderrTail.trim()}`}`);
+    });
+
+    function listenForAddress(): void {
+      let buffer = "";
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        buffer += chunk;
+        for (let newline = buffer.indexOf("\n"); newline !== -1; newline = buffer.indexOf("\n")) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          // The announcement is one JSON line with a string `url`; anything else is noise.
+          const url = announcementIn(line);
+          if (url === undefined) continue;
           if (listener !== undefined && !matchesListener(url, listener)) {
             refuseReady?.("the server announced an address outside the box's TCP loopback listener");
           } else settleReady?.(url);
         }
-      }
-      if (buffer.length > MAX_LINE_BYTES) {
-        buffer = "";
-        refuseReady?.("a line of the output stream was longer than the readiness budget");
-        failSession(session, "a line of the output stream was longer than the readiness budget");
-      }
-    });
+        if (buffer.length > MAX_LINE_BYTES) {
+          buffer = "";
+          refuseReady?.("a line of the output stream was longer than the readiness budget");
+          failSession(session, "a line of the output stream was longer than the readiness budget");
+        }
+      });
+    }
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       session.stderrTail = (session.stderrTail + chunk).slice(-STDERR_TAIL_CHARS);
@@ -906,11 +944,13 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
       await stopSession(session);
       throw error;
     }
-    session.url = url;
-    session.client = OpenCode.make({ baseUrl: url, headers: authOf(password) });
+    session.client = OpenCode.make({ baseUrl: url, headers: authOf(password), ...(pipe === undefined ? {} : { fetch: pipe.fetch }) });
     try {
       // The version guard: a server of another major speaks a protocol this client does not know.
-      const info = await call(session, "start", (options) => session.client!.server.info(options));
+      const info = await call(session, ability, (options) => session.client!.server.info(options));
+      if (pipe !== undefined && (info.version !== OPENCODE_RUNTIME_VERSION || info.urls.length !== 0)) {
+        throw unavailable(ability, `the boxed worker must run OpenCode ${OPENCODE_RUNTIME_VERSION} without a listener`);
+      }
       const major = Number.parseInt(info.version, 10);
       if (!Number.isInteger(major) || major !== REQUIRED_MAJOR) {
         throw unavailable(

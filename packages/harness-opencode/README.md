@@ -13,16 +13,24 @@ harnesses.register(opencodeKind.bind({
 }));
 ```
 
-Pass `harnesses` to `defaultComposition` to expose native session history. Use a v2
-executable with an already configured provider. An explicit path lets a v1
-installation remain the default on your machine. The optional `model` field
-on the binding takes a provider/model ID.
+Pass `harnesses` to `defaultComposition` to expose native session history. Set
+`control.binary` to a v2 executable for direct unboxed SDK launches. An explicit
+path lets a v1 installation remain the default on your machine. The optional
+`model` field on the binding takes a provider/model ID.
 
-Niwa starts one `opencode serve --stdio` process per controlled session and
-communicates through the authenticated HTTP API. The adapter supports start,
-resume, send, interrupt, schema-validated questions and operator permission
-decisions. It can forward interactive forms for the primary session. Control
-uses the official `@opencode/client` pinned to 2.3.2. The local history reader
+The host's `session.start` and `session.resume` run the official
+`@opencode/server@2.3.2` in a Bun worker inside the session's box. One worker
+owns the session and serves the authenticated API through inherited pipes with
+no network listener. The provider, tools and OpenCode SQLite store are used by
+that worker. A direct unboxed SDK launch uses `opencode serve --stdio`, whose
+`--stdio` flag keeps the process alive while the client connects to its loopback
+HTTP listener. A host with a custom sandbox that can enforce a specific TCP
+loopback endpoint can explicitly select that executable transport with
+`boxProfile.listen`.
+
+Both transports use the official `@opencode/client@2.3.2` and support start,
+resume, send, interrupt, schema-validated questions, operator permission
+decisions and interactive forms for the primary session. The local history reader
 opens the installation's SQLite database read-only, including committed WAL
 records. SQLite may update shared-memory reader marks while coordinating with
 a writer. Browsing history does not start the OpenCode scheduler.
@@ -71,6 +79,8 @@ OpenCode uses `providers.gateway.settings.baseURL` to connect to the gateway.
 The box uses `boxProfile.net` as the outbound host list for this installation.
 If the provider is already configured in OpenCode, put its exact hostname in
 `boxProfile.net`. Add any other exact hosts the provider needs for requests.
+Use `OPENCODE_DISABLE_MODELS_FETCH: "1"` in `control.env` to use the bundled
+catalog without a network refresh, or allow the configured catalog hostname.
 Configure credentials through the [OpenCode provider connection settings](https://opencode.ai/docs/providers/).
 
 ## Operating limits
@@ -78,18 +88,21 @@ Configure credentials through the [OpenCode provider connection settings](https:
 - Use `auto` (the default) for the installation's normal OpenCode permission
   policy, or choose `full` explicitly. OpenCode can honor a project-wide saved
   approval before emitting a permission request. Niwa therefore cannot offer
-  its strict `ask` launch mode with this transport. Sending a schema-validated
+  its strict `ask` launch mode. Sending a schema-validated
   question to a running agent is supported independently of its launch mode.
-- The OpenCode kind requests one listener on `127.0.0.1`, with a port chosen
-  by the operating system. The stock nono and SRT backends cannot enforce
-  that exact grant. A box request is
-  refused before the agent starts. The host action `session.start` provisions a
-  box for each new session. Use the reading side through the host or call the
-  binding’s control side directly in a trusted unboxed SDK application.
 - Provide a persistent installation home ending in `opencode`. If you select
   a database via `control.env.OPENCODE_DB`, choose a file inside that home.
   The local history reader and the controlled sessions share the installation's
   database. Use an explicit database file when selecting a different channel.
+- Niwa prepares a read-only runtime directory with the bundled server and
+  its platform PTY binary. A source checkout builds the bundle from its locked
+  development dependencies on first use. The npm package carries the bundle
+  created by `prepack` in `dist/opencode-runtime/` with its
+  `THIRD-PARTY-LICENSES.txt`. The host removes the temporary runtime on normal
+  process exit. OpenCode's app directories have individual write grants.
+  Features that open listeners, such as persistent terminals, depend on the
+  sandbox. External OpenCode plugins and optional provider runtimes may need
+  their own dependencies and were outside the boxed verification.
 - Operator requests are routed for the controlled session. A native child
   session that asks for permission or opens an interactive form can wait for
   a response in OpenCode.

@@ -1,11 +1,8 @@
 import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
-import { realPlace } from "@niwa-labs/sandbox";
+import { boxSpec, realPlace, sandboxOf } from "@niwa-labs/sandbox";
 import type { BoxRequest, LoopbackListen } from "@niwa-labs/sandbox";
-
-/** Choose one ephemeral IPv4 loopback port for a boxed OpenCode server. */
-export const OPENCODE_LISTENER = { host: "127.0.0.1", port: 0 } as const satisfies LoopbackListen;
 
 export function xdgRootsOf(env: Readonly<Record<string, string | undefined>>, home: string, cwd: string) {
   const user = env[process.platform === "win32" ? "USERPROFILE" : "HOME"] || home;
@@ -23,8 +20,8 @@ export function boxedEnvironment(box: BoxRequest, launchEnv: Readonly<Record<str
   const roots = xdgRootsOf({ ...process.env, ...requested }, homedir(), cwd);
   const temp = resolve(cwd, requested["TMPDIR"] || requested["TMP"] || requested["TEMP"] || tmpdir());
   const config = requested["OPENCODE_CONFIG_DIR"];
-  const dirs = [...Object.values(roots).map((root) => join(root, "opencode")), join(temp, "opencode")];
-  if (config) dirs.push(resolve(cwd, config));
+  const directories = Object.values(roots).map((root) => join(root, "opencode"));
+  const dirs = [...directories, join(temp, "opencode"), ...(config ? [resolve(cwd, config)] : [])];
   const writes = (box.spec.write ?? []).map((path) => realPlace(path.startsWith("~/") ? path : resolve(cwd, path)));
   const missing = [...new Set(dirs)].filter((dir) => {
     const place = realPlace(dir);
@@ -33,6 +30,7 @@ export function boxedEnvironment(box: BoxRequest, launchEnv: Readonly<Record<str
   return {
     env: { ...roots, TMPDIR: temp },
     home: join(roots.XDG_DATA_HOME, "opencode"),
+    directories,
     missing,
   };
 }
@@ -46,4 +44,14 @@ export function matchesListener(url: string, listener: LoopbackListen): boolean 
   const { hostname, port } = new URL(url);
   const host = listener.host === "::1" ? "[::1]" : listener.host;
   return hostname === host && (listener.port === 0 || Number(port || "80") === listener.port);
+}
+
+/** A writable grant may name the runtime tree, an ancestor, or something inside it. */
+export function writesRuntime(box: BoxRequest, runtime: string, cwd: string): boolean {
+  const spec = boxSpec({ ...box.spec, cwd });
+  const policy = sandboxOf(box.sandbox).manifest(spec).policy;
+  return [...spec.write, ...policy?.write ?? []].some((path) => {
+    const place = realPlace(path.startsWith("~/") ? path : resolve(cwd, path));
+    return covers(place, runtime) || covers(runtime, place);
+  });
 }

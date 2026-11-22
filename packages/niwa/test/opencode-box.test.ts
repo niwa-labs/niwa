@@ -8,7 +8,7 @@ import { nono, sandbox, srt } from "@niwa-labs/sandbox";
 import { sessions } from "@niwa-labs/sessions";
 import { createNiwa, tempHome } from "@niwa-labs/testing";
 
-test.each([nono(), srt()])("the host refuses a boxed OpenCode launch through $name before probing", async (adapter) => {
+test.each([nono(), srt()])("the host admits OpenCode without a listener before probing $name", async (adapter) => {
   const home = await tempHome();
   const root = await realpath(home.path);
   const data = join(root, "opencode");
@@ -25,18 +25,19 @@ test.each([nono(), srt()])("the host refuses a boxed OpenCode launch through $na
   try {
     host.use(sessions({ harnesses: [binding], sandbox: boxes }));
     await host.serve();
-    const reason = expect.stringContaining(`${adapter.name} cannot restrict a TCP loopback listener`);
     await expect(host.call(actionName("session.start"), { harness: binding.instance.id, prompt: "" })).rejects.toMatchObject({
-      code: "box-refused", message: reason,
+      message: expect.stringContaining(adapter.name),
     });
+    expect(available).toHaveBeenCalledTimes(1);
     await expect(host.call(actionName("session.resume"), { session: { harness: binding.instance.id, native: "ses_existing" } })).rejects.toMatchObject({
-      code: "box-refused", message: reason,
+      message: expect.stringContaining(adapter.name),
     });
-    expect(available).not.toHaveBeenCalled();
+    expect(available).toHaveBeenCalledTimes(2);
 
     const plan = boxes.plan({ cwd: process.cwd(), owner: "another-harness", defaults: { allow: [] }, network: false });
     const closed = plan.closed.filter(({ from }) => from === `harness:${binding.instance.id}`).map(({ path }) => path);
-    expect(closed.sort()).toEqual([data, ...Object.values(env).map((base) => join(base, "opencode"))].sort());
+    expect(closed).toEqual(expect.arrayContaining([data, ...Object.values(env).map((base) => join(base, "opencode"))]));
+    expect(closed.filter((path) => path.includes("niwa-opencode-runtime-")).length).toBe(1);
   } finally {
     await host.close();
     await home.cleanup();

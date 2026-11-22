@@ -1,8 +1,8 @@
 /**
  * The OpenCode harness kind.
  *
- * It reads local history from SQLite and controls sessions over the OpenCode v2 HTTP server,
- * with one `opencode serve --stdio` child per controlled session. It has no insert side.
+ * It reads local history from SQLite and controls sessions through the OpenCode v2 API,
+ * with one server child per controlled session. It has no insert side.
  */
 
 import { homedir } from "node:os";
@@ -11,10 +11,11 @@ import { join, resolve } from "node:path";
 import { NO_INSERT, NoOptions, UNSUPPORTED, VERIFIED, defineHarnessKind, kindOptions } from "@niwa-labs/harness";
 import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilities } from "@niwa-labs/harness";
 
-import { OPENCODE_LISTENER, xdgRootsOf } from "./box.ts";
+import { xdgRootsOf } from "./box.ts";
 import { OPENCODE_LAUNCH, opencodeControl } from "./control.ts";
 import type { OpenCodeControlOptions } from "./control.ts";
 import { OpenCodeReading } from "./reading.ts";
+import { opencodeWorker } from "./runtime.ts";
 import { installationHome } from "./server.ts";
 
 export { OpenCodeReading } from "./reading.ts";
@@ -120,20 +121,19 @@ export const opencodeKind = defineHarnessKind<OpenCodeInstanceOptions>({
   profile: {
     status: "admitted",
     of: (options) => {
-      const binary = binaryOf(options);
       const data = installationHome(options.home);
       const configured = options.control?.env;
+      const cli = options.boxProfile?.listen === undefined ? undefined : binaryOf(options);
       return ({ home, env, bin }) => {
         const roots = xdgRootsOf({ ...env, ...configured }, home, process.cwd());
         return {
-          read: bin(binary),
+          read: cli === undefined ? [...bin(process.execPath), opencodeWorker().root] : bin(cli),
           write: [
             data,
             join(roots.XDG_CONFIG_HOME, "opencode"),
             join(roots.XDG_STATE_HOME, "opencode"),
             join(roots.XDG_CACHE_HOME, "opencode"),
           ],
-          listen: OPENCODE_LISTENER,
         };
       };
     },

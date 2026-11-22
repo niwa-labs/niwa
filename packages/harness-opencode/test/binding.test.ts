@@ -108,7 +108,7 @@ test("discovery uses the selected XDG home and executable and ignores v1", async
   expect(fallback.proposals[0]?.home).toBe(fallbackHome);
 });
 
-test("a binding uses the detected executable for control and reads history without launching it", async () => {
+test("a binding uses the detected executable for unboxed control and reads history without launching it", async () => {
   const binary = await fakeServer("detected-opencode");
   const home = join(root, "opencode");
   const binding = opencode({
@@ -119,7 +119,7 @@ test("a binding uses the detected executable for control and reads history witho
   const profile = binding.profile;
   expect(typeof profile).toBe("function");
   if (typeof profile !== "function" || binding.reading === undefined) throw new Error("incomplete binding");
-  expect(profile({ home: homedir(), env: {}, bin: (name) => [name] }).read).toEqual([binary]);
+  expect(profile({ home: homedir(), env: {}, bin: (name) => [name] }).read).not.toContain(binary);
   const control = binding.control as OpenCodeSessionControl;
   try {
     const { session } = await control.start({ prompt });
