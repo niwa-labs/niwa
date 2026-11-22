@@ -8,7 +8,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { record, recordId, seq, streamId } from "@niwa-labs/core";
+import { CORE_TYPES, record, recordId, seq, streamId } from "@niwa-labs/core";
 import type { ActionName, JournalReader, StoredRecord } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import { createNiwa, requests, timers, counter, eventually, gate, spawnHost, tempHome, connectAsOwner, watch } from "@niwa-labs/testing";
@@ -141,6 +141,43 @@ test("the requested plan is all ahead before a start and stays authoritative aft
   // The file might no longer be readable or might have changed since the request.
   write(RunStarted.name, { ...origin, phases: [{ title: "Changed on disk" }] });
   expect(statusOf(journal, run).phases).toEqual(ahead);
+});
+
+test("nested action internals stay with their script step, while direct dotted labels can be outside phases", () => {
+  const run = RunId.parse("run-000001");
+  const phase = "Implement and verify";
+  const origin = { run, args: null, file: "/script.ts", phases: [{ title: phase }] };
+  const invocation = "inv:workflow.run:phase-test";
+  const actor = { kind: "handler", handler: "workflow.run", invocation } as StoredRecord["actor"];
+  const rows: StoredRecord[] = [];
+  const write = (type: StoredRecord["type"], data: unknown, id = recordId(`row-${rows.length + 1}`)) => {
+    rows.push({ id, type, data, seq: seq(rows.length + 1), at: 1_700_000_000_000 as StoredRecord["at"], stream: streamId("main"), schema: 1, actor, cause: null, root: id });
+  };
+  const intent = (key: string, action = "test.call") => write(CORE_TYPES.stepIntent, {
+    invocation, key, action, operationId: `${invocation}/${key}`,
+  }, recordId(`${invocation}/step/${key}/intent`));
+  const journal = {
+    find: ({ type, field, equals, after = seq(0) }) => rows.filter((row) =>
+      row.type === type && row.seq > after && (field === undefined || (row.data as Record<string, unknown>)[field] === equals)),
+    get: (id) => rows.find((row) => row.id === id),
+    since: () => [],
+  } satisfies Pick<JournalReader, "find" | "get" | "since"> as JournalReader;
+
+  write(RunRequested.name, origin);
+  write(RunStarted.name, origin);
+  const key = "label:cockpit-scroll";
+  write(StepPhase.name, { run, key, phase });
+  intent(key);
+  intent(`${key}.step-1`);
+  intent(`${key}.step-1.step-1`);
+  const direct = `${key}.step-1.step-2`;
+  intent(`${direct}~auth`, "workflow.authorize");
+  intent(direct);
+  intent("label:before-phase");
+
+  const inspection = inspectRun(journal, run);
+  expect(inspection?.phases[0]?.steps.map((step) => step.key)).toEqual([key]);
+  expect(inspection?.steps.map((step) => step.key)).toEqual([direct, "label:before-phase"]);
 });
 
 test("phases at the top go one after another: each entry is a record of its own, and each step is in the phase it began in", async () => {

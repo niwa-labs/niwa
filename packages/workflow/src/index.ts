@@ -757,7 +757,7 @@ export function workflow(opts: WorkflowOptions = {}) {
           const run = runOf(input.run, ctx.caller);
           const reader = journal();
           mayAct(ctx.caller, ownerOfRun(reader, run), `inspect the run "${run}"`);
-          const inspection = inspectRun(reader, run);
+          const inspection = inspectRun(reader, run, api.artifacts);
           if (inspection === undefined) throw new RunRefusal("unknown-run", `unknown run "${run}"`);
           return inspection;
         },

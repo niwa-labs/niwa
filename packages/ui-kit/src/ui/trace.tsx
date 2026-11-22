@@ -22,7 +22,7 @@ export function TraceLine({ className, status, ...props }: ComponentProps<"span"
       data-slot="trace-line"
       data-status={status}
       className={cn(
-        "flex w-fit max-w-full min-w-0 items-center gap-2 text-sm text-muted-foreground transition-colors in-[a,button]:cursor-pointer in-[a:hover,button:hover]:text-foreground data-[status=error]:text-destructive data-[status=pending]:opacity-60 data-[status=running]:*:data-[slot=trace-title]:shimmer",
+        "flex w-fit max-w-full min-w-0 items-center gap-2 text-sm text-muted-foreground transition-colors in-[a,button]:cursor-pointer in-[a:hover,button:hover]:text-foreground data-[status=error]:text-destructive data-[status=pending]:opacity-60 data-[status=running]:*:data-[slot=trace-title]:text-foreground",
         className,
       )}
       {...props}
@@ -45,7 +45,7 @@ export function TraceIcon({ className, ...props }: ComponentProps<"span">) {
 }
 
 export function TraceTitle({ className, ...props }: ComponentProps<"span">) {
-  return <span data-slot="trace-title" className={cn("min-w-0 truncate motion-reduce:shimmer-none", className)} {...props} />;
+  return <span data-slot="trace-title" className={cn("min-w-0 truncate", className)} {...props} />;
 }
 
 export function TraceDescription({ className, ...props }: ComponentProps<"span">) {

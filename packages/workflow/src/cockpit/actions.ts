@@ -11,6 +11,7 @@ import { z } from "zod";
 export const RunState = z.enum(["running", "paused", "finished"]);
 
 export const RunEntry = z.object({
+  boxed: z.boolean().optional(),
   run: z.string(),
   name: z.string(),
   state: RunState,
@@ -47,6 +48,10 @@ export const Step = z.object({
   endedAt: z.string().optional(),
   status: StepStatus,
   session: z.string().optional(),
+  sequence: z.number().optional(),
+  endSequence: z.number().optional(),
+  sessionResult: z.enum(["sent", "queued", "handled", "completed", "ended", "no-answer", "invalid-answer", "timed-out", "closed", "already-closed"]).optional(),
+  sessionEndRecord: z.string().optional(),
   phase: z.string().optional(),
   /** The path of the branch the step is in, when it is in one. */
   branch: z.string().optional(),
@@ -96,7 +101,10 @@ export const Inspection = z.object({
     id: z.string(),
     ref: z.string(),
     parentSession: z.string().optional(),
+    boxed: z.literal(true).optional(),
     startedAt: z.string(),
+    startSequence: z.number().optional(),
+    end: z.object({ at: z.string(), sequence: z.number(), record: z.string() }).optional(),
   })),
 });
 export type Inspection = z.infer<typeof Inspection>;

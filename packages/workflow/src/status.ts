@@ -450,6 +450,7 @@ function aboutRun(status: RunStatus): string {
 
 /** A run of a list as fields: what a page needs to group and show runs without reading each one. */
 export const RunEntry = z.object({
+  boxed: z.boolean().optional(),
   run: z.string(),
   name: z.string(),
   state: RunState,
@@ -476,6 +477,7 @@ export function runEntry(journal: JournalReader, run: string): RunEntry {
   return {
     run,
     name: nameOfRun(journal, run),
+    ...(data && { boxed: data.box === true }),
     ...(data?.workflow && { workflow: data.workflow }),
     ...(status.phases && { phases: status.phases }),
     ...(status.waiting && { waiting: status.waiting }),

@@ -43,6 +43,15 @@ export interface ExecutionPhase {
   state: WorkState;
   activity?: Activity | undefined;
   steps: ExecutionStep[];
+  timeline?: ExecutionMoment[] | undefined;
+}
+
+export interface ExecutionMoment {
+  id: string;
+  at: string;
+  step?: ExecutionStep | undefined;
+  heading?: ReactNode;
+  session?: { id: string; boundary?: "start" | "end" | "continuation" | "reference" | undefined } | undefined;
 }
 const marks: Record<WorkState, string> = {
   pending: "○",
@@ -97,10 +106,12 @@ function Countdown({ at }: { at: number }) {
   );
 }
 
-function Branch({ step, full, first, last }: { step: ExecutionStep; full: boolean; first: number; last: number }) {
+function Branch({ step, full, first, last, as: Tag = "li" }: {
+  step: ExecutionStep; full: boolean; first: number; last: number; as?: "li" | "div";
+}) {
   const icon = { agent: "A", question: "?", timer: "◷", wait: "◷", action: "⌘" }[step.kind];
   return (
-    <li className="nw-branch" data-kind={step.kind} data-activity={step.activity}>
+    <Tag className="nw-branch" data-kind={step.kind} data-activity={step.activity}>
       <div className="nw-step">
         <i aria-hidden>{icon}</i>
         <span>
@@ -133,8 +144,57 @@ function Branch({ step, full, first, last }: { step: ExecutionStep; full: boolea
           </small>
         </>
       )}
-    </li>
+    </Tag>
   );
+}
+
+function Timeline({ moments }: { moments: ExecutionMoment[] }) {
+  const reserved: Array<string | undefined> = [];
+  const active = new Set<string>();
+  const lastUse = new Map(moments.flatMap((moment, index) => moment.session ? [[moment.session.id, index] as const] : []));
+  const visible = () => reserved.map(id => id !== undefined && active.has(id));
+  const rows = moments.map((moment, index) => {
+    const before = visible();
+    const session = moment.session;
+    let lane = -1;
+    if (session) {
+      lane = reserved.indexOf(session.id);
+      if (lane === -1) {
+        lane = reserved.indexOf(undefined);
+        if (lane === -1) lane = reserved.length;
+        reserved[lane] = session.id;
+      }
+      if (session.boundary === "start" || session.boundary === "continuation") active.add(session.id);
+      if (session.boundary === "end") active.delete(session.id);
+    }
+    const after = visible();
+    if (session && lastUse.get(session.id) === index && !active.has(session.id)) reserved[lane] = undefined;
+    return { moment, lane, before, after };
+  });
+  const columns = Math.max(0, ...rows.map(({ lane, before, after }) => Math.max(lane + 1, before.length, after.length)));
+  const clock = new Intl.DateTimeFormat("ru", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return <ol className="nw-timeline" aria-label="Хронология действий сценария">
+    {rows.map(({ moment, lane, before, after }) => {
+      const date = new Date(moment.at);
+      return <li key={moment.id} className="nw-moment" data-session={moment.session?.id} data-boundary={moment.session?.boundary}>
+        <time dateTime={moment.at} title={date.toLocaleString("ru")}>{clock.format(date)}</time>
+        <span className="nw-moment-rails" aria-hidden="true">
+          <span className="nw-moment-axis" data-mark={lane === -1 || undefined} />
+          {Array.from({ length: columns }, (_, i) => <span key={i} className="nw-moment-lane"
+            data-before={before[i] || undefined}
+            data-after={after[i] || undefined}
+            data-mark={i === lane || undefined}
+            data-join={i <= lane && !!moment.session?.boundary || undefined}>
+            {i === lane && <i />}
+          </span>)}
+        </span>
+        <div className="nw-moment-content">
+          {moment.heading}
+          {moment.step && <Branch as="div" step={moment.step} full={false} first={0} last={0} />}
+        </div>
+      </li>;
+    })}
+  </ol>;
 }
 
 function PhaseSteps({ steps, detail, observedAt }: {
@@ -179,8 +239,9 @@ function DetailedTrack({ phases, observedAt }: { phases: ExecutionPhase[]; obser
   </section>;
 }
 
-export function ExecutionTrack({ phases, looseSteps = [], detail = false, observedAt }: {
+export function ExecutionTrack({ phases, looseSteps = [], looseTimeline, detail = false, observedAt }: {
   looseSteps?: ExecutionStep[];
+  looseTimeline?: ExecutionMoment[] | undefined;
   phases: ExecutionPhase[];
   detail?: boolean;
   observedAt?: number | undefined;
@@ -190,12 +251,14 @@ export function ExecutionTrack({ phases, looseSteps = [], detail = false, observ
     <ol className="nw-track" data-detail="false" aria-label="Ход выполнения">
       {phases.map(p => <li className="nw-phase" key={p.id} data-activity={p.activity}>
         <div className="nw-phase-title"><Node phase={p} />{p.title}</div>
-        <PhaseSteps steps={p.steps} detail={false} observedAt={observedAt} />
+        {p.timeline?.length ? <Timeline moments={p.timeline} /> :
+          <PhaseSteps steps={p.steps} detail={false} observedAt={observedAt} />}
       </li>)}
     </ol>)}
     {looseSteps.length > 0 && <section className="nw-loose-steps" aria-label="Шаги вне фаз">
       <h3>{phases.length ? "Шаги вне фаз" : "Шаги"}</h3>
-      <PhaseSteps steps={looseSteps} detail={detail} observedAt={observedAt} />
+      {looseTimeline?.length ? <Timeline moments={looseTimeline} /> :
+        <PhaseSteps steps={looseSteps} detail={detail} observedAt={observedAt} />}
     </section>}
   </>;
 }

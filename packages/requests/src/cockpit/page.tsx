@@ -1,7 +1,7 @@
 /** Open requests and paused work waiting for a decision. */
 
 import { EntityLink, useAction, useCall, useViewer } from "@niwa-labs/cockpit-sdk";
-import { Badge, Button, DataValue, fieldLabel, PageSection } from "@niwa-labs/ui-kit";
+import { Badge, Button, DataValue, fieldLabel, PageSection, stepPause, StepPauseLabel } from "@niwa-labs/ui-kit";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { AnswerForm } from "./answer-form.tsx";
@@ -51,12 +51,13 @@ function RequestCard({ request, onSent }: { request: OpenRequest; onSent: () => 
 }
 
 function PausedCard({ paused, onSent }: { paused: OpenPaused; onSent: () => void }) {
+  const pause = stepPause(paused.reason);
   const resolve = useAction(resolveAction);
   const viewer = useViewer();
   return (
     <article data-slot="paused" className="min-w-0 flex flex-col gap-3 py-2">
       <h3 className="text-base font-semibold">Действие приостановлено</h3>
-      {paused.reason && <p className="text-sm wrap-anywhere">{paused.reason}</p>}
+      {paused.reason && <p className="text-sm wrap-anywhere">{pause ? <StepPauseLabel pause={pause} /> : paused.reason}</p>}
       {viewer.can(resolveAction) && (
         <div className="flex flex-wrap gap-2">
           {paused.choices.map((choice) => (

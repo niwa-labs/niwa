@@ -93,5 +93,5 @@ export const catalogue = {
   continue: { name: "workflow.continue", input: z.object({ run: z.string(), pause: z.string() }), output: z.unknown() },
 };
 
-export const catalogueEvents = { types: ["workflow.*", "request.*", "niwa.invocation.state", "niwa.step.*", "session.turn.*", "session.started", "timer.sleep.requested", "timer.fired"] };
+export const catalogueEvents = { types: ["workflow.*", "request.*", "niwa.invocation.state", "niwa.invocation.resolved", "niwa.step.*", "session.turn.*", "session.started", "session.ended", "timer.sleep.requested", "timer.fired"] };
 export const workflowPath = (id: string) => "/workflows/" + encodeURIComponent(id);

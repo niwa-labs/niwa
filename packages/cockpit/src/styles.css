@@ -114,6 +114,22 @@
   flex: 1;
   min-width: 0;
 }
+/* Give the session transcript the space left after navigation, commands and status. */
+.desk-shell:has(> .desk-body > main > [data-slot="session-page"]) {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  min-height: 0;
+}
+.desk-body:has(> main > [data-slot="session-page"]) {
+  flex: 1;
+  min-height: 0;
+}
+.desk-body > main:has(> [data-slot="session-page"]) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .desk-body > main > [class*="p-4"] {
   padding: 0;
 }

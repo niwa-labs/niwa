@@ -14,8 +14,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { buildCockpit, cockpitApp } from "@niwa-labs/cockpit";
+import { harnessId, sessionId } from "@niwa-labs/harness";
 import { requestAsk, requestGet, requests } from "@niwa-labs/requests";
 import { RequestAnswered } from "@niwa-labs/requests/records";
+import { SessionTurnStarted, sessionRef } from "@niwa-labs/sessions/records";
 import { baseStack, connectAsOwner, createNiwa, eventually, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 import { taskCreate } from "@niwa-labs/tasks";
@@ -120,6 +122,10 @@ run("the cockpit app in a browser", () => {
     await page.waitForSelector(".desk-strip button[data-kind=decision]");
     const waiting = page.locator('[data-slot="run-row"]').filter({has:page.locator('a[href^="/requests/"]')}).first();
     await waiting.locator(".nw-track").waitFor();
+    const isolation = waiting.getByRole("img", { name: "Сценарий · без песочницы" });
+    await isolation.focus();
+    await page.getByRole("tooltip").filter({ hasText: "Сценарий · без песочницы" }).waitFor();
+    await isolation.blur();
     expect(await waiting.locator(".nw-sequence").count()).toBe(0);
     expect(await waiting.locator('a[href^="/requests"]').count()).toBe(1);
     await page.getByLabel("Проект", { exact: true }).selectOption("/work/beta");
@@ -256,6 +262,103 @@ run("the cockpit app in a browser", () => {
     const page = await open("/sessions");
     await page.waitForSelector("text=Сессий пока нет");
     await page.context().close();
+  }, 60_000);
+
+  test("the session transcript scrolls over expanded tool output and follows new messages at the bottom", async () => {
+    const page = await open("/sessions");
+    const id = sessionRef(sessionId(harnessId("fixture"), "scroll"));
+    const output = Array.from({ length: 80 }, (_, index) => `Output line ${index + 1}`).join("\n");
+    const records = [
+      { kind: "tool-call", callId: "long", name: "Long tool call" },
+      { kind: "tool-result", callId: "long", output },
+      { kind: "user", text: "Message after the tool" },
+    ];
+    try {
+      await page.route("**/api/call", async (route) => {
+        const { action, input } = route.request().postDataJSON();
+        if (action === "session.read" && input.session === id) await route.fulfill({ json: { records } });
+        else await route.continue();
+      });
+      await page.goto(`${web.url}/sessions/${encodeURIComponent(id)}`);
+      const chat = page.getByRole("log");
+      const tool = chat.getByRole("button", { name: "Long tool call" });
+      await tool.click();
+      const payload = chat.locator('[data-slot="trace-collapsible-content"] .nw-value-text');
+      await payload.waitFor();
+      const scroll = () => chat.evaluate((node) => ({
+        top: node.scrollTop,
+        viewport: node.clientHeight,
+        content: node.scrollHeight,
+        pageTop: window.scrollY,
+      }));
+      if (process.env.NIWA_TEST_SCROLL_TRACE === "1") {
+        await payload.evaluate(async (node) => {
+          const panel = node.closest('[data-slot="trace-collapsible-content"]')!;
+          await Promise.all(panel.getAnimations().map((animation) => animation.finished.catch(() => {})));
+        });
+        const chain = await payload.evaluate((node) => {
+          const parents = [];
+          for (let parent: Element | null = node; parent; parent = parent.parentElement) {
+            const css = getComputedStyle(parent);
+            parents.push({
+              node: parent.getAttribute("data-slot") ?? parent.getAttribute("role") ?? parent.tagName,
+              viewport: parent.clientHeight, content: parent.scrollHeight,
+              overflowY: css.overflowY, overscrollY: css.overscrollBehaviorY,
+            });
+          }
+          return parents;
+        });
+        console.info("Expanded tool scroll chain", JSON.stringify(chain));
+        const before = await scroll();
+        if (before.content <= before.viewport && await page.evaluate(() => document.documentElement.scrollHeight > innerHeight)) {
+          const bounds = (await payload.boundingBox())!;
+          const y = Math.min(bounds.y + bounds.height / 2, page.viewportSize()!.height - 32);
+          await page.mouse.move(bounds.x + bounds.width / 2, y);
+          await page.mouse.wheel(0, 180);
+          await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          const overChat = await scroll();
+          await page.mouse.move(8, y);
+          await page.mouse.wheel(0, 180);
+          await eventually(async () => (await scroll()).pageTop > overChat.pageTop, 2_000, "the gutter should scroll the document");
+          console.info("Baseline wheel", JSON.stringify({ before, overChat, gutter: await scroll() }));
+        }
+      }
+      await eventually(async () => {
+        const { content, viewport } = await scroll();
+        return content > viewport + 400;
+      }, 5_000, "the tool output should overflow the chat scrollport");
+      const atBottom = () => chat.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop <= 2);
+      await eventually(atBottom, 5_000, "expanding the tool at the bottom should follow the transcript");
+      const start = await scroll();
+      const pointer = await payload.evaluate((node) => {
+        const bounds = node.closest('[role="log"]')!.getBoundingClientRect();
+        const output = node.getBoundingClientRect();
+        const x = (Math.max(bounds.left, output.left) + Math.min(bounds.right, output.right)) / 2;
+        const y = (Math.max(bounds.top, output.top) + Math.min(bounds.bottom, output.bottom)) / 2;
+        return { x, y, overOutput: node.contains(document.elementFromPoint(x, y)) };
+      });
+      expect(pointer.overOutput).toBe(true);
+      await page.mouse.move(pointer.x, pointer.y);
+      await page.mouse.wheel(0, -240);
+      await eventually(async () => (await scroll()).top < start.top - 100, 5_000, "wheel up should scroll the chat");
+      const up = await scroll();
+      await page.mouse.wheel(0, 120);
+      await eventually(async () => (await scroll()).top > up.top + 60, 5_000, "wheel down should scroll the chat");
+      const down = await scroll();
+      expect(down.pageTop).toBe(start.pageTop);
+      await page.getByRole("button", { name: "Scroll to the latest" }).click();
+      await eventually(atBottom, 5_000, "the latest button should return to the bottom");
+
+      records.push({ kind: "user", text: "New message at the bottom" });
+      await host.emit(SessionTurnStarted, { session: id, turn: 1 });
+      await chat.getByText("New message at the bottom", { exact: true }).waitFor();
+      await eventually(atBottom, 5_000, "the transcript should follow new messages at the bottom");
+      if (process.env.NIWA_TEST_SCROLL_TRACE === "1") {
+        console.info("Session wheel and follow", JSON.stringify({ start, up, down, afterAppend: await scroll() }));
+      }
+    } finally {
+      await page.context().close();
+    }
   }, 60_000);
 
   test("an owner checks and registers a script, then fills its input schema and launches it", async () => {

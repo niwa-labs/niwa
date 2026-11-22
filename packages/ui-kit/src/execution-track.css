@@ -163,6 +163,90 @@
   color: var(--state-running);
   margin: 5px 0 0 12px;
 }
+.nw-track:has(.nw-timeline) { display: block; overflow: visible; }
+.nw-track:has(.nw-timeline) > .nw-phase + .nw-phase { margin-top: 14px; }
+.nw-track:has(.nw-timeline) > .nw-phase::before { display: none; }
+.nw-timeline {
+  --moment-center: 17px;
+  --moment-lane-width: clamp(9px, 2vw, 16px);
+  --moment-line: color-mix(in srgb, var(--primary) 65%, var(--border));
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.nw-moment {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  column-gap: 5px;
+  min-height: 34px;
+}
+.nw-moment > time {
+  margin-top: 9px;
+  color: var(--muted-foreground);
+  font: 11px/16px system-ui;
+  font-variant-numeric: tabular-nums;
+}
+.nw-moment-rails { display: flex; color: var(--moment-line); }
+.nw-moment-axis, .nw-moment-lane {
+  width: var(--moment-lane-width);
+  position: relative;
+}
+.nw-moment-lane:nth-child(3n + 3) { color: var(--state-running); }
+.nw-moment-lane:nth-child(3n + 4) { color: var(--state-waiting); }
+.nw-moment-axis::before, .nw-moment-lane::before {
+  content: "";
+  position: absolute;
+  left: calc(50% - .5px);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+.nw-moment-axis::before { background: var(--muted-foreground); }
+.nw-moment:first-child .nw-moment-axis::before { top: var(--moment-center); }
+.nw-moment:last-child .nw-moment-axis::before { bottom: auto; height: var(--moment-center); }
+.nw-moment:only-child .nw-moment-axis::before { display: none; }
+.nw-moment-lane[data-before]::before, .nw-moment-lane[data-after]::before { background: currentColor; }
+.nw-moment-lane[data-after]:not([data-before])::before { top: var(--moment-center); }
+.nw-moment-lane[data-before]:not([data-after])::before { bottom: auto; height: var(--moment-center); }
+.nw-moment-lane[data-join]::after {
+  content: "";
+  position: absolute;
+  top: var(--moment-center);
+  left: -50%;
+  right: 50%;
+  border-top: 1px solid var(--moment-line);
+}
+.nw-moment-axis[data-mark]::after, .nw-moment-lane > i {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: var(--moment-center);
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 7px;
+  height: 7px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: var(--card);
+}
+.nw-moment-axis[data-mark]::after { color: var(--muted-foreground); }
+.nw-moment[data-boundary="start"] .nw-moment-lane > i { background: currentColor; }
+.nw-moment[data-boundary="end"] .nw-moment-lane > i { border-radius: 1px; background: currentColor; }
+.nw-moment-content {
+  min-width: 0;
+  padding: 4px 0;
+  overflow-wrap: anywhere;
+}
+.nw-moment[data-session]:not([data-boundary]) .nw-moment-content { padding-inline-start: 8px; }
+.nw-moment .nw-branch { padding: 3px 0; }
+.nw-moment .nw-branch::before { display: none; }
+.nw-session-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; font-size: 12px; }
+.nw-session-heading h4 { margin: 0; font: 600 13px/1.4 system-ui; }
+@media (max-width: 600px) {
+  .nw-moment { column-gap: 3px; }
+  .nw-moment > time { font-size: 10px; }
+  .nw-moment[data-session]:not([data-boundary]) .nw-moment-content { padding-inline-start: 4px; }
+}
 .nw-prompt {
   white-space: pre-wrap;
 }

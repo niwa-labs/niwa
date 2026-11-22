@@ -4,6 +4,7 @@ import { useEffect, useMemo } from "react";
 import { runsAction, type RunEntry } from "./actions.ts";
 import { catalogueEvents } from "./catalogue-actions.ts";
 import { ActivityLabel, MiniPhaseTrack, CopyValue } from "@niwa-labs/ui-kit";
+import { IsolationMark } from "./isolation-mark.tsx";
 import { RunTrack } from "./track.tsx";
 import { RunCommands } from "./run-commands.tsx";
 
@@ -101,6 +102,7 @@ export function DashboardRuns({ project, reportProjects }: HomeTileProps) {
                   >
                     <div className="desk-tools">
                       <PageLink to={"/runs/" + r.run}>{r.name}</PageLink>
+                      <IsolationMark boxed={r.boxed} subject="Сценарий" />
                       {compact && r.phases && (
                         <MiniPhaseTrack
                           phases={r.phases.map((p) => ({
