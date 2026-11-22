@@ -7,17 +7,10 @@ types, workflows and Cockpit pages.
 
 See the [changelog](CHANGELOG.md) for released versions and changes on main.
 
-## Install from npm
-
-Install Bun and run `npm install @niwa-labs/niwa` in your project. The package
-provides the `niwa` command. The [package quickstart](packages/niwa/README.md#install-and-start)
-creates your first host and opens its Cockpit.
-
 ## Run from source
 
-Use Git and Bun on your PATH. The commands below use a shell and were tested
-with Bun 1.4.4 on macOS. In this example the host configuration and the
-companion repositories live together at `~/niwa-labs`.
+Install Git and Bun. This example keeps the Niwa checkout and host
+configuration together at `~/niwa-labs`.
 
 ```sh
 mkdir -p "$HOME/niwa-labs"
