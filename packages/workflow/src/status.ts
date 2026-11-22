@@ -278,8 +278,9 @@ export function deadlineOf(journal: JournalReader, run: string): number | undefi
 const inside = (branch: string, outer: string): boolean => branch !== outer && (outer === "" || branch.startsWith(`${outer}.`));
 
 /**
- * The phase plan of a run: the phases its latest start declares, each with its state, read from the phases its branches
- * entered (`workflow.phase.entered`) and the branches that ended (`workflow.phase.left`).
+ * The phase plan of a run: the phases declared by the script, all ahead until it starts. Once started, the state of
+ * each phase is read from the phases its branches entered (`workflow.phase.entered`) and the branches
+ * that ended (`workflow.phase.left`).
  *
  * - A branch (the script itself, or a branch of `parallel`/`pipeline`) is in the phase it entered last. It is going
  *   until it ended, and it waits, not goes, while a branch it made is going: the script is not in its own phase while
@@ -294,16 +295,19 @@ const inside = (branch: string, outer: string): boolean => branch !== outer && (
  * Undefined for a run whose script declares none.
  */
 export function phasesOf(journal: JournalReader, run: string, status: Pick<RunStatus, "state" | "outcome">): PhaseProgress[] | undefined {
-  const after = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1)?.seq ?? seq(0);
+  const requested = journal.find({ type: RunRequested.name, field: "run", equals: run }).at(-1);
+  const after = requested?.seq ?? seq(0);
   const started = journal.find({ type: RunStarted.name, field: "run", equals: run, after }).at(-1);
-  const declared = started === undefined ? undefined : RunStarted.schema.parse(started.data).phases;
+  const pinned = requested === undefined ? undefined : RunRequested.schema.parse(requested.data).phases;
+  if (started === undefined) return pinned?.map((phase) => ({ ...phase, state: "ahead" }));
+  const declared = pinned ?? RunStarted.schema.parse(started.data).phases;
   if (declared === undefined) return undefined;
   const indexOf = (title: string): number => declared.findIndex((phase) => phase.title === title);
   const entered = journal.find({ type: PhaseEntered.name, field: "run", equals: run, after });
   const reached = new Set(entered.map((row) => indexOf(PhaseEntered.schema.parse(row.data).phase)).filter((index) => index >= 0));
   const done = status.state === "finished" && status.outcome?.status === "done";
   const current = new Set<number>();
-  const invocation = started?.actor.kind === "handler" ? started.actor.invocation : undefined;
+  const invocation = started.actor.kind === "handler" ? started.actor.invocation : undefined;
   if (!done && invocation !== undefined) {
     const own = (row: StoredRecord): boolean => row.actor.kind === "handler" && row.actor.invocation === invocation;
     // The phase each branch of the latest start is in, and the branches that ended.
@@ -312,7 +316,7 @@ export function phasesOf(journal: JournalReader, run: string, status: Pick<RunSt
       const data = PhaseEntered.schema.parse(row.data);
       branches.set(data.branch, indexOf(data.phase));
     }
-    for (const row of journal.find({ type: PhaseLeft.name, field: "run", equals: run, after: started?.seq }).filter(own)) {
+    for (const row of journal.find({ type: PhaseLeft.name, field: "run", equals: run, after: started.seq }).filter(own)) {
       branches.delete(PhaseLeft.schema.parse(row.data).branch);
     }
     for (const [branch, index] of branches) {

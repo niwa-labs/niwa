@@ -10,6 +10,7 @@ import { CORE_TYPES, RuleSpecSchema, grant } from "@niwa-labs/core";
 import type { EntityDescription, Grant, IssuedId, JournalReader, Principal, StoredRecord } from "@niwa-labs/core";
 import { z } from "zod";
 
+import type { WorkflowPhases } from "./language.ts";
 import { SubscriptionInstalled, SubscriptionUninstalled } from "./records.ts";
 import type { Builtin, ContractHash, InstallationId, JsonSchemaValue, Subscription, WorkflowId, WorkflowVersion } from "./records.ts";
 
@@ -30,6 +31,8 @@ export interface Installation {
   input?: JsonSchemaValue;
   output?: JsonSchemaValue;
   contract: ContractHash;
+  /** The plan declared by the installed script. */
+  phases?: WorkflowPhases;
   /** Absent when nothing limited the installer. */
   installer?: Principal;
   /** Whether its runs are boxed. */
@@ -67,6 +70,7 @@ export function installationsOf(journal: JournalReader): Installation[] {
       ...(data.input === undefined ? {} : { input: data.input }),
       ...(data.output === undefined ? {} : { output: data.output }),
       contract: data.contract,
+      ...(data.phases === undefined ? {} : { phases: data.phases }),
       ...(data.installer === undefined ? {} : { installer: data.installer }),
       ...(data.box === undefined ? {} : { box: data.box }),
       ...(data.builtin === undefined ? {} : { builtin: data.builtin }),

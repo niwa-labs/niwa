@@ -4,8 +4,8 @@
  *
  * The script is `export default workflow({ description, input, output, uses, on }, fn)`. `uses` is
  * the actions it calls, as names or masks (`task.*`): the typing of a check holds only those, so a
- * call outside `uses` is an error of the type checker, with the place in the file. `name`, `uses`
- * and `on` are read from the text of the declaration, as literals, so the rights of a run are known
+ * call outside `uses` is an error of the type checker, with the place in the file. `name`, `uses`,
+ * `on` and `phases` are read from the text of the declaration, as literals, so they are known
  * without running anything; the schemas (`input`, `output`) are read by loading the module in a
  * disposable process (`describe.ts`). The function of the script is never run.
  *
@@ -210,6 +210,13 @@ function phasesOf(ts: typeof Ts, source: Ts.SourceFile): { phases: WorkflowPhase
   if (written === undefined) return { bad: { ...placeOf(ts, source, field.value), message: "phases must be written in the declaration as a list: phases: [{ title: \"Review\" }, { title: \"Fix\", detail: \"...\" }]" } };
   const parsed = WorkflowPhases.safeParse(written.value);
   return parsed.success ? { phases: parsed.data } : { bad: { ...placeOf(ts, source, field.value), message: `phases: ${z.prettifyError(parsed.error)}` } };
+}
+
+/** The plan declared in the header of these exact script bytes. */
+export async function scriptPhases(source: ScriptSource): Promise<WorkflowPhases | undefined> {
+  const ts = (await import("typescript")).default;
+  const read = phasesOf(ts, ts.createSourceFile(source.file, source.text, ts.ScriptTarget.ESNext, true));
+  return read !== undefined && "phases" in read ? read.phases : undefined;
 }
 
 /** The options of the check: a `.ts` script is strict, a `.js` one is read for its syntax unless it opts in with `// @ts-check`. */
@@ -419,6 +426,7 @@ export interface TextCheck {
   /** The module can be loaded for its schemas: it is `export default workflow({ ... }, fn)`. */
   readable: boolean;
   places: Places;
+  phases?: WorkflowPhases;
 }
 
 /**
@@ -461,7 +469,7 @@ export async function withDeclaration(text: TextCheck, describe: Describer, box?
     errors.push({ file, ...text.places.declaration, code: "describe", message: `the module could not be read for its schemas: ${read.failed}` });
     return { file, ok: false, errors, ...warned, note: "described, the script was not run" };
   }
-  const { description, input, output, emits, phases, problems } = read.described;
+  const { description, input, output, emits, problems } = read.described;
   for (const problem of problems) {
     // Phases the text already shows to be wrong are not said twice.
     if (problem.key === "phases" && errors.some((error) => error.code === "phases")) continue;
@@ -477,7 +485,7 @@ export async function withDeclaration(text: TextCheck, describe: Describer, box?
     ...(input === undefined ? {} : { input }),
     ...(output === undefined ? {} : { output }),
     ...(emits === undefined ? {} : { emits: emittedTypesOf(read) }),
-    ...(phases === undefined ? {} : { phases }),
+    ...(text.phases === undefined ? {} : { phases: text.phases }),
     ...(problems.length === 0 ? { contract: contractOf(read.described) } : {}),
   };
 }
@@ -853,11 +861,20 @@ async function check(source: ScriptSource, catalogue: Catalogue): Promise<TextCh
     ...known,
     ...listed.filter((type) => type.startsWith(SCRIPT_TYPES) && !known.some((trigger) => trigger.name === type)).map((name) => ({ name, schema: {} })),
   ];
-  const titles = phases !== undefined && "phases" in phases ? phases.phases.map((phase) => phase.title) : [];
+  const plan = phases !== undefined && "phases" in phases ? phases.phases : undefined;
+  const titles = (plan ?? []).map((phase) => phase.title);
   const typing = scriptTyping(catalogue.actions, allowed, described.filter((trigger) => listed.includes(trigger.name)), records, catalogue.blocks, titles);
   const harnessesOf = (names: readonly string[]) => new Set(names.flatMap((name) => harnessOfAction(name) ?? []));
   const diagnosis = diagnose(ts, source, typing.declarations, { hosted: harnessesOf(catalogue.actions.map((action) => action.name)), allowed: harnessesOf(allowed) });
   errors.push(...referenceErrors(source.file, referencesOf(ts, diagnosis.program, source.file), catalogue));
   errors.push(...diagnosis.errors);
-  return { file: source.file, ok: errors.length === 0, errors, warnings: diagnosis.warnings, readable: declaration !== undefined && "object" in declaration, places };
+  return {
+    file: source.file,
+    ok: errors.length === 0,
+    errors,
+    warnings: diagnosis.warnings,
+    readable: declaration !== undefined && "object" in declaration,
+    places,
+    ...(plan === undefined ? {} : { phases: plan }),
+  };
 }

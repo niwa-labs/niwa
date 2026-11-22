@@ -8,15 +8,16 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { record, seq } from "@niwa-labs/core";
-import type { ActionName, StoredRecord } from "@niwa-labs/core";
+import { record, recordId, seq, streamId } from "@niwa-labs/core";
+import type { ActionName, JournalReader, StoredRecord } from "@niwa-labs/core";
 import { plugin } from "@niwa-labs/plugin";
 import { createNiwa, requests, timers, counter, eventually, gate, spawnHost, tempHome, connectAsOwner, watch } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
-import { workflow, workflowCheck, workflowGet, workflowInspect, workflowList, workflowRegister, workflowRuns, workflowStart, workflowWait } from "../src/index.ts";
-import type { RunStatus } from "../src/status.ts";
+import { workflow, workflowCheck, workflowGet, workflowInspect, workflowInstall, workflowList, workflowRegister, workflowResume, workflowRevise, workflowRuns, workflowStart, workflowWait } from "../src/index.ts";
+import { inspectRun } from "../src/inspect.ts";
+import { runEntry, statusOf, type RunStatus } from "../src/status.ts";
 
-import { PhaseEntered, PhaseLeft, StepPhase } from "../src/records.ts";
+import { PhaseEntered, PhaseLeft, RunId, RunRequested, RunStarted, StepPhase } from "../src/records.ts";
 import { scriptTyping } from "../src/script-types.ts";
 import { z } from "zod";
 
@@ -35,7 +36,7 @@ async function served(): Promise<{ host: Host; home: string }> {
   const home = await tempHome();
   homes.push(home);
   const host = createNiwa({ home: home.path });
-  host.use(requests(), timers([]), plugin("go", (api) => api.declare(Go)), workflow());
+  host.use(requests(), timers([]), plugin("go", (api) => api.declare(Go)), workflow({ triggers: [Go] }));
   await host.serve();
   hosts.push(host);
   return { host, home: home.path };
@@ -109,6 +110,39 @@ async function recordsOf(host: Host, type: string): Promise<StoredRecord[]> {
   return (await host.records.read()).filter((row) => row.type === type);
 }
 
+test("the requested plan is all ahead before a start and stays authoritative after it", () => {
+  const run = RunId.parse("run-000001");
+  const origin = { run, args: null, file: "/script.ts" };
+  const rows: StoredRecord[] = [];
+  const write = (type: StoredRecord["type"], data: unknown) => {
+    const id = recordId("phase-test-" + String(rows.length + 1));
+    rows.push({ id, type, data, seq: seq(rows.length + 1), at: 1_700_000_000_000 as StoredRecord["at"], stream: streamId("main"), schema: 1, actor: { kind: "host" }, cause: null, root: id });
+  };
+  const journal = {
+    find: ({ type, field, equals, after = seq(0) }) => rows.filter((row) =>
+      row.type === type && row.seq > after && (field === undefined || (row.data as Record<string, unknown>)[field] === equals)),
+    since: () => [],
+  } satisfies Pick<JournalReader, "find" | "since"> as JournalReader;
+
+  write(RunRequested.name, origin);
+  expect(statusOf(journal, run).phases).toBeUndefined();
+  write(RunStarted.name, { ...origin, phases: [{ title: "Old plan" }] });
+  expect(statusOf(journal, run).phases).toEqual([{ title: "Old plan", state: "ahead" }]);
+
+  const plan = [{ title: "Read" }, { title: "Review", detail: "revised plan" }];
+  const ahead = plan.map((phase) => ({ ...phase, state: "ahead" }));
+  write(RunRequested.name, { ...origin, execution: run + "/revision", phases: plan });
+  expect(statusOf(journal, run)).toMatchObject({ phases: ahead, currentPhases: [] });
+  const inspection = inspectRun(journal, run);
+  expect(inspection?.origin.startedAt).toBeUndefined();
+  expect(inspection?.phases).toEqual(ahead.map((phase) => ({ ...phase, steps: [] })));
+  expect(runEntry(journal, run).phases).toEqual(ahead);
+
+  // The file might no longer be readable or might have changed since the request.
+  write(RunStarted.name, { ...origin, phases: [{ title: "Changed on disk" }] });
+  expect(statusOf(journal, run).phases).toEqual(ahead);
+});
+
 test("phases at the top go one after another: each entry is a record of its own, and each step is in the phase it began in", async () => {
   const { host, home } = await served();
   const file = await scriptIn(home, "plan.ts", [
@@ -121,6 +155,10 @@ test("phases at the top go one after another: each entry is a record of its own,
     "});",
   ]);
   const { run } = await host.call(workflowStart, { file });
+  const [requested] = await recordsOf(host, RunRequested.name);
+  expect(RunRequested.schema.parse(requested?.data).phases).toEqual([
+    { title: "Ревью" }, { title: "Фикс", detail: "чиним" }, { title: "Отчёт" },
+  ]);
   // Entering a phase precedes the first step in it. Wait until that step is visible in the plan.
   await eventually(async () => {
     const { phases } = await host.call(workflowInspect, { run });
@@ -291,6 +329,53 @@ test("the declared phases are on the registered version: workflow.get and workfl
   const { run } = await host.call(workflowStart, { id });
   const status = await host.call(workflowWait, { run, timeoutMs: 15_000 });
   expect(status.phases?.map((phase) => [phase.title, phase.state])).toEqual([["Ревью", "done"], ["Фикс", "ahead"]]);
+}, 30_000);
+
+test("an explicit version and its subscription keep their own plan when a new version is registered", async () => {
+  const { host, home } = await served();
+  const name = "subscribed.ts";
+  const file = await scriptIn(home, name, [
+    'export default workflow({ description: "On Go", on: ["test.go"], phases: [{ title: "Before", detail: "pinned" }] }, async () => {});',
+  ]);
+  const { id, version } = await host.call(workflowRegister, { file });
+  const installation = await host.call(workflowInstall, { id, description: "Go from first version" });
+  await scriptIn(home, name, [
+    'export default workflow({ description: "On Go", on: ["test.go"], phases: [{ title: "After" }] }, async () => {});',
+  ]);
+  const newer = await host.call(workflowRegister, { id, file });
+  const manual = await host.call(workflowStart, { id, version });
+  const latest = await host.call(workflowStart, { id });
+  await host.emit(Go, {});
+  const requests = async () => (await recordsOf(host, RunRequested.name)).map((row) => RunRequested.schema.parse(row.data));
+  await eventually(async () => (await requests()).some((row) => row.installation === installation.id), 15_000, "the subscription should request a run");
+  const recorded = await requests();
+  const before = [{ title: "Before", detail: "pinned" }];
+  expect(recorded.find((row) => row.run === manual.run)).toMatchObject({ version, phases: before });
+  expect(recorded.find((row) => row.run === latest.run)).toMatchObject({ version: newer.version, phases: [{ title: "After" }] });
+  expect(recorded.find((row) => row.installation === installation.id)).toMatchObject({ version, phases: before });
+}, 30_000);
+
+test("resume and revise record the declaration from the file chosen for each new execution", async () => {
+  const { host, home } = await served();
+  const file = await scriptIn(home, "original.ts", [
+    'export default workflow({ phases: [{ title: "Original" }] }, async () => {});',
+  ]);
+  const { run } = await host.call(workflowStart, { file });
+  expect((await host.call(workflowWait, { run, timeoutMs: 15_000 })).state).toBe("finished");
+  await scriptIn(home, "original.ts", [
+    'export default workflow({ phases: [{ title: "Edited", detail: "same file" }] }, async () => {});',
+  ]);
+  await host.call(workflowResume, { run });
+  expect((await host.call(workflowWait, { run, timeoutMs: 15_000 })).state).toBe("finished");
+  const replacement = await scriptIn(home, "replacement.ts", [
+    'export default workflow({ phases: [{ title: "Replacement" }] }, async () => {});',
+  ]);
+  await host.call(workflowRevise, { run, file: replacement });
+  expect((await recordsOf(host, RunRequested.name)).map((row) => RunRequested.schema.parse(row.data))).toMatchObject([
+    { run, file, phases: [{ title: "Original" }] },
+    { run, file, phases: [{ title: "Edited", detail: "same file" }] },
+    { run, file: replacement, phases: [{ title: "Replacement" }] },
+  ]);
 }, 30_000);
 
 test("the phases of branches survive a kill of the host: the replay writes the same records, and the run is in the same phases", async () => {

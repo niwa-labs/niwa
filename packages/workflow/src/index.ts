@@ -76,14 +76,14 @@ import {
 import { actionName, holds } from "@niwa-labs/core";
 import { catalogueFor } from "./catalogue.ts";
 import { neutralValue } from "./ask.ts";
-import { isUse, scriptChecker, scriptReads, scriptUses, useName, withDeclaration } from "./check.ts";
+import { isUse, scriptChecker, scriptPhases, scriptReads, scriptUses, useName, withDeclaration } from "./check.ts";
 import { describer } from "./describe-cache.ts";
 import { contractOf, emittedTypesOf } from "./describe.ts";
 import type { Described } from "./describe.ts";
 import type { CheckError, CheckReport } from "./check.ts";
 import { guideFor } from "./guide.ts";
 import { inspectRun } from "./inspect.ts";
-import { SCRIPT_TYPES, agentActionName } from "./language.ts";
+import { SCRIPT_TYPES, WorkflowPhases, agentActionName } from "./language.ts";
 import { sessionAgent } from "./agent.ts";
 import type { HarnessLaunch } from "./agent.ts";
 import {
@@ -594,7 +594,12 @@ export function workflow(opts: WorkflowOptions = {}) {
     };
 
     /** A revision keeps its original authority ceiling and receives a fresh, independently closable identity. */
-    const requestAgain = async (ctx: ActionContext, request: ReturnType<typeof requestedOf> & { from?: string }, previous: string) => changeControl(request.run, async () => {
+    const requestAgain = async (
+      ctx: ActionContext,
+      request: ReturnType<typeof requestedOf> & { from?: string },
+      previous: string,
+      script: ReturnType<typeof readScript>,
+    ) => changeControl(request.run, async () => {
       if ((latestRequest(request.run)?.execution ?? request.run) !== previous) {
         throw new RunRefusal("run-is-going", "another execution has already been requested for this run");
       }
@@ -602,9 +607,9 @@ export function workflow(opts: WorkflowOptions = {}) {
         .map(row => AccessGranted.schema.parse(row.data)).find(data => data.principal.kind === "run");
       const parent = initial?.parent === undefined ? ctx.caller : callerOf(initial.parent.principal);
       const policy = latestRequest(request.run)?.allow;
-      const script = readScript(request.file);
       const intrinsic = `emit:${SCRIPT_TYPES}*`;
       const declared = await grantOfRun(parent, script?.text, request.file, request.args, policy?.rules);
+      const phases = script === undefined ? undefined : await scriptPhases({ file: request.file, text: script.text });
       const execution = `${request.run}/${randomUUID()}`;
       let rules = declared;
       if (initial !== undefined) {
@@ -617,7 +622,13 @@ export function workflow(opts: WorkflowOptions = {}) {
       }
       await guardResumable(request.run, ctx);
       if (rules !== undefined) api.issueToken("run", execution, { grant: rules, parent });
-      await ctx.emit(RunRequested, { ...request, execution, ...(policy === undefined ? {} : { allow: policy }) });
+      await ctx.emit(RunRequested, {
+        ...request,
+        execution,
+        ...(script === undefined ? {} : { hash: script.hash }),
+        ...(policy === undefined ? {} : { allow: policy }),
+        ...(phases === undefined ? {} : { phases }),
+      });
     });
 
     api.action(
@@ -683,6 +694,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       const boxed = await boxOf(input.box);
       let accepted: unknown = input.args ?? null;
       let contract: ContractHash | undefined;
+      let phases: CheckReport["phases"];
       if (script !== undefined) {
         const report = await checked(ctx, { file, text: script.text }, boxed);
         if (!report.ok) throw new ScriptCheckFailed(report.errors);
@@ -693,6 +705,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         if (issues.length > 0) throw new InputInvalid(issues);
         accepted = report.input === undefined || records ? (input.args ?? null) : (input.args ?? {});
         contract = report.contract;
+        phases = report.phases;
       }
       // The run is a subject of its own: what it may do is what the caller may do, narrowed to
       // `uses` as its arguments fill it, and it keeps that grant until it ends.
@@ -705,6 +718,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         ...(input.label === undefined ? {} : { label: input.label }),
         ...(script === undefined ? {} : { hash: script.hash }),
         ...(contract === undefined ? {} : { contract }),
+        ...(phases === undefined ? {} : { phases }),
         ...(boxed ? { box: true } : {}),
         ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
         ...(input.version === undefined ? {} : { version: input.version }),
@@ -1005,15 +1019,16 @@ export function workflow(opts: WorkflowOptions = {}) {
           const previous = latestRequest(run)?.execution ?? run;
           // The script is the file the run was started with: an edit to it makes the resume a
           // revision, and the answer says what the new start takes from the earlier ones and what runs.
-          const hash = readScript(facts.file)?.hash;
+          const script = readScript(facts.file);
+          const hash = script?.hash;
           const edited = hash !== undefined && facts.hash !== undefined && hash !== facts.hash;
-          const requested = { ...requestedOf(run, facts, facts.file, hash), ...(input.from === undefined ? {} : { from: input.from }) };
+          const requested = { ...requestedOf(run, facts, facts.file), ...(input.from === undefined ? {} : { from: input.from }) };
           if (!edited) {
-            await requestAgain(ctx, requested, previous);
+            await requestAgain(ctx, requested, previous, script);
             return { run, finished: false };
           }
           const revision = await revisionOf(journal(), api.artifacts, facts, actionNameOf, boxFor(facts.box), facts.file, run, input.from);
-          await requestAgain(ctx, requested, previous);
+          await requestAgain(ctx, requested, previous, script);
           return { run, finished: false, revision };
         },
       }),
@@ -1034,7 +1049,9 @@ export function workflow(opts: WorkflowOptions = {}) {
           const previous = latestRequest(run)?.execution ?? run;
           const file = resolveFile(opts.root, input.file);
           const revision = await revisionOf(journal(), api.artifacts, facts, actionNameOf, boxFor(facts.box), file, run, input.from);
-          await requestAgain(ctx, { ...requestedOf(run, facts, file, readScript(file)?.hash), ...(input.from === undefined ? {} : { from: input.from }) }, previous);
+          const script = readScript(file);
+          const request = { ...requestedOf(run, facts, file), ...(input.from === undefined ? {} : { from: input.from }) };
+          await requestAgain(ctx, request, previous, script);
           return { run, finished: false, revision };
         },
       }),
@@ -1188,11 +1205,11 @@ export function workflow(opts: WorkflowOptions = {}) {
     const birth = action("workflow.subscription.birth", {
       description: "Issue the id of the run that a record starts under an installation, and give the run its grant.",
       input: z.object({ installation: z.number().int(), record: z.string().optional() }),
-      output: z.object({ run: RunId.optional(), refused: z.string().optional() }),
+      output: z.object({ run: RunId.optional(), refused: z.string().optional(), phases: WorkflowPhases.optional() }),
       recovery: "repeat",
       effect: "record",
       world: "niwa",
-      run: ({ installation, record: woken }, ctx) => {
+      run: async ({ installation, record: woken }, ctx) => {
         const found = installationsOf(journal()).find((one) => one.seq === installation);
         if (found === undefined || found.removed !== undefined) return {};
         const installer = installerOf(found);
@@ -1200,9 +1217,10 @@ export function workflow(opts: WorkflowOptions = {}) {
         if ("refused" in api.narrow(installer, [])) return {};
         // A workflow that a change of one it calls broke does not start, and its installation stays.
         const registered = found.workflow === undefined ? undefined : workflowsOf(journal()).find((one) => one.id === found.workflow);
-        if (registered?.versions.find((one) => one.version === found.version)?.broken !== undefined) return {};
-        const pinned = readScript(found.file)?.hash;
-        if (pinned !== found.hash || (found.version !== undefined && versionOf(found.file) !== found.version)) {
+        const installedVersion = registered?.versions.find((one) => one.version === found.version);
+        if (installedVersion?.broken !== undefined) return {};
+        const script = readScript(found.file);
+        if (script?.hash !== found.hash || (found.version !== undefined && versionOf(found.file) !== found.version)) {
           throw new RunRefusal("script-changed", `the installed script "${found.file}" is not the one that was installed: install it again`);
         }
         // A target template is filled by the record the run starts on, and the rule it gives is held whole by the
@@ -1221,6 +1239,9 @@ export function workflow(opts: WorkflowOptions = {}) {
           if ("refused" in held) return { refused: new UsesRefused(held.refused.map((text) => text.replace(/^call:/, ""))).message };
           filled = specsOf(held.rules);
         }
+        // Record the plan with this step's result so a replay keeps the original request payload.
+        // For older installations, take the exact registered version or the verified script bytes.
+        const phases = found.phases ?? installedVersion?.phases ?? await scriptPhases({ file: found.file, text: script.text });
         const run = runIndex.issue(ctx.operationId);
         const issued = journal()
           .find({ type: CORE_TYPES.accessGranted, field: "principal.id", equals: run })
@@ -1230,7 +1251,7 @@ export function workflow(opts: WorkflowOptions = {}) {
           const rules = withinInstaller(installer, specsOf(profile).filter(notEmit));
           api.issueToken("run", run, { grant: grant([...rules, ...filled, emitRule]), parent: installer });
         }
-        return { run };
+        return { run, ...(phases === undefined ? {} : { phases }) };
       },
     });
 
@@ -1242,7 +1263,7 @@ export function workflow(opts: WorkflowOptions = {}) {
     const startRun =
       (installation: Installation): Handler<unknown> =>
       async (_data, step, stored) => {
-        const { run } = await step(birth, { installation: installation.seq, record: stored.id }, { key: `birth:${installation.seq}` });
+        const { run, phases } = await step(birth, { installation: installation.seq, record: stored.id }, { key: `birth:${installation.seq}` });
         if (run === undefined) return;
         await step.emit(
           RunRequested,
@@ -1252,6 +1273,7 @@ export function workflow(opts: WorkflowOptions = {}) {
             args: { id: stored.id, type: stored.type, data: stored.data },
             hash: installation.hash,
             contract: installation.contract,
+            ...(phases === undefined ? {} : { phases }),
             ...(installation.box === true ? { box: true } : {}),
             ...(installation.workflow === undefined ? {} : { workflow: installation.workflow }),
             ...(installation.version === undefined ? {} : { version: installation.version }),
@@ -1334,6 +1356,7 @@ export function workflow(opts: WorkflowOptions = {}) {
         ...(report.input === undefined ? {} : { input: report.input }),
         ...(report.output === undefined ? {} : { output: report.output }),
         contract,
+        ...(report.phases === undefined ? {} : { phases: report.phases }),
         ...(asker.kind === "client" && asker.principal !== undefined ? { installer: asker.principal } : {}),
         ...(boxed ? { box: true } : {}),
         ...(input.builtin === undefined ? {} : { builtin: input.builtin }),
@@ -1984,6 +2007,7 @@ export function workflow(opts: WorkflowOptions = {}) {
       // What the module declares as it is now: the version of the script, with the files it imports, says whether it was read.
       const read = script === undefined ? undefined : await describe(file, boxFor(data.box), `describe:${run}`);
       const described = read !== undefined && "described" in read && read.described.problems.length === 0 ? read.described : undefined;
+      const phases = data.phases ?? described?.phases;
       const contract = described === undefined ? undefined : contractOf(described);
       const records = script !== undefined && (await scriptOn({ file, text: script.text })) !== undefined;
       // A contract that is not the one the run was asked under: the arguments it recorded must pass the input it has now.
@@ -2000,14 +2024,14 @@ export function workflow(opts: WorkflowOptions = {}) {
           // A run that stops on a changed contract keeps the contract it began under: a resume meets the same change.
           ...((changed.length > 0 ? data.contract : contract) === undefined ? {} : { contract: changed.length > 0 ? data.contract : contract }),
           ...(data.box === true ? { box: true } : {}),
-          ...(described?.phases === undefined ? {} : { phases: described.phases }),
+          ...(phases === undefined ? {} : { phases }),
           ...originOf(data),
         },
         { key: "started" },
       );
       const current = started.actor.kind === "handler" ? started.actor.invocation : undefined;
       /** The titles of the phases the script declares: what `phase(title)` may name. */
-      const titles = (described?.phases ?? []).map((phase) => phase.title);
+      const titles = (phases ?? []).map((phase) => phase.title);
       // The calls the earlier starts of this run finished: a call with the same key and input is
       // taken from them along the longest unchanged prefix (see revise.ts).
       const before = factsOf(journal(), run)?.invocations.filter((invocation) => invocation !== current) ?? [];
@@ -2552,14 +2576,12 @@ function requestedOf(
   run: RunId,
   facts: RunFacts,
   file: string,
-  hash: string | undefined,
-): { run: RunId; file: string; args: unknown; label?: string; hash?: string; contract?: ContractHash; box?: boolean } & RunOrigin {
+): { run: RunId; file: string; args: unknown; label?: string; contract?: ContractHash; box?: boolean } & RunOrigin {
   return {
     run,
     file,
     args: facts.args,
     ...(facts.label === undefined ? {} : { label: facts.label }),
-    ...(hash === undefined ? {} : { hash }),
     ...(facts.contract === undefined ? {} : { contract: facts.contract }),
     ...(facts.box === true ? { box: true } : {}),
     ...originOf(facts),

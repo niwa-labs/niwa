@@ -250,6 +250,8 @@ export const RunRequested = record("workflow.run.requested", z.object({
   box: z.boolean().optional(),
   /** The hash of the contract of the script as it was read when the run was asked for. */
   contract: ContractHash.optional(),
+  /** The phases declared by the requested script, before any phase has been entered. */
+  phases: WorkflowPhases.optional(),
   /** Run again the steps from this one on: a step key, a key prefix of a branch or scope, or the title of a phase. */
   from: z.string().min(1).optional(),
   ...RunOrigin,
@@ -308,6 +310,8 @@ export const SubscriptionInstalled = record(
     output: JsonSchemaValue.optional(),
     /** The hash of the contract, at the installation. */
     contract: ContractHash,
+    /** The phases declared by the script at this installation. */
+    phases: WorkflowPhases.optional(),
     /** Absent when nothing limits the installer (the host itself). */
     installer: principalSchema.optional(),
     /** Whether the runs of the script are boxed, as for `workflow.start`. Absent: they are not. */
