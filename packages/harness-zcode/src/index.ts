@@ -15,6 +15,7 @@ import type { HarnessBinding, InstanceOptions, KindCapabilities, SideCapabilitie
 import { ZCODE_LAUNCH, zcodeControl } from "./control.ts";
 import type { ZcodeControlOptions } from "./control.ts";
 import { ZcodeReading } from "./reading.ts";
+import { installationWrites } from "./storage.ts";
 
 export { ZcodeReading } from "./reading.ts";
 export type { ZcodeReadingOptions } from "./reading.ts";
@@ -95,11 +96,12 @@ export const zcodeKind = defineHarnessKind<ZcodeInstanceOptions>({
   home: () => join(homedir(), ".zcode"),
   // Its launcher, the runtime it runs on, and its home (sessions, their database, sign-in and
   // configuration). Its model endpoint depends on the provider: the installation names it (`net`).
+  // Installations using the browser broker opt in to binding in their private session temp.
   profile: {
     status: "admitted",
     of: ({ home, control }) => ({ bin }) => ({
       read: [...bin(control?.binary ?? "zcode"), ...bin("node")],
-      write: [home],
+      write: installationWrites(home),
     }),
   },
   bind: ({ id, home, model, control }) => ({
