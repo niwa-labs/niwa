@@ -163,12 +163,12 @@ test("the first prompt of a start is recorded under the operation of the start w
   expect(started.operation).toBe("start-1");
   const all = await records();
   expect(ofType(all, "session.input.sending")).toEqual([{ session: started.ref, operation: "start-1", digest: expect.any(String) }]);
-  expect(ofType(all, "session.input.settled")).toEqual([{ session: started.ref, operation: "start-1", outcome: { status: "accepted", receipt: { status: "started", turn: 1 } } }]);
+  expect(ofType(all, "session.input.settled")).toEqual([{ session: started.ref, operation: "start-1", track: {}, outcome: { status: "accepted", receipt: { status: "started", turn: 1 } } }]);
 
   // Without one, the operation is the start's own.
   const other = await call<{ ref: string; operation: string }>(niwa, "session.start", { harness: HARNESS, prompt: "again" });
   expect(other.operation.length).toBeGreaterThan(0);
-  expect(ofType(await records(), "session.input.settled")).toContainEqual({ session: other.ref, operation: other.operation, outcome: { status: "accepted", receipt: { status: "started", turn: 1 } } });
+  expect(ofType(await records(), "session.input.settled")).toContainEqual({ session: other.ref, operation: other.operation, track: {}, outcome: { status: "accepted", receipt: { status: "started", turn: 1 } } });
 });
 
 test("a start retried under its operation answers the session it made, and another prompt under it is a conflict", async () => {

@@ -93,6 +93,7 @@ import type {
   ModelName,
   OptionBlocks,
   PermissionMark,
+  Prompt,
   SessionControl,
   SessionId,
   SessionInfo,
@@ -133,6 +134,7 @@ import {
   SessionModel,
   SessionStarted,
   SessionTurnEnded,
+  SessionTurnResult,
   SessionTurnStarted,
   SessionUnknownVariant,
   sameAddress,
@@ -142,6 +144,10 @@ import type { SessionSendInput, SessionSendOutput } from "./records.ts";
 import {
   SessionRefInput,
   sessionAsk,
+  sessionAskAndWait,
+  sessionTurnSend,
+  sessionTurnWait,
+  sessionTurnWaitMany,
   sessionBelong,
   sessionGet,
   sessionEnd,
@@ -161,6 +167,7 @@ import {
 } from "./actions.ts";
 import { VisibleActionsInputSchema, visibleActionsOf } from "./visible.ts";
 import type { VisibleActionsInput } from "./visible.ts";
+import { TurnSettledResult } from "./actions.ts";
 
 const SESSION_TYPE_NAMES = SESSION_TYPES.map((type) => type.name);
 
@@ -204,6 +211,21 @@ function runningLine(entry: SessionEntry): string {
   const active = entry.lastActivityAt === undefined ? "" : new Date(entry.lastActivityAt).toTimeString().slice(0, 8);
   const title = (entry.title ?? "").replace(/\s+/g, " ").trim();
   return [entry.id ?? entry.ref, active, entry.model ?? "", title.length > 60 ? `${title.slice(0, 59)}…` : title].filter((part) => part !== "").join("  ");
+}
+
+/** A prompt with the schema of the answer the caller asked for, as one more volatile section after the rest. */
+function promptWithSchema(prompt: Prompt, schema: z.output<typeof JsonSchemaValue>): Prompt {
+  return {
+    sections: [
+      ...prompt.sections,
+      { id: "answer-schema", tier: "volatile", text: `Return only JSON that matches this JSON Schema:\n${stableJson(schema)}` },
+    ],
+  };
+}
+
+/** A prompt no section of which has text: the harness starts no turn for it, so it has no first answer. */
+function promptIsEmpty(prompt: Prompt): boolean {
+  return prompt.sections.every((section) => section.text.trim() === "");
 }
 
 /** What the plugin is given: the harness installations it may read from. */
@@ -429,6 +451,10 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     });
     // The last record before this host served: turns that began by then ran in processes of another host.
     let servedAfter = seq(0);
+    const openingSeq = () => api.journal?.()?.openingSeq ?? servedAfter;
+    const pendingTracked = new Map<SessionRef, Set<Promise<void>>>();
+    type SendOutput = z.output<typeof sessionSend.output>;
+    const sendsRunning = new Map<string, { digest: string; answer: Promise<SendOutput> }>();
     api.service(() => {
       servedAfter = api.journal?.()?.last() ?? seq(0);
       return () => {};
@@ -577,22 +603,40 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
                   await api.emit(SessionModel, { session: ref, model: event.model });
                 }
                 break;
-              case "turn-started":
+              case "turn-started": {
+                const turn = beginning(ref, event.turn);
+                if (turn === undefined) break;
                 activeAt = -Infinity;
                 pending = undefined;
                 pendingTool = undefined;
                 // An interrupt that ended no turn says nothing about the turn that begins now.
                 interrupting.delete(ref);
-                await api.emit(SessionTurnStarted, { session: ref, turn: beginning(ref, event.turn) });
+                await api.emit(SessionTurnStarted, { session: ref, turn });
                 break;
-              case "turn-ended": {
-                // An interrupt niwa asked for says how the turn ended; otherwise the harness does.
-                const interrupted = interrupting.delete(ref);
-                await api.emit(SessionTurnEnded, {
-                  session: ref,
-                  turn: numbered(ref, event.turn),
-                  how: interrupted ? "interrupted" : (event.outcome ?? "completed"),
-                });
+              }
+              case "turn-ended":
+              case "turn-discarded": {
+                const turn = numbered(ref, event.turn);
+                const discarded = event.kind === "turn-discarded";
+                const how = discarded ? "failed" : interrupting.delete(ref) ? "interrupted" : (event.outcome ?? "completed");
+                // A fast turn can end before its send receipt reaches the journal.
+                await Promise.all(pendingTracked.get(ref) ?? []);
+                const data = { session: ref, turn, how } as const;
+                if (trackedTurn(ref, turn)) {
+                  let answer: string | undefined;
+                  if (event.kind === "turn-ended" && how === "completed") {
+                    answer = event.answer;
+                    if (!answer?.trim() && event.readAnswer !== undefined) {
+                      answer = await event.readAnswer().catch(() => undefined);
+                    }
+                  }
+                  const diagnostic = event.kind === "turn-ended" && (how === "failed" || how === "unknown") ? event.diagnostic : undefined;
+                  const result = { ...data, ...(answer === undefined ? {} : { answer }), ...(diagnostic === undefined ? {} : { diagnostic }) };
+                  if (discarded) await api.emit(SessionTurnResult, result);
+                  else await api.emitAll([{ type: SessionTurnEnded, data }, { type: SessionTurnResult, data: result }]);
+                } else if (!discarded) {
+                  await api.emit(SessionTurnEnded, data);
+                }
                 break;
               }
               case "activity":
@@ -887,7 +931,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           ...(cwd === undefined ? { noProject: "the session names no working directory" } : {}),
           defaults,
           request,
+          holdsRule: (needed) => heldRule(rights, needed) !== undefined,
           owner: harness,
+          sessionTemp: temp,
           writes: [{ path: temp, from: "temp" }],
           closed: [...closedPlacesOf(api.home()), api.secrets.dir].map((path) => ({ path, from: "niwa" })),
           network: true,
@@ -1004,7 +1050,18 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      * The last send of a session under an operation id, from the journal: the digest of its message,
      * and its outcome once it was settled. A send that has no outcome was cut off while it went.
      */
-    const inputOf = (ref: SessionRef, operation: string): { digest: string; outcome?: InputOutcome } | undefined => {
+    type TrackedSend = NonNullable<z.output<typeof SessionInputSettled.schema>["track"]>;
+    const acceptedTurns = (ref: SessionRef) =>
+      (api.journal?.()?.find({ type: SessionInputSettled.name, field: "session", equals: ref }) ?? []).flatMap((row) => {
+        const data = SessionInputSettled.schema.parse(row.data);
+        return data.outcome.status === "accepted" && data.outcome.receipt.turn !== undefined
+          ? [{ turn: data.outcome.receipt.turn, track: data.track }]
+          : [];
+      });
+    const trackedTurn = (ref: SessionRef, turn: number) =>
+      acceptedTurns(ref).some((input) => input.turn === turn && input.track !== undefined);
+
+    const inputOf = (ref: SessionRef, operation: string): { seq: ReturnType<typeof seq>; digest: string; outcome?: InputOutcome; track?: TrackedSend } | undefined => {
       const journal = api.journal?.();
       if (journal === undefined) return undefined;
       const sent = journal
@@ -1019,10 +1076,10 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         .find({ type: SessionInputSettled.name, field: "operation", equals: operation })
         .flatMap((stored) => {
           const parsed = SessionInputSettled.schema.safeParse(stored.data);
-          return parsed.success && parsed.data.session === ref && stored.seq > sent.seq ? [parsed.data.outcome] : [];
+          return parsed.success && parsed.data.session === ref && stored.seq > sent.seq ? [parsed.data] : [];
         })
         .at(-1);
-      return settled === undefined ? { digest: sent.digest } : { digest: sent.digest, outcome: settled };
+      return { ...sent, outcome: settled?.outcome, track: settled?.track };
     };
 
     /**
@@ -1036,12 +1093,13 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         .find({ type: SessionInputSending.name, field: "operation", equals: operation })
         .flatMap((stored) => {
           const parsed = SessionInputSending.schema.safeParse(stored.data);
-          return parsed.success ? [parsed.data] : [];
+          return parsed.success ? [{ seq: stored.seq, session: parsed.data.session, digest: parsed.data.digest }] : [];
         })
         .at(0);
       if (sent === undefined) return undefined;
       const issued = sessionIdsOf(journal).find((entry) => entry.ref === sent.session);
-      const outcome = inputOf(sent.session, operation)?.outcome;
+      const settled = inputOf(sent.session, operation);
+      const outcome = settled?.outcome;
       // An input under the operation that is not the prompt of a start niwa made answers nothing but its conflict.
       if (issued === undefined) return { digest: sent.digest };
       const cwd = startedOf(sent.session)?.cwd;
@@ -1057,6 +1115,13 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           session: issued.id,
           ref: sent.session,
           ...(outcome?.status === "accepted" ? { receipt: outcome.receipt } : {}),
+          ...(settled?.track !== undefined && outcome?.status === "accepted" ? {
+            handle: {
+              session: sent.session,
+              operation,
+              ...(outcome.receipt.turn === undefined ? {} : { turn: outcome.receipt.turn }),
+            },
+          } : {}),
           ...(made === undefined ? {} : { worktree: { id: made.id, path: made.path, branch: made.branch } }),
           operation,
         },
@@ -1116,15 +1181,27 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     /** The harness counts from 1 again: the next turn it names goes on after the last one written. */
     const restart = (ref: SessionRef): void => {
       const count = countOf(ref);
+      // A receipt can reserve a number that was never started, including in a dead host's queue.
+      for (const { turn } of acceptedTurns(ref)) count.last = Math.max(count.last, turn);
       count.offset = count.last;
     };
 
-    /** A turn of the harness began: its number in the records, always after the last one written. */
-    const beginning = (ref: SessionRef, turn: number): number => {
+    /** Preserve receipt numbers while allowing an untracked harness to restart its counter. */
+    const beginning = (ref: SessionRef, turn: number): number | undefined => {
       const count = countOf(ref);
-      if (turn + count.offset <= count.last) count.offset = count.last - turn + 1;
-      count.last = turn + count.offset;
-      return count.last;
+      let recorded = turn + count.offset;
+      // A legacy harness can reset its counter without a resume or a numbered receipt.
+      // Keep that behavior only while no receipt or in-flight send relies on the offset.
+      if (recorded < count.last && !pendingTracked.has(ref) && acceptedTurns(ref).length === 0) {
+        count.offset = count.last + 1 - turn;
+        recorded = count.last + 1;
+      }
+      // A provider can start a steer as a new turn ahead of already numbered queue entries.
+      if (recorded <= count.offset || (recorded <= count.last &&
+        api.journal?.()?.find({ type: SessionTurnStarted.name, field: "session", equals: ref })
+          .some((stored) => SessionTurnStarted.schema.safeParse(stored.data).data?.turn === recorded))) return undefined;
+      count.last = Math.max(count.last, recorded);
+      return recorded;
     };
 
     /** The model the harness last named for a session, from the journal: `undefined` until it names one. */
@@ -1265,6 +1342,17 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       digest: string,
     ): Promise<z.output<typeof sessionStart.output>> => {
       const control = controlFor(bindings, input.harness, "start");
+      // The first turn is a tracked turn when the harness takes the prompt: check the schema before anything is made.
+      if (input.schema !== undefined) z.fromJSONSchema(input.schema);
+      // A schema shapes the answer to the first prompt: a prompt with no text starts no turn, so
+      // there is no answer it could shape. The two together are refused here rather than the schema
+      // becoming the only content of the prompt and manufacturing a turn out of an empty start.
+      if (input.schema !== undefined && promptIsEmpty(input.prompt)) {
+        throw new SessionRefusal(
+          "empty-prompt",
+          "a start with a schema needs a prompt with text: an empty prompt starts no turn, so there is no first answer to validate against it",
+        );
+      }
       // A model or an effort the kind cannot apply is refused here, before anything is made.
       const instance = instanceOf(bindings, input.harness);
       requireLaunch(instance.id, instance.sides.control?.launch ?? { model: false, effort: [], modes: [] }, input);
@@ -1339,7 +1427,8 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       });
       const asking = recording(mark, instance.id, launch, ctx, () =>
         control.start({
-          prompt: input.prompt,
+          // A schema the first answer must pass rides on the prompt as one more section, as a send carries it.
+          prompt: input.schema === undefined ? input.prompt : promptWithSchema(input.prompt, input.schema),
           model: input.model,
           effort: input.effort,
           mode: input.mode,
@@ -1383,14 +1472,26 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       });
       await ctx.emit(SessionMarked, { session: ref, mark });
       // The session has a name only now, so the input of its prompt is written once the harness took it; a start
-      // without a prompt is written too, so a retry of it finds the session it made.
+      // without a prompt is written too, so a retry of it finds the session it made. A prompt the harness took
+      // as a turn is a tracked turn, so the handle of the first turn is answered and can be waited for.
       await ctx.emit(SessionInputSending, { session: ref, operation, digest });
-      if (first !== undefined) await ctx.emit(SessionInputSettled, { session: ref, operation, outcome: { status: "accepted", receipt: first } });
+      if (first === undefined) {
+        follow(control, ref, id);
+        return {
+          session: issued,
+          ref,
+          ...(worktree === undefined ? {} : { worktree: { id: worktree.id, path: worktree.path, branch: worktree.branch } }),
+          operation,
+        };
+      }
+      const track: TrackedSend = input.schema === undefined ? {} : { schema: input.schema };
+      await ctx.emit(SessionInputSettled, { session: ref, operation, outcome: { status: "accepted", receipt: first }, track });
       follow(control, ref, id);
       return {
         session: issued,
         ref,
-        ...(first === undefined ? {} : { receipt: first }),
+        receipt: first,
+        handle: { session: ref, operation, ...(first.turn === undefined ? {} : { turn: first.turn }) },
         ...(worktree === undefined ? {} : { worktree: { id: worktree.id, path: worktree.path, branch: worktree.branch } }),
         operation,
       };
@@ -1484,63 +1585,248 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       }),
     );
 
-    api.action(
-      action(sessionSend, {
-        // The message is delivered into the session: a send that was cut off may have
-        // been delivered, so it is not made again.
-        recovery: "do-not-repeat",
-        effect: "write",
-        world: "local",
-        run: async (input, ctx) => {
-          const { ref, id, control } = controlOf(input.session, "send", ctx.caller);
-          // The slot of the harness is taken before anything is written of the send, so a send that waits
-          // for one is not taken for possibly sent if the host stops while it waits.
-          const sending = async (slot: Slot): Promise<DeliveryReceipt> => {
-            try {
-              const receipt = await control.send(id, input.message, input.into === undefined ? undefined : { into: input.into });
-              slot.reached(ref, receipt);
-              return receipt;
-            } catch (error) {
-              slot.release();
-              throw error;
-            }
-          };
-          // The turn is named as the records name it, not as the harness counts it in this process.
-          const named = (receipt: DeliveryReceipt) => (receipt.turn === undefined ? receipt : { ...receipt, turn: numbered(ref, receipt.turn) });
-          // A harness at its ceiling takes the message once one of its turns ends.
-          if (input.operation === undefined) return { receipt: named(await sending(await caps.admit(id.harness, ref))) };
+    const send = async (input: z.output<typeof sessionSend.input>, ctx: ActionContext): Promise<SendOutput> => {
+      const { ref, id, control } = controlOf(input.session, "send", ctx.caller);
+      const track: TrackedSend | undefined = input.schema !== undefined ? { schema: input.schema } : input.track ? {} : undefined;
+      const operation = input.operation ?? (track === undefined ? undefined : ctx.operationId);
+      const answerOf = (receipt: DeliveryReceipt): SendOutput => ({
+        receipt,
+        ...(track === undefined || operation === undefined ? {} : {
+          handle: { session: ref, operation, ...(receipt.turn === undefined ? {} : { turn: receipt.turn }) },
+        }),
+      });
+      // Check the schema before dispatch. Keep the legacy digest for existing operation ids.
+      if (input.schema !== undefined) z.fromJSONSchema(input.schema);
+      const message = input.schema === undefined ? input.message
+        : `${input.message}\n\nReturn only JSON that matches this JSON Schema:\n${stableJson(input.schema)}`;
+      const deliver = async (slot: Slot): Promise<DeliveryReceipt> => {
+        try {
+          const receipt = await control.send(id, message, input.into === undefined ? undefined : { into: input.into });
+          slot.reached(ref, receipt);
+          return receipt.turn === undefined ? receipt : { ...receipt, turn: numbered(ref, receipt.turn) };
+        } catch (error) {
+          slot.release();
+          throw error;
+        }
+      };
+      if (operation === undefined) return answerOf(await deliver(await caps.admit(id.harness, ref)));
 
-          const operation = input.operation;
-          const digest = createHash("sha256").update(JSON.stringify([input.message, input.into ?? null])).digest("hex");
-          const before = inputOf(ref, operation);
-          if (before !== undefined) {
-            if (before.digest !== digest) {
-              throw new SessionRefusal("operation-conflict", `operation "${operation}" was a send of another message into this session`);
-            }
-            // What became of it is answered from the records; only a message that never went is sent again.
-            if (before.outcome?.status === "accepted") return { receipt: before.outcome.receipt };
-            if (before.outcome?.status !== "unsent") {
-              throw new InputPossiblySent(id.harness, "send", before.outcome?.reason ?? "the send was cut off before its outcome was known");
-            }
-          }
-          const slot = await caps.admit(id.harness, ref);
-          await ctx.emit(SessionInputSending, { session: ref, operation, digest }).catch((error: unknown) => {
-            slot.release();
-            throw error;
-          });
-          const outcome = await outcomeOf(sending(slot).then(named));
-          await ctx.emit(SessionInputSettled, { session: ref, operation, outcome });
+      const body = [input.message, input.into ?? null];
+      const digest = createHash("sha256").update(track === undefined ? JSON.stringify(body) : stableJson([...body, track])).digest("hex");
+      const conflict = () => new SessionRefusal("operation-conflict", `operation "${operation}" was a send of another message into this session`);
+      const key = JSON.stringify([ref, operation]);
+      const running = sendsRunning.get(key);
+      if (running !== undefined) {
+        if (running.digest !== digest) throw conflict();
+        return await running.answer;
+      }
+      const before = inputOf(ref, operation);
+      if (before !== undefined) {
+        if (before.digest !== digest) throw conflict();
+        if (before.outcome?.status === "accepted") return answerOf(before.outcome.receipt);
+        if (before.outcome?.status !== "unsent") {
+          throw new InputPossiblySent(id.harness, "send", before.outcome?.reason ?? "the send was cut off before its outcome was known");
+        }
+        // A replay of this same step reads its final refusal. A separate call may retry it.
+        if (operation === ctx.operationId) throw new InputNotSent(id.harness, "send", before.outcome.reason);
+      }
+
+      const run = async (): Promise<SendOutput> => {
+        // Wait for capacity before writing an intent that would otherwise mean possibly sent.
+        const slot = await caps.admit(id.harness, ref);
+        await ctx.emit(SessionInputSending, { session: ref, operation, digest }).catch((error: unknown) => {
+          slot.release();
+          throw error;
+        });
+        const pending = pendingTracked.get(ref) ?? new Set<Promise<void>>();
+        const done = Promise.withResolvers<void>();
+        if (track !== undefined) {
+          pending.add(done.promise);
+          pendingTracked.set(ref, pending);
+        }
+        try {
+          const outcome = await outcomeOf(deliver(slot));
+          await ctx.emit(SessionInputSettled, { session: ref, operation, outcome, ...(track === undefined ? {} : { track }) });
           switch (outcome.status) {
-            case "accepted":
-              return { receipt: outcome.receipt };
-            case "unsent":
-              throw new InputNotSent(id.harness, "send", outcome.reason);
-            case "possibly-sent":
-              throw new InputPossiblySent(id.harness, "send", outcome.reason);
+            case "accepted": return answerOf(outcome.receipt);
+            case "unsent": throw new InputNotSent(id.harness, "send", outcome.reason);
+            case "possibly-sent": throw new InputPossiblySent(id.harness, "send", outcome.reason);
           }
-        },
-      }),
-    );
+        } finally {
+          if (track !== undefined) {
+            pending.delete(done.promise);
+            if (pending.size === 0) pendingTracked.delete(ref);
+            done.resolve();
+          }
+        }
+      };
+      const answer = run();
+      sendsRunning.set(key, { digest, answer });
+      try {
+        return await answer;
+      } finally {
+        sendsRunning.delete(key);
+      }
+    };
+
+    const sendTracked = async (input: z.output<typeof sessionTurnSend.input>, ctx: ActionContext) => {
+      const { receipt, handle } = await send({ ...input, track: true }, ctx);
+      if (handle === undefined) throw new Error("a tracked send must have a handle");
+      return { receipt, handle };
+    };
+
+    /**
+     * The settled outcome of one tracked turn, as the journal holds it now: the exact semantics of
+     * `session.turn-wait` for a single turn, with `undefined` while the turn can still settle.
+     */
+    const settledOf = (
+      ref: SessionRef,
+      sent: { seq: ReturnType<typeof seq>; digest: string; outcome?: InputOutcome; track?: TrackedSend },
+      journal: JournalReader,
+    ): z.output<typeof TurnSettledResult> | undefined => {
+      if (sent.outcome?.status !== "accepted") return { status: "ended", how: "unknown" };
+      const turn = sent.outcome.receipt.turn;
+      if (sent.outcome.receipt.status === "handled") return { status: "handled" };
+      if (turn === undefined) return { status: "ended", how: "unknown" };
+      const result = journal.find({ type: SessionTurnResult.name, field: "session", equals: ref })
+        .map((row) => SessionTurnResult.schema.parse(row.data)).find((row) => row.turn === turn);
+      if (result !== undefined) {
+        if (result.how !== "completed") return {
+          status: "ended", how: result.how, ...(result.diagnostic === undefined ? {} : { diagnostic: result.diagnostic }),
+        };
+        if (result.answer === undefined || result.answer.trim() === "") return { status: "no-answer" };
+        if (sent.track?.schema === undefined) return { status: "completed", value: result.answer };
+        const text = result.answer.trim();
+        const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(text);
+        let value: unknown;
+        try {
+          value = JSON.parse(fenced?.[1] ?? text);
+        } catch {
+          return { status: "invalid-answer" };
+        }
+        const parsed = z.fromJSONSchema(sent.track.schema).safeParse(value);
+        return parsed.success ? { status: "completed", value: z.json().parse(parsed.data) } : { status: "invalid-answer" };
+      }
+
+      const after = sent.seq;
+      if (after <= openingSeq() || !followed.has(ref) || turn <= countOf(ref).offset ||
+        journal.find({ type: SessionEnded.name, field: "session", equals: ref, after }).length > 0) {
+        return { status: "ended", how: "unknown" };
+      }
+      return undefined;
+    };
+
+    const waitForTurn = async (
+      input: z.output<typeof sessionTurnWait.input>,
+      ctx: ActionContext,
+    ): Promise<z.output<typeof sessionTurnWait.output>> => {
+      const ref = refOf(input.session);
+      authorizeControl(ref, ctx.caller);
+      const sent = inputOf(ref, input.operation);
+      if (sent?.track === undefined || sent.outcome?.status !== "accepted") {
+        throw new SessionRefusal("unknown-turn", "there is no accepted tracked send under this operation in this session");
+      }
+      const turn = sent.outcome.receipt.turn;
+      if (input.turn !== undefined && input.turn !== turn) {
+        throw new SessionRefusal("turn-mismatch", "the turn does not match the tracked send's receipt");
+      }
+
+      const deadline = input.timeoutMs === undefined && ctx.invocation !== undefined
+        ? Infinity : performance.now() + (input.timeoutMs ?? 30_000);
+      for (;;) {
+        ctx.signal?.throwIfAborted();
+        const journal = api.journal?.();
+        if (journal === undefined) return { status: "ended", how: "unknown" };
+        const settled = settledOf(ref, sent, journal);
+        if (settled !== undefined) return settled;
+        const left = Math.ceil(deadline - performance.now());
+        if (left <= 0) return { status: "timed-out" };
+        // A caller that cancelled its request is released from the wait at once, not at the next poll.
+        await api.untilCommit(Math.min(left, 1000), ctx.signal);
+      }
+    };
+
+    /**
+     * The group wait: every handle is resolved and the caller's right to it checked before anything is
+     * reported, so one handle nothing knows refuses the whole call. The turns themselves are left
+     * alone — nothing is sent, consumed or cancelled — and one deadline is shared by the group.
+     */
+    const waitForTurns = async (
+      input: z.output<typeof sessionTurnWaitMany.input>,
+      ctx: ActionContext,
+    ): Promise<z.output<typeof sessionTurnWaitMany.output>> => {
+      const waits = input.handles.map((handle, index) => {
+        const ref = refOf(handle.session);
+        authorizeControl(ref, ctx.caller);
+        const sent = inputOf(ref, handle.operation);
+        if (sent?.track === undefined || sent.outcome?.status !== "accepted") {
+          throw new SessionRefusal(
+            "unknown-turn",
+            `there is no accepted tracked send under operation "${handle.operation}" in this session (handle ${String(index)})`,
+          );
+        }
+        if (handle.turn !== undefined && handle.turn !== sent.outcome.receipt.turn) {
+          throw new SessionRefusal("turn-mismatch", `the turn does not match the tracked send's receipt (handle ${String(index)})`);
+        }
+        return { index, handle, ref, sent };
+      });
+      const deadline = input.timeoutMs === undefined && ctx.invocation !== undefined
+        ? Infinity : performance.now() + (input.timeoutMs ?? 30_000);
+      for (;;) {
+        ctx.signal?.throwIfAborted();
+        const journal = api.journal?.();
+        const done: z.output<typeof sessionTurnWaitMany.output>["done"] = [];
+        const pending: z.output<typeof sessionTurnWaitMany.output>["pending"] = [];
+        for (const wait of waits) {
+          const settled = journal === undefined ? { status: "ended", how: "unknown" } as const : settledOf(wait.ref, wait.sent, journal);
+          if (settled === undefined) pending.push({ index: wait.index, handle: wait.handle });
+          else done.push({ index: wait.index, handle: wait.handle, result: settled });
+        }
+        if (input.until === "first" ? done.length > 0 : pending.length === 0) return { done, pending, timedOut: false };
+        const left = Math.ceil(deadline - performance.now());
+        if (left <= 0) return { done, pending, timedOut: true };
+        // A caller that cancelled its request is released from the wait at once, not at the next poll.
+        await api.untilCommit(Math.min(left, 1000), ctx.signal);
+      }
+    };
+
+    api.action(action(sessionSend, {
+      recovery: "do-not-repeat",
+      effect: "write",
+      world: "local",
+      run: send,
+    }));
+
+    api.action(action(sessionTurnSend, {
+      recovery: "repeat-with-key",
+      effect: "write",
+      world: "local",
+      run: sendTracked,
+    }));
+
+    api.action(action(sessionTurnWait, {
+      recovery: "repeat",
+      effect: "read",
+      world: "niwa",
+      run: waitForTurn,
+    }));
+
+    api.action(action(sessionTurnWaitMany, {
+      recovery: "repeat",
+      effect: "read",
+      world: "niwa",
+      run: waitForTurns,
+    }));
+
+    api.action(action(sessionAskAndWait, {
+      recovery: "repeat-with-key",
+      effect: "write",
+      world: "local",
+      run: async ({ timeoutMs, ...input }, ctx) => {
+        const { handle } = await sendTracked(input, ctx);
+        return { handle, result: await waitForTurn({ ...handle, timeoutMs }, ctx) };
+      },
+    }));
 
     api.action(
       action(sessionInterrupt, {
@@ -1808,6 +2094,7 @@ export {
   SessionModel,
   SessionStarted,
   SessionTurnEnded,
+  SessionTurnResult,
   SessionTurnStarted,
   SessionUnknownVariant,
   sameAddress,
@@ -1826,6 +2113,12 @@ export { PromptInputSchema, promptFrom } from "./prompt.ts";
 export { VisibleActionsInputSchema, visibleActionsOf } from "./visible.ts";
 export {
   sessionAsk,
+  sessionAskAndWait,
+  sessionTurnSend,
+  sessionTurnWait,
+  sessionTurnWaitMany,
+  SessionTurnHandle,
+  TurnSettledResult,
   sessionBelong,
   sessionGet,
   sessionEnd,

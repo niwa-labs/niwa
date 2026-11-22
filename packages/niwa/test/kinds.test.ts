@@ -536,17 +536,18 @@ test("the pi control side queues a busy send through prompt, and refuses to resu
     await eventually(async () => (await control.state(id)) === "running", 15_000);
     const queued = await control.send(id, "later");
     expect(queued.status).toBe("queued");
+    expect((await framesOf(fake.log)).some(frame => frame.message === "later")).toBe(false);
     const steered = await control.send(id, "now", { into: "turn" });
     expect(steered.status).toBe("delivered");
 
-    // The fake logs a frame before it answers it, so both are there once the sends have returned;
-    // waiting for them keeps a slow machine from reading the log too early.
+    // The standalone prompt reaches Pi after the held turn, while steering reaches it immediately.
     await frameOf(fake.log, (frame) => frame.message === "later");
     await frameOf(fake.log, (frame) => frame.message === "now");
     const frames = await framesOf(fake.log);
-    // pi decides atomically whether it is working: no bare follow_up or steer goes out.
+    // Both messages use prompt, with a steering flag only for the active turn.
     expect(frames.some((frame) => frame.type === "follow_up" || frame.type === "steer")).toBe(false);
-    expect(frames.find((frame) => frame.message === "later")?.streamingBehavior).toBe("followUp");
+    expect(frames.findIndex((frame) => frame.message === "now")).toBeLessThan(frames.findIndex((frame) => frame.message === "later"));
+    expect(frames.find((frame) => frame.message === "later")?.streamingBehavior).toBeUndefined();
     expect(frames.find((frame) => frame.message === "now")?.streamingBehavior).toBe("steer");
 
     // pi wrote no file for this session (it has not run a turn it could save): resume is a typed
@@ -865,7 +866,8 @@ for await (const chunk of process.stdin) {
         out({ type: "extension_ui_request", id: "dialog-1", method: "confirm", title: "go on?" });
       }
       // A prompt sent with a streaming behavior while a run is held is queued by pi, not run.
-      if (!(held && frame.streamingBehavior !== undefined)) run(frame.message ?? "");
+      if (held && frame.streamingBehavior === "steer" && frame.message === "now") finish();
+      else if (!(held && frame.streamingBehavior !== undefined)) run(frame.message ?? "");
     } else if (frame.type === "follow_up" || frame.type === "steer") {
       out({ type: "response", id: frame.id, command: frame.type, success: true });
     } else if (frame.type === "abort") {

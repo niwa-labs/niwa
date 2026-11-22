@@ -483,8 +483,13 @@ const MAX_LIVE_BACKLOG = 256;
 class Connection {
   /** The subscriptions this connection opened: closed with it. */
   readonly feeds = new Set<Feed>();
-  /** The live channels this connection listens to: closed with it. */
+  /** The live channels this connection listens on: closed with it. */
   readonly liveFeeds = new Set<LiveFeed>();
+  /**
+   * The calls this connection made that it can still cancel, by their request id: the request's
+   * answer is the abort of the controller. An entry lives exactly as long as the call runs.
+   */
+  readonly cancellable = new Map<number, AbortController>();
   private readonly receive: (chunk: Uint8Array | string) => void;
   /** The frames the socket did not take yet; the head may be partly written. */
   private readonly queue: Uint8Array[] = [];
@@ -996,7 +1001,7 @@ class Niwa implements Host {
         for (const type of needs.types ?? []) installed.needs.types.add(typeof type === "string" ? type : type.name);
       },
       recordType: (name) => installed.types.find((type) => type.name === name) ?? this.declaredBefore(name),
-      untilCommit: (ms) => this.untilCommit(ms),
+      untilCommit: (ms, signal) => this.untilCommit(ms, signal),
       socket: () => socketPath(realpathSync(this.home)),
       home: () => realpathSync(this.home),
       artifacts: this.artifacts,
@@ -1291,17 +1296,24 @@ class Niwa implements Host {
     return { records, next: full ? seq(records[records.length - 1]?.seq ?? from) : seq(Math.max(end, from)) };
   }
 
-  /** Wait until a record is committed, or the time is over. */
-  private untilCommit(ms: number): Promise<void> {
+  /**
+   * Wait until a record is committed, or the time is over. A signal releases the wait at once:
+   * the caller that was cancelled stops holding a waiter the journal will never answer for it.
+   */
+  private untilCommit(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve) => {
+      // A wait that was cancelled before it began does not start: its caller is gone.
+      if (signal?.aborted) return resolve();
       const done = (): void => {
         clearTimeout(timer);
         this.commitWaiters.delete(done);
+        signal?.removeEventListener("abort", done);
         resolve();
       };
       // A timer longer than the runtime's limit fires at once, and a wait would then spin.
       const timer = setTimeout(done, Math.min(ms, MAX_TIMER_MS));
       this.commitWaiters.add(done);
+      signal?.addEventListener("abort", done, { once: true });
     });
   }
 
@@ -2720,7 +2732,7 @@ class Niwa implements Host {
   }
 
   async call<I, O, In = I>(target: ActionTarget<I, O, In>, input: NoInfer<In>, opts?: CallOptions): Promise<O> {
-    return this.runAction({ kind: "host" }, target, input, false, opts?.reason);
+    return this.runAction({ kind: "host" }, target, input, false, opts?.reason, undefined, opts?.signal);
   }
 
   readonly records = {
@@ -2863,8 +2875,9 @@ class Niwa implements Host {
     atDoor = false,
     reason?: string,
     made?: MadeUnder,
+    signal?: AbortSignal,
   ): Promise<O> {
-    const result = await this.outsideCall<I, O, In>(caller, target, input, atDoor, reason, made);
+    const result = await this.outsideCall<I, O, In>(caller, target, input, atDoor, reason, made, signal);
     switch (result.kind) {
       case "completed":
         return result.value;
@@ -2891,6 +2904,7 @@ class Niwa implements Host {
     atDoor = false,
     reason?: string,
     made?: MadeUnder,
+    signal?: AbortSignal,
   ): Promise<OutsideCall<O>> {
     const name = targetName(target);
     const found = this.actionOf(name);
@@ -2945,6 +2959,8 @@ class Niwa implements Host {
     const output = await found.run(decision.final, {
       operationId: operation,
       caller,
+      // A call the caller can cancel is aborted with it, as a step's call is with the step.
+      ...(signal === undefined ? {} : { signal }),
       ...(decision.access?.allowed === true && decision.access.answered !== undefined ? { answered: decision.access.answered } : {}),
       // A call outside an invocation starts a chain of its own: the first record has no cause
       // and is its own root, and the later ones of the same call belong to it. Every record
@@ -2988,8 +3004,9 @@ class Niwa implements Host {
       },
       // A call made inside a call outside an invocation is a call outside an invocation too:
       // there is no invocation to record it in, so it goes through the same point as any other
-      // call, with the same caller.
-      step: this.outsideStep(caller),
+      // call, with the same caller — and it stops with the caller's cancellation, as the call
+      // it was made by does.
+      step: this.outsideStep(caller, signal),
     });
     const checked = found.output.safeParse(output);
     if (!checked.success) {
@@ -3010,12 +3027,12 @@ class Niwa implements Host {
    * are today. The records it writes hang on the record before it, as the records of any other
    * call outside an invocation do.
    */
-  private outsideStep(caller: Caller): ActionStep {
+  private outsideStep(caller: Caller, signal?: AbortSignal): ActionStep {
     const call = async <I, O, In = I>(
       target: ActionTarget<I, O, In>,
       input: NoInfer<In>,
     ): Promise<O> => {
-      const result = await this.outsideCall<I, O, In>(caller, target, input);
+      const result = await this.outsideCall<I, O, In>(caller, target, input, false, undefined, undefined, signal);
       switch (result.kind) {
         case "completed":
           return result.value;
@@ -3035,7 +3052,7 @@ class Niwa implements Host {
       ): Promise<Outcome<O>> => {
         let result: Awaited<ReturnType<typeof this.outsideCall<I, O, In>>>;
         try {
-          result = await this.outsideCall<I, O, In>(caller, target, input);
+          result = await this.outsideCall<I, O, In>(caller, target, input, false, undefined, undefined, signal);
         } catch (error) {
           // An error the caller catches belongs to the code that called the action, here as in an
           // invocation.
@@ -3127,13 +3144,31 @@ class Niwa implements Host {
       case "call": {
         const { action: target, input, operation } = message;
         return reply(connection, message.id, async () => {
-          if (operation === undefined) return this.runAction(caller, target, input, true, message.reason);
-          this.operations.requireNamed(connection.isNamed, operation);
-          const recovery = this.actionOf(target)?.recovery;
-          return await this.operations.once(caller, operation, target, input, recovery, (id, began, actor) =>
-            this.runAction(caller, target, input, true, message.reason, { operation: id, began, actor }),
-          );
+          // The right to cancel this call is held from the moment the work starts, so a cancel that
+          // follows the call onto the wire finds it; it is given up when the call ends, whatever it ended with.
+          const cancelled = new AbortController();
+          connection.cancellable.set(message.id, cancelled);
+          try {
+            // The work is awaited, not handed back: the finally below runs when the work ends, not
+            // when it starts, so a cancel that comes while it runs still finds its controller.
+            if (operation === undefined) {
+              return await this.runAction(caller, target, input, true, message.reason, undefined, cancelled.signal);
+            }
+            this.operations.requireNamed(connection.isNamed, operation);
+            const recovery = this.actionOf(target)?.recovery;
+            return await this.operations.once(caller, operation, target, input, recovery, (id, began, actor) =>
+              this.runAction(caller, target, input, true, message.reason, { operation: id, began, actor }, cancelled.signal),
+            );
+          } finally {
+            if (connection.cancellable.get(message.id) === cancelled) connection.cancellable.delete(message.id);
+          }
         });
+      }
+      case "cancel": {
+        // The caller gave up on its call: the work that can stop stops, and the reply it will not
+        // read is the one the call itself makes when it ends.
+        connection.cancellable.get(message.id)?.abort();
+        return;
       }
       case "emit": {
         const { type, data, record, links } = message;

@@ -68,10 +68,10 @@ import type { Answered, TurnEnd } from "./dispatch.ts";
 import { SessionMessageSchema } from "./protocol/generated/zcode-protocol.ts";
 import type { RequestPermissionParams, RequestUserInputParams } from "./protocol/generated/zcode-protocol.ts";
 import { readNotification, readRequest, unknownDetail, unknownVariantName, ZCODE_PROTOCOL } from "./protocol/index.ts";
-import type { UnknownVariant } from "./protocol/index.ts";
-import { dbPathOf } from "./paths.ts";
+import type { SessionEvent, UnknownVariant } from "./protocol/index.ts";
 import { directoryOf, persistedModeOf } from "./reading.ts";
 import { INPUT_CANCELLED, readPermission, readUserInput } from "./reverse.ts";
+import { boxedStorage, installationStorage } from "./storage.ts";
 
 /**
  * What a ZCode session takes at launch: a model as `providerId/modelId`, and the reasoning level
@@ -144,6 +144,10 @@ export interface ZcodeSessionControl extends SessionControl {
 }
 
 const DEFAULT_CALL_TIMEOUT_MS = 180_000;
+const TERMINAL_HISTORY_GRACE_MS = 1_000;
+const TERMINAL_READ_TIMEOUT_MS = 2_000;
+const TERMINAL_RETRY_MS = 100;
+const TERMINAL_MAX_RETRY_MS = 1_000;
 /** A node process that writes its database needs time to drain after its input ends. */
 const DEFAULT_STOP_GRACE_MS = 1_500;
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
@@ -171,7 +175,10 @@ const CommandAckSchema = z.looseObject({
   status: z.enum(["accepted", "rejected", "stale", "duplicate", "noop", "failed"]),
   reasonCode: z.string().optional(),
   message: z.string().optional(),
-  result: z.looseObject({ delivery: z.enum(["startNow", "queue", "guide"]).optional() }).optional(),
+  result: z.looseObject({
+    delivery: z.enum(["startNow", "queue", "guide"]).optional(),
+    inputId: z.string().min(1).optional(),
+  }).optional(),
 });
 
 /** JSON-RPC's code for a method the server does not have. */
@@ -188,6 +195,31 @@ const SendAckSchema = z.looseObject({ accepted: z.literal(true), sessionId: z.st
 
 /** What a `session/messages` result is made of; each message is read by the snapshot's schema on its own, so one it does not know costs only itself. */
 const MessagesResultSchema = z.object({ messages: z.array(z.unknown()) });
+
+// Subset of ZCode's zcodeSessionReadParamsSchema used by the driver.
+type SessionReadParams = {
+  readonly sessionId: string;
+  readonly messageLimit: number;
+  readonly contentProfile: "index";
+};
+
+/** Fields of the ZCode session/read snapshot used to reconcile an ambiguous terminal. */
+const SessionReadResultSchema = z.object({
+  projection: z.object({
+    sessionId: z.string().min(1),
+    status: z.enum(["idle", "running", "waiting", "paused", "completed", "error"]),
+    currentTurnId: z.string().min(1).optional(),
+    lastError: z.object({ type: z.string().min(1), message: z.string().min(1) }).optional(),
+  }),
+  messages: z.array(z.unknown()),
+  runtime: z.object({
+    eventSeq: z.number().int().nonnegative(),
+    stateRevision: z.number().int().nonnegative(),
+    pendingRequestIds: z.array(z.string()),
+    activeTurnId: z.string().min(1).optional(),
+    activeTurnKind: z.enum(["regular", "compact", "rewind"]).optional(),
+  }),
+});
 
 /** The result of one call. A refusal is an outcome, not a rejection. */
 interface Outcome {
@@ -210,6 +242,24 @@ interface ModelSelection {
 /** How a turn ended, and which message of the transcript began it, when the server said. */
 interface EndedTurn extends TurnEnd {
   readonly messageId?: string | undefined;
+}
+
+interface NativeTurnStart {
+  readonly seq: number;
+  readonly turnId: string | undefined;
+  readonly messageId: string | undefined;
+  reconciliation?: TurnEnd[];
+}
+
+type TranscriptMessage = z.output<typeof SessionMessageSchema>;
+type TerminalEvent = Extract<SessionEvent, { type: "turn.completed" | "turn.failed" }>;
+type StartEvent = Extract<SessionEvent, { type: "turn.started" }>;
+type TurnEvent = { event: StartEvent; fresh: boolean } | { event: TerminalEvent; end: TurnEnd };
+
+interface PendingSteer {
+  readonly events: TurnEvent[];
+  readonly ready: PromiseWithResolvers<void>;
+  redirected?: { turn: number; text: string; inputId: string };
 }
 
 interface TurnWait {
@@ -246,6 +296,7 @@ type Watcher = (event: LifeEvent | undefined) => void;
 
 /** A turn that waits for the running one; an ask also waits for its answer. */
 interface QueuedTurn {
+  readonly turn: number;
   readonly text: string;
   readonly ask?: { resolve: (end: string) => void; reject: (error: unknown) => void };
 }
@@ -265,12 +316,21 @@ class LiveSession {
   nativeId = "";
   /** The turns niwa has started; the running one, if any, has this number. */
   turn = 0;
+  assigned = 0;
   busy = false;
   /** Whether the running turn's start was reported. */
   began = false;
-  /** The message of the transcript the running turn began with, once the server has named it. */
-  turnMessage: string | undefined;
+  turnInput = "";
+  turnInputId = "";
+  eventSeq = -1;
+  lastNativeStartSeq = -1;
+  nativeTurnStart: NativeTurnStart | undefined;
+  bareTurnStart: NativeTurnStart | undefined;
+  steer: PendingSteer | undefined;
+  /** Start identities already bound in this process, including those of completed turns. */
+  readonly seenStarts = new Set<string>();
   stopping = false;
+  closing: Promise<void> | undefined;
   ended = false;
   /** The surface (servers, allow-list, deny-list) the process was given, as JSON; a resume compares it. */
   surface = "{}";
@@ -321,7 +381,10 @@ class LiveSession {
   /** Fail every queued ask, and drop the queue; returns how many turns were dropped. */
   dropQueue(reason: string): number {
     const dropped = this.queue.splice(0);
-    for (const turn of dropped) turn.ask?.reject(new Error(reason));
+    for (const entry of dropped) {
+      entry.ask?.reject(new Error(reason));
+      this.emit({ kind: "turn-discarded", turn: entry.turn });
+    }
     return dropped.length;
   }
 
@@ -371,6 +434,8 @@ class LiveSession {
     if (this.ended) return;
     this.ended = true;
     this.busy = false;
+    this.steer?.ready.resolve();
+    this.steer = undefined;
     this.cancelAsking();
     const lost = this.dropQueue(failure ?? "the session ended");
     if (failure !== undefined) {
@@ -402,8 +467,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   // directory and database (a child left to itself uses `~/.zcode`). What a box gives it is the
   // installation's profile, resolved with the rest of the box.
   const home = options.home === undefined ? undefined : resolve(options.home);
-  const installationEnv: Readonly<Record<string, string>> =
-    home === undefined ? {} : { ZCODE_STORAGE_DIR: home, ZCODE_SESSION_DB_PATH: dbPathOf(home) };
+  const installationEnv = installationStorage(home);
 
   /** The sessions by id; `owned` also holds those still starting. */
   const sessions = new Map<string, LiveSession>();
@@ -429,13 +493,13 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   }
 
   /** One call, matched to its answer by id. It never rejects. */
-  function call(session: LiveSession, method: string, params: Record<string, unknown>): Promise<Outcome> {
+  function call(session: LiveSession, method: string, params: Record<string, unknown>, timeoutMs = callTimeoutMs): Promise<Outcome> {
     const id = session.nextId;
     session.nextId += 1;
     return new Promise<Outcome>((resolve) => {
       const timer = setTimeout(() => {
         if (session.pending.delete(id)) resolve({ ok: false, error: `the call ${method} timed out`, dispatch: "uncertain" });
-      }, callTimeoutMs);
+      }, timeoutMs);
       session.pending.set(id, (outcome) => {
         clearTimeout(timer);
         resolve(outcome);
@@ -673,13 +737,16 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       return;
     }
     // A subagent's turn is not this session's.
-    if (notification.method === "session/event" && notification.params.sessionId !== session.nativeId) return;
-    if (notification.method === "session/event" && notification.params.type === "turn.started") {
-      session.turnMessage = notification.params.payload?.messageId;
-    }
+    const event = notification.method === "session/event" ? notification.params : undefined;
+    if (event !== undefined && event.sessionId !== session.nativeId) return;
+    const fresh = event !== undefined && event.seq > session.eventSeq;
+    if (fresh) session.eventSeq = event.seq;
+    if (event?.type === "turn.started") handleTurnEvent(session, { event, fresh });
     switch (action.do) {
       case "end-turn":
-        endTurn(session, action.end);
+        if (event?.type === "turn.completed" || event?.type === "turn.failed") {
+          handleTurnEvent(session, { event, end: action.end });
+        }
         return;
       case "activity":
         session.emit({ kind: "activity", at: Date.now(), detail: action.detail });
@@ -691,25 +758,169 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     }
   }
 
+  function handleTurnEvent(session: LiveSession, frame: TurnEvent): void {
+    // The old turn can end before the command response. Hold the following lifecycle frames
+    // until the response tells us whether the command owns a new turn.
+    if (!session.busy && session.steer !== undefined) {
+      session.steer.events.push(frame);
+      return;
+    }
+    if ("end" in frame) {
+      handleTerminal(session, frame.event, frame.end);
+    } else if (session.busy && session.nativeTurnStart === undefined) {
+      const { turnId, seq, payload } = frame.event;
+      const inputId = payload?.inputId;
+      const messageId = payload?.messageId;
+      const keys = [
+        ...(turnId === undefined ? [] : [`turn:${turnId}`]),
+        ...(inputId === undefined ? [] : [`input:${inputId}`]),
+        ...(messageId === undefined ? [] : [`message:${messageId}`]),
+      ];
+      if (seq > session.lastNativeStartSeq
+        && (inputId === session.turnInputId
+          || (inputId === undefined && (payload?.input === session.turnInput || (payload === undefined && turnId !== undefined))))
+        && !keys.some((key) => session.seenStarts.has(key))) {
+        session.nativeTurnStart = { seq, turnId, messageId };
+        session.lastNativeStartSeq = seq;
+        for (const key of keys) session.seenStarts.add(key);
+      } else if (frame.fresh && turnId === undefined && payload === undefined) {
+        // This only provides a sequence floor for session/read. It supplies no ownership.
+        session.bareTurnStart ??= { seq, turnId, messageId };
+      }
+    }
+  }
+
+  function handleTerminal(session: LiveSession, event: TerminalEvent, end: TurnEnd): void {
+    const note = (detail: string): void => session.emit({ kind: "activity", at: Date.now(), detail });
+    const start = session.nativeTurnStart ?? session.bareTurnStart;
+    if (!session.busy) {
+      note(`a turn ended while none was running (${end.outcome})`);
+      return;
+    }
+    if (start !== undefined && event.seq <= start.seq) {
+      note("ignored a ZCode terminal event without a matching start");
+      return;
+    }
+    const inputId = event.payload?.inputId;
+    if ((inputId !== undefined && inputId !== session.turnInputId)
+      || (event.turnId !== undefined && start?.turnId !== undefined && event.turnId !== start.turnId)
+      || (event.turnId !== undefined && start?.turnId === undefined && session.seenStarts.has(`turn:${event.turnId}`))) {
+      note("ignored a ZCode terminal event for another turn");
+      return;
+    }
+    if (inputId === session.turnInputId || (event.turnId !== undefined && event.turnId === start?.turnId)) {
+      endTurn(session, end);
+    } else if (start !== undefined) {
+      note("ignored an uncorrelated ZCode terminal event");
+      if (start.reconciliation === undefined) {
+        start.reconciliation = [end];
+        void reconcileTerminal(session, start, event.seq, start.reconciliation);
+      } else {
+        start.reconciliation.push(end);
+      }
+    } else {
+      note("ignored a ZCode terminal event without a matching start");
+    }
+  }
+
+  function confirmedTerminal(last: TranscriptMessage | undefined, candidates: TurnEnd[]): TurnEnd | undefined {
+    if (last?.info.role === "assistant" && last.info.time.completed !== undefined) {
+      const response = messageText(last);
+      for (const end of candidates) {
+        if (end.outcome === "completed" && last.info.error === undefined && last.info.finish !== "tool-calls"
+          && (end.response === "" || end.response === response)) return { outcome: "completed", response };
+        if (end.outcome === "failed" && end.error !== undefined && last.info.error?.["message"] === end.error) return end;
+      }
+    }
+    return undefined;
+  }
+
+  async function reconcileTerminal(session: LiveSession, start: NativeTurnStart, terminalSeq: number, candidates: TurnEnd[]): Promise<void> {
+    const current = (): boolean => session.busy && !session.stopping && (session.nativeTurnStart ?? session.bareTurnStart) === start;
+    const timeout = Math.min(callTimeoutMs, TERMINAL_READ_TIMEOUT_MS);
+    let retry = TERMINAL_RETRY_MS;
+    let idleSince: number | undefined;
+    const params: SessionReadParams = { sessionId: session.nativeId, messageLimit: 1, contentProfile: "index" };
+    while (current()) {
+      const read = await call(session, "session/read", params, timeout);
+      if (!current()) return;
+      const snapshot = SessionReadResultSchema.safeParse(read.result);
+      if (read.ok && snapshot.success) {
+        const { projection, runtime, messages } = snapshot.data;
+        // currentTurnId is the last projected turn. Only runtime identifies active work.
+        const idle = projection.sessionId === session.nativeId && runtime.eventSeq >= terminalSeq
+          && runtime.activeTurnId === undefined && runtime.activeTurnKind === undefined
+          && runtime.pendingRequestIds.length === 0
+          && (projection.status === "idle" || projection.status === "completed" || projection.status === "error")
+          && (start.turnId === undefined || projection.currentTurnId === start.turnId);
+        if (idle) {
+          if (start.turnId !== undefined && projection.status === "error" && projection.lastError !== undefined) {
+            endTurn(session, { outcome: "failed", response: "", error: projection.lastError.message });
+            return;
+          }
+          if (start.messageId === undefined) break;
+          idleSince ??= performance.now();
+          // The bounded snapshot often contains the answer. If it doesn't, history can lag;
+          // look for the assistant message linked to the exact user message.
+          const parent = start.messageId;
+          const assistantForTurn = (message: TranscriptMessage): boolean => message.info.role === "assistant"
+            && message.info.sessionId === params.sessionId && message.info.parentMessageId === parent;
+          const matchingEnd = (message: TranscriptMessage | undefined): TurnEnd | undefined => {
+            const end = confirmedTerminal(message, candidates);
+            return end !== undefined && (projection.status === "error") === (end.outcome === "failed") ? end : undefined;
+          };
+          const fromSnapshot = SessionMessageSchema.safeParse(messages.at(-1));
+          const projectedEnd = fromSnapshot.success && assistantForTurn(fromSnapshot.data) ? matchingEnd(fromSnapshot.data) : undefined;
+          const end = projectedEnd ?? matchingEnd((await transcript(session, timeout)).findLast(assistantForTurn));
+          if (!current()) return;
+          if (end !== undefined) {
+            endTurn(session, end);
+            return;
+          }
+          if (performance.now() - idleSince >= TERMINAL_HISTORY_GRACE_MS) break;
+          retry = TERMINAL_RETRY_MS;
+        } else {
+          idleSince = undefined;
+        }
+      } else {
+        idleSince = undefined;
+      }
+      await Bun.sleep(retry);
+      retry = Math.min(retry * 2, TERMINAL_MAX_RETRY_MS);
+    }
+    if (!current()) return;
+    // ZCode is idle, but its terminal cannot be attributed. Close the writer and discard the queue
+    // with individual outcomes before another turn can change the evidence.
+    const reason = "could not correlate a ZCode terminal event with the running turn";
+    session.stopping = true;
+    const at = Date.now();
+    announceTurn(session, at);
+    session.emit({ kind: "turn-ended", turn: session.turn, at, outcome: "unknown" });
+    session.end(reason);
+    await stopSession(session);
+  }
+
+  function announceTurn(session: LiveSession, at: number): void {
+    if (session.began) return;
+    session.began = true;
+    session.emit({ kind: "turn-started", turn: session.turn, at });
+  }
+
   function endTurn(session: LiveSession, end: TurnEnd): void {
     const at = Date.now();
     // The turn is over: nothing it asked is waited for any more.
     session.cancelAsking();
-    // An end with no turn running ends nothing: it is a stray, and a sign of life at most.
-    if (!session.busy) {
-      session.emit({ kind: "activity", at, detail: `a turn ended while none was running (${end.outcome})` });
-      return;
-    }
     // The end of a turn that came before the answer to its send is still preceded by its start.
-    if (!session.began) {
-      session.began = true;
-      session.emit({ kind: "turn-started", turn: session.turn, at });
-    }
+    announceTurn(session, at);
     session.busy = false;
     if (end.error !== undefined) session.emit({ kind: "activity", at, detail: end.error });
     // A turn that was cut or broke did not complete.
-    session.emit({ kind: "turn-ended", turn: session.turn, at, outcome: end.outcome === "completed" ? "completed" : "failed" });
-    session.settleTurn({ ...end, messageId: session.turnMessage });
+    const messageId = session.nativeTurnStart?.messageId;
+    session.emit({
+      kind: "turn-ended", turn: session.turn, at, outcome: end.outcome === "completed" ? "completed" : "failed", answer: end.response,
+      ...(messageId === undefined ? {} : { readAnswer: () => turnAnswer(session, messageId) }),
+    });
+    session.settleTurn({ ...end, messageId });
     // A message that waited for this turn becomes a turn of its own.
     drainQueue(session);
   }
@@ -748,7 +959,11 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   }
 
   /** Ends the input and lets the child drain, then SIGTERM to the process group, then SIGKILL. */
-  async function stopSession(session: LiveSession): Promise<void> {
+  function stopSession(session: LiveSession): Promise<void> {
+    return session.closing ??= finishStopping(session);
+  }
+
+  async function finishStopping(session: LiveSession): Promise<void> {
     const pid = session.child.pid;
     session.stopping = true;
     if (pid === undefined) {
@@ -783,6 +998,9 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
 
   async function launchSession(cwd: string | undefined, plan: Pick<StartOptions, "env" | "box">): Promise<LiveSession> {
     if (disposed) throw unavailable("start", "the control side is disposed");
+    // The bound installation supplies its storage defaults after the session environment.
+    const env = { ...plan.env, ...installationEnv };
+    const launch = plan.box === undefined ? { env } : await boxedStorage(plan.box, env, cwd);
     const child = await spawnAgent({
       harness: harnessId,
       program: binary,
@@ -790,9 +1008,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       cwd,
       // Its own process group, so a stop reaches everything ZCode started and nothing else.
       detached: true,
-      // The installation comes last: a child that kept to another one would write where the reader does not look.
-      env: { ...plan.env, ...installationEnv },
-      box: plan.box,
+      ...launch,
     });
     const session = new LiveSession(child);
     owned.add(session);
@@ -874,19 +1090,25 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     return prompt.sections.map((section) => section.text).join("\n\n");
   }
 
+  function beginTurn(session: LiveSession, turn: number, text: string, inputId: string): void {
+    session.turn = turn;
+    session.busy = true;
+    session.began = false;
+    session.turnInput = text;
+    session.turnInputId = inputId;
+    session.nativeTurnStart = undefined;
+    session.bareTurnStart = undefined;
+  }
+
   /**
    * Ask ZCode to take a message as a turn. The wait for the turn's end is registered before the
    * request is written, so a turn that ends in the same read as its answer is not missed.
    */
-  async function startTurn(session: LiveSession, text: string): Promise<{ turn: number; wait: TurnWait }> {
+  async function startTurn(session: LiveSession, text: string, turn = ++session.assigned): Promise<{ turn: number; wait: TurnWait }> {
     if (session.busy) throw new InputNotSent(harnessId, "send", "a turn is already running");
-    session.turn += 1;
-    session.busy = true;
-    session.began = false;
-    session.turnMessage = undefined;
-    const turn = session.turn;
+    beginTurn(session, turn, text, randomUUID());
     const wait = session.expectTurn(turnTimeoutMs);
-    const params: Record<string, unknown> = { sessionId: session.nativeId, content: text };
+    const params: Record<string, unknown> = { sessionId: session.nativeId, content: text, inputId: session.turnInputId };
     if (session.selection !== undefined) params["modelSelection"] = session.selection;
     const sent = await call(session, "session/send", params);
     // An answer that is no acceptance of this session's message, after the message was written, may
@@ -900,15 +1122,8 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       const dispatch = answer.dispatch ?? "uncertain";
       const failure = inputFailure(harnessId, "send", dispatch, answer.error ?? "the CLI refused the message");
       if (dispatch === "uncertain") {
-        // The message may be a turn that is running: the session stays busy, so a later turn is not
-        // taken for it and what is queued waits. Its end releases the session; if none comes, the
-        // timeout of the turn does, which is all this side can tell.
-        void wait.done.then((end) => {
-          if (end !== undefined || session.ended || session.turn !== turn || !session.busy) return;
-          session.busy = false;
-          session.emit({ kind: "activity", at: Date.now(), detail: `turn ${turn} never reported its end: the session is taken for idle` });
-          drainQueue(session);
-        });
+        // The send may have taken effect. Keep later inputs queued until ZCode reports an end.
+        wait.cancel();
         throw failure;
       }
       // The message was never taken: its turn never was, and what waited behind it goes on.
@@ -917,10 +1132,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       drainQueue(session);
       throw failure;
     }
-    if (!session.began && session.turn === turn) {
-      session.began = true;
-      session.emit({ kind: "turn-started", turn, at: Date.now() });
-    }
+    if (session.turn === turn) announceTurn(session, Date.now());
     return { turn, wait };
   }
 
@@ -932,36 +1144,39 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     return end.response !== "" ? end.response : await turnAnswer(session, end.messageId, text);
   }
 
-  /**
-   * The answer of one turn, read back from the transcript when the end of the turn carried none: the
-   * last text of the assistant messages that answer the message the turn began with. That message is
-   * the one the server named when the turn started, else the last one that said what was sent. A turn
-   * that left no text of its own has none: the text of another turn is never its answer.
-   */
-  async function turnAnswer(session: LiveSession, started: string | undefined, sent: string): Promise<string> {
-    const read = await call(session, "session/messages", { sessionId: session.nativeId });
+  function messageText(message: TranscriptMessage): string {
+    return message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+  }
+
+  async function transcript(session: LiveSession, timeoutMs?: number): Promise<TranscriptMessage[]> {
+    const read = await call(session, "session/messages", { sessionId: session.nativeId }, timeoutMs);
     const messages = MessagesResultSchema.safeParse(read.result);
-    if (!read.ok || !messages.success) return "";
-    const known: Array<z.output<typeof SessionMessageSchema>> = [];
+    if (!read.ok || !messages.success) return [];
+    const known: TranscriptMessage[] = [];
     for (const item of messages.data.messages) {
       const message = SessionMessageSchema.safeParse(item);
       if (message.success) {
-        known.push(message.data);
+        if (message.data.info.sessionId === session.nativeId) known.push(message.data);
         continue;
       }
       // One message the snapshot does not know costs that message, not the answer.
       const unknown: UnknownVariant = { protocol: "zcode", discriminator: "method", value: "session/messages", why: "does not fit the snapshot", raw: item };
       emitUnknown(session, unknown);
     }
-    const textOf = (message: z.output<typeof SessionMessageSchema>): string =>
-      message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
+    return known;
+  }
+
+  /** Read the answer by its parent ID. Legacy ask also supports older starts without a message ID. */
+  async function turnAnswer(session: LiveSession, started: string | undefined, sent?: string): Promise<string> {
+    const known = await transcript(session);
     const beginning =
-      started ?? known.findLast((message) => message.info.role === "user" && textOf(message).trim() === sent.trim())?.info.messageId;
+      started ?? (sent === undefined ? undefined : known.findLast((message) =>
+        message.info.role === "user" && messageText(message).trim() === sent.trim())?.info.messageId);
     if (beginning === undefined) return "";
     let answer = "";
     for (const message of known) {
       if (message.info.role !== "assistant" || message.info.parentMessageId !== beginning) continue;
-      const text = textOf(message);
+      const text = messageText(message);
       if (text.trim() !== "") answer = text;
     }
     return answer;
@@ -977,10 +1192,20 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
    * The caller of a message does not wait for its turn; the caller of an ask waits for the answer.
    */
   function drainQueue(session: LiveSession): void {
-    if (session.ended || session.stopping) return;
+    if (session.ended || session.stopping || session.busy) return;
+    const steer = session.steer;
+    if (steer !== undefined) {
+      const redirected = steer.redirected;
+      if (redirected !== undefined) {
+        beginTurn(session, redirected.turn, redirected.text, redirected.inputId);
+        announceTurn(session, Date.now());
+        releaseSteer(session, steer);
+      }
+      return;
+    }
     const next = session.queue.shift();
     if (next === undefined) return;
-    void startTurn(session, next.text)
+    void startTurn(session, next.text, next.turn)
       .then(({ wait }) => {
         if (next.ask === undefined) {
           wait.cancel();
@@ -990,6 +1215,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
       })
       .catch((error: unknown) => {
         next.ask?.reject(error);
+        if (error instanceof InputNotSent) session.emit({ kind: "turn-discarded", turn: next.turn });
         // The messages behind it are released by the start that failed, when its message was never taken.
         session.emit({ kind: "activity", at: Date.now(), detail: `a queued message could not be started: ${String(error)}` });
       });
@@ -998,9 +1224,10 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
   /** Deliver a message the way a send does and say what became of it; nothing waits for the turn to end. */
   async function deliver(session: LiveSession, message: string): Promise<DeliveryReceipt> {
     const at = Date.now();
-    if (session.busy) {
-      session.queue.push({ text: message });
-      return { status: "queued", turn: session.turn + session.queue.length, at };
+    if (session.busy || session.steer !== undefined) {
+      const turn = ++session.assigned;
+      session.queue.push({ turn, text: message });
+      return { status: "queued", turn, at };
     }
     const { turn, wait } = await startTurn(session, message);
     wait.cancel();
@@ -1013,11 +1240,37 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
    * it. A ZCode that has no such command refuses by name, and nothing is sent.
    */
   async function steer(session: LiveSession, message: string): Promise<DeliveryReceipt> {
+    while (session.steer !== undefined) await session.steer.ready.promise;
+    if (!session.busy) return deliver(session, message);
     const at = Date.now();
     const turn = session.turn;
+    const commandId = `niwa-${randomUUID()}`;
+    const pending: PendingSteer = { events: [], ready: Promise.withResolvers<void>() };
+    session.steer = pending;
+    try {
+      const delivery = await steerCommand(session, message, commandId, at);
+      if (delivery?.delivery !== "startNow") return { status: "delivered", turn, at };
+      const redirected = { turn: ++session.assigned, text: message, inputId: delivery.inputId ?? commandId };
+      pending.redirected = redirected;
+      drainQueue(session);
+      return { status: "started", turn: redirected.turn, at };
+    } finally {
+      if (pending.redirected === undefined) releaseSteer(session, pending);
+    }
+  }
+
+  function releaseSteer(session: LiveSession, pending: PendingSteer): void {
+    if (session.steer !== pending) return;
+    session.steer = undefined;
+    pending.ready.resolve();
+    for (const frame of pending.events) handleTurnEvent(session, frame);
+    drainQueue(session);
+  }
+
+  async function steerCommand(session: LiveSession, message: string, commandId: string, at: number) {
     const sent = await call(session, "v4/command", {
       ...(session.cwd === undefined ? {} : wire(session.cwd)),
-      commandId: `niwa-${randomUUID()}`,
+      commandId,
       clientId: "niwa",
       sessionId: session.nativeId,
       type: "sendText",
@@ -1036,8 +1289,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
     switch (ack.data.status) {
       case "accepted":
       case "duplicate":
-        // The turn ended on its way: ZCode began a turn of the message instead of steering the old one.
-        return ack.data.result?.delivery === "startNow" ? { status: "started", at } : { status: "delivered", turn, at };
+        return ack.data.result;
       case "rejected":
       case "stale":
       case "noop":
@@ -1099,6 +1351,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
 
     // A held session continues in its own child: a second child would be a second writer.
     const held = sessions.get(id.native);
+    if (held?.closing !== undefined) await held.closing;
     let carried: Watcher[] = [];
     if (held !== undefined && !held.ended && !held.stopping) {
       if (resumeOptions?.box !== undefined) throw new Unsupported(harnessId, "control", "resume", LIVE_PROCESS_REFUSAL);
@@ -1120,13 +1373,13 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         if (resumeOptions?.reverse !== undefined) held.reverse = resumeOptions.reverse;
         if (text === "") return undefined;
         // The prompt of a resume waits behind a running turn, as a send does; it is not an error.
-        if (held.busy) {
-          held.queue.push({ text });
+        if (held.busy || held.steer !== undefined) {
+          held.queue.push({ turn: ++held.assigned, text });
           return undefined;
         }
         return async () => void (await runTurn(held, text));
       }
-      if (held.busy) {
+      if (held.busy || held.steer !== undefined) {
         throw unavailable("resume", "a turn is running: the servers and tools of the session change only when it is idle");
       }
       // The watchers follow the session, not the process: they are handed to the new one.
@@ -1281,7 +1534,7 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         throw new InputNotSent(harnessId, "send", `the session ${id.native} is not held by this control side`);
       }
       // Only a caller that asks for it is steered into the running turn.
-      if (session.busy && sendOptions?.into === "turn") return steer(session, message);
+      if ((session.busy || session.steer !== undefined) && sendOptions?.into === "turn") return steer(session, message);
       return deliver(session, message);
     },
 
@@ -1310,9 +1563,9 @@ export function zcodeControl(options: ZcodeControlOptions): ZcodeSessionControl 
         JSON.stringify(jsonSchema),
       ].join("\n");
       // An ask into a busy session waits for its turn, behind what is already queued.
-      const text = session.busy
+      const text = session.busy || session.steer !== undefined
         ? await new Promise<string>((resolve, reject) => {
-            session.queue.push({ text: instruction, ask: { resolve, reject } });
+            session.queue.push({ turn: ++session.assigned, text: instruction, ask: { resolve, reject } });
           })
         : await runTurn(session, instruction);
       if (text.trim() === "") throw unavailable("ask", "the turn left no answer");

@@ -10,6 +10,7 @@ import type { HarnessId, LifeEvent, SessionId } from "@niwa-labs/harness";
 import { PiControl, piToolFlags, piToolsModeFlags } from "../src/control.ts";
 import { PI_MCP_SERVERS_ENV, decodeServers } from "../src/mcp/index.ts";
 import { eventually, tempDir } from "@niwa-labs/testing";
+import { EVENT_FIXTURES } from "./wire-fixtures.ts";
 
 /**
  * A scripted pi. It logs each spawn (`spawns.log`: pid, arguments, working directory and the
@@ -20,7 +21,7 @@ import { eventually, tempDir } from "@niwa-labs/testing";
  * FAKE_FLOOD makes it write a line that never ends after it has named its session.
  */
 const FAKE = `#!/usr/bin/env bun
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 const dir = process.env.FAKE_DIR;
 appendFileSync(dir + "/spawns.log", JSON.stringify({
   pid: process.pid,
@@ -32,6 +33,26 @@ appendFileSync(dir + "/spawns.log", JSON.stringify({
 }) + "\\n");
 const send = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
 const mode = process.env.FAKE_PROMPT ?? "started";
+let held;
+let released = 0;
+const finish = (aborted = false) => {
+  const end = ${JSON.stringify(EVENT_FIXTURES.agent_end)};
+  const answer = end.messages.at(-1);
+  answer.content[0].text = held;
+  if (aborted) answer.stopReason = "aborted";
+  held = undefined;
+  send(end);
+  send({ type: "agent_settled", aborted });
+};
+if (mode === "hold") setInterval(() => {
+  if (held === undefined) return;
+  let wanted;
+  try { wanted = Number(readFileSync(dir + "/release", "utf8")); } catch { return; }
+  if (released < wanted) {
+    released += 1;
+    finish();
+  }
+}, 10);
 let buffer = "";
 process.stdin.on("data", (chunk) => {
   buffer += chunk;
@@ -50,13 +71,19 @@ process.stdin.on("data", (chunk) => {
         if (frame.streamingBehavior === undefined) send({ type: "response", id: frame.id, command: "prompt", success: false, error: "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message." });
         else answer("queued");
       } else if (mode === "hold") {
+        if (frame.streamingBehavior === undefined) {
+          held = frame.message;
+          send({ type: "agent_start" });
+        }
         answer(frame.streamingBehavior === undefined ? "started" : "queued");
-        if (frame.streamingBehavior === undefined) send({ type: "agent_start" });
       } else {
         answer("started");
         send({ type: "agent_start" });
         send({ type: "agent_end", messages: [], willRetry: false });
       }
+    } else if (frame.type === "abort") {
+      if (held !== undefined) finish(true);
+      send({ type: "response", id: frame.id, command: "abort", success: true });
     }
   }
 });
@@ -243,7 +270,7 @@ test("an answer that is no refusal is never read as one: the prompt is written o
   expect(await prompts()).toHaveLength(1);
 });
 
-test("a prompt pi refuses because it is working is queued the way the caller asked, once", async () => {
+test("a prompt pi refuses because it is working is retried once for an explicit steer", async () => {
   process.env.FAKE_PROMPT = "busy";
   const pi = side({ callTimeoutMs: 2_000 });
   const { session } = await pi.start({ prompt: promptFromText("") });
@@ -252,9 +279,42 @@ test("a prompt pi refuses because it is working is queued the way the caller ask
   expect(receipt).toMatchObject({ status: "delivered" });
   expect((await prompts()).map((prompt) => prompt.streamingBehavior)).toEqual([undefined, "steer"]);
 
-  const queued = await pi.send(session, "later");
-  expect(queued).toMatchObject({ status: "queued" });
-  expect((await prompts()).map((prompt) => prompt.streamingBehavior)).toEqual([undefined, "steer", undefined, "followUp"]);
+  await expect(pi.send(session, "later")).rejects.toBeInstanceOf(InputNotSent);
+  expect((await prompts()).map((prompt) => prompt.streamingBehavior)).toEqual([undefined, "steer", undefined]);
+});
+
+test("queued Pi prompts keep their reserved turns through completion and interrupt", async () => {
+  process.env.FAKE_PROMPT = "hold";
+  const pi = side();
+  const { session } = await pi.start({ prompt: promptFromText("") });
+  const signs: LifeEvent[] = [];
+  const reading = (async () => {
+    for await (const event of pi.life(session)) signs.push(event);
+  })();
+  const release = (count: number) => writeFile(join(dir, "release"), String(count));
+  const ended = (turn: number) => signs.find(event => event.kind === "turn-ended" && event.turn === turn);
+  expect(await pi.send(session, "first")).toMatchObject({ status: "started", turn: 1 });
+  const [second, third] = await Promise.all([pi.send(session, "second"), pi.send(session, "third")]);
+  expect(second).toMatchObject({ status: "queued", turn: 2 });
+  expect(third).toMatchObject({ status: "queued", turn: 3 });
+  expect(await prompts()).toEqual([expect.objectContaining({ message: "first" })]);
+  await release(3);
+  await eventually(() => ended(3) !== undefined);
+  expect(ended(2)).toMatchObject({ answer: "second", outcome: "completed" });
+  expect(ended(3)).toMatchObject({ answer: "third", outcome: "completed" });
+  expect((await prompts()).map(prompt => prompt.streamingBehavior)).toEqual([undefined, undefined, undefined]);
+
+  expect(await pi.send(session, "running")).toMatchObject({ status: "started", turn: 4 });
+  expect(await pi.send(session, "discard this")).toMatchObject({ status: "queued", turn: 5 });
+  await pi.interrupt(session);
+  await eventually(() => signs.some(event => event.kind === "turn-discarded" && event.turn === 5));
+  expect(await pi.send(session, "after abort")).toMatchObject({ status: "started", turn: 6 });
+  await release(4);
+  await eventually(() => ended(6) !== undefined);
+  expect(ended(6)).toMatchObject({ answer: "after abort", outcome: "completed" });
+  expect((await prompts()).map(prompt => prompt.message)).toEqual(["first", "second", "third", "running", "after abort"]);
+  await pi.dispose();
+  await reading;
 });
 
 test("a message an extension handled starts no turn and is receipted as handled with no turn named", async () => {

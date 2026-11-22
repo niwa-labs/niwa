@@ -158,15 +158,19 @@ interface TurnEnd {
 /** A turn's end: the turn Codex reported, or `undefined` when it timed out or the child died. */
 interface TurnWait {
   readonly done: Promise<TurnEnd | undefined>;
-  /** Names the turn this wait is for, by Codex's id of it, once that is known: another turn's end then leaves it waiting. */
-  bind(turnId: string | undefined): void;
   cancel(): void;
 }
 
-/** A wait for the end of a turn, and the id of the turn it waits for once Codex named it. */
 interface TurnWaiter {
-  turnId: string | undefined;
   readonly settle: (end: TurnEnd | undefined) => void;
+}
+
+type TurnNotification = Extract<Incoming, { kind: "turn-started" | "turn-ended" | "answer" }>;
+type EarlyTurnEvent = { event: TurnNotification; at: number } | { sign: LifeEvent };
+
+function turnIdOf(event: TurnNotification): string | undefined {
+  if (event.kind === "turn-ended") return event.turn.id;
+  return event.turnId;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -193,6 +197,7 @@ function idOf(value: unknown): string | undefined {
 
 /** A turn that waits for the running one; an ask also waits for its answer. */
 interface QueuedTurn {
+  readonly turn: number;
   readonly text: string;
   readonly outputSchema?: Record<string, unknown>;
   readonly ask?: { resolve: (answer: string) => void; reject: (error: unknown) => void };
@@ -208,8 +213,12 @@ class LiveSession {
   nativeId = "";
   /** The turns niwa has started; the running one, if any, has this number. */
   turn = 0;
+  assigned = 0;
   /** The id Codex gave the running turn. */
   activeTurnId: string | undefined;
+  turnStartEmitted = false;
+  readonly endedTurnIds = new Set<string>();
+  earlyTurnEvents: EarlyTurnEvent[] = [];
   busy = false;
   stopping = false;
   ended = false;
@@ -277,7 +286,10 @@ class LiveSession {
   /** Fail every queued ask, and drop the queue; returns how many turns were dropped. */
   dropQueue(reason: string): number {
     const dropped = this.queue.splice(0);
-    for (const turn of dropped) turn.ask?.reject(new Error(reason));
+    for (const entry of dropped) {
+      entry.ask?.reject(new Error(reason));
+      this.emit({ kind: "turn-discarded", turn: entry.turn });
+    }
     return dropped.length;
   }
 
@@ -296,7 +308,7 @@ class LiveSession {
   }
 
   expectTurn(timeoutMs: number): TurnWait {
-    if (this.ended) return { done: Promise.resolve(undefined), bind: () => {}, cancel: () => {} };
+    if (this.ended) return { done: Promise.resolve(undefined), cancel: () => {} };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let waiter: TurnWaiter | undefined;
     const drop = (): void => {
@@ -306,7 +318,6 @@ class LiveSession {
     };
     const done = new Promise<TurnEnd | undefined>((resolve) => {
       waiter = {
-        turnId: undefined,
         settle: (end) => {
           clearTimeout(timer);
           resolve(end);
@@ -320,35 +331,16 @@ class LiveSession {
     });
     return {
       done,
-      bind: (turnId) => {
-        if (waiter !== undefined && waiter.turnId === undefined) waiter.turnId = turnId;
-      },
       cancel: drop,
     };
   }
 
-  /** Codex named the turn that began: the oldest wait that has no turn yet is the wait for it. */
-  bindTurn(turnId: string): void {
-    const waiting = this.turnWaiters.find((waiter) => waiter.turnId === undefined);
-    if (waiting !== undefined) waiting.turnId = turnId;
-  }
-
-  /**
-   * A turn ended: the waits for it are settled. A wait for another turn, one Codex named already,
-   * keeps waiting; a wait that has no turn yet, and an end that names none, cannot be told apart.
-   * The child going away (`undefined`) ends every wait. With `named`, only the waits Codex named
-   * for exactly this turn end: the end of a turn that is not the running one touches no other.
-   */
-  settleTurn(turn: EndedTurn | undefined, named = false): void {
+  /** The current turn ended, or the child went away. Settle before starting the next turn. */
+  settleTurn(turn: EndedTurn | undefined): void {
     // The answer of the turn that ends is the text as it stands now; the next turn clears it.
     const end: TurnEnd = { turn, text: this.text };
     const waiting = this.turnWaiters.splice(0);
-    for (const waiter of waiting) {
-      const other = turn?.id !== undefined && waiter.turnId !== undefined && waiter.turnId !== turn.id;
-      const unnamed = named && waiter.turnId === undefined;
-      if (other || unnamed) this.turnWaiters.push(waiter);
-      else waiter.settle(end);
-    }
+    for (const waiter of waiting) waiter.settle(end);
   }
 
   /** The child is gone: every call in flight and every waiter is released, every watcher told. */
@@ -357,6 +349,8 @@ class LiveSession {
     this.ended = true;
     this.busy = false;
     this.activeTurnId = undefined;
+    for (const entry of this.earlyTurnEvents) if ("sign" in entry) this.emit(entry.sign);
+    this.earlyTurnEvents = [];
     this.cancelAsking();
     const lost = this.dropQueue(failure ?? "the session ended");
     if (failure !== undefined) {
@@ -457,7 +451,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         handleUnknown(session, frame, at);
         return;
       case "unreadable":
-        session.emit({ kind: "activity", at, detail: frame.reason });
+        publishNotification(session, { kind: "activity", at, detail: frame.reason });
         return;
       default:
         assertNever(frame, "codex frame");
@@ -478,7 +472,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
    * a request is still answered, and a turn that began or ended is still known to have.
    */
   function handleUnknown(session: LiveSession, frame: UnknownFrame, at: number): void {
-    for (const sign of unknownVariantSigns(at, CODEX_PROTOCOL, frame.variant, frame.raw, frame.method)) session.emit(sign);
+    for (const sign of unknownVariantSigns(at, CODEX_PROTOCOL, frame.variant, frame.raw, frame.method)) publishNotification(session, sign);
     if (frame.id !== undefined) {
       writeReply(session, frame.id, refusalOf(frame.method));
       return;
@@ -586,29 +580,39 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     writeFrame(session, { id, ...reply });
   }
 
-  /** What a notification means to the session, done. */
-  function apply(session: LiveSession, incoming: Incoming, at: number): void {
+  /** Keep diagnostics and other signs in wire order with notifications awaiting turn identity. */
+  function publishNotification(session: LiveSession, sign: LifeEvent): void {
+    if (session.busy && session.activeTurnId === undefined) session.earlyTurnEvents.push({ sign });
+    else session.emit(sign);
+  }
+
+  /** Reverse-request bookkeeping stays live while publication waits for the turn ID. */
+  function apply(session: LiveSession, incoming: Incoming, at: number, replaying = false): void {
+    if (incoming.kind === "turn-started" || incoming.kind === "turn-ended" || incoming.kind === "answer") {
+      if (!session.busy) return;
+      const id = turnIdOf(incoming);
+      if (id === undefined || session.endedTurnIds.has(id)) return;
+      if (session.activeTurnId === undefined) {
+        session.earlyTurnEvents.push({ event: incoming, at });
+        return;
+      }
+      if (id !== session.activeTurnId) return;
+    }
     switch (incoming.kind) {
       case "turn-started":
-        session.activeTurnId = incoming.turnId;
-        session.bindTurn(incoming.turnId);
-        session.busy = true;
+        if (session.turnStartEmitted) return;
+        session.turnStartEmitted = true;
         session.emit({ kind: "turn-started", turn: session.turn, at });
         return;
       case "turn-ended":
-        // The end of a turn that is not the running one (a late end of an interrupted turn, say) is not the end of this one.
-        if (incoming.turn.id !== undefined && session.activeTurnId !== undefined && incoming.turn.id !== session.activeTurnId) {
-          session.settleTurn(incoming.turn, true);
-          session.emit({ kind: "activity", at, detail: `turn ${incoming.turn.id} ended (the running turn is ${session.activeTurnId})` });
-          return;
-        }
+        if (incoming.turn.id !== undefined) session.endedTurnIds.add(incoming.turn.id);
         session.activeTurnId = undefined;
         session.busy = false;
         session.cancelAsking();
-        session.emit({ kind: "turn-ended", turn: session.turn, at, outcome: outcomeOfTurn(incoming.turn) });
+        session.emit({ kind: "turn-ended", turn: session.turn, at, outcome: outcomeOfTurn(incoming.turn), answer: session.text });
         session.settleTurn(incoming.turn);
         // A message that waited for this turn becomes a turn of its own.
-        drainQueue(session);
+        if (!replaying) drainQueue(session);
         return;
       case "file-change":
         session.rememberFileChange(incoming.itemId, incoming.paths);
@@ -618,7 +622,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         break;
       case "rerouted":
         // Codex moved the turn to another model: that is the model the session runs from now on.
-        if (incoming.toModel !== "") session.emit({ kind: "model", model: modelName(incoming.toModel) });
+        if (incoming.toModel !== "") publishNotification(session, { kind: "model", model: modelName(incoming.toModel) });
         break;
       case "request-resolved":
         // Codex answered the request itself (the turn was interrupted, a policy decided): nobody waits.
@@ -631,7 +635,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       default:
         assertNever(incoming, "codex incoming");
     }
-    session.emit({ kind: "activity", at, detail: incoming.detail });
+    publishNotification(session, { kind: "activity", at, detail: incoming.detail });
   }
 
   // -- the child ------------------------------------------------------------
@@ -683,7 +687,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
         try {
           handleLine(session, line);
         } catch (error) {
-          session.emit({ kind: "activity", at: Date.now(), detail: `a frame failed: ${String(error)}` });
+          publishNotification(session, { kind: "activity", at: Date.now(), detail: `a frame failed: ${String(error)}` });
         }
       }
       if (buffer.length > MAX_FRAME_BYTES) {
@@ -801,43 +805,76 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     threadId: string,
     text: string,
     outputSchema?: Record<string, unknown>,
+    turn = ++session.assigned,
   ): Promise<{ turn: number; wait: TurnWait }> {
     if (session.busy) throw new InputNotSent(harnessId, "send", "a turn is already running");
-    session.turn += 1;
+    session.turn = turn;
     session.busy = true;
+    session.turnStartEmitted = false;
     session.text = "";
-    const turn = session.turn;
     const wait = session.expectTurn(turnTimeoutMs);
 
     const params: Record<string, unknown> = { threadId, input: [{ type: "text", text }] };
     if (outputSchema !== undefined) params.outputSchema = outputSchema;
     if (session.effort !== undefined) params.effort = session.effort;
     const started = await call(session, "turn/start", params);
+    if (session.ended) {
+      wait.cancel();
+      throw inputFailure(harnessId, "send", started.dispatch ?? "uncertain", started.error ?? "the session ended");
+    }
+    const early = session.earlyTurnEvents.splice(0);
     if (!started.ok) {
       wait.cancel();
       const dispatch = started.dispatch ?? "uncertain";
       const failure = inputFailure(harnessId, "send", dispatch, started.error ?? "the CLI refused the turn");
-      if (dispatch !== "uncertain" || session.ended) {
+      if (dispatch !== "uncertain") {
         // Codex did not take the turn: nothing runs, and what queued behind it goes on in its order.
+        replayEarlySigns(session, early);
         session.busy = false;
         drainQueue(session);
-      } else if (session.activeTurnId === undefined) {
+      } else {
+        const announced = new Set(early.flatMap((entry) =>
+          "event" in entry && entry.event.kind === "turn-started" ? [entry.event.turnId] : []));
+        const [id] = announced;
+        if (announced.size === 1 && id !== undefined) {
+          // The notification can identify a turn whose start acknowledgement was lost.
+          bindTurn(session, id, early);
+          throw failure;
+        }
         // Codex neither answered nor announced the turn, so nobody knows whether one runs. Another
         // turn on top of it would be a second writer, and what waits could wait forever: the
         // session is closed, and a later resume starts from what Codex has on disk.
+        replayEarlySigns(session, early);
         session.end(`${started.error ?? "the CLI did not answer the turn"}: the session was closed because the turn may be running`);
         await stopSession(session);
       }
-      // Otherwise Codex announced the turn before the answer was lost: it runs, it ends by its
-      // own notification, and the session stays busy until then.
       throw failure;
     }
-    // The end may already have been processed, and a newer turn may already have taken over:
-    // only a turn that is still the running one gets its id.
     const nativeTurn = idOf(asRecord(started.result).turn);
-    wait.bind(nativeTurn);
-    if (session.busy && session.turn === turn) session.activeTurnId = nativeTurn;
+    if (nativeTurn === undefined || session.endedTurnIds.has(nativeTurn)) {
+      wait.cancel();
+      const reason = "Codex accepted the turn without a new turn ID";
+      replayEarlySigns(session, early);
+      session.end(reason);
+      await stopSession(session);
+      throw inputFailure(harnessId, "send", "uncertain", reason);
+    }
+    bindTurn(session, nativeTurn, early);
     return { turn, wait };
+  }
+
+  function replayEarlySigns(session: LiveSession, early: EarlyTurnEvent[]): void {
+    for (const entry of early) if ("sign" in entry) session.emit(entry.sign);
+  }
+
+  /** Replay signs in order and accept only turn notifications named by the acknowledgement. */
+  function bindTurn(session: LiveSession, id: string, early: EarlyTurnEvent[]): void {
+    session.activeTurnId = id;
+    for (const entry of early) {
+      if ("sign" in entry) session.emit(entry.sign);
+      else if (session.activeTurnId === id && turnIdOf(entry.event) === id) apply(session, entry.event, entry.at, true);
+    }
+    if (!session.busy) drainQueue(session);
   }
 
   /** Wait for a started turn; anything but a completed turn is an error. Returns its answer. */
@@ -875,7 +912,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     if (next === undefined) return;
     // The caller of a message does not wait for its turn; its end is a sign of life. The
     // caller of an ask waits for the answer.
-    void startTurn(session, session.nativeId, next.text, next.outputSchema)
+    void startTurn(session, session.nativeId, next.text, next.outputSchema, next.turn)
       .then(({ wait }) => {
         if (next.ask === undefined) {
           wait.cancel();
@@ -885,6 +922,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       })
       .catch((error: unknown) => {
         next.ask?.reject(error);
+        if (error instanceof InputNotSent) session.emit({ kind: "turn-discarded", turn: next.turn });
         session.emit({
           kind: "activity",
           at: Date.now(),
@@ -901,8 +939,9 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
     const at = Date.now();
     if (session.busy) {
       // The default: the message waits for the turn after the running one.
-      session.queue.push({ text: message });
-      return { status: "queued", turn: session.turn + session.queue.length, at };
+      const turn = ++session.assigned;
+      session.queue.push({ turn, text: message });
+      return { status: "queued", turn, at };
     }
     const { turn, wait } = await startTurn(session, session.nativeId, message);
     wait.cancel();
@@ -1097,13 +1136,14 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
           if (session.activeTurnId === undefined) {
             throw new InputNotSent(harnessId, "send", "the running turn has not been named by Codex yet");
           }
+          const turn = session.turn;
           const steered = await call(session, "turn/steer", {
             threadId: id.native,
             expectedTurnId: session.activeTurnId,
             input,
           });
           if (!steered.ok) throw inputFailure(harnessId, "send", steered.dispatch ?? "uncertain", steered.error ?? "the CLI refused the message");
-          return { status: "delivered", turn: session.turn, at };
+          return { status: "delivered", turn, at };
         }
       }
       return deliver(session, message);
@@ -1142,7 +1182,7 @@ export function codexControl(options: CodexControlOptions): CodexSessionControl 
       // An ask into a busy session waits for its turn, behind what is already queued.
       const answer = session.busy
         ? await new Promise<string>((resolve, reject) => {
-            session.queue.push({ text: plan.text, outputSchema, ask: { resolve, reject } });
+            session.queue.push({ turn: ++session.assigned, text: plan.text, outputSchema, ask: { resolve, reject } });
           })
         : await runTurn(session, id.native, plan.text, outputSchema);
       // An answer written in the text may hold more than one piece of JSON (braces in the words

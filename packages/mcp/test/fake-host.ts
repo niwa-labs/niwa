@@ -16,11 +16,11 @@ export type ReadMode = "allowed" | "denied";
 /** A host the tests drive: what it declares and what its journal holds are theirs to change. */
 export class FakeHost {
   actions: Description["actions"] = [];
-  /** The answers of the actions that are called, by action name. */
-  readonly answers = new Map<string, (input: unknown) => unknown>();
+  /** The answers of the actions that are called, by action name, told the signal of the call when it has one. */
+  readonly answers = new Map<string, (input: unknown, signal?: AbortSignal) => unknown>();
   readMode: ReadMode = "allowed";
-  /** The actions that were called, with their input. */
-  readonly calls: Array<{ action: string; input: unknown }> = [];
+  /** The actions that were called, with their input, and the signal of the call when it carried one. */
+  readonly calls: Array<{ action: string; input: unknown; signal?: AbortSignal }> = [];
   /** How many times the host was asked to describe itself. */
   described = 0;
   /** How many core clients were opened, and how many of them are still open. */
@@ -62,9 +62,9 @@ export class FakeHost {
         this.described += 1;
         return { actions: this.actions, types: [] };
       },
-      call: async (action: ActionName | string, input: unknown): Promise<unknown> => {
+      call: async (action: ActionName | string, input: unknown, opts?: { signal?: AbortSignal }): Promise<unknown> => {
         const name = String(action);
-        this.calls.push({ action: name, input });
+        this.calls.push({ action: name, input, ...(opts?.signal === undefined ? {} : { signal: opts.signal }) });
         if (name === "niwa.records.read") {
           refuseUnlessAllowed();
           await this.readGate;
@@ -72,7 +72,7 @@ export class FakeHost {
         }
         const answer = this.answers.get(name);
         if (answer === undefined) throw new HostError(`no answer for ${name}`);
-        return answer(input);
+        return answer(input, opts?.signal);
       },
       records: {
         read: async () => {

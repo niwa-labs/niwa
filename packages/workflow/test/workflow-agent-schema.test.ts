@@ -17,8 +17,8 @@ import { z } from "zod";
 import { actionName, seq } from "@niwa-labs/core";
 import type { StoredRecord } from "@niwa-labs/core";
 import { harnessId, machineId } from "@niwa-labs/harness";
-import type { Harness, SessionControl, SessionId } from "@niwa-labs/harness";
-import { createNiwa, sessions, eventually, tempHome } from "@niwa-labs/testing";
+import type { Harness, LifeEvent, SessionControl, SessionId } from "@niwa-labs/harness";
+import { createNiwa, sessions, eventually, openBoxes, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 import { RunFinished, workflow, workflowCheck } from "../src/index.ts";
 import type { RunStatus } from "../src/status.ts";
@@ -40,6 +40,9 @@ class FakeControl implements SessionControl {
   /** What the session answers next. */
   reply: unknown = undefined;
   private counter = 0;
+  private turn = 0;
+  turnAnswers?: string[];
+  private readonly streams = new Map<string, ReadableStreamDefaultController<LifeEvent>>();
   readonly closed = new Set<string>();
   keepAlive = false;
   private readonly untilClosed = new Map<string, () => void>();
@@ -47,6 +50,8 @@ class FakeControl implements SessionControl {
 
   async close(id: SessionId): Promise<void> {
     this.closed.add(id.native);
+    this.streams.get(id.native)?.close();
+    this.streams.delete(id.native);
     this.untilClosed.get(id.native)?.();
   }
 
@@ -59,8 +64,14 @@ class FakeControl implements SessionControl {
     throw new Error("this session cannot be resumed");
   }
 
-  async send() {
-    return { status: "started" as const, turn: 1 };
+  async send(id: SessionId) {
+    const turn = ++this.turn;
+    const stream = this.streams.get(id.native);
+    if (stream !== undefined) {
+      stream.enqueue({ kind: "turn-started", turn });
+      stream.enqueue({ kind: "turn-ended", turn, answer: this.turnAnswers?.shift() });
+    }
+    return { status: "started" as const, turn };
   }
 
   async interrupt(): Promise<void> {}
@@ -78,7 +89,12 @@ class FakeControl implements SessionControl {
     return { session: id, value: this.reply as T, at: 0 as never };
   }
 
-  async *life(id: SessionId): AsyncIterable<never> {
+  async *life(id: SessionId): AsyncIterable<LifeEvent> {
+    if (this.turnAnswers !== undefined) {
+      const stream = new ReadableStream<LifeEvent>({ start: (controller) => { this.streams.set(id.native, controller); } });
+      yield* stream;
+      return;
+    }
     if (this.keepAlive && !this.closed.has(id.native)) await new Promise<void>(resolve => this.untilClosed.set(id.native, resolve));
   }
 
@@ -106,12 +122,12 @@ afterEach(async () => {
   for (const home of homes.splice(0)) await home.cleanup();
 }, 30_000);
 
-async function served(): Promise<{ host: Host; home: string; control: FakeControl }> {
+async function served(options: { openBox?: boolean } = {}): Promise<{ host: Host; home: string; control: FakeControl }> {
   const home = await tempHome();
   homes.push(home);
   const control = new FakeControl();
   const host = createNiwa({ home: home.path });
-  host.use(sessions({ harnesses: [{ instance, control }] }));
+  host.use(sessions({ harnesses: [{ instance, control }], ...(options.openBox ? { sandbox: openBoxes() } : {}) }));
   host.use(workflow({ harnesses: [HARNESS] }));
   await host.serve();
   hosts.push(host);
@@ -383,4 +399,55 @@ test("concurrent first turns share a session and another handle opens its own", 
   expect(results[0]?.slice(0, 2).sort()).toEqual([...sessions].sort());
   expect(results[1]).toEqual(results[0]);
   expect(control.asked.map(turn => turn.prompt)).toEqual(["one", "two"]);
+}, 30_000);
+
+test("session.send infers the type of its turn wait and parses the exact answer on replay", async () => {
+  const { host, home, control } = await served({ openBox: true });
+  control.turnAnswers = ["plain", '{"answer":"second"}'];
+  const file = await scriptIn(home, "tracked-conversation.ts", [
+    'export default workflow({ uses: ["session.start.fake-harness", "session.turn-send", "session.turn-wait", "session.end"], output: z.json() }, async () => {',
+    '  const conversation = session({ harness: "fake-harness", label: "conversation" });',
+    '  const [first, second] = await Promise.all([',
+    '    conversation.send("first", { label: "a".repeat(210) }),',
+    '    conversation.send("second", { label: "send-second", schema: z.object({ answer: z.string().transform(s => s.length) }) }),',
+    '  ]);',
+    '  const text: string = await first.wait({ label: "wait-first" });',
+    '  const parsed: { answer: number } = await second.wait({ label: "wait-second" });',
+    '  await conversation.end({ label: "end" });',
+    '  return { text, count: parsed.answer, firstTurn: first.turn ?? null, secondTurn: second.turn ?? null };',
+    '});',
+  ]);
+  expect(await host.call(workflowCheck, { file })).toMatchObject({ ok: true, errors: [] });
+  const { run } = await host.call(START, { file, wait: true, timeoutMs: 20_000 }) as { run: string };
+  const result = { text: "plain", count: 6, firstTurn: 1, secondTurn: 2 };
+  expect((await statusOf(host, run)).outcome).toMatchObject({ status: "done", result });
+  await host.call(RESUME, { run });
+  await eventually(async () => (await host.records.read()).filter(row => row.type === "workflow.run.finished").length === 2);
+  expect((await statusOf(host, run)).outcome).toMatchObject({ status: "done", result });
+  const settlements = (await host.records.read()).filter(row => row.type === "session.input.settled");
+  expect(settlements).toHaveLength(2);
+  expect(settlements.some(row => (row.data as { operation: string }).operation.length > 200)).toBe(true);
+}, 30_000);
+
+test("the workflow type checker requires narrowing an answer from a conditional schema", async () => {
+  const { host, home } = await served();
+  const source = [
+    'export default workflow({ output: z.json() }, async () => {',
+    '  const conversation = session({ harness: "fake-harness" });',
+    '  const flag = Math.random() > 0.5;',
+    '  const opts = { label: "probe", schema: flag ? z.number() : undefined };',
+    '  const result = await (await conversation.send("value", opts)).wait();',
+  ];
+  const good = await scriptIn(home, "conditional-schema.ts", [
+    ...source,
+    '  return typeof result === "string" ? result.toUpperCase() : result.toFixed();',
+    '});',
+  ]);
+  expect(await host.call(workflowCheck, { file: good })).toMatchObject({ ok: true, errors: [] });
+  const bad = await scriptIn(home, "conditional-schema-wrong.ts", [
+    ...source,
+    '  return result.toUpperCase();',
+    '});',
+  ]);
+  expect(await host.call(workflowCheck, { file: bad })).toMatchObject({ ok: false, errors: [{ code: "TS2339", line: 6 }] });
 }, 30_000);

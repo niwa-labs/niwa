@@ -22,7 +22,8 @@ import { harnessId, harnessKind, machineId, promptFromText, sessionId } from "@n
 import type { Harness, ReverseHandler, ReverseRequest, SessionId } from "@niwa-labs/harness";
 import { requests } from "@niwa-labs/requests";
 import { sessions } from "@niwa-labs/sessions";
-import { eventually, tempDir, tempHome, live, ZCODE_FAKE } from "@niwa-labs/testing";
+import { SessionTurnResult, SessionTurnStarted, sessionStart, sessionTurnSend, sessionTurnWait } from "@niwa-labs/sessions/records";
+import { eventually, openBoxes, tempDir, tempHome, live, ZCODE_FAKE } from "@niwa-labs/testing";
 
 import { zcodeControl, zcodeSides } from "@niwa-labs/harness-zcode";
 import type { ZcodeSessionControl } from "@niwa-labs/harness-zcode";
@@ -375,6 +376,189 @@ async function stack(script: readonly Step[]): Promise<{ niwa: Host; records: St
 }
 
 const call = <O>(niwa: Host, name: string, input: unknown): Promise<O> => niwa.call(name as ActionName, input) as Promise<O>;
+
+test("late ZCode completions and failures cannot settle a queued receipt or overwrite its SQLite result", async () => {
+  await Promise.all(["hold-reply", "no-turn-id", "hold-failure", "partial-failure-start", "idle-projection-while-busy"]
+    .map((name) => writeFile(join(dir, name), "")));
+  const home = await tempHome();
+  const control = zcodeControl({ harness: HARNESS, binary: bin, stopGraceMs: 300 });
+  let niwa = createNiwa({ home: home.path });
+  niwa.use(sessions({ sandbox: openBoxes(), harnesses: [{ instance: installation, control }] }));
+  try {
+    await niwa.serve();
+    const { session } = await niwa.call(sessionStart, { harness: HARNESS, prompt: "", cwd: dir });
+    const life = control.life(sessionId(harnessId(HARNESS), "sess_fake-1"))[Symbol.asyncIterator]();
+    const ignored: string[] = [];
+    const observing = (async () => {
+      for (let next = await life.next(); !next.done; next = await life.next()) {
+        const event = next.value;
+        if (event.kind === "activity" && event.detail?.startsWith("ignored")) {
+          ignored.push(event.detail);
+          if (ignored.length === 4) return;
+        }
+      }
+    })();
+    const first = await niwa.call(sessionTurnSend, { session, message: "stray" });
+    const second = await niwa.call(sessionTurnSend, { session, message: "give the word" });
+    const third = await niwa.call(sessionTurnSend, { session, message: "fail" });
+    expect(first.receipt).toMatchObject({ status: "started", turn: 1 });
+    expect(second.receipt).toMatchObject({ status: "queued", turn: 2 });
+    expect(third.receipt).toMatchObject({ status: "queued", turn: 3 });
+    const result = (handle: typeof first.handle, timeoutMs = 3000) => niwa.call(sessionTurnWait, { ...handle, timeoutMs });
+    await writeFile(join(dir, "release-first"), "");
+    expect(await result(first.handle)).toEqual({ status: "completed", value: "fake reply" });
+    await eventually(() => ignored.length === 4, 3000);
+    await observing;
+    await life.return?.();
+    expect(ignored.sort()).toEqual([
+      "ignored a ZCode terminal event for another turn",
+      "ignored a ZCode terminal event for another turn",
+      "ignored an uncorrelated ZCode terminal event",
+      "ignored an uncorrelated ZCode terminal event",
+    ]);
+    // Keep B busy past the old one-second recovery window after all of A's late events.
+    expect(await result(second.handle, 1400)).toEqual({ status: "timed-out" });
+    expect(await result(third.handle, 0)).toEqual({ status: "timed-out" });
+    expect(await control.state(sessionId(harnessId(HARNESS), "sess_fake-1"))).toBe("running");
+    expect((await niwa.records.read({ types: [SessionTurnResult] })).map(({ data }) => [data.turn, data.answer]))
+      .toEqual([[1, "fake reply"]]);
+
+    const secondWaits = [result(second.handle), result(second.handle)];
+    await writeFile(join(dir, "release-reply"), "");
+    const expected = { status: "completed", value: '{"word":"ok"}' };
+    expect(await Promise.all(secondWaits)).toEqual([expected, expected]);
+
+    expect(await result(third.handle, 0)).toEqual({ status: "timed-out" });
+    await writeFile(join(dir, "release-failure"), "");
+    // C actually failed. Its start and terminal had no IDs, so the exact outcome is unknown.
+    expect(await result(third.handle)).toEqual({ status: "ended", how: "unknown" });
+    const wire = (await readFile(join(dir, "requests.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(wire.filter(({ method }) => method === "session/read").length).toBeGreaterThan(1);
+    expect(wire.filter(({ method }) => method === "session/messages")).toEqual([]);
+    await niwa.close();
+    niwa = createNiwa({ home: home.path });
+    niwa.use(sessions({
+      sandbox: openBoxes(),
+      harnesses: [{ instance: installation, control: zcodeControl({ harness: HARNESS, binary: bin }) }],
+    }));
+    await niwa.serve();
+    expect(await result(first.handle, 0)).toEqual({ status: "completed", value: "fake reply" });
+    expect(await result(second.handle, 0)).toEqual(expected);
+    expect(await result(third.handle, 0)).toEqual({ status: "ended", how: "unknown" });
+    expect((await niwa.records.read({ types: [SessionTurnResult] })).map(({ data }) => [data.turn, data.how, data.answer]))
+      .toEqual([[1, "completed", "fake reply"], [2, "completed", '{"word":"ok"}'], [3, "unknown", undefined]]);
+  } finally {
+    await control.dispose();
+    await niwa.close();
+    await home.cleanup();
+  }
+}, 15_000);
+
+test.each([
+  { scenario: "lagging history", flags: ["lag-history-once", "hold-reply"], firstMessage: "give the word", release: "release-reply", firstOutcome: "completed", secondOutcome: "completed" },
+  { scenario: "identified failure in the projection", flags: ["hold-failure"], firstMessage: "fail", release: "release-failure", firstOutcome: "failed", secondOutcome: "completed" },
+  { scenario: "failure without start or terminal IDs", flags: ["hold-failure", "partial-failure-start"], firstMessage: "fail", release: "release-failure", firstOutcome: "unknown", secondOutcome: "failed" },
+  { scenario: "failure after a start without a payload or turn ID", flags: ["hold-failure", "partial-failure-start", "bare-failure-start"], firstMessage: "fail", release: "release-failure", firstOutcome: "unknown", secondOutcome: "failed" },
+])("ZCode reconciles ID-less terminals with $scenario and stores both receipt outcomes", async ({ flags, firstMessage, release, firstOutcome, secondOutcome }) => {
+  await Promise.all(["no-turn-id", ...flags].map((name) => writeFile(join(dir, name), "")));
+  const home = await tempHome();
+  let niwa = createNiwa({ home: home.path });
+  const mount = () => niwa.use(sessions({
+    sandbox: openBoxes(),
+    harnesses: [{ instance: installation, control: zcodeControl({ harness: HARNESS, binary: bin, stopGraceMs: 300 }) }],
+  }));
+  mount();
+  try {
+    await niwa.serve();
+    const { session } = await niwa.call(sessionStart, { harness: HARNESS, prompt: "", cwd: dir });
+    const first = await niwa.call(sessionTurnSend, { session, message: firstMessage });
+    const second = await niwa.call(sessionTurnSend, { session, message: "next" });
+    expect(first.receipt).toMatchObject({ status: "started", turn: 1 });
+    expect(second.receipt).toMatchObject({ status: "queued", turn: 2 });
+    const wait = (handle: typeof first.handle, timeoutMs: number) => niwa.call(sessionTurnWait, { ...handle, timeoutMs });
+    expect(await wait(first.handle, 0)).toEqual({ status: "timed-out" });
+    const waits = Promise.all([wait(first.handle, 4000), wait(second.handle, 4000)]);
+    await writeFile(join(dir, release), "");
+
+    const expected = [
+      firstOutcome === "completed" ? { status: "completed", value: '{"word":"ok"}' } : { status: "ended", how: firstOutcome },
+      secondOutcome === "completed" ? { status: "completed", value: "fake reply" } : { status: "ended", how: secondOutcome },
+    ];
+    expect(await waits).toEqual(expected);
+    const methods = (await readFile(join(dir, "requests.log"), "utf8")).trim().split("\n").map((line) => JSON.parse(line).method);
+    expect(methods).toContain("session/read");
+    if (firstOutcome === "completed") expect(methods.filter((method) => method === "session/messages").length).toBeGreaterThanOrEqual(2);
+    expect(methods.filter((method) => method === "session/send")).toHaveLength(secondOutcome === "completed" ? 2 : 1);
+    expect((await niwa.records.read({ types: [SessionTurnResult] })).map(({ data }) => [data.turn, data.how]))
+      .toEqual([[1, firstOutcome], [2, secondOutcome]]);
+
+    await niwa.close();
+    niwa = createNiwa({ home: home.path });
+    mount();
+    await niwa.serve();
+    expect(await Promise.all([wait(first.handle, 0), wait(second.handle, 0)])).toEqual(expected);
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+}, 15_000);
+
+test.each([
+  { scenario: "after acknowledgement", earlyStart: false },
+  { scenario: "before acknowledgement, ahead of an already numbered queue entry", earlyStart: true },
+])("ZCode tracks a steer redirected into a new turn starting $scenario", async ({ earlyStart }) => {
+  await writeFile(join(dir, "hold-first-terminal"), "");
+  await writeFile(join(dir, "hold-reply"), "");
+  if (earlyStart) await writeFile(join(dir, "start-before-steer-ack"), "");
+  const home = await tempHome();
+  let niwa = createNiwa({ home: home.path });
+  const mount = () => niwa.use(sessions({
+    sandbox: openBoxes(),
+    harnesses: [{ instance: installation, control: zcodeControl({ harness: HARNESS, binary: bin, stopGraceMs: 300 }) }],
+  }));
+  mount();
+  try {
+    await niwa.serve();
+    const { session } = await niwa.call(sessionStart, { harness: HARNESS, prompt: "", cwd: dir });
+    const firstInput = { session, message: "first", operation: "first" };
+    const first = await niwa.call(sessionTurnSend, firstInput);
+    expect(first.receipt).toMatchObject({ status: "started", turn: 1 });
+    const queued = earlyStart ? await niwa.call(sessionTurnSend, { session, message: "give the fenced word" }) : undefined;
+    if (queued !== undefined) expect(queued.receipt).toMatchObject({ status: "queued", turn: 2 });
+
+    await eventually(() => Bun.file(join(dir, "first-idle")).exists());
+    const secondInput = { session, message: "give the word", into: "turn", operation: "redirected" } as const;
+    const second = await niwa.call(sessionTurnSend, secondInput);
+    const turn = earlyStart ? 3 : 2;
+    expect(second.receipt).toMatchObject({ status: "started", turn });
+    expect(second.handle.turn).toBe(turn);
+    const wait = (handle: typeof first.handle, timeoutMs = 4000) => niwa.call(sessionTurnWait, { ...handle, timeoutMs });
+    const firstAnswer = { status: "completed", value: "fake reply" };
+    const secondAnswer = { status: "completed", value: '{"word":"ok"}' };
+    expect(await wait(first.handle)).toEqual(firstAnswer);
+    expect(await wait(second.handle, 0)).toEqual({ status: "timed-out" });
+    if (queued !== undefined) expect(await wait(queued.handle, 0)).toEqual({ status: "timed-out" });
+    const secondWaits = Promise.all([wait(second.handle), wait(second.handle)]);
+    await writeFile(join(dir, "release-reply"), "");
+    expect(await secondWaits).toEqual([secondAnswer, secondAnswer]);
+    const queuedAnswer = { status: "completed", value: 'Here it is: ```json\n{"word":"fenced"}\n```' };
+    if (queued !== undefined) expect(await wait(queued.handle)).toEqual(queuedAnswer);
+    expect((await niwa.records.read({ types: [SessionTurnStarted] })).map(({ data }) => data.turn))
+      .toEqual(earlyStart ? [1, 3, 2] : [1, 2]);
+
+    await niwa.close();
+    niwa = createNiwa({ home: home.path });
+    mount();
+    await niwa.serve();
+    expect(await niwa.call(sessionTurnSend, firstInput)).toEqual(first);
+    expect(await niwa.call(sessionTurnSend, secondInput)).toEqual(second);
+    expect(await Promise.all([wait(first.handle, 0), wait(second.handle, 0)])).toEqual([firstAnswer, secondAnswer]);
+    if (queued !== undefined) expect(await wait(queued.handle, 0)).toEqual(queuedAnswer);
+  } finally {
+    await niwa.close();
+    await home.cleanup();
+  }
+}, 15_000);
 
 interface OpenRequest {
   id: string;

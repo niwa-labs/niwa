@@ -29,7 +29,7 @@ export type Incoming =
   /** An item that changes files was announced: an approval of it names no path, so the paths are kept. */
   | { readonly kind: "file-change"; readonly detail: string; readonly itemId: string; readonly paths: readonly string[] }
   /** The final answer of the turn, as it stands. */
-  | { readonly kind: "answer"; readonly detail: string; readonly text: string }
+  | { readonly kind: "answer"; readonly detail: string; readonly text: string; readonly turnId?: string }
   /** Codex answered a request of its own, or stopped waiting for it: nobody waits for an answer any more. */
   | { readonly kind: "request-resolved"; readonly detail: string; readonly requestId: RequestId }
   /** Codex moved the turn to another model: the model the session runs from now on. */
@@ -46,14 +46,14 @@ function sign(detail: string): Incoming {
 }
 
 /** The meaning of an item that was announced (`started`) or is done (`completed`). */
-function incomingOfItem(method: "item/started" | "item/completed", item: ThreadItem): Incoming {
+function incomingOfItem(method: "item/started" | "item/completed", item: ThreadItem, turnId: string): Incoming {
   const detail = `${method} ${item.type}`;
   switch (item.type) {
     case "agentMessage":
       // Only the final answer of a turn is its answer: a commentary or a partial message is not.
       // An item that does not say which it is, is the answer.
       if (method === "item/completed" && (item.phase === null || item.phase === "final_answer") && item.text !== "") {
-        return { kind: "answer", detail, text: item.text };
+        return { kind: "answer", detail, text: item.text, turnId };
       }
       return sign(detail);
     case "fileChange":
@@ -97,7 +97,7 @@ export function incomingOf(notification: ServerNotification): Incoming {
     }
     case "item/started":
     case "item/completed":
-      return incomingOfItem(notification.method, notification.params.item);
+      return incomingOfItem(notification.method, notification.params.item, notification.params.turnId);
     case "serverRequest/resolved":
       return { kind: "request-resolved", detail: notification.method, requestId: notification.params.requestId };
     case "model/rerouted":
@@ -217,6 +217,7 @@ const DriftedResolvedSchema = z.looseObject({ requestId: z.union([z.string(), z.
 
 /** What the control side keeps of an item: the agent's words, and the paths of a change of files. */
 const DriftedItemSchema = z.looseObject({
+  turnId: z.string().optional(),
   item: z.looseObject({
     type: z.string(),
     id: z.string().optional(),
@@ -252,7 +253,7 @@ export function incomingOfDrifted(method: string, params: JsonValue | undefined)
       const { item } = read.data;
       const detail = `${method} ${item.type}`;
       if (method === "item/completed" && item.type === "agentMessage" && (item.phase == null || item.phase === "final_answer") && item.text !== undefined && item.text !== "") {
-        return { kind: "answer", detail, text: item.text };
+        return { kind: "answer", detail, text: item.text, ...(read.data.turnId === undefined ? {} : { turnId: read.data.turnId }) };
       }
       if (method === "item/started" && item.type === "fileChange" && item.id !== undefined && item.changes !== undefined) {
         return { kind: "file-change", detail, itemId: item.id, paths: item.changes.map((change) => change.path) };

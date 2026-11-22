@@ -9,11 +9,11 @@
 // The home comes from argv[2]. The test imports this file for the names it needs, so the host
 // only starts when the file is run directly.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { TurnOutcomeSchema, harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
+import { InputNotSent, InputPossiblySent, TurnOutcomeSchema, harnessId, harnessKind, machineId, sessionId } from "@niwa-labs/harness";
 import type {
   AskAnswer,
   AskOptions,
@@ -24,7 +24,7 @@ import type {
   SessionId,
   SessionState,
 } from "@niwa-labs/harness";
-import { createNiwa } from "@niwa-labs/testing";
+import { createNiwa, openBoxes } from "@niwa-labs/testing";
 
 import { sessions } from "../../src/index.ts";
 
@@ -51,36 +51,59 @@ class FakeControl implements SessionControl {
   private readonly cursor: string;
   /** How many instructions were reported already. */
   private reported: number;
+  private turn = 0;
+  private held = false;
+  private disposed = false;
 
-  constructor(log: string, cursor: string) {
+  constructor(log: string, cursor: string, private readonly tracked: boolean) {
     this.log = log;
     this.cursor = cursor;
     this.reported = readCursor(cursor);
   }
 
-  async start(): Promise<{ session: SessionId }> {
-    return { session: sessionId(harnessId(HARNESS), "session-1") };
+  async start(options: { prompt: { sections: Array<{ text: string }> } }): Promise<{ session: SessionId; first?: DeliveryReceipt }> {
+    this.held = true;
+    // A prompt with text becomes the session's first turn, as a real control side delivers it.
+    const text = options.prompt.sections.map((section) => section.text).join("\n\n").trim();
+    if (text === "") return { session: sessionId(harnessId(HARNESS), "session-1") };
+    this.turn = 1;
+    return { session: sessionId(harnessId(HARNESS), "session-1"), first: { status: "started", turn: 1 } };
   }
 
-  async resume(): Promise<void> {}
+  async resume(): Promise<void> {
+    this.held = true;
+  }
 
-  async send(): Promise<DeliveryReceipt> {
-    return { status: "started", turn: 1 };
+  async send(id: SessionId, message: string): Promise<DeliveryReceipt> {
+    if (message === "handled") return { status: "handled" };
+    if (message === "unsent") throw new InputNotSent(id.harness, "send", "refused");
+    if (message === "uncertain") throw new InputPossiblySent(id.harness, "send", "lost reply");
+    const turn = ++this.turn;
+    if (message.startsWith("instant ")) {
+      // The life stream can observe the result before this receipt is returned.
+      appendFileSync(this.log, `turn-started ${turn}\nturn-ended ${turn} completed ${message.slice(8)}\n`);
+      await sleep(75);
+    }
+    return { status: turn === 1 || message.startsWith("instant ") ? "started" : "queued", turn };
   }
 
   async interrupt(): Promise<void> {}
 
-  async ask<T>(_id: SessionId, _options: AskOptions<T>): Promise<AskAnswer<T>> {
-    throw new Error("the fake control side does not ask");
+  async ask<T>(id: SessionId, options: AskOptions<T>): Promise<AskAnswer<T>> {
+    return { session: id, value: options.schema.parse({ answer: "legacy" }) as T, at: 0 as never };
   }
 
   async state(): Promise<SessionState> {
-    return "idle";
+    return this.tracked && !this.held ? "unknown" : "idle";
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed = true;
   }
 
   /** The signs of life are the instructions of the file, one after another. */
   async *life(): AsyncIterable<LifeEvent> {
-    for (;;) {
+    while (!this.disposed) {
       const lines = instructions(this.log);
       while (this.reported < lines.length) {
         const event = eventOf(lines[this.reported] ?? "");
@@ -110,9 +133,12 @@ function eventOf(line: string): LifeEvent | undefined {
   if (!Number.isInteger(turn) || turn < 1) return undefined;
   const kind = parts[0];
   if (kind === "turn-started") return { kind: "turn-started", turn };
+  if (kind === "turn-discarded") return { kind, turn };
+  if (kind === "turn-failed") return { kind: "turn-ended", turn, outcome: "failed", diagnostic: parts.slice(2).join(" ") };
   if (kind === "turn-ended") {
     const outcome = TurnOutcomeSchema.safeParse(parts[2]);
-    return outcome.success ? { kind: "turn-ended", turn, outcome: outcome.data } : { kind: "turn-ended", turn };
+    const answer = parts.length > 3 ? parts.slice(3).join(" ") : undefined;
+    return { kind, turn, ...(outcome.success ? { outcome: outcome.data } : {}), ...(answer === undefined ? {} : { answer }) };
   }
   return undefined;
 }
@@ -141,12 +167,28 @@ function installation(): Harness {
         start: true,
         resume: true,
         send: true,
-        interrupt: false,
-        ask: false,
-        structuredOutput: false, launch: { model: false, effort: [], modes: [] },
+        interrupt: true,
+        ask: true,
+        structuredOutput: true, launch: { model: false, effort: [], modes: [] },
       },
     },
   };
+}
+
+export function fakeHost(home: string, tracked = false) {
+  const niwa = createNiwa({ home });
+  niwa.use(
+    sessions({
+      sandbox: openBoxes(),
+      harnesses: [
+        {
+          instance: installation(),
+          control: new FakeControl(join(home, INSTRUCTIONS), join(home, CURSOR), tracked),
+        },
+      ],
+    }),
+  );
+  return niwa;
 }
 
 if (import.meta.main) {
@@ -155,18 +197,7 @@ if (import.meta.main) {
     console.error("usage: bun restart-host.ts <home>");
     process.exit(2);
   }
-
-  const niwa = createNiwa({ home });
-  niwa.use(
-    sessions({
-      harnesses: [
-        {
-          instance: installation(),
-          control: new FakeControl(join(home, INSTRUCTIONS), join(home, CURSOR)),
-        },
-      ],
-    }),
-  );
+  const niwa = fakeHost(home, process.argv.includes("--tracked"));
   await niwa.serve();
 
   process.on("SIGTERM", () => {

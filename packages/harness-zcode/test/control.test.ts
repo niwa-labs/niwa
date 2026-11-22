@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { z } from "zod";
@@ -24,7 +24,7 @@ import {
   sessionId,
 } from "@niwa-labs/harness";
 import type { Harness, LifeEvent, ReverseHandler, SessionId } from "@niwa-labs/harness";
-import { onBoxManifest, onSpawn, useSandbox } from "@niwa-labs/sandbox";
+import { nono, onBoxManifest, onSpawn, useSandbox } from "@niwa-labs/sandbox";
 import type { BoxRecord, LaunchedBox, Sandbox } from "@niwa-labs/sandbox";
 import { ZCODE_FAKE as FAKE, tempDir } from "@niwa-labs/testing";
 
@@ -106,7 +106,7 @@ test("a start spawns one process, pings it, names the session and begins its fir
   expect((await requestsOf("session/create"))[0]).toEqual({ workspace: { workspacePath: dir, workspaceKey: dir }, mode: "edit" });
   expect((await requestsOf("session/subscribe"))[0]).toMatchObject({ deliveryKind: "desktop-continuous", includeSnapshot: false });
   // Nothing was chosen, so the send names no model.
-  expect((await requestsOf("session/send"))[0]).toEqual({ sessionId: "sess_fake-1", content: "hello" });
+  expect((await requestsOf("session/send"))[0]).toEqual({ sessionId: "sess_fake-1", content: "hello", inputId: expect.any(String) });
 
   // The first turn began inside the start: its signs are kept for the first stream.
   // No model was asked for, so the model the session runs is the one the server names, and it is the first sign.
@@ -359,16 +359,36 @@ test("a message the server refuses releases the session, and what queued behind 
 });
 
 test("a message whose answer never came keeps the session busy, so a later turn is not taken for it", async () => {
-  const c = control({ callTimeoutMs: 200 });
+  const c = control({ callTimeoutMs: 150, turnTimeoutMs: 300 });
   const { session } = await c.start({ prompt: promptFromText(""), cwd: dir });
   const ended = turnsEnded(c, session, 2);
   await expect(c.send(session, "mute slow")).rejects.toMatchObject({ code: "InputPossiblySent" });
   // The turn may be running: it is not over, and the next message waits for it.
   expect(await c.state(session)).toBe("running");
   expect(await c.send(session, "next")).toMatchObject({ status: "queued", turn: 2 });
+  await Bun.sleep(220);
+  expect(await c.state(session)).toBe("running");
+  expect((await requestsOf("session/send")).map((params) => params["content"])).toEqual(["mute slow"]);
   const events = await ended;
   expect(events.filter((event) => event.kind === "turn-ended").map((event) => (event as { turn: number }).turn)).toEqual([1, 2]);
   expect((await requestsOf("session/send")).map((params) => params["content"])).toEqual(["mute slow", "next"]);
+});
+
+test("an echoed input ID identifies a terminal even without a native turn ID", async () => {
+  await Promise.all(["no-turn-id", "terminal-input-id"].map((name) => writeFile(join(dir, name), "")));
+  const c = control();
+  const { session } = await c.start({ prompt: promptFromText(""), cwd: dir });
+  const ended = turnsEnded(c, session, 2);
+  expect(await c.send(session, "hello")).toMatchObject({ status: "started", turn: 1 });
+  expect(await c.send(session, "next")).toMatchObject({ status: "queued", turn: 2 });
+  expect((await ended).filter((event) => event.kind === "turn-ended")).toMatchObject([
+    { turn: 1, outcome: "completed", answer: "fake reply" },
+    { turn: 2, outcome: "completed", answer: "fake reply" },
+  ]);
+  const ids = (await requestsOf("session/send")).map((params) => params["inputId"]);
+  expect(ids).toEqual([expect.any(String), expect.any(String)]);
+  expect(new Set(ids).size).toBe(2);
+  expect(await requestsOf("session/read")).toEqual([]);
 });
 
 test("an answer to a send that is no acceptance of it is a message that may have gone", async () => {
@@ -442,14 +462,24 @@ test("an ask to a busy session is answered after the turn that runs", async () =
 test("an interrupt stops the turn through session/stop, ends it, and drops what waited behind it", async () => {
   const c = control();
   const { session } = await c.start({ prompt: promptFromText("hang"), cwd: dir });
-  await c.send(session, "never sent");
-  const ended = turnsEnded(c, session);
+  const queued = await c.send(session, "never sent");
+  const discarded: number[] = [];
+  const ended = (async () => {
+    for await (const event of c.life(session)) {
+      if (event.kind === "turn-discarded") discarded.push(event.turn);
+      if (event.kind === "turn-ended") break;
+    }
+  })();
   await c.interrupt(session);
   await ended;
   expect(await requestsOf("session/stop")).toEqual([{ sessionId: "sess_fake-1" }]);
   expect(await c.state(session)).toBe("idle");
   expect((await requestsOf("session/send")).map((params) => params["content"])).toEqual(["hang"]);
   await expect(c.interrupt(session)).rejects.toMatchObject({ code: "Unavailable" });
+  expect(queued.turn).toBe(2);
+  expect(discarded).toEqual([2]);
+  const next = await c.send(session, "new");
+  expect(next.turn).toBe(3);
 });
 
 test("a turn that fails is an error for its asker, and a turn that was cut is one too", async () => {
@@ -878,6 +908,7 @@ test("the child, the box and the reader all use the installation the control sid
     // The box is the one given, the installation's profile in it; the child keeps its sessions where the reader looks.
     expect(records[0]?.spec.write.map(String)).toEqual([dir]);
     expect((await logOf("env.log"))[0]).toMatchObject({ storage: home, db: dbPathOf(home) });
+    expect((await stat(join(home, "cli", "db"))).isDirectory()).toBe(true);
   } finally {
     forget();
     restore();
@@ -886,6 +917,63 @@ test("the child, the box and the reader all use the installation the control sid
   await rm(join(dir, "env.log"));
   await control().start({ prompt: hello, cwd: dir });
   expect((await logOf("env.log"))[0]?.["storage"]).toBeUndefined();
+});
+
+test("a boxed database override grants only its resolved directory and is pinned in the child", async () => {
+  const cwd = await realpath(dir);
+  const home = join(cwd, "installation");
+  const database = join(cwd, "external", "nested", "sessions.sqlite");
+  const records: BoxRecord[] = [];
+  const restore = useSandbox("nono", { ...plainNono(), manifest: nono().manifest });
+  const forget = onBoxManifest((record) => void records.push(record));
+  try {
+    await control({ home }).start({
+      prompt: hello,
+      cwd,
+      box: { sandbox: "nono", spec: { cwd, write: [home], env: { ZCODE_SESSION_DB: "external/other.sqlite" } } },
+      env: { HOME: cwd, ZCODE_SESSION_DB: "~/external/nested/sessions.sqlite" },
+    });
+    expect(records[0]?.spec.write.map(String)).toEqual([home, join(cwd, "external", "nested")]);
+    expect(records[0]?.manifest.policy?.write).toEqual([home, join(cwd, "external", "nested")]);
+    expect(Object.entries(records[0]?.spec.env ?? {})).toContainEqual(["ZCODE_SESSION_DB_PATH", database]);
+    expect(Object.keys(records[0]?.spec.env ?? {})).not.toContain("ZCODE_SESSION_DB");
+    expect((await logOf("env.log"))[0]).toMatchObject({ storage: home, db: database });
+    expect((await stat(join(cwd, "external", "nested"))).mode & 0o777).toBe(0o700);
+  } finally {
+    forget();
+    restore();
+  }
+});
+
+test("a boxed database path from the box environment is relative to the process cwd", async () => {
+  const cwd = await realpath(dir);
+  const database = join(cwd, "external", "sessions.sqlite");
+  const restore = useSandbox("nono", plainNono());
+  try {
+    await control().start({
+      prompt: hello,
+      cwd,
+      box: { sandbox: "nono", spec: { cwd, env: { ZCODE_SESSION_DB_PATH: "external/sessions.sqlite" } } },
+    });
+    expect((await logOf("env.log"))[0]).toMatchObject({ db: database });
+    expect((await stat(join(cwd, "external"))).isDirectory()).toBe(true);
+  } finally {
+    restore();
+  }
+});
+
+test("a database override overlapping a closed path refuses before directory creation", async () => {
+  const cwd = await realpath(dir);
+  for (const closed of ["private", "private/db/sessions.sqlite-shm"]) {
+    await expect(control().start({
+      prompt: hello,
+      cwd,
+      box: { sandbox: "nono", spec: { cwd, closed: [closed] } },
+      env: { ZCODE_SESSION_DB_PATH: "private/db/sessions.sqlite" },
+    })).rejects.toMatchObject({ name: "BoxRefused", reasons: [{ code: "closed" }] });
+    await expect(stat(join(cwd, "private"))).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  expect(spawned).toEqual([]);
 });
 
 test("dispose stops the process of every session", async () => {

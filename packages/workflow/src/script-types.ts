@@ -32,6 +32,13 @@ declare namespace z {
   type output<T> = import("zod").z.output<T>;
 }
 type NiwaPrompt = string | { sections: { id: string; tier: "constant" | "stable" | "volatile"; text: string }[] };
+interface NiwaTurn<T> {
+  readonly session: string;
+  readonly operation: string;
+  readonly turn?: number;
+  /** Returns the answer, or rejects on timeout or terminal failure. The handle can be waited on again. */
+  wait(options?: NiwaCallOptions & { timeout?: NiwaDuration }): Promise<T>;
+}
 interface NiwaSession {
   readonly id: string;
   readonly ref: string;
@@ -39,8 +46,34 @@ interface NiwaSession {
   readonly worktree?: Omit<NiwaSessionWorktree, "changed">;
   ask<S extends import("zod").z.ZodType>(prompt: NiwaPrompt, options: { schema: S; label?: string }): Promise<import("zod").z.output<S>>;
   ask(prompt: NiwaPrompt, options?: { label?: string }): Promise<{ answer: string }>;
+  send<S extends import("zod").z.ZodType>(prompt: NiwaPrompt, options: NiwaCallOptions & { schema: S }): Promise<NiwaTurn<import("zod").z.output<S>>>;
+  send(prompt: NiwaPrompt, options?: NiwaCallOptions & { schema?: undefined }): Promise<NiwaTurn<string>>;
+  send<S extends import("zod").z.ZodType>(prompt: NiwaPrompt, options: NiwaCallOptions & { schema?: S }): Promise<NiwaTurn<string | import("zod").z.output<S>>>;
   end(options?: NiwaCallOptions): Promise<void>;
 }
+/** How one turn of a group wait ended: its answer, or the reason there is none. */
+type NiwaTurnOutcome<T> = { status: "completed"; value: T } | { status: "ended"; how: "interrupted" | "failed" | "unknown" } | { status: "handled" } | { status: "no-answer" } | { status: "invalid-answer" };
+/** One turn of a group wait that settled: its index among the handles given, the handle, and how it ended. */
+interface NiwaTurnDone<T> { readonly index: number; readonly turn: NiwaTurn<T>; readonly result: NiwaTurnOutcome<T> }
+/** One turn of a group wait still running: its index among the handles given, and the handle, to wait on again. */
+interface NiwaTurnPending<T> { readonly index: number; readonly turn: NiwaTurn<T> }
+/** The value a list of turn handles answers with: the union of the value types of its handles. */
+type NiwaTurnValue<T extends readonly NiwaTurn<any>[]> = T[number] extends NiwaTurn<infer V> ? V : never;
+/** What turns.first and turns.all answer: what settled and what is still pending, in the order the handles were given. */
+interface NiwaTurnsWaited<T extends readonly NiwaTurn<any>[]> {
+  readonly done: Array<NiwaTurnDone<NiwaTurnValue<T>>>;
+  readonly pending: Array<NiwaTurnPending<NiwaTurnValue<T>>>;
+  readonly timedOut: boolean;
+}
+/**
+ * Group waits over turn handles session.send returned. One call and one deadline cover the whole group;
+ * nothing is sent, consumed or cancelled, and a handle either answer names can be waited for again.
+ * Put session.turn-wait-many in uses.
+ */
+declare const turns: {
+  first<T extends readonly NiwaTurn<any>[]>(list: T, opts?: NiwaCallOptions & { timeout?: NiwaDuration }): Promise<NiwaTurnsWaited<T>>;
+  all<T extends readonly NiwaTurn<any>[]>(list: T, opts?: NiwaCallOptions & { timeout?: NiwaDuration }): Promise<NiwaTurnsWaited<T>>;
+};
 
 /** The worktree an ask({ worktree }) call left because the work changed something in it; a clean one is removed. */
 type NiwaSessionWorktree = { id: string; path: string; branch: string; changed: boolean };
@@ -50,7 +83,7 @@ type NiwaWorktreeOption = true | { repo?: string; base?: string; description?: s
 type NiwaBoxItem = string | { read: string } | { write: string } | { net: string };
 /** What ask({ box }) takes: items added to the host's default (allow), or put instead of it (only). Beyond the default takes the run's box.* rules. */
 type NiwaBoxAccess = { allow: NiwaBoxItem[] } | { only: NiwaBoxItem[] };
-declare function session(options: NiwaSessionOptions): Pick<NiwaSession, "ask" | "end"> & PromiseLike<NiwaSession>;
+declare function session(options: NiwaSessionOptions): Pick<NiwaSession, "ask" | "send" | "end"> & PromiseLike<NiwaSession>;
 declare function agent(name: "agent.tell" extends keyof NiwaActions ? string : never): { tell(text: string, options?: NiwaCallOptions): Promise<{ message: string }> };
 /** Sleep; a replay does not sleep from the start. */
 declare function sleep(duration: NiwaDuration, opts?: NiwaCallOptions): Promise<void>;

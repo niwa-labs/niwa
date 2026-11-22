@@ -270,8 +270,9 @@ export interface ActionContext {
   operationId: OperationId;
   /**
    * Aborted when the step this call is made in is cancelled: the work it stood for is no longer
-   * wanted, and its outcome is written as cancelled whatever the call returns after that. Absent
-   * for a call made outside a step.
+   * wanted, and its outcome is written as cancelled whatever the call returns after that. Also
+   * set for a call made outside an invocation whose caller can cancel it, and aborted when it
+   * does; absent for a call nobody can cancel.
    */
   signal?: AbortSignal;
   caller: Caller;
@@ -460,6 +461,13 @@ export interface CallOptions {
    * conflict. It is the caller's: another caller's id is another call.
    */
   operation?: string;
+  /**
+   * Stop waiting for the answer: the caller's request was cancelled, so the call is cancelled with
+   * it. The promise rejects with the signal's reason, and the host is told to stop the work it can
+   * stop — a wait releases what it holds; an effect that began is not unwound, and a retry under
+   * the same operation id decides what a retry of it always decides.
+   */
+  signal?: AbortSignal;
 }
 
 /** Options for writing a record that may be linked to other records. */

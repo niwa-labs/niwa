@@ -34,7 +34,7 @@ import { CoverageSchema, ReadAnswerSchema, SearchMatchSchema, SearchQuerySchema,
 
 import { NiwaSessionIdSchema } from "./identity.ts";
 import { PromptInputSchema } from "./prompt.ts";
-import { BelongingSource } from "./records.ts";
+import { BelongingSource, TurnEnding } from "./records.ts";
 import { VisibleActionsInputSchema } from "./visible.ts";
 
 /**
@@ -217,6 +217,16 @@ export const harnessGet = actionRef("harness.get", {
   }),
 });
 
+const TurnOperation = z.string().min(1);
+const TurnNumber = z.number().int().positive();
+const TurnTimeout = z.number().int().nonnegative().max(2_147_483_647).optional();
+
+export const SessionTurnHandle = z.object({
+  session: z.string().min(1),
+  operation: TurnOperation,
+  turn: TurnNumber.optional(),
+});
+
 /** The fields of `session.start`: every other key of its input is an options block. */
 const SessionStartFields = z.object({
   /** The harness to start the session on. */
@@ -256,6 +266,12 @@ const SessionStartFields = z.object({
    * retry with it answers the session it made instead of making another. Default: the operation of the call.
    */
   operation: z.string().min(1).max(200).optional(),
+  /**
+   * Ask for JSON matching this schema, and validate the first turn's answer when it is read. A
+   * prompt with no text starts no turn and so has no answer to validate: a start given both is
+   * refused.
+   */
+  schema: JsonSchemaValue.optional(),
   /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck; kept in its record. */
   stuckAfter: z.number().int().positive().optional(),
 });
@@ -265,7 +281,7 @@ export const SESSION_START_FIELDS: readonly string[] = Object.keys(SessionStartF
 
 export const sessionStart = actionRef("session.start", {
   description:
-    "Starts a session. With `worktree` it runs in a new git worktree of the repository (`cwd` by default), which stays until it is removed. It returns as soon as the harness has named the session; until then there is a start in progress, not a session. The prompt becomes the first turn, delivered like a send: the receipt says whether it started or was queued, and the end of that turn is not waited for. Give `operation` to make a retry safe: the same id with the same prompt answers the session it made. The block named after the harness's kind (`claude` for Claude Code) holds the options of that kind for the whole life of the session; the block of another kind is refused.",
+    "Starts a session. With `worktree` it runs in a new git worktree of the repository (`cwd` by default), which stays until it is removed. It returns as soon as the harness has named the session; until then there is a start in progress, not a session. The prompt becomes the first turn, delivered like a send: the receipt says whether it started or was queued, and the end of that turn is not waited for — the handle it answers is the one session.turn-wait takes, so two calls cover a whole question and its answer. Give `operation` to make a retry safe: the same id with the same prompt answers the session it made. The block named after the harness's kind (`claude` for Claude Code) holds the options of that kind for the whole life of the session; the block of another kind is refused.",
   // Every key that is not a field is the options block of the harness's kind, an object named after it: what
   // is in it is the kind's schema to check, so it is checked once the harness is known.
   input: withBlocks(SessionStartFields),
@@ -279,6 +295,8 @@ export const sessionStart = actionRef("session.start", {
     ref: z.string().min(1),
     /** What became of the prompt: the first turn started or queued. Absent when there was none. */
     receipt: DeliveryReceiptSchema.optional(),
+    /** The handle of the first turn, for session.turn-wait: the prompt is its tracked turn. Absent when the prompt started no turn. */
+    handle: SessionTurnHandle.optional(),
     /** The operation the prompt is recorded under: the one given, or the call's own. */
     operation: z.string().min(1),
   }),
@@ -295,17 +313,90 @@ export const sessionResume = actionRef("session.resume", {
   output: z.object({ resumed: z.boolean() }),
 });
 
+const TurnSendInput = z.object({
+  session: SessionRefInput,
+  message: z.string(),
+  into: z.literal("turn").optional(),
+  /** The caller's own id of this send: a retry with it never sends the message twice. */
+  operation: TurnOperation.max(200).optional(),
+  /** Ask for JSON matching this schema, and validate the answer when it is read. */
+  schema: JsonSchemaValue.optional(),
+});
+
 export const sessionSend = actionRef("session.send", {
   description:
-    "Sends a message into a session and says what happened to it: delivered into the running turn, queued after the current turn, or started a new turn. A send that fails says whether the message was not sent (sending it again is safe) or may have been (it is never sent again by itself). Give `operation` to make a retry safe: the same id with the same message answers what became of it, and sends it only if it was not sent.",
-  input: z.object({
-    session: SessionRefInput,
-    message: z.string(),
-    into: z.literal("turn").optional(),
-    /** The caller's own id of this send: a retry with it never sends the message twice. */
-    operation: z.string().min(1).max(200).optional(),
+    "Sends a message into a session and says what happened to it: delivered into the running turn, queued after the current turn, or started a new turn. A send that fails says whether the message was not sent (sending it again is safe) or may have been (it is never sent again by itself). Give `operation` to make a retry safe: the same id with the same message answers what became of it, and sends it only if it was not sent. Use track (or a schema) to get a handle for session.turn-wait.",
+  input: TurnSendInput.extend({
+    /** Keep this turn's final answer so it can be waited for later. */
+    track: z.boolean().optional(),
   }),
-  output: z.object({ receipt: DeliveryReceiptSchema }),
+  output: z.object({ receipt: DeliveryReceiptSchema, handle: SessionTurnHandle.optional() }),
+});
+
+export const sessionTurnSend = actionRef("session.turn-send", {
+  description: "Send a message and return a durable handle for session.turn-wait.",
+  input: TurnSendInput,
+  output: z.object({ receipt: DeliveryReceiptSchema, handle: SessionTurnHandle }),
+});
+
+/**
+ * How a tracked turn settled, with the exact semantics of `session.turn-wait`: its answer (parsed against the schema the
+ * tracked send was given, when it had one), or the reason there is none. A group wait reports this per handle; a
+ * handle it names as pending has not settled.
+ */
+export const TurnSettledResult = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("completed"), value: z.json() }),
+  z.object({ status: z.literal("handled") }),
+  z.object({ status: z.literal("ended"), how: TurnEnding.exclude(["completed"]), diagnostic: z.string().optional() }),
+  z.object({ status: z.literal("no-answer") }),
+  z.object({ status: z.literal("invalid-answer") }),
+]);
+
+const TurnWaitResult = z.discriminatedUnion("status", [
+  ...TurnSettledResult.options,
+  z.object({ status: z.literal("timed-out") }),
+]);
+
+export const sessionTurnWait = actionRef("session.turn-wait", {
+  description: "Wait for the exact turn named by a tracked session.send handle. A timeout leaves the turn running. Outside a workflow the default timeout is 30 seconds.",
+  input: SessionTurnHandle.extend({ session: SessionRefInput, timeoutMs: TurnTimeout }),
+  output: TurnWaitResult,
+});
+
+/** The most handles one group wait may hold: a wait is one answer, not a catalogue of the host. */
+export const TURN_WAIT_MANY_MAX = 64;
+
+export const sessionTurnWaitMany = actionRef("session.turn-wait-many", {
+  description:
+    "Wait for a group of tracked turns at once: until the first of them settles on any outcome (a failure settles it too), or until every one has. The answer names the entries that settled and the handles still pending, each by its index among the handles given and in their order, and whether the deadline ran out; one handle listed twice is answered twice, once per place. Nothing is sent, consumed or cancelled: a handle named pending, and one named done, can be waited for again. Every handle and the caller's right to it is checked before anything is reported, so one unknown handle refuses the whole call. A timeout is not an error: the turns keep running. Outside a workflow the default timeout is 30 seconds.",
+  input: z.object({
+    handles: z.array(SessionTurnHandle).min(1).max(TURN_WAIT_MANY_MAX),
+    /** `first`: wake when any handle settles. `all`: wake when every handle has. */
+    until: z.enum(["first", "all"]),
+    timeoutMs: TurnTimeout,
+  }),
+  output: z.object({
+    /** The handles that settled, in the order their handles were given, each with how its turn ended. */
+    done: z.array(z.object({
+      /** The index of the handle among the handles given. */
+      index: z.number().int().nonnegative(),
+      handle: SessionTurnHandle,
+      result: TurnSettledResult,
+    })),
+    /** The handles still pending, in the order they were given. */
+    pending: z.array(z.object({
+      index: z.number().int().nonnegative(),
+      handle: SessionTurnHandle,
+    })),
+    /** True when the deadline ran out before the wait was satisfied. */
+    timedOut: z.boolean(),
+  }),
+});
+
+export const sessionAskAndWait = actionRef("session.ask-and-wait", {
+  description: "Send a tracked message and wait for its exact turn. Keep the returned handle to wait again after a timeout.",
+  input: TurnSendInput.extend({ timeoutMs: TurnTimeout }),
+  output: z.object({ handle: SessionTurnHandle, result: TurnWaitResult }),
 });
 
 export const sessionInterrupt = actionRef("session.interrupt", {

@@ -23,9 +23,8 @@
  * What the RPC mode really supports, and so what this side declares:
  *
  * - **start**: a session is a pi process, and it is started with `--mode rpc`.
- * - **send**: a message is delivered with pi's `prompt`. A session that is working refuses a
- *   prompt, so the message is queued with `follow_up`, or steered into the running turn with
- *   `steer` when the caller asks for that.
+ * - **send**: a message is delivered with pi's `prompt`. Niwa queues standalone prompts until
+ *   the previous run settles. A caller can also steer into the running turn.
  * - **interrupt**: pi's `abort` stops the run in flight.
  * - **resume**: a session is opened again by starting pi with `--session <file>`, the file pi
  *   itself named. `--resume` and `--continue` are not used: they open a picker or a guess, and
@@ -92,6 +91,7 @@ import { LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess } from "@niwa-labs/sandbox";
 import { PI_INSTANCE_ENV } from "./insert/insert.ts";
 import { PI_MCP_SERVERS_ENV, encodeServers, piToolPattern } from "./mcp/servers.ts";
+import { AssistantMessageSchema } from "./protocol/messages.ts";
 import { PI_PROTOCOL, PiCommandSchema, RequestIdSchema, describeUnknown, parseLine, unknownVariantName } from "./protocol/index.ts";
 import type {
   PiUnknownVariant,
@@ -285,20 +285,23 @@ const MAX_LINE_BYTES = 16 * 1024 * 1024;
 const STDERR_TAIL_CHARS = 2_000;
 
 /** How pi is told to queue a message that comes while it works. */
-type StreamingBehavior = "steer" | "followUp";
-
 /** What pi did with a prompt. */
 type Disposition = "started" | "queued" | "handled";
 
 /** What became of a message put into a session: what pi did with it, and how it was asked to queue it. */
 interface Delivery {
   readonly disposition: Disposition;
-  readonly behavior: StreamingBehavior | undefined;
+  readonly turnAtReply: number;
+}
+
+interface QueuedPrompt {
+  readonly turn: number;
+  readonly message: string;
 }
 
 /** How a request ends: pi answered it, or the process went away before it did. */
 type Settled =
-  | { readonly kind: "answer"; readonly incoming: Extract<PiIncoming, { kind: "response" }> }
+  | { readonly kind: "answer"; readonly incoming: Extract<PiIncoming, { kind: "response" }>; readonly turnAtReply: number }
   | { readonly kind: "gone"; readonly error: string };
 
 /** A dialog of pi, with the line it came in as. */
@@ -354,6 +357,11 @@ class LiveSession {
   sessionFile: string | null = null;
   /** The runs niwa has seen; the running one, if any, has this number. */
   turn = 0;
+  assigned = 0;
+  starting: number | undefined;
+  earlyPromptEvents: PiEvent[] | undefined;
+  readonly queue: QueuedPrompt[] = [];
+  answer = "";
   /** Whether a run is in flight. */
   busy = false;
   /** Whether the session is on its way out. */
@@ -452,7 +460,7 @@ export class PiControl implements PiSessionControl {
   /** The starts of processes that have not returned one yet: a dispose waits for them. */
   readonly #spawning = new Set<Promise<unknown>>();
   /** The last open of each session id: opens of one id run one after another. */
-  readonly #opening = new Map<string, Promise<void>>();
+  readonly #exclusiveWork = new Map<string | LiveSession, Promise<void>>();
   #disposed = false;
 
   constructor(options: PiControlOptions) {
@@ -519,7 +527,7 @@ export class PiControl implements PiSessionControl {
     // id find one process, and a resume with a prompt does not hold up the next for the length of a turn.
     const { session, fresh } = await this.#exclusive(id.native, () => this.#open(id, options));
     if (fresh) await this.#firstTurn(session, text);
-    else if (text.trim().length > 0) await this.#deliver(session, text, true);
+    else if (text.trim().length > 0) await this.#deliver(session, text);
   }
 
   /** The process that serves a session: the one that is held, or the one that opens its file. */
@@ -587,63 +595,100 @@ export class PiControl implements PiSessionControl {
     try {
       return await this.#submit(session, message, options);
     } catch (error) {
+      if (error instanceof InputNotSent) throw error;
       if (error instanceof PiRefusal) throw new InputNotSent(this.#harness, "send", error.message);
       throw new InputPossiblySent(this.#harness, "send", error instanceof Error ? error.message : String(error));
     }
   }
 
-  /** Delivers a message and says what became of it; nothing waits for the run to end. */
-  async #submit(session: LiveSession, message: string, options?: SendOptions): Promise<DeliveryReceipt> {
-    const at = Date.now();
-    // The runs counted before the message goes out: pi may begin the run in the same read as
-    // its answer, and the receipt of a run it starts names that run, not the one after it.
-    const before = session.turn;
-    const delivery = await this.#put(session, message, options?.into);
-    switch (delivery.disposition) {
-      // An extension of pi took the message as a command of its own: no run began, and none will
-      // for it. It reached the session, and it names no turn.
-      case "handled":
-        return { status: "handled", at };
-      // The caller does not wait for the end of the run; the signs of life report it.
-      case "started":
-        return { status: "started", turn: before + 1, at };
-      case "queued":
-        // Only a caller that asks for it gets its message into the running turn; otherwise pi keeps
-        // the message for the answer that comes after the running one.
-        return delivery.behavior === "steer"
-          ? { status: "delivered", turn: session.turn, at }
-          : { status: "queued", turn: session.turn + 1, at };
-      default:
-        return assertNever(delivery.disposition, "pi prompt disposition");
+  /** Reserve one turn per standalone prompt, including those still in Niwa's queue. */
+  #submit(session: LiveSession, message: string, options?: SendOptions): Promise<DeliveryReceipt> {
+    return this.#exclusive(session, async () => {
+      if (session.ended || session.stopping) throw new InputNotSent(this.#harness, "send", this.#deathReason(session));
+      const at = Date.now();
+      const running = session.starting !== undefined || session.busy;
+      const steer = options?.into === "turn";
+      if (running && steer) return this.#steer(session, message, at);
+      const entry = { turn: ++session.assigned, message };
+      if (running || session.queue.length > 0) {
+        session.queue.push(entry);
+        this.#drainQueue(session);
+        return { status: "queued", turn: entry.turn, at };
+      }
+      try {
+        return await this.#launchPrompt(session, entry, at);
+      } catch (error) {
+        if (!isBusyRefusal(error)) throw error;
+        if (steer) return this.#steer(session, message, at);
+        if (!session.busy) throw error;
+        session.queue.push(entry);
+        return { status: "queued", turn: entry.turn, at };
+      } finally {
+        this.#drainQueue(session);
+      }
+    });
+  }
+
+  async #launchPrompt(session: LiveSession, entry: QueuedPrompt, at: number): Promise<DeliveryReceipt> {
+    session.earlyPromptEvents = [];
+    try {
+      const delivery = await this.#prompt(session, entry.message, false);
+      if (delivery.disposition === "queued") {
+        throw new Error("pi unexpectedly queued a standalone prompt");
+      }
+      if (delivery.disposition === "started") session.starting = entry.turn;
+      this.#replayPromptEvents(session);
+      return delivery.disposition === "started"
+        ? { status: "started", turn: entry.turn, at }
+        : { status: "handled", at };
+    } catch (error) {
+      if (error instanceof PiRefusal) this.#replayPromptEvents(session);
+      else await this.#stopSession(session);
+      throw error;
     }
   }
 
-  /**
-   * Puts a message into a session, and says what pi did with it.
-   *
-   * The queueing is pi's own `prompt` with a `streamingBehavior`: pi decides, atomically, whether
-   * it is working. A bare `steer` or `follow_up` sent after the run ended in the same read would be
-   * kept by an idle pi and never delivered; this one just starts a run. A session seen busy is
-   * queued from the start. One not seen busy gets a bare prompt, and when pi refuses it because it
-   * is working after all (the side has not seen the run begin yet), the refusal is taken at its
-   * word and the message is queued, the way the caller asked for.
-   *
-   * Only an answer that is a refusal of this very command, with the reason pi gives for being busy,
-   * allows the second write. Any other failure may have left the first one in pi's hands.
-   */
-  async #put(
-    session: LiveSession,
-    message: string,
-    into: SendOptions["into"],
-  ): Promise<Delivery> {
-    const queued: StreamingBehavior = into === "turn" ? "steer" : "followUp";
-    if (session.busy) return { disposition: await this.#prompt(session, message, queued), behavior: queued };
-    try {
-      return { disposition: await this.#prompt(session, message, undefined), behavior: undefined };
-    } catch (error) {
-      if (!isBusyRefusal(error)) throw error;
-      return { disposition: await this.#prompt(session, message, queued), behavior: queued };
+  #replayPromptEvents(session: LiveSession): void {
+    const early = session.earlyPromptEvents ?? [];
+    session.earlyPromptEvents = undefined;
+    for (const event of early) this.#handleEvent(session, event);
+  }
+
+  async #steer(session: LiveSession, message: string, at: number): Promise<DeliveryReceipt> {
+    const before = session.turn;
+    const starting = session.starting;
+    const delivery = await this.#prompt(session, message, true);
+    if (delivery.disposition === "handled") return { status: "handled", at };
+    if (delivery.disposition === "queued") {
+      const turn = starting ?? delivery.turnAtReply;
+      return { status: "delivered", ...(turn > 0 ? { turn } : {}), at };
     }
+    const turn = session.turn !== before ? session.turn : (session.starting ??= ++session.assigned);
+    return { status: "started", turn, at };
+  }
+
+  #discardQueue(session: LiveSession): void {
+    for (const { turn } of session.queue.splice(0)) session.emit({ kind: "turn-discarded", turn });
+  }
+
+  #drainQueue(session: LiveSession): void {
+    if (session.busy || session.starting !== undefined || session.queue.length === 0) return;
+    void this.#exclusive(session, async () => {
+      while (!session.busy && session.starting === undefined && !session.stopping && !session.ended) {
+        const entry = session.queue.shift();
+        if (entry === undefined) return;
+        try {
+          const receipt = await this.#launchPrompt(session, entry, Date.now());
+          if (receipt.status === "handled") session.emit({ kind: "turn-discarded", turn: entry.turn });
+        } catch (error) {
+          if (isBusyRefusal(error) && session.busy) {
+            session.queue.unshift(entry);
+            return;
+          }
+          if (error instanceof PiRefusal) session.emit({ kind: "turn-discarded", turn: entry.turn });
+        }
+      }
+    });
   }
 
   /**
@@ -651,12 +696,15 @@ export class PiControl implements PiSessionControl {
    * run. A pi that predates the dispositions says nothing, and the side's own reading of what it
    * asked for stands in.
    */
-  async #prompt(session: LiveSession, message: string, behavior: StreamingBehavior | undefined): Promise<Disposition> {
-    const response = await this.#call(session, "prompt", behavior === undefined ? { message } : { message, streamingBehavior: behavior });
+  async #prompt(session: LiveSession, message: string, steer: boolean): Promise<Delivery> {
+    const response = await this.#call(session, "prompt", steer ? { message, streamingBehavior: "steer" } : { message });
     if (response.command !== "prompt") {
       throw new Unavailable(this.#harness, "control", "prompt", `pi answered "${response.command}" to the command "prompt"`);
     }
-    return response.data?.disposition ?? (behavior === undefined ? "started" : "queued");
+    return {
+      disposition: response.data?.disposition ?? (steer ? "queued" : "started"),
+      turnAtReply: response.turnAtReply,
+    };
   }
 
   async interrupt(id: SessionId): Promise<void> {
@@ -668,7 +716,10 @@ export class PiControl implements PiSessionControl {
       this.#write(session, uiResponse(dialog, CANCELLED));
       waiting.abort();
     }
-    await this.#call(session, "abort");
+    await this.#exclusive(session, async () => {
+      this.#discardQueue(session);
+      await this.#call(session, "abort");
+    });
   }
 
   async ask<T>(_id: SessionId, _options: AskOptions<T>): Promise<AskAnswer<T>> {
@@ -718,7 +769,7 @@ export class PiControl implements PiSessionControl {
     const session = this.#sessions.get(id.native);
     // A session that is not held, or whose process is gone, proves nothing about now.
     if (session === undefined || session.ended || session.stopping) return "unknown";
-    return session.busy ? "running" : "idle";
+    return session.busy || session.starting !== undefined || session.earlyPromptEvents !== undefined ? "running" : "idle";
   }
 
   /** The release the shared contract names: stops this session's process and no other. */
@@ -754,20 +805,20 @@ export class PiControl implements PiSessionControl {
   }
 
   /** Runs `work` once the earlier work for the same key has ended. */
-  async #exclusive<T>(key: string, work: () => Promise<T>): Promise<T> {
-    const previous = this.#opening.get(key) ?? Promise.resolve();
+  async #exclusive<T>(key: string | LiveSession, work: () => Promise<T>): Promise<T> {
+    const previous = this.#exclusiveWork.get(key) ?? Promise.resolve();
     let release: () => void = () => undefined;
     const mine = new Promise<void>((resolve) => {
       release = resolve;
     });
     const tail = previous.then(() => mine);
-    this.#opening.set(key, tail);
+    this.#exclusiveWork.set(key, tail);
     await previous;
     try {
       return await work();
     } finally {
       release();
-      if (this.#opening.get(key) === tail) this.#opening.delete(key);
+      if (this.#exclusiveWork.get(key) === tail) this.#exclusiveWork.delete(key);
     }
   }
 
@@ -987,7 +1038,8 @@ export class PiControl implements PiSessionControl {
         const settle = session.pending.get(id);
         if (settle === undefined) return;
         session.pending.delete(id);
-        settle({ kind: "answer", incoming });
+        // Use the count at this line. A later line in the same chunk can begin the queued turn.
+        settle({ kind: "answer", incoming, turnAtReply: session.turn });
         return;
       }
       case "dialog":
@@ -999,7 +1051,8 @@ export class PiControl implements PiSessionControl {
         // pi waits for no answer, and it is not a sign of the run.
         return;
       case "event":
-        this.#handleEvent(session, incoming.event);
+        if (session.earlyPromptEvents !== undefined) session.earlyPromptEvents.push(incoming.event);
+        else this.#handleEvent(session, incoming.event);
         return;
       case "extension-error":
         session.emit({
@@ -1044,12 +1097,18 @@ export class PiControl implements PiSessionControl {
           session.emit({ kind: "activity", at: Date.now(), detail: event.type });
           return;
         }
-        session.turn += 1;
+        session.turn = session.starting ?? ++session.assigned;
+        session.starting = undefined;
+        session.answer = "";
         session.emit({ kind: "turn-started", turn: session.turn, at: Date.now() });
         return;
       }
       case "agent_end": {
         session.runOutcome = outcomeOfRun(event.messages);
+        const answer = AssistantMessageSchema.safeParse(event.messages.findLast((message) => message.role === "assistant"));
+        const content = answer.success ? answer.data.content : undefined;
+        session.answer = typeof content === "string" ? content
+          : (content ?? []).flatMap((part) => part.type === "text" ? [part.text] : []).join("");
         if (event.willRetry === true) {
           // pi runs the same request again by itself: the turn goes on, and the session is not idle between the tries.
           session.holding = true;
@@ -1144,7 +1203,8 @@ export class PiControl implements PiSessionControl {
     session.compacting = false;
     session.holding = false;
     session.busy = false;
-    session.emit({ kind: "turn-ended", turn: session.turn, at: Date.now(), outcome });
+    session.emit({ kind: "turn-ended", turn: session.turn, at: Date.now(), outcome, answer: session.answer });
+    this.#drainQueue(session);
   }
 
   /**
@@ -1231,7 +1291,7 @@ export class PiControl implements PiSessionControl {
     session: LiveSession,
     command: C,
     ...args: {} extends PiCommandFields<C> ? [fields?: PiCommandFields<C>] : [fields: PiCommandFields<C>]
-  ): Promise<SuccessResponse> {
+  ): Promise<SuccessResponse & { turnAtReply: number }> {
     if (session.ended) {
       throw new Unavailable(this.#harness, "control", command, "the pi process is gone");
     }
@@ -1275,7 +1335,7 @@ export class PiControl implements PiSessionControl {
     if (!response.success) {
       throw new PiRefusal(this.#harness, "control", command, response.error);
     }
-    return response;
+    return { ...response, turnAtReply: settled.turnAtReply };
   }
 
   /** What pi says about its session: the identity of it is the id and the file. */
@@ -1288,26 +1348,26 @@ export class PiControl implements PiSessionControl {
   }
 
   /**
-   * Delivers a message, and waits for the run it starts when it is asked to.
+   * Delivers a resume prompt and waits for its own turn.
    *
    * The wait is registered before the message goes out, so a run that ends in the same read as
    * its start is not missed.
    */
-  async #deliver(session: LiveSession, message: string, wait: boolean): Promise<void> {
-    const ended = wait ? this.#waitForEnd(session) : null;
-    let delivery: Delivery;
+  async #deliver(session: LiveSession, message: string): Promise<void> {
+    const ended = this.#waitForEnd(session);
+    let receipt: DeliveryReceipt;
     try {
-      delivery = await this.#put(session, message, undefined);
+      receipt = await this.#submit(session, message);
     } catch (error) {
-      ended?.cancel();
+      ended.cancel();
       throw error;
     }
-    if (ended === null) return;
     // No run began for a message an extension handled: there is no end to wait for.
-    if (delivery.disposition === "handled") {
+    if (receipt.turn === undefined) {
       ended.cancel();
       return;
     }
+    ended.bind(receipt.turn);
     await withTimeout(
       ended.done,
       this.#options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS,
@@ -1316,7 +1376,7 @@ export class PiControl implements PiSessionControl {
   }
 
   /** The wait for the end of a run: the promise, and the way to give it up. */
-  #waitForEnd(session: LiveSession): { readonly done: Promise<void>; cancel(): void } {
+  #waitForEnd(session: LiveSession): { readonly done: Promise<void>; bind(turn: number): void; cancel(): void } {
     let settle: (() => void) | undefined;
     let fail: ((error: Error) => void) | undefined;
     const done = new Promise<void>((resolve, reject) => {
@@ -1325,6 +1385,13 @@ export class PiControl implements PiSessionControl {
     });
     // A death while the request is still out is reported by the request; this one is for the wait.
     done.catch(() => undefined);
+    let turn: number | undefined;
+    const early = new Map<number, boolean>();
+    const finish = (failed: boolean): void => {
+      session.watchers.delete(watcher);
+      if (failed) fail?.(new Unavailable(this.#harness, "control", "turn", "pi discarded the prompt"));
+      else settle?.();
+    };
     const watcher: Watcher = (event) => {
       if (event === undefined) {
         // The process went away: the end of the run will never come.
@@ -1332,14 +1399,19 @@ export class PiControl implements PiSessionControl {
         fail?.(
           new Unavailable(this.#harness, "control", "turn", this.#deathReason(session)),
         );
-      } else if (event.kind === "turn-ended") {
-        session.watchers.delete(watcher);
-        settle?.();
+      } else if (event.kind === "turn-ended" || event.kind === "turn-discarded") {
+        if (turn === event.turn) finish(event.kind === "turn-discarded");
+        else if (turn === undefined) early.set(event.turn, event.kind === "turn-discarded");
       }
     };
     session.watchers.add(watcher);
     return {
       done,
+      bind: (number) => {
+        turn = number;
+        const failed = early.get(number);
+        if (failed !== undefined) finish(failed);
+      },
       cancel: () => {
         session.watchers.delete(watcher);
       },
@@ -1357,11 +1429,14 @@ export class PiControl implements PiSessionControl {
     if (session.ended) return;
     session.ended = true;
     session.busy = false;
+    session.starting = undefined;
+    session.earlyPromptEvents = undefined;
     session.holding = false;
     session.compacting = false;
     clearTimeout(session.settling);
     session.settling = undefined;
     session.abortDialogs();
+    this.#discardQueue(session);
     for (const settle of session.pending.values()) {
       const tail = session.stderrTail.trim();
       settle({ kind: "gone", error: tail === "" ? reason.message : `${reason.message}: ${tail}` });
@@ -1394,7 +1469,7 @@ export class PiControl implements PiSessionControl {
   async #firstTurn(session: LiveSession, text: string): Promise<void> {
     if (text.trim().length === 0) return;
     try {
-      await this.#deliver(session, text, true);
+      await this.#deliver(session, text);
     } catch (error) {
       this.#unpublish(session);
       await this.#stopSession(session);

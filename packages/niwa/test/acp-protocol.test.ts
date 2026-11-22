@@ -376,7 +376,8 @@ test("upstream: every captured frame parses with upstream's dialect", async () =
 test("upstream: the captured turn is text, tool calls and signs of life, and it never reads a fork mark", async () => {
   const captured = await frames("mcode-0.7.1-upstream");
   const replayed = [
-    ...captured.filter((frame) => frame["method"] !== undefined && frame["id"] === undefined),
+    ...captured.filter((frame) => frame["method"] !== undefined && frame["id"] === undefined).map(frame =>
+      frame["method"] === "session/update" ? { ...frame, params: { ...(frame["params"] as object), sessionId: REPLAY_SESSION } } : frame),
     // What only the fork sends: upstream's reading does not look at it.
     update({ sessionUpdate: "tool_call", toolCallId: "c1", title: "bash", kind: "execute", _meta: { "minimax-code/permission": { decision: "allow", decidedBy: "mode", ruleKind: null, mode: "bypassPermissions", reason: "bypass" } } }),
   ];

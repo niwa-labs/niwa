@@ -27,6 +27,7 @@ import { WorktreeOption } from "@niwa-labs/git/records";
 import { blocksOf, promptFromText } from "@niwa-labs/harness";
 import type { OptionBlocks } from "@niwa-labs/harness";
 import type { CallOptions, Duration, ScriptSession, SessionPrompt } from "@niwa-labs/script";
+import { sessionTurnSend, sessionTurnWait, sessionTurnWaitMany } from "@niwa-labs/sessions/records";
 
 import { choiceQuestion, confirmQuestion, formQuestion, multiQuestion, textQuestion } from "./ask.ts";
 import type { AskOption } from "./ask.ts";
@@ -302,24 +303,57 @@ async function openSession(options: AgentOptions): Promise<ScriptSession> {
   const separator = started.ref.indexOf(" ");
   let ending: Promise<void> | undefined;
   let previous: Promise<unknown> = Promise.resolve();
-  const askTurn = (prompt: SessionPrompt, opts: { schema?: z.ZodType; label?: string } = {}) => {
+  const order = <T>(turn: () => Promise<T>): Promise<T> => {
     if (ending !== undefined) return Promise.reject(new Error("this workflow session has ended"));
-    // A harness has one conversation. Order concurrent turns even when its adapter accepts both.
-    const turn = async () => {
+    const next = previous.then(turn, turn);
+    previous = next;
+    return next;
+  };
+  const askTurn = (prompt: SessionPrompt, opts: { schema?: z.ZodType; label?: string } = {}) => {
+    // A harness has one conversation. Order concurrent calls into it.
+    return order(async () => {
       const schema = opts.schema ?? z.object({ answer: z.string() });
       const content = typeof prompt === "string" ? promptFromText(prompt) : prompt;
       const output = await callOf("session.ask", { session: id, prompt: content, schema: answerSchema(schema) }, opts) as { value: unknown };
       return schema.parseAsync(output.value);
-    };
-    previous = previous.then(turn, turn);
-    return previous;
+    });
   };
+  const sendTurn = (prompt: SessionPrompt, opts: CallOptions & { schema?: z.ZodType } = {}) => order(async () => {
+    const schema = opts.schema;
+    const message = typeof prompt === "string" ? prompt : prompt.sections.map((part) => part.text).join("\n\n");
+    const { handle } = sessionTurnSend.output.parse(await callOf(sessionTurnSend.name, {
+      session: id,
+      message,
+      ...(schema === undefined ? {} : { schema: answerSchema(schema) }),
+    }, opts));
+    const answer = {
+      ...handle,
+      async wait(options: CallOptions & { timeout?: Duration } = {}) {
+        const result = sessionTurnWait.output.parse(await callOf(sessionTurnWait.name, {
+          ...handle,
+          ...(options.timeout === undefined ? {} : { timeoutMs: durationMs(options.timeout) }),
+        }, options));
+        if (result.status === "completed") return (schema ?? z.string()).parseAsync(result.value);
+        const turn = handle.turn === undefined ? "session message" : `session turn ${handle.turn}`;
+        if (result.status === "timed-out") {
+          const error = new Error(`waiting for ${turn} timed out`);
+          error.name = "SessionTurnTimedOut";
+          throw error;
+        }
+        throw new Error(`${turn}: ${result.status === "ended" ? result.how : result.status}`);
+      },
+    };
+    // The schema of the answer is what `wait` and a group wait parse the value with: it stays off the wire.
+    turnSchemas.set(answer, schema ?? z.string());
+    return answer;
+  });
   return {
     id,
     ref: started.ref,
     address: { kind: "session", harness: started.ref.slice(0, separator), id: started.ref.slice(separator + 1) },
     ...(started.worktree === undefined ? {} : { worktree: started.worktree }),
     ask: askTurn as ScriptSession["ask"],
+    send: sendTurn as ScriptSession["send"],
     end(opts) {
       const close = async () => {
         await callOf("session.end", { session: id, reason: "workflow session ended" }, opts);
@@ -344,11 +378,74 @@ globals.session = (options: AgentOptions) => {
       const session = await open();
       return opts?.schema === undefined ? session.ask(prompt, opts) : session.ask(prompt, { ...opts, schema: opts.schema });
     },
+    send: async (prompt: SessionPrompt, opts?: CallOptions & { schema?: z.ZodType }) => {
+      const session = await open();
+      return opts === undefined ? session.send(prompt) : session.send(prompt, opts);
+    },
     end: async (opts?: CallOptions) => {
       ended = true;
       if (opened !== undefined) await (await opened).end(opts);
     },
   };
+};
+
+/**
+ * The answer schema of each turn handle `session.send` returned, by the handle itself: `wait` and a group
+ * wait parse the value with it, and it never rides on the handle the wire carries.
+ */
+const turnSchemas = new WeakMap<object, z.ZodType>();
+
+/**
+ * One group wait over turn handles: `turns.first` wakes when any of them settles, `turns.all` when every
+ * one has. One call, one deadline: the answer says what settled and what is still pending, and nothing is
+ * sent, consumed or cancelled — a handle either list names can be waited for again.
+ */
+async function waitTurns(
+  list: readonly object[],
+  until: "first" | "all",
+  opts: CallOptions & { timeout?: Duration } | undefined,
+): Promise<unknown> {
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new TypeError(`turns.${until} takes the list of handles session.send returned, at least one`);
+  }
+  const handles = list.map((turn) => {
+    if (turn === null || typeof turn !== "object" || typeof (turn as { operation?: unknown }).operation !== "string") {
+      throw new TypeError(`turns.${until} takes the handles session.send returned`);
+    }
+    const { session, operation, turn: number } = turn as { session: string; operation: string; turn?: number };
+    return { session, operation, ...(number === undefined ? {} : { turn: number }) };
+  });
+  const waited = sessionTurnWaitMany.output.parse(await callOf(sessionTurnWaitMany.name, {
+    handles,
+    until,
+    ...(opts?.timeout === undefined ? {} : { timeoutMs: durationMs(opts.timeout) }),
+  }, opts));
+  const done = await Promise.all(waited.done.map(async (entry) => {
+    const turn = list[entry.index];
+    if (entry.result.status !== "completed") return { index: entry.index, turn, result: entry.result };
+    // A value that passed the wire schema is parsed with the schema the handle was sent with, as `wait`
+    // does. A parse that fails only here — a refinement or a transform the wire schema could not
+    // carry — is this handle's invalid answer, not the group's failure: its siblings and the pending
+    // handles are answered as they are.
+    const parsed = await (turnSchemas.get(turn ?? {}) ?? z.string()).safeParseAsync(entry.result.value);
+    return {
+      index: entry.index,
+      turn,
+      result: parsed.success
+        ? { status: "completed" as const, value: parsed.data }
+        : { status: "invalid-answer" as const },
+    };
+  }));
+  return {
+    done,
+    pending: waited.pending.map((entry) => ({ index: entry.index, turn: list[entry.index] })),
+    timedOut: waited.timedOut,
+  };
+}
+
+globals.turns = {
+  first: (list: readonly object[], opts?: CallOptions & { timeout?: Duration }) => waitTurns(list, "first", opts),
+  all: (list: readonly object[], opts?: CallOptions & { timeout?: Duration }) => waitTurns(list, "all", opts),
 };
 
 /** The reason a call carries, when it has one. */
@@ -1318,6 +1415,7 @@ if (mode === "describe") {
   globals.niwa = stub("niwa");
   globals.ask = stub("ask");
   globals.read = stub("read");
+  globals.turns = stub("turns");
   try {
     say({ kind: "described", ...describeScript(await loadScript()) }, () => exitWith(0));
   } catch (error) {

@@ -76,6 +76,14 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new HostError(String(error));
 }
 
+/** The error a cancelled call rejects with: the signal's own reason when it has one. */
+function cancelledOf(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error("the call was cancelled");
+  error.name = "AbortError";
+  return error;
+}
+
 type ClientMessageInput = z.input<typeof clientMessageSchema>;
 
 /** Read what the host returned with a schema, or refuse it. */
@@ -209,16 +217,48 @@ class WireConnection {
     }
   }
 
-  /** One request/response exchange: `build` gets a fresh request id; the reply is matched by it. */
-  request(build: (id: number) => ClientMessageInput): Promise<unknown> {
+  /**
+   * One request/response exchange: `build` gets a fresh request id; the reply is matched by it.
+   *
+   * A `signal` cancels the exchange from this side: the host is told to stop the work it can stop,
+   * and the answer that may still come back for the id is left unmatched. A request that carries
+   * none waits as before.
+   */
+  request(build: (id: number) => ClientMessageInput, signal?: AbortSignal): Promise<unknown> {
     if (this.isClosed) return Promise.reject(this.closedError());
+    if (signal?.aborted) return Promise.reject(cancelledOf(signal));
     const id = this.nextId++;
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const settle = (): void => {
+        signal?.removeEventListener("abort", cancel);
+      };
+      const cancel = (): void => {
+        if (!this.pending.delete(id)) return;
+        settle();
+        // The host is told to stop the work; a connection that is already gone has nothing to cancel.
+        try {
+          this.send({ id, op: "cancel" });
+        } catch {
+          // The cancel is only a kindness to the host: the caller has its refusal.
+        }
+        reject(cancelledOf(signal!));
+      };
+      this.pending.set(id, {
+        resolve: (value) => {
+          settle();
+          resolve(value);
+        },
+        reject: (error) => {
+          settle();
+          reject(error);
+        },
+      });
+      signal?.addEventListener("abort", cancel, { once: true });
       try {
         this.send(build(id));
       } catch (error) {
         this.pending.delete(id);
+        settle();
         reject(asError(error));
       }
     });
@@ -880,7 +920,7 @@ class Client implements NiwaApi {
       input,
       ...(reason === undefined ? {} : { reason }),
       ...(operation === undefined ? {} : { operation }),
-    }))) as O;
+    }), opts?.signal)) as O;
   }
 
   /** What niwa is: its actions and its record types, with their schemas. */
@@ -910,8 +950,8 @@ class Client implements NiwaApi {
     (await this.link.catch(() => undefined))?.close();
   }
 
-  private async request(build: (id: number) => ClientMessageInput): Promise<unknown> {
-    return (await this.connection()).request(build);
+  private async request(build: (id: number) => ClientMessageInput, signal?: AbortSignal): Promise<unknown> {
+    return (await this.connection()).request(build, signal);
   }
 
   /** The call connection; a host that went away and came back gets a fresh one on the next call. */

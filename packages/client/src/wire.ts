@@ -162,6 +162,9 @@ export const clientMessageSchema = z.discriminatedUnion("op", [
     /** The caller's id for the call: a retry under it answers what the first call answered. */
     operation: z.string().min(1).max(256).optional(),
   }),
+  // The caller gave up on a call it made: its id names the call, and it is answered by the call
+  // being cancelled, not by a message of its own.
+  z.strictObject({ id: requestIdSchema, op: z.literal("cancel") }),
   z.strictObject({
     id: requestIdSchema,
     op: z.literal("emit"),

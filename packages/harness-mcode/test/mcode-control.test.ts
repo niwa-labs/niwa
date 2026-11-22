@@ -266,6 +266,8 @@ if (process.argv.slice(2).join(" ") === "acp --help") {
 let buffer = "";
 let active;
 let model;
+let structuredPrompt;
+const structuredScenario = new URL("structured-scenario", import.meta.url);
 appendFileSync(${JSON.stringify(join(dir, "argv.log"))}, JSON.stringify(process.argv.slice(2)) + "\\n");
 appendFileSync(${JSON.stringify(join(dir, "env.log"))}, JSON.stringify({ mode: process.env.MCODE_SERVER_MODE, id: process.env.NIWA_ID }) + "\\n");
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
@@ -329,8 +331,34 @@ for await (const chunk of Bun.stdin.stream()) {
         : {};
       send({ jsonrpc: "2.0", id: message.id, result: { modes: {}, configOptions: [], ...named } });
     }
+    else if (message.method === "session/history" && existsSync(structuredScenario)) {
+      // A schema-valid reply for this exact prompt would let the old fallback mask an invalid ACP answer.
+      appendFileSync(new URL("history.log", import.meta.url), "read\\n");
+      send({ jsonrpc: "2.0", id: message.id, result: { entries: [
+        { role: "user", text: structuredPrompt },
+        { role: "assistant", text: JSON.stringify({ answer: "from history" }) },
+      ] } });
+    }
     else if (message.method === "session/prompt") {
       appendFileSync(${JSON.stringify(join(dir, "prompts.log"))}, JSON.stringify(message.params) + "\\n");
+      if (existsSync(structuredScenario)) {
+        const scenario = JSON.parse(readFileSync(structuredScenario, "utf8"));
+        const update = (text, messageId, sessionUpdate = "agent_message_chunk", sessionId = "fake-1", _meta) =>
+          ({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: {
+            sessionUpdate, messageId, _meta,
+            ...(sessionUpdate === "tool_call"
+              ? { toolCallId: "synthetic-tool", title: "Synthetic tool" }
+              : { content: { type: "text", text } }),
+          } } });
+        structuredPrompt = message.params.prompt[0].text;
+        const result = { jsonrpc: "2.0", id: message.id, result: { stopReason: scenario.stopReason ?? "end_turn" } };
+        const frames = [...scenario.updates.map(args => update(...args)), result];
+        // Exercise split ACP frames and the last update adjacent to the prompt result.
+        const wire = frames.map(frame => JSON.stringify(frame) + "\\n").join("");
+        process.stdout.write(wire.slice(0, 27));
+        process.stdout.write(wire.slice(27));
+        continue;
+      }
       // Like real mcode: a session whose daemon runs a turn for another client refuses a prompt.
       if (existsSync(${JSON.stringify(join(dir, "foreign-turn"))})) { send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error: MiniMax Code refused the prompt (local_session_busy): Session already has an active Turn. Use queue send to deliver the message after it.", data: { code: "local_session_busy", retryable: false } } }); continue; }
       // Like real mcode: one prompt at a time per session.
@@ -450,6 +478,80 @@ async function fakeControl(options?: {
     ...(options?.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: options.turnTimeoutMs }),
   });
 }
+
+test("structured Ncode ask keeps final message deltas together without consulting history", async () => {
+  control = await fakeControl({ lineage: "fork" });
+  await writeFile(join(dir, "structured-scenario"), JSON.stringify({
+    updates: [
+      ['```json\n{"answer":"intermediate"}\n```', "early"],
+      ["", null, "tool_call"],
+      ["thinking", "final", "agent_thought_chunk"],
+      ['{"answer":"', "final"],
+      ["straggler", "early"],
+      ["wrong session", "alien", "agent_message_chunk", "other"],
+      ["service text", "service", "agent_message_chunk", "fake-1", { informational: true }],
+      ['ok"}', "final"],
+    ],
+  }));
+  const { session } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  const ended = firstTurnEnded(control.life(session));
+  const result = await control.ask(session, { prompt: promptFromText("ask"), schema: z.object({ answer: z.string() }) });
+  expect(result.value).toEqual({ answer: "ok" });
+  expect((await ended).find((event) => event.kind === "turn-ended")).not.toHaveProperty("answer");
+  expect(existsSync(join(dir, "history.log"))).toBe(false);
+});
+
+test("structured Ncode ask rejects the ACP schema mismatch even with a valid persisted answer", async () => {
+  control = await fakeControl({ lineage: "fork" });
+  await writeFile(join(dir, "structured-scenario"), JSON.stringify({
+    updates: [['{"answer":42,"privateKey":"sensitive synthetic value"}', "final"]],
+  }));
+  const { session } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  const schema = z.object({ answer: z.string() });
+  const error: unknown = await control.ask(session, { prompt: promptFromText("ask"), schema })
+    .catch((failure: unknown) => failure);
+  expect(String(error)).toMatch(/invalid_type at depth 1; ACP json \(object\), \d+ chars, 1 text chunks, 1 named messages/);
+  expect(String(error)).not.toMatch(/sensitive synthetic value|privateKey|history/);
+  expect(existsSync(join(dir, "history.log"))).toBe(false);
+  const sent = JSON.parse((await readFile(join(dir, "prompts.log"), "utf8")).trim());
+  expect(sent.prompt).toEqual([{
+    type: "text",
+    text: [
+      "ask",
+      "",
+      "Answer with JSON only, matching this schema exactly:",
+      JSON.stringify(z.toJSONSchema(schema, { io: "output", unrepresentable: "any" })),
+    ].join("\n"),
+  }]);
+});
+
+for (const [boundary, update] of [
+  ["a new thought", ["thinking", "final", "agent_thought_chunk"]],
+  ["a tool call", ["", null, "tool_call"]],
+] as const) {
+  test("structured Ncode ask discards intermediate text after " + boundary, async () => {
+    control = await fakeControl({ lineage: "fork" });
+    await writeFile(join(dir, "structured-scenario"), JSON.stringify({
+      updates: [['{"answer":"intermediate"}', "early"], update],
+    }));
+    const { session } = await control.start({ prompt: promptFromText(""), cwd: dir });
+    await expect(control.ask(session, { prompt: promptFromText("ask"), schema: z.object({ answer: z.string() }) }))
+      .rejects.toThrow(/invalid_type at root; ACP empty \(undefined\), 0 chars/);
+    expect(existsSync(join(dir, "history.log"))).toBe(false);
+  });
+}
+
+test("structured Ncode ask rejects a token limit even with schema-valid text", async () => {
+  control = await fakeControl({ lineage: "fork" });
+  await writeFile(join(dir, "structured-scenario"), JSON.stringify({
+    updates: [['{"answer":"ok"}', "final"]],
+    stopReason: "max_tokens",
+  }));
+  const { session } = await control.start({ prompt: promptFromText(""), cwd: dir });
+  await expect(control.ask(session, { prompt: promptFromText("ask"), schema: z.object({ answer: z.string() }) }))
+    .rejects.toThrow(/max_tokens/);
+  expect(existsSync(join(dir, "history.log"))).toBe(false);
+});
 
 test("a message behind a running turn is queued with the turn it will run as, and runs after it", async () => {
   control = await fakeControl();

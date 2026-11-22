@@ -83,6 +83,16 @@ Calling actions:
   tools chooses "all", "niwa-only", or { allow: [...] } for harness tools. visible selects Niwa actions.
   A prompt can be text or ordered { sections: [{ id, tier, text }] }. The first ask opens the session.
   To obtain its id, ref and address immediately, use const opened = await session(options).
+  Use const turn = await s.send(prompt, { schema, label }) to keep a handle for a specific turn.
+  Await turn.wait({ timeout, label }) for its answer. Without schema, the answer is a string.
+  A timeout rejects the wait and keeps the turn running, so the same handle can be waited on again.
+  For these calls include session.turn-send and session.turn-wait in uses.
+- turns.first([turn, ...], { timeout, label }) waits for the first of a group of handles to settle, on any
+  outcome, and turns.all([turn, ...]) for every one of them. Both share one deadline and answer
+  { done, pending, timedOut }: each entry of done carries its index among the handles given, the handle and
+  how its turn ended (a failure settles it too), each entry of pending its index and the handle, in input
+  order. Nothing is sent, consumed or cancelled, and every handle either answer names can be waited for
+  again, after the timeout included. For these calls include session.turn-wait-many in uses.
 - To message a named agent, await agent("rin").tell(text, { label: "report" }) with agent.tell in uses.
   Its inbox receives the message and the call returns its message id.
 - uses lists the actions the script calls, as names or masks ("task.*"). The check holds the script to it:

@@ -24,6 +24,43 @@ export interface AskWorktree {
 }
 
 export type SessionPrompt = string | { sections: { id: string; tier: "constant" | "stable" | "volatile"; text: string }[] };
+/** A receipt for one message. A harness command may be handled without starting a turn. */
+export interface ScriptTurn<T> {
+  readonly session: string;
+  readonly operation: string;
+  readonly turn?: number;
+  /** Returns the answer, or rejects on timeout or terminal failure. The handle can be waited on again. */
+  wait(options?: CallOptions & { timeout?: Duration }): Promise<T>;
+}
+/** How one turn of a group wait ended: its answer, or the reason there is none. */
+export type ScriptTurnOutcome<T> =
+  | { status: "completed"; value: T }
+  | { status: "ended"; how: "interrupted" | "failed" | "unknown" }
+  | { status: "handled" }
+  | { status: "no-answer" }
+  | { status: "invalid-answer" };
+/** One turn of a group wait that settled: its index among the handles given, the handle, and how it ended. */
+export interface ScriptTurnDone<T = unknown> {
+  readonly index: number;
+  readonly turn: ScriptTurn<T>;
+  readonly result: ScriptTurnOutcome<T>;
+}
+/** One turn of a group wait still running: its index among the handles given, and the handle, to wait on again. */
+export interface ScriptTurnPending<T = unknown> {
+  readonly index: number;
+  readonly turn: ScriptTurn<T>;
+}
+/** What `turns.first` and `turns.all` answer: what settled and what is still pending, in the order the handles were given. */
+export interface ScriptTurnsWaited<T extends readonly ScriptTurn<any>[] = readonly ScriptTurn<any>[]> {
+  /** The turns that settled, in the order their handles were given, each with how it ended. */
+  readonly done: Array<ScriptTurnDone<TurnValue<T>>>;
+  /** The handles still pending, in the order they were given. */
+  readonly pending: Array<ScriptTurnPending<TurnValue<T>>>;
+  /** True when the deadline ran out before the wait was satisfied. */
+  readonly timedOut: boolean;
+}
+/** The value a list of turn handles answers with: the union of the value types of its handles. */
+export type TurnValue<T extends readonly ScriptTurn<any>[]> = T[number] extends ScriptTurn<infer V> ? V : never;
 export interface ScriptSession {
   readonly id: string;
   readonly ref: string;
@@ -31,6 +68,9 @@ export interface ScriptSession {
   readonly worktree?: Omit<AskWorktree, "changed">;
   ask<S extends import("zod").z.ZodType>(prompt: SessionPrompt, options: { schema: S; label?: string }): Promise<import("zod").z.output<S>>;
   ask(prompt: SessionPrompt, options?: { label?: string }): Promise<{ answer: string }>;
+  send<S extends import("zod").z.ZodType>(prompt: SessionPrompt, options: CallOptions & { schema: S }): Promise<ScriptTurn<import("zod").z.output<S>>>;
+  send(prompt: SessionPrompt, options?: CallOptions & { schema?: undefined }): Promise<ScriptTurn<string>>;
+  send<S extends import("zod").z.ZodType>(prompt: SessionPrompt, options: CallOptions & { schema?: S }): Promise<ScriptTurn<string | import("zod").z.output<S>>>;
   end(options?: CallOptions): Promise<void>;
 }
 
@@ -240,7 +280,18 @@ export interface ScriptApi {
   call(name: string, input: unknown, opts?: CallOptions): Promise<any>;
   /** `niwa.task.create(input, { label })` is `call("task.create", input, { label })`; the wrappers are generated. */
   niwa: ActionGroup;
-  session(options: SessionOptions): Pick<ScriptSession, "ask" | "end"> & PromiseLike<ScriptSession>;
+  session(options: SessionOptions): Pick<ScriptSession, "ask" | "send" | "end"> & PromiseLike<ScriptSession>;
+  /**
+   * Group waits over turn handles `session.send` returned. One call and one deadline cover the whole
+   * group; nothing is sent, consumed or cancelled, and a handle either answer names can be waited for
+   * again. Put `session.turn-wait-many` in `uses`.
+   */
+  turns: {
+    /** Wake when any of the turns settles, on any outcome: what settled (a failure settles it too), and what is still pending. */
+    first<T extends readonly ScriptTurn<any>[]>(turns: T, opts?: CallOptions & { timeout?: Duration }): Promise<ScriptTurnsWaited<T>>;
+    /** Wait for every turn to settle, or the deadline: what settled, and what is still pending. */
+    all<T extends readonly ScriptTurn<any>[]>(turns: T, opts?: CallOptions & { timeout?: Duration }): Promise<ScriptTurnsWaited<T>>;
+  };
   agent(name: string): { tell(text: string, options?: CallOptions): Promise<{ message: string }> };
   /**
    * The first record of a type whose data holds every field of `filter`, written after `from` — a

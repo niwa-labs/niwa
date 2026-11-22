@@ -315,8 +315,10 @@ export interface PluginApi {
   /**
    * Wait until a record is committed, or `ms` milliseconds have passed: for a read that blocks until
    * something happens. The caller looks again after it; a commit may be a record it does not want.
+   *
+   * A signal ends the wait the moment it aborts: a read whose caller was cancelled holds nothing.
    */
-  untilCommit(ms: number): Promise<void>;
+  untilCommit(ms: number, signal?: AbortSignal): Promise<void>;
   /**
    * The path of the unix socket this host serves on, with the links of its home resolved: the name a
    * sandbox that works by path matches, and where a process that talks to the host connects. The home

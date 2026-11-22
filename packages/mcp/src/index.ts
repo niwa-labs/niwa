@@ -208,7 +208,8 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const binding = await bindingOf(extra.sessionId);
     try {
-      return answer(await callTool(binding, request.params.name, request.params.arguments ?? {}, opts.visible));
+      // The request's cancellation is the call's: a caller that gave up does not leave a waiter on the host.
+      return answer(await callTool(binding, request.params.name, request.params.arguments ?? {}, opts.visible, extra.signal));
     } catch (error) {
       return { content: [{ type: "text", text: errorText(error) }], isError: true };
     }
@@ -343,6 +344,7 @@ async function callTool(
   name: string,
   args: Record<string, unknown>,
   visible: readonly string[] | undefined,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const { api } = binding;
   const catalog = catalogOf(await api.describe(), visible);
@@ -352,11 +354,13 @@ async function callTool(
   }
   const action = catalog.actions.get(name);
   if (action === undefined) throw new Error(`there is no tool "${name}"`);
+  // The caller's cancellation of the request is carried into the call, when it has one.
+  const opts = signal === undefined ? undefined : { signal };
   // An action that takes no object has its input in `input`.
-  if (catalog.wrapped.has(name)) return api.call(action, args[WRAPPED_INPUT]);
+  if (catalog.wrapped.has(name)) return api.call(action, args[WRAPPED_INPUT], opts);
   // The session works where its server was started: an action that takes a directory is told so when the model names none.
   const input = catalog.tools.find((tool) => tool.name === name)?.inputSchema;
-  return api.call(action, withWorkingDirectory(input as JsonSchema | undefined, args));
+  return api.call(action, withWorkingDirectory(input as JsonSchema | undefined, args), opts);
 }
 
 /** The streams of a stdio server: the process's own unless a caller gives others. */

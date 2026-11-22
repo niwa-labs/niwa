@@ -9,6 +9,13 @@
  * through `v4/command` (a text that begins with "reject" is rejected). The content "refuse" is refused after a pause, "mute" is never answered (its turn runs),
  * "bad ack" is answered with something that is no acceptance, "bare ack" with neither a result nor an error, and "empty" ends with no answer anywhere. Each turn is
  * written to the transcript, `session/messages`, as the user message that began it and the answer it gave.
+ * "stray" repeats its ID-less completion and sends late failures. "hold-reply" gates the "stray"
+ * and JSON replies on "release-first" and "release-reply". "no-turn-id" omits both terminal IDs,
+ * unless "terminal-input-id" preserves the caller's input ID.
+ * "hold-failure" gates a failure on "release-failure"; "partial-failure-start" strips its start IDs.
+ * "bare-failure-start" also strips the entire start payload. "hold-first-terminal" delays the
+ * terminal notification for "first" until an idle v4 command arrives.
+ * "lag-history-once" hides the first assistant answer.
  *
  * It speaks the wire as the real server does, in the shapes of the snapshot niwa types it with: every event
  * has its envelope and the payload its type needs, so a test that sends less says only what it means to
@@ -34,8 +41,15 @@ const subscribeKind = () => (existsSync(dir + "/old-subscribe") ? "desktop" : "d
 
 let session = "sess_fake-1";
 let active;
+let activeTurnId;
+let currentTurnId;
+let status = "idle";
+let lastError;
+let delayedTerminal;
+let firstTerminal;
 let turnNumber = 0;
 const transcript = [];
+let historyReads = 0;
 let requestsOfServer = 0;
 const askClient = (method, params) => {
   requestsOfServer += 1;
@@ -46,12 +60,12 @@ const askClient = (method, params) => {
 const answerWaiters = new Map();
 const unanswered = new Map();
 const answered = (id) => new Promise((resolve) => { answerWaiters.set(id, resolve); });
-async function playScript(userId) {
+async function playScript(userId, turnId) {
   const steps = JSON.parse(await Bun.file(dir + "/script.json").text());
   for (const step of steps) {
     if (active === undefined) return;
     if (step.ms !== undefined) await Bun.sleep(step.ms);
-    else if (step.event !== undefined) event(step.event.type, step.event.payload);
+    else if (step.event !== undefined) event(step.event.type, step.event.payload, turnId);
     else if (step.ask !== undefined) {
       const first = askClient(step.ask.method, step.ask.params);
       unanswered.set(first, step.ask.params.requestId);
@@ -62,8 +76,10 @@ async function playScript(userId) {
   }
   if (active !== undefined) {
     active = undefined;
+    activeTurnId = undefined;
+    status = "idle";
     transcript.push(message("assistant", "fake reply", "msg-assistant-" + turnNumber, userId));
-    event("turn.completed", { response: "fake reply", resultType: "success" });
+    event("turn.completed", { response: "fake reply", resultType: "success" }, turnId);
   }
 }
 let eventSeq = 0;
@@ -75,9 +91,9 @@ const PAYLOADS = {
   "turn.completed": { response: "", tokenCount: 0, toolCallCount: 0, duration: 0, resultType: "success" },
   "turn.failed": { turnPhase: "execution" },
 };
-const event = (type, payload) => {
+const event = (type, payload, turnId) => {
   eventSeq += 1;
-  out({ method: "session/event", params: { eventId: "event-" + eventSeq, sessionId: session, seq: eventSeq, timestamp: Date.now(), deliveryKind: "desktop-continuous", type, payload: { ...PAYLOADS[type], ...payload } } });
+  out({ method: "session/event", params: { eventId: "event-" + eventSeq, sessionId: session, seq: eventSeq, timestamp: Date.now(), deliveryKind: "desktop-continuous", turnId, type, payload: payload === undefined ? undefined : { ...PAYLOADS[type], ...payload } } });
 };
 const snapshot = () => ({ protocol: { name: "ZCode Protocol", version: 1 }, session: { sessionId: session, mode: "build", model: { providerId: "fake", modelId: "default-model" } } });
 const workspace = { workspacePath: dir, workspaceKey: dir };
@@ -91,10 +107,18 @@ const permissionParams = (requestId, toolName, input) => ({
   ],
 });
 
-function turn(content) {
+function turn(content, inputId) {
   active = content;
   turnNumber += 1;
   const userId = "msg-user-" + turnNumber;
+  const nativeTurnId = "turn-" + turnNumber;
+  currentTurnId = activeTurnId = nativeTurnId;
+  status = "running";
+  lastError = undefined;
+  const turnId = existsSync(dir + "/no-turn-id") ? undefined : nativeTurnId;
+  const partial = content.startsWith("fail") && existsSync(dir + "/partial-failure-start");
+  const terminalInputId = content === "stray" || partial || (turnId === undefined && !existsSync(dir + "/terminal-input-id"))
+    ? undefined : inputId;
   transcript.push(message("user", content, userId));
   askClient("session/requestRuntimePreferences", { sessionId: session, scope: "user-execution" });
   askClient("interaction/requestOfficialMcpAuthHeaders", { requestId: "official-mcp-auth:1", workspace, pluginId: "zcode-site@zcode-plugins-official", mcpKey: "sites", targetOrigin: "https://zcode.z.ai" });
@@ -102,35 +126,68 @@ function turn(content) {
   out({ method: "v4/conversation/contextCompositionChanged", params: { sessionId: session, revision: 1 } });
   if (content.includes("needs permission")) askClient("interaction/requestPermission", permissionParams("perm-1", "Bash", { command: "ls" }));
   out({ method: "state.updated", params: { type: "state.updated", scope: "session", sessionId: session, revision: 1, patch: { status: "running" } } });
-  event("turn.started", { input: content, ...(existsSync(dir + "/no-message-id") ? {} : { messageId: userId }) });
+  event("turn.started", partial && existsSync(dir + "/bare-failure-start") ? undefined : {
+    turnNumber, input: content, inputId: partial ? undefined : inputId,
+    messageId: partial || existsSync(dir + "/no-message-id") ? undefined : userId,
+  }, partial ? undefined : nativeTurnId);
   event("model.streaming", { delta: "x", kind: "text_delta" });
+  if (delayedTerminal !== undefined) {
+    delayedTerminal();
+    delayedTerminal = undefined;
+  }
   if (content === "hang") return;
-  if (content === "script") return void playScript(userId);
+  if (content === "script") return void playScript(userId, turnId);
   if (content === "die") process.exit(3);
   const settle = (name, payload) => {
     if (active === undefined) return;
     active = undefined;
+    activeTurnId = undefined;
+    status = name === "turn.failed" ? "error" : "idle";
+    lastError = payload.error;
     // What the turn wrote into the transcript: its answer, unless it left none.
     const written = content.startsWith("empty") || name !== "turn.completed" ? undefined : content.startsWith("silent") ? "from the transcript" : payload.response;
     if (written !== undefined && written !== "") transcript.push(message("assistant", written, "msg-assistant-" + turnNumber, userId));
-    event(name, payload);
+    const notify = () => event(name, { ...payload, inputId: terminalInputId }, content === "stray" || partial ? undefined : turnId);
+    if (content === "first" && existsSync(dir + "/hold-first-terminal")) {
+      firstTerminal = notify;
+      log("first-idle", true);
+    } else notify();
   };
-  if (content.startsWith("fail")) return void setTimeout(() => settle("turn.failed", { error: { type: "execution", message: "model exploded" } }), 50);
+  if (content.startsWith("fail")) return void setTimeout(async () => {
+    if (existsSync(dir + "/hold-failure")) {
+      while (!existsSync(dir + "/release-failure")) await Bun.sleep(10);
+    }
+    settle("turn.failed", { error: { type: "execution", message: "model exploded" } });
+  }, 50);
   const response = content.includes("give the fenced word")
     ? "Here it is: \`\`\`json\\n{\\"word\\":\\"fenced\\"}\\n\`\`\`"
     : content.includes("give the word") ? '{"word":"ok"}'
     : content.startsWith("silent") || content.startsWith("empty") ? ""
     : "fake reply";
-  setTimeout(() => {
+  setTimeout(async () => {
+    const gate = content === "stray" ? "release-first" : content.includes("give the word") ? "release-reply" : undefined;
+    if (gate !== undefined && existsSync(dir + "/hold-reply")) {
+      while (!existsSync(dir + "/" + gate)) await Bun.sleep(10);
+    }
     settle("turn.completed", { response, resultType: "success" });
-    if (content === "stray") setTimeout(() => event("turn.completed", { response, resultType: "success" }), 30);
+    if (content !== "stray") return;
+    const replayTerminal = () => {
+      event("turn.completed", { response, resultType: "success" });
+      event("turn.completed", { response, resultType: "success" }, nativeTurnId);
+      const failure = { error: { type: "execution", message: "late failure" } };
+      event("turn.failed", failure, nativeTurnId);
+      event("turn.failed", failure);
+    };
+    // In the regression case, inject the late events after B's start, while its model is still running.
+    if (existsSync(dir + "/hold-reply")) delayedTerminal = replayTerminal;
+    else setTimeout(replayTerminal, 30);
   }, content === "slow" || content === "mute slow" ? 600 : 200);
 }
 
 const message = (role, text, messageId, parent) => ({
   info: role === "user"
     ? { messageId, sessionId: session, role, time: { created: 1 }, agent: "build" }
-    : { messageId, sessionId: session, role, time: { created: 2 }, parentMessageId: parent, agent: "build", path: { cwd: dir, root: dir }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
+    : { messageId, sessionId: session, role, time: { created: 2, completed: 3 }, parentMessageId: parent, agent: "build", path: { cwd: dir, root: dir }, cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } } },
   parts: [{ partId: "part-" + messageId, sessionId: session, messageId, type: "text", text }],
 });
 
@@ -152,12 +209,19 @@ function handle({ id, method, params }) {
       if (params.content.startsWith("bad ack")) out({ id, result: { ok: true } });
       else if (params.content.startsWith("bare ack")) out({ id });
       else if (!params.content.startsWith("mute")) ok({ accepted: true, sessionId: params.sessionId, stateRevision: 1 });
-      return void turn(params.content);
+      return void turn(params.content, params.inputId);
     case "v4/command": {
       if (existsSync(dir + "/no-v4")) return out({ id, error: { code: -32601, message: "method not found" } });
       if (params.type !== "sendText" || params.payload.text.startsWith("reject")) return out({ id, result: { commandId: params.commandId, status: "rejected", reasonCode: "proto.unsupported", revisionAtDecision: 1 } });
       if (active === undefined) {
-        out({ id, result: { commandId: params.commandId, status: "accepted", revisionAtDecision: 1, result: { type: "inputAccepted", delivery: "startNow", inputId: params.commandId } } });
+        firstTerminal?.();
+        firstTerminal = undefined;
+        const acknowledge = () => ok({ commandId: params.commandId, status: "accepted", revisionAtDecision: 1, result: { type: "inputAccepted", delivery: "startNow", inputId: params.commandId } });
+        if (existsSync(dir + "/start-before-steer-ack")) {
+          turn(params.payload.text, params.commandId);
+          return acknowledge();
+        }
+        acknowledge();
         return void turn(params.payload.text);
       }
       out({ id, result: { commandId: params.commandId, status: "accepted", revisionAtDecision: 1, result: { type: "inputAccepted", delivery: "queue", inputId: params.commandId } } });
@@ -167,11 +231,28 @@ function handle({ id, method, params }) {
       ok({});
       if (active !== undefined) {
         active = undefined;
+        activeTurnId = undefined;
+        status = "idle";
         for (const requestId of unanswered.values()) event("permission.resolved", { requestId, toolCallId: "call-" + requestId });
-        setTimeout(() => event("turn.completed", { resultType: "cancelled", response: "" }), 50);
+        const turnId = "turn-" + turnNumber;
+        setTimeout(() => event("turn.completed", { resultType: "cancelled", response: "" }, turnId), 50);
       }
       return;
+    case "session/read":
+      if (params.sessionId !== session || params.contentProfile !== "index" || params.messageLimit !== 1) {
+        return out({ id, error: { code: -32602, message: "invalid snapshot request" } });
+      }
+      return ok({
+        ...snapshot(),
+        projection: { sessionId: session, status: active !== undefined && existsSync(dir + "/idle-projection-while-busy") ? "idle" : status, currentTurnId, lastError },
+        runtime: { eventSeq, stateRevision: eventSeq, pendingRequestIds: [], activeTurnId, activeTurnKind: active === undefined ? undefined : "regular" },
+        messages: existsSync(dir + "/lag-history-once") ? [] : transcript.slice(-params.messageLimit),
+      });
     case "session/messages":
+      historyReads += 1;
+      if (historyReads === 1 && existsSync(dir + "/lag-history-once")) {
+        return ok({ messages: transcript.filter(({ info }) => info.role === "user") });
+      }
       return ok({ messages: transcript });
     default: return out({ id, error: { code: -32601, message: "method not found" } });
   }

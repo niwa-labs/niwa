@@ -167,6 +167,16 @@ export const LifeEventSchema = z.discriminatedUnion("kind", [
     turn: z.number().int().positive(),
     at: z.number().int().nonnegative().optional(),
     outcome: TurnOutcomeSchema.optional(),
+    /** Safe diagnostic supplied by the harness when a turn reports an error. */
+    diagnostic: z.string().optional(),
+    /** The final assistant answer from this turn, when the harness provides it. */
+    answer: z.string().optional(),
+    /** Read a fallback answer by a reference captured from this turn. Called only for tracked turns. */
+    readAnswer: z.custom<() => Promise<string>>((value) => typeof value === "function").optional(),
+  }),
+  z.object({
+    kind: z.literal("turn-discarded"),
+    turn: z.number().int().positive(),
   }),
   z.object({
     kind: z.literal("activity"),

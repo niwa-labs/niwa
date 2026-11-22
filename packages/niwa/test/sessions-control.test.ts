@@ -978,7 +978,7 @@ test("the start returns with the receipt of its first turn, and the signs of tha
   const { niwa, records } = await serve(control, installation());
   // The start does not wait for the first turn: it returns while that turn runs, and says so.
   const started = await call<{ session: string; ref: string; receipt?: unknown; operation: string }>(niwa, "session.start", { harness: HARNESS, prompt: "go" });
-  expect(started).toEqual({ session: expect.stringMatching(/^s-/), ref: SESSION, receipt: { status: "started", turn: 1 }, operation: expect.any(String) });
+  expect(started).toEqual({ session: expect.stringMatching(/^s-/), ref: SESSION, receipt: { status: "started", turn: 1 }, operation: expect.any(String), handle: { session: SESSION, turn: 1, operation: started.operation } });
 
   // The turn began before the stream of life was opened, and its end comes after: both are
   // written, after the record that the session started.
@@ -992,6 +992,7 @@ test("the start returns with the receipt of its first turn, and the signs of tha
     "session.input.settled",
     "session.turn-started",
     "session.turn-ended",
+    "session.turn-result",
   ]);
 });
 

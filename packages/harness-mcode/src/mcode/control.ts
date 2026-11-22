@@ -66,7 +66,7 @@ import type {
 import { LIVE_PROCESS_REFUSAL, spawnAgent } from "@niwa-labs/sandbox";
 import type { AgentProcess } from "@niwa-labs/sandbox";
 
-import { AcpClient, acpVariant, answerText, readVariant } from "@niwa-labs/acp";
+import { AcpClient, acpVariant, readVariant } from "@niwa-labs/acp";
 import type { AgentNotification, AgentRequest, RequestId, RpcOutcome, UnknownVariant } from "@niwa-labs/acp";
 
 import {
@@ -352,6 +352,8 @@ interface TurnWaiters {
 interface TurnResult {
   readonly stopReason: string;
   readonly text: string;
+  readonly chunks: number;
+  readonly messages: number;
 }
 
 /** A message that waits behind the running turn. */
@@ -361,6 +363,7 @@ interface QueuedMessage {
   readonly turn: number;
   /** A question waits for the answer of its turn; a plain message does not. */
   readonly ask?: TurnWaiters;
+  readonly structured?: boolean;
 }
 
 /** How many turn signs are kept for the first watcher of a session. */
@@ -422,7 +425,11 @@ class AcpSession {
   /** The last line written to the child, settled when its input has taken it or failed it. */
   accepted: Promise<void> = Promise.resolve();
   /** The text of the turn that is running. */
-  text = "";
+  private text = "";
+  structured = false;
+  private chunks = 0;
+  private readonly messages = new Set<string>();
+  private lastMessageId: string | undefined;
   /** The messages written while a turn ran; each becomes its turn when the previous one ends. */
   readonly queued: QueuedMessage[] = [];
   /** Where this session's reverse requests go, when it has been given a place for them. */
@@ -480,7 +487,10 @@ class AcpSession {
 
   /** Drop what waits behind the running turn; a question that waited is told why. */
   dropQueue(reason: string): void {
-    for (const message of this.queued.splice(0)) message.ask?.reject(new Error(reason));
+    for (const message of this.queued.splice(0)) {
+      message.ask?.reject(new Error(reason));
+      this.emit({ kind: "turn-discarded", turn: message.turn });
+    }
   }
 
   emit(event: LifeEvent): void {
@@ -519,11 +529,38 @@ class AcpSession {
     return this.turn;
   }
 
-  beginTurn(turn: number): void {
+  /** A message ID identifies a group of append-only deltas. */
+  appendText(text: string, messageId?: string | null): void {
+    if (!this.running) return;
+    if (text.length > 0) this.chunks += 1;
+    if (this.structured) {
+      const id = messageId || undefined;
+      if (id !== this.lastMessageId) {
+        // An interleaved chunk from an earlier message cannot replace the latest.
+        if (id !== undefined && this.messages.has(id)) return;
+        if (id !== undefined) this.messages.add(id);
+        this.lastMessageId = id;
+        this.text = "";
+      }
+    }
+    this.text += text;
+  }
+
+  /** A tool invocation means the preceding message was intermediate. */
+  awaitAnswerAfterTool(): void {
+    this.lastMessageId = undefined;
+    this.text = "";
+  }
+
+  beginTurn(turn: number, structured = false): void {
     this.current = turn;
     this.running = true;
     this.overdue = undefined;
     this.text = "";
+    this.structured = structured;
+    this.chunks = 0;
+    this.messages.clear();
+    this.lastMessageId = undefined;
     this.emit({ kind: "turn-started", turn, at: Date.now() });
   }
 
@@ -536,19 +573,19 @@ class AcpSession {
   }
 
   /** The turn is over, however it ended: say how, and release those who wait for the idle. */
-  private settle(outcome: TurnOutcome): void {
+  private settle(outcome: TurnOutcome, answer?: string): void {
     this.running = false;
     this.held = undefined;
     // The turn is over: nothing it asked is waited for any more.
     this.cancelAsking();
-    this.emit({ kind: "turn-ended", turn: this.current, at: Date.now(), outcome });
+    this.emit({ kind: "turn-ended", turn: this.current, at: Date.now(), outcome, ...(answer === undefined ? {} : { answer }) });
     for (const waiter of this.idleWaiters.splice(0)) waiter();
   }
 
   /** The agent answered the prompt: the turn ended. */
   endTurn(result: TurnResult): void {
     // Only an answer that says the turn ended of itself completed it; a cancel, a refusal or a limit did not.
-    this.settle(result.stopReason === STOP_TURN ? "completed" : "failed");
+    this.settle(result.stopReason === STOP_TURN ? "completed" : "failed", this.structured ? undefined : result.text);
     const waiters = this.turnWaiters;
     this.turnWaiters = undefined;
     waiters?.resolve(result);
@@ -573,7 +610,7 @@ class AcpSession {
     if (this.ended || this.stopping) return;
     const next = this.queued.shift();
     if (next === undefined) return;
-    this.beginTurn(next.turn);
+    this.beginTurn(next.turn, next.structured);
     // The waiter for this turn goes in before the prompt goes out, or the reply that ends it
     // would find nobody waiting. A question that waited gets the result of its turn; a plain
     // message has nobody waiting: a failed turn is reported by the signs of life, and the next
@@ -699,7 +736,13 @@ class AcpSession {
       return;
     }
     const result = isRecord(outcome.result) ? outcome.result : {};
-    this.endTurn({ stopReason: typeof result["stopReason"] === "string" ? result["stopReason"] : "", text: this.text });
+    const stop = Acp.StopReason.safeParse(result["stopReason"]);
+    this.endTurn({
+      stopReason: stop.success ? stop.data : "unknown",
+      text: this.text,
+      chunks: this.chunks,
+      messages: this.messages.size,
+    });
   }
 }
 
@@ -765,7 +808,9 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     session.emit({
       kind: "activity",
       at: Date.now(),
-      detail: `a line of the agent's output could not be read: ${line.slice(0, 200)}`,
+      detail: session.running && session.structured
+        ? "an ACP frame could not be read"
+        : `a line of the agent's output could not be read: ${line.slice(0, 200)}`,
     });
   }
 
@@ -829,13 +874,18 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   function handleNotification(session: AcpSession, message: AgentNotification): void {
     const read = readVariant(McodeAgentNotification, message, protocol, acpVariant);
     if (!read.ok) {
-      emitUnknown(session, read.unknown);
+      if (session.running && session.structured && message.method === "session/update") {
+        session.emit({ kind: "activity", at: Date.now(), detail: "an ACP session update could not be decoded" });
+      } else {
+        emitUnknown(session, read.unknown);
+      }
       return;
     }
     const notification = read.value;
     const at = Date.now();
     switch (notification.method) {
       case "session/update": {
+        if (session.nativeId !== "" && notification.params.sessionId !== session.nativeId) return;
         const update = notification.params.update;
         handleUpdate(session, update, lineage === "fork" ? ncodeMarks(update) : UPSTREAM_MARKS, at);
         return;
@@ -872,19 +922,30 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
           session.emit({ kind: "activity", at, detail: "informational" });
           return;
         }
-        session.text += answerText(update.content);
+        if (update.content.type === "text") {
+          session.appendText(update.content.text, update.messageId);
+        }
         session.emit({ kind: "activity", at, detail: "text" });
         return;
       case "tool_call":
       case "tool_call_update": {
+        if (update.sessionUpdate === "tool_call" && session.running && session.structured) {
+          session.awaitAnswerAfterTool();
+        }
         const permission = marks.permission === undefined ? undefined : permissionMarkOf(marks.permission);
         session.emit({ kind: "activity", at, detail: update.sessionUpdate, ...(permission === undefined ? {} : { permission }) });
         return;
       }
-      // The replayed history, the thinking, the plan, the commands, the mode, the config, the
+      case "agent_thought_chunk":
+        // A thought delta can mark a new message before its text arrives.
+        if (session.structured && update.messageId) {
+          session.appendText("", update.messageId);
+        }
+        session.emit({ kind: "activity", at, detail: update.sessionUpdate });
+        return;
+      // The replayed history, the plan, the commands, the mode, the config, the
       // session's title and the usage: none is part of the answer, each a sign of life.
       case "user_message_chunk":
-      case "agent_thought_chunk":
       case "plan":
       case "plan_update":
       case "plan_removed":
@@ -1323,7 +1384,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
    */
   async function runTurn(session: AcpSession, text: string, ability: string): Promise<TurnResult> {
     if (session.running) throw unavailable(ability, "a turn is already running");
-    session.beginTurn(session.reserveTurn());
+    session.beginTurn(session.reserveTurn(), lineage === "fork" && ability === "ask");
     // The waiter goes in first: the reply can arrive before the write returns.
     const settled = session.awaitTurn();
     session.sendPrompt(text);
@@ -1341,7 +1402,12 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   async function queueTurn(session: AcpSession, text: string, ability: string): Promise<TurnResult> {
     try {
       return await new Promise<TurnResult>((resolve, reject) => {
-        session.queued.push({ text, turn: session.reserveTurn(), ask: { resolve, reject } });
+        session.queued.push({
+          text,
+          turn: session.reserveTurn(),
+          ask: { resolve, reject },
+          structured: lineage === "fork" && ability === "ask",
+        });
       });
     } catch (error) {
       throw refusal(ability, error);
@@ -1430,7 +1496,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       if (status.activeTurn === null) {
         // A turn that was cancelled for its time was not answered: it is over, and it failed.
         if (cancelled !== undefined) session.failTurn(new Error("the turn did not end in time"));
-        else session.endTurn({ stopReason: STOP_TURN, text: "" });
+        else session.endTurn({ stopReason: STOP_TURN, text: "", chunks: 0, messages: 0 });
         return;
       }
       if (cancelled === undefined && Date.now() >= deadline) {
@@ -1684,14 +1750,14 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       if (result.stopReason !== STOP_TURN) {
         throw unavailable("ask", `the agent ended the question with "${result.stopReason}"`);
       }
-      const checked = schema.safeParse(parseJson(result.text));
-      if (!checked.success) {
-        throw unavailable(
-          "ask",
-          `the answer did not pass the schema: ${checked.error.issues.map((issue) => issue.path.join(".")).join(", ")}`,
-        );
-      }
-      return { session: id, value: checked.data, at: timestamp(Date.now()) };
+      const parsed = parseJson(result.text);
+      const checked = schema.safeParse(parsed.value);
+      if (checked.success) return { session: id, value: checked.data, at: timestamp(Date.now()) };
+
+      throw unavailable(
+        "ask",
+        `the answer did not pass the schema: ${issueKinds(checked.error)}; ACP ${answerShape(parsed)}, ${result.text.length} chars, ${result.chunks} text chunks, ${result.messages} named messages`,
+      );
     },
 
     async *life(id: SessionId): AsyncIterable<LifeEvent> {
@@ -1833,22 +1899,33 @@ function sleep(ms: number): Promise<void> {
 }
 
 /** The JSON in an answer, or the answer itself when it is not JSON. */
-function parseJson(text: string | undefined): unknown {
-  if (text === undefined) return undefined;
+function parseJson(text: string): { readonly value: unknown; readonly format: "empty" | "json" | "text" } {
   const trimmed = text.trim();
-  if (trimmed.length === 0) return undefined;
+  if (trimmed.length === 0) return { value: undefined, format: "empty" };
   // The agent may wrap the JSON in a fence; the first object or array in it is the answer.
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
   const body = fenced === null ? trimmed : fenced[1]?.trim() ?? trimmed;
   try {
-    return JSON.parse(body);
+    return { value: JSON.parse(body), format: "json" };
   } catch {
     const start = body.search(/[[{]/);
-    if (start === -1) return body;
+    if (start === -1) return { value: body, format: "text" };
     try {
-      return JSON.parse(body.slice(start));
+      return { value: JSON.parse(body.slice(start)), format: "json" };
     } catch {
-      return body;
+      return { value: body, format: "text" };
     }
   }
+}
+
+function answerShape({ value, format }: ReturnType<typeof parseJson>): string {
+  const kind = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+  return `${format} (${kind})`;
+}
+
+/** Schema paths can include keys supplied by the model. */
+function issueKinds(error: z.ZodError): string {
+  return [...new Set(error.issues.map(({ code, path }) =>
+    `${code} at ${path.length === 0 ? "root" : `depth ${path.length}`}`,
+  ))].slice(0, 8).join(", ");
 }

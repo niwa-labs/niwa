@@ -11,6 +11,7 @@
   },
   "include": [
     "packages/*/src",
+    "packages/script/test/turn-wait-types.ts",
     "scripts"
   ]
 }

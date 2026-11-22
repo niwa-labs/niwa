@@ -64,7 +64,7 @@ let turns = 0;
 let refused = false;
 let staleSent = false;
 setInterval(() => {
-  if (mode !== "hold") return;
+  if (mode !== "hold" && mode !== "late-before-ack") return;
   // A late end of a turn that is not the running one, when the test asks for it.
   if (!staleSent) {
     try {
@@ -81,6 +81,7 @@ setInterval(() => {
   }
   if (wanted > released && pending.length > 0) {
     released += 1;
+    if (mode === "late-before-ack" && released === 1) emit(turnStarted(THREAD, pending[0]));
     finish("completed", pending.shift());
   }
 }, 20);
@@ -115,13 +116,40 @@ process.stdin.on("data", (chunk) => {
       }
       turns += 1;
       const turnId = "t" + turns;
+      if (mode === "novel") {
+        emit(turnStarted(THREAD, turnId));
+        notify("novel/thing", { n: 1 });
+        finish("completed", turnId);
+        const acknowledge = setInterval(() => {
+          try {
+            readFileSync(dir + "/release", "utf8");
+          } catch {
+            return;
+          }
+          clearInterval(acknowledge);
+          send({ id: frame.id, result: { turn: { id: turnId } } });
+        }, 10);
+        continue;
+      }
+      if (mode === "late-before-ack" && turns === 2) {
+        emit(turnStarted(THREAD, "t1"));
+        emit(agentMessageCompleted(THREAD, "t1", "stale answer"));
+        emit(turnCompleted(THREAD, "t1", "completed"));
+        emit(turnCompleted(THREAD, "older-turn", "completed"));
+        emit(turnStarted(THREAD, turnId));
+        emit(turnStarted(THREAD, turnId));
+        emit(agentMessageCompleted(THREAD, turnId, "second answer"));
+        emit(turnCompleted(THREAD, turnId, "completed"));
+        send({ id: frame.id, result: { turn: { id: turnId } } });
+        continue;
+      }
       send({ id: frame.id, result: { turn: { id: turnId } } });
       emit(turnStarted(THREAD, turnId));
       if (process.env.FAKE_REROUTE) notify("model/rerouted", { threadId: "${THREAD}", turnId, fromModel: process.env.FAKE_MODEL, toModel: process.env.FAKE_REROUTE, reason: "highRiskCyberActivity" });
       if (mode === "approval") send(serverRequest("srv1", "item/commandExecution/requestApproval", THREAD, turnId, commandApprovalParams({ command: "ls" })));
       else if (mode === "ask-user") send(serverRequest("srv1", "item/tool/requestUserInput", THREAD, turnId, { isBlocking: true, itemId: "call-2", questions: JSON.parse(process.env.FAKE_QUESTIONS) }));
       else if (mode === "novel-request") send({ id: "srv2", method: "novel/ask", params: { why: "because" } });
-      else if (mode === "hold") pending.push(turnId);
+      else if (mode === "hold" || mode === "late-before-ack") pending.push(turnId);
       else if (mode === "drift-message") {
         const message = agentMessageCompleted(THREAD, turnId, process.env.FAKE_TEXT ?? "ok");
         message.params.item.moderation = { from: "the future" };
@@ -133,7 +161,6 @@ process.stdin.on("data", (chunk) => {
         ended.params.turn.status = "paused";
         emit(ended);
       } else {
-        if (mode === "novel") notify("novel/thing", { n: 1 });
         finish(mode === "fail" ? "failed" : "completed", turnId);
       }
     } else if (frame.method === "turn/steer") send({ id: frame.id, result: {} });
@@ -299,8 +326,13 @@ test("a request with a secret question is refused: the person is not asked, and 
 test("a notification that is not in the snapshot is a typed sign of life that carries the message, and the turn goes on", async () => {
   process.env.FAKE_MODE = "novel";
   const codex = control();
-  const { session: id } = await codex.start({ prompt: promptFromText("go") });
-  const signs = await signsOfFirstTurn(codex, id);
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+  const sending = codex.send(id, "go");
+  const watching = signsOfFirstTurn(codex, id);
+  await until(async () => (await events()).some((event) => event.method === "turn/completed"), "the completion before acknowledgement");
+  await release(1);
+  expect(await sending).toMatchObject({ status: "started", turn: 1 });
+  const signs = await watching;
   const unknown = signs.filter((sign) => sign.kind === "unknown-variant");
   expect(unknown).toHaveLength(1);
   expect(unknown[0]).toMatchObject({
@@ -670,6 +702,28 @@ test("the turn that runs inside start is reported to the first watcher", async (
   await until(async () => (await codex.state(id)) === "idle", "the first turn ended");
   expect(await turnSigns(codex, id)).toEqual(["turn-started:1", "turn-ended:1"]);
   await codex.dispose();
+});
+
+test("duplicate starts and late Codex events preserve the identity of queued turns", async () => {
+  process.env.FAKE_MODE = "late-before-ack";
+  process.env.FAKE_TEXT = "first answer";
+  const codex = control();
+  const { session: id } = await codex.start({ prompt: promptFromText("") });
+  const signs: LifeEvent[] = [];
+  const reading = (async () => {
+    for await (const event of codex.life(id)) signs.push(event);
+  })();
+  expect(await codex.send(id, "first")).toMatchObject({ status: "started", turn: 1 });
+  expect(await codex.send(id, "second")).toMatchObject({ status: "queued", turn: 2 });
+  await release(1);
+  await until(async () => (await codex.state(id)) === "idle", "the queue completed");
+  await codex.dispose();
+  await reading;
+  expect(signs.filter(event => event.kind === "turn-started").map(event => event.turn)).toEqual([1, 2]);
+  expect(signs.filter(event => event.kind === "turn-ended").map(event => [event.turn, event.answer])).toEqual([
+    [1, "first answer"],
+    [2, "second answer"],
+  ]);
 });
 
 /** The turn signs the first stream of life sees, up to the first turn that ends. */

@@ -151,6 +151,7 @@ type Watcher = (event: LifeEvent | undefined) => void;
 
 /** A turn that waits for the running one; an ask also waits for its answer. */
 interface QueuedTurn {
+  readonly turn: number;
   readonly text: string;
   readonly ask?: { resolve: (end: string) => void; reject: (error: unknown) => void };
 }
@@ -240,6 +241,7 @@ class LiveSession {
   client: ReturnType<typeof OpenCode.make> | undefined;
   /** The turns niwa has started; the running one, if any, has this number. */
   turn = 0;
+  assigned = 0;
   busy = false;
   interrupting = false;
   /** Whether the running turn's start was reported. */
@@ -326,7 +328,10 @@ class LiveSession {
   /** Fail every queued ask, and drop the queue; returns how many turns were dropped. */
   dropQueue(reason: string): number {
     const dropped = this.queue.splice(0);
-    for (const turn of dropped) turn.ask?.reject(new Error(reason));
+    for (const entry of dropped) {
+      entry.ask?.reject(new Error(reason));
+      this.emit({ kind: "turn-discarded", turn: entry.turn });
+    }
     return dropped.length;
   }
 
@@ -570,7 +575,7 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
         // Defensive: the admission already said the session is busy. An execution that began
         // while this side believed the session idle is a turn of its own, that its own end will end.
         if (!session.busy) {
-          session.turn += 1;
+          session.turn = ++session.assigned;
           session.busy = true;
           session.began = true;
           session.answer = "";
@@ -719,8 +724,12 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
     }
     session.busy = false;
     if (end.error !== undefined) session.emit({ kind: "activity", at, detail: end.error });
-    session.emit({ kind: "turn-ended", turn: session.turn, at, outcome: end.outcome });
-    session.settleTurn({ ...end, response: session.answer, messages: session.turnMessages });
+    const result = { ...end, response: session.answer, messages: session.turnMessages };
+    session.emit({
+      kind: "turn-ended", turn: session.turn, at, outcome: end.outcome, answer: result.response,
+      ...(result.messages.length === 0 ? {} : { readAnswer: () => readTurnAnswer(session, result) }),
+    });
+    session.settleTurn(result);
     session.answer = "";
     session.turnMessages = [];
     // A message that waited for this turn becomes a turn of its own.
@@ -975,17 +984,16 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
    * Ask the server to take a message as a turn. The wait for the turn's end is registered before
    * the call is made, so a turn that ends in the same breath as its admission is not missed.
    */
-  async function startTurn(session: LiveSession, text: string): Promise<{ turn: number; wait: TurnWait }> {
+  async function startTurn(session: LiveSession, text: string, turn = ++session.assigned): Promise<{ turn: number; wait: TurnWait }> {
     if (session.busy || session.interrupting) throw new InputNotSent(harnessId, "send", "a turn is running or being interrupted");
     if (session.client === undefined || session.ended || session.stopping) {
       throw new InputNotSent(harnessId, "send", session.failure ?? "the session's server is not running");
     }
-    session.turn += 1;
+    session.turn = turn;
     session.busy = true;
     session.began = false;
     session.answer = "";
     session.turnMessages = [];
-    const turn = session.turn;
     const wait = session.expectTurn(turnTimeoutMs);
     void wait.done.then((end) => {
       if (end !== undefined || session.ended || session.stopping || session.turn !== turn || !session.busy) return;
@@ -1028,6 +1036,10 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
    */
   async function turnAnswer(session: LiveSession, wait: TurnWait): Promise<string> {
     const end = await finishTurn(session, wait, "ask");
+    return readTurnAnswer(session, end);
+  }
+
+  async function readTurnAnswer(session: LiveSession, end: TurnOutcome): Promise<string> {
     if (end.response !== "" || end.messages.length === 0) return end.response;
     const read = await call(session, "ask", (options) =>
       session.client!.message.list({ sessionID: session.nativeId, limit: 100, order: "desc" }, options),
@@ -1048,12 +1060,13 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
     if (session.busy || session.interrupting || session.ended || session.stopping) return;
     const next = session.queue.shift();
     if (next === undefined) return;
-    void startTurn(session, next.text)
+    void startTurn(session, next.text, next.turn)
       .then(({ wait }) => {
         if (next.ask !== undefined) return turnAnswer(session, wait).then(next.ask.resolve, next.ask.reject);
       })
       .catch((error: unknown) => {
         next.ask?.reject(error);
+        if (error instanceof InputNotSent) session.emit({ kind: "turn-discarded", turn: next.turn });
         // The messages behind it are released by the start that failed, when its message was never taken.
         session.emit({ kind: "activity", at: Date.now(), detail: `a queued message could not be started: ${messageOf(error)}` });
       });
@@ -1064,8 +1077,9 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
     const at = Date.now();
     if (session.stopping) throw new InputNotSent(harnessId, "send", session.failure ?? "the session's server is stopping");
     if (session.busy || session.interrupting) {
-      session.queue.push({ text: message });
-      return { status: "queued", turn: session.turn + session.queue.length, at };
+      const turn = ++session.assigned;
+      session.queue.push({ turn, text: message });
+      return { status: "queued", turn, at };
     }
     const { turn } = await startTurn(session, message);
     return { status: "started", turn, at };
@@ -1162,7 +1176,7 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
         if (text === "") return undefined;
         // The prompt of a resume waits behind a running turn, as a send does; it is not an error.
         if (held.busy || held.interrupting) {
-          held.queue.push({ text });
+          held.queue.push({ turn: ++held.assigned, text });
           return undefined;
         }
         return async () => resumeTurn(held, text);
@@ -1362,7 +1376,7 @@ export function opencodeControl(options: OpenCodeControlOptions): OpenCodeSessio
       // An ask into a busy session waits for its turn, behind what is already queued.
       const text = session.busy || session.interrupting
         ? await new Promise<string>((resolve, reject) => {
-            session.queue.push({ text: instruction, ask: { resolve, reject } });
+            session.queue.push({ turn: ++session.assigned, text: instruction, ask: { resolve, reject } });
           })
         : await turnAnswer(session, (await startTurn(session, instruction)).wait);
       if (text.trim() === "") throw unavailable("ask", "the turn left no answer");

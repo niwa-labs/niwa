@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 
-import { actionName, record, stableJson, Address } from "@niwa-labs/core";
+import { actionName, record, stableJson, Address, JsonSchemaValue } from "@niwa-labs/core";
 import type { ActionName } from "@niwa-labs/core";
 import {
   DeliveryReceiptSchema,
@@ -333,6 +333,19 @@ export const SessionInputSettled = record(
     session: SessionRefSchema,
     operation: z.string().min(1),
     outcome: InputOutcomeSchema,
+    track: z.object({ schema: JsonSchemaValue.optional() }).optional(),
+  }),
+);
+
+/** The outcome kept for an explicitly tracked turn, with its final answer or safe failure diagnostic. */
+export const SessionTurnResult = record(
+  "session.turn-result",
+  z.object({
+    session: SessionRefSchema,
+    turn: z.number().int().positive(),
+    how: TurnEnding,
+    answer: z.string().optional(),
+    diagnostic: z.string().optional(),
   }),
 );
 
@@ -389,6 +402,7 @@ export const SESSION_TYPES = [
   SessionBoxManifest,
   SessionInputSending,
   SessionInputSettled,
+  SessionTurnResult,
   SessionStartReserved,
   SessionStartNamed,
   SessionStartUnsent,
