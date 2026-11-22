@@ -5,18 +5,20 @@ plugins and the surfaces.
 
 ## Install and start
 
-Install Bun, then add Niwa to the directory that holds your host configuration.
+Clone the Niwa checkout and install its workspace dependencies with Bun.
 
 ```sh
-npm install @niwa-labs/niwa
+git clone https://github.com/niwa-labs/niwa.git
+cd niwa
+bun install
 ```
 
-Create `host.ts` next to your `package.json`.
+Create `host.ts` in the checkout root.
 
 ```ts
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { defaultComposition, HarnessInstanceRegistry } from "@niwa-labs/niwa";
+import { defaultComposition, HarnessInstanceRegistry } from "./packages/niwa/src/index.ts";
 
 export default defaultComposition({
   home: process.env.NIWA_HOME ?? join(homedir(), ".niwa"),
@@ -25,15 +27,15 @@ export default defaultComposition({
 ```
 
 ```sh
-npx niwa serve -d ./host.ts
-npx niwa status
-npx niwa web
+bun packages/niwa/bin/niwa.ts serve -d ./host.ts
+bun packages/niwa/bin/niwa.ts status
+bun packages/niwa/bin/niwa.ts web
 ```
 
 Open the local login link printed by `niwa web`. The host stores its journal in
 `~/.niwa` by default. Set `NIWA_HOME` to choose another persistent directory.
-Use `npx niwa stop` to stop the host. For agent configuration and optional
-plugins, see the [Niwa configuration guide](https://github.com/niwa-labs/niwa#run-from-source).
+Run `bun packages/niwa/bin/niwa.ts stop` to stop the host. For agent
+configuration and optional plugins, see the [Niwa configuration guide](../../README.md#run-from-source).
 
 ## Override an installation's network profile
 
