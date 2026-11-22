@@ -1,3 +1,4 @@
+import { DataValue } from "@niwa-labs/ui-kit";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useHost, useViewer } from "./runtime.tsx";
@@ -54,7 +55,7 @@ function CommandForm({ command }: { command: PageCommand }) {
       {call.isSuccess && (
         <details open>
           <summary>Результат</summary>
-          <pre>{JSON.stringify(call.data, null, 2)}</pre>
+          <DataValue value={call.data}/>
         </details>
       )}
     </form>

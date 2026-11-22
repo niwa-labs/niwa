@@ -1,3 +1,4 @@
+import { FileRef, CopyValue } from "@niwa-labs/ui-kit";
 import { useCall } from "@niwa-labs/cockpit-sdk";
 import { formatDuration, PageSection } from "@niwa-labs/ui-kit";
 import { useState } from "react";
@@ -15,7 +16,7 @@ const metrics: [string, (m: Measures) => string | number][] = [
   ["В работе", (m) => m.outcomes.running],
   ["Без участия человека", (m) => percent(m.cleanRate)],
   ["Медиана", (m) => duration(m.duration?.p50)],
-  ["p90", (m) => duration(m.duration?.p90)],
+  ["90% запусков до", (m) => duration(m.duration?.p90)],
 ];
 
 export function Statistics({ id, versions = [] }: { id?: string; versions?: string[] }) {
@@ -70,24 +71,41 @@ export function Statistics({ id, versions = [] }: { id?: string; versions?: stri
               {f.phase ?? "Вне фаз"} · ошибок {f.count}
             </p>
           ))}
-          {m.agentCalls.map((c) => (
-            <p key={c.harness + c.model}>
-              {c.harness} · {c.model} · вызовов {c.calls}, ошибок {c.failed} · {duration(c.ms)}
-            </p>
-          ))}
+          {!!m.agentCalls.length && (
+            <section className="nw-stat-group">
+              <h3>Работа агентов</h3>
+              {m.agentCalls.map((c) => (
+                <div className="nw-stat-row" key={c.harness + "/" + c.model}>
+                  <div>
+                    <strong>{c.harness}</strong>{" "}
+                    {c.model && (
+                      <CopyValue value={c.model} label={c.model.replace(/^m:[^:]*:/, "").split(":v:")[0] ?? c.model} />
+                    )}
+                  </div>
+                  <small>
+                    Вызовы · {c.calls}　Ошибки · {c.failed}
+                  </small>
+                  <b>{duration(c.ms)}</b>
+                </div>
+              ))}
+            </section>
+          )}
         </div>
       )}
-      {stats.scope === "all" &&
-        stats.workflows
-          .filter((w) => w.subject.kind === "script")
-          .map(
+      {stats.scope === "all" && stats.workflows.some((w) => w.subject.kind === "script") && (
+        <section className="nw-stat-group">
+          <h3>Запуски по файлам</h3>
+          {stats.workflows.map(
             (w) =>
               w.subject.kind === "script" && (
-                <p key={w.subject.file}>
-                  <code>{w.subject.file}</code> · запусков {w.measures.runs}
-                </p>
+                <div className="nw-stat-row" key={w.subject.file}>
+                  <FileRef path={w.subject.file} />
+                  <small>Запуски · {w.measures.runs}</small>
+                </div>
               ),
           )}
+        </section>
+      )}
       {stats.scope === "workflow" &&
         stats.versions.map((v) => (
           <p key={v.version}>

@@ -19,6 +19,7 @@ const version = z.object({
   file: z.string(),
   broken: z.string().optional(),
   candidate: z.boolean().optional(),
+  superseded: z.boolean().optional(),
   input: z.record(z.string(), z.unknown()).optional(),
   output: z.unknown().optional(),
   phases: z.array(z.object({ title: z.string(), detail: z.string().optional() })).optional(),

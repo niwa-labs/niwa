@@ -1,3 +1,4 @@
+import { DataValue } from "@niwa-labs/ui-kit";
 import { PageLink, useAction, useCall, useViewer } from "@niwa-labs/cockpit-sdk";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
@@ -94,7 +95,7 @@ function Commands({ run, state, workflow }: Props) {
           </form>
         </details>
       )}
-      {revise.data && <pre>{JSON.stringify(revise.data.revision, null, 2)}</pre>}
+      {revise.data && <DataValue value={revise.data.revision}/>}
       {error && <p role="alert">{error.message}</p>}
     </div>
   );

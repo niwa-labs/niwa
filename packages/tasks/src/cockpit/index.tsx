@@ -9,7 +9,8 @@ export default definePlugin({
   setup(ctx) {
     ctx.pages.add({
       path: "/tasks",
-      title: "Tasks",
+      title: "Задачи",
+      commandHeading: true,
       nav: { order: 40 },
       commands: [
         {
@@ -23,13 +24,9 @@ export default definePlugin({
     ctx.pages.add({
       path: "/tasks/$taskId",
       panel: true,
-      title: "Task",
-      commands: ({ params }) => [
-        { action: "task.report", label: "Добавить отчёт", preset: { task: params.taskId } },
-        { action: "task.finish", label: "Завершить задачу", preset: { task: params.taskId } },
-      ],
+      title: "Задача",
       component: TaskPage,
     });
-    ctx.entities.register("task", { label: "Task", prefix: "task", href: (id) => `/tasks/${encodeURIComponent(id)}` });
+    ctx.entities.register("task", { label: "Задача", prefix: "task", href: (id) => `/tasks/${encodeURIComponent(id)}` });
   },
 });

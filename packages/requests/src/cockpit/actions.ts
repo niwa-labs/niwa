@@ -27,7 +27,7 @@ export type Question = z.infer<typeof Question>;
 export const Address = z.object({ kind: z.string(), id: z.string().optional(), harness: z.string().optional() }).loose();
 export type Address = z.infer<typeof Address>;
 
-export const OpenRequest = z.object({ id: z.string(), to: Address, answerPolicy: z.literal("owner-only").optional(), question: z.string(), input: Question, from: Address.optional() });
+export const OpenRequest = z.object({ id: z.string(), to: Address, answerPolicy: z.literal("owner-only").optional(), question: z.string(), input: Question, from: Address.optional(), deadline: z.number().optional() });
 export type OpenRequest = z.infer<typeof OpenRequest>;
 
 export const OpenPaused = z.object({

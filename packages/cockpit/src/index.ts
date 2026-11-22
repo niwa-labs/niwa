@@ -66,7 +66,9 @@ function scannedBy(stylesheet: string): string[] {
   const found: string[] = [];
   for (const [, pattern] of readFileSync(stylesheet, "utf8").matchAll(/@source\s+"([^"]+)"/g)) {
     let folders = [base];
-    for (const segment of pattern!.split("/")) {
+    // The fingerprint walks directories itself, while Tailwind needs an explicit recursive file glob.
+    const directory = pattern!.split("/**/")[0]!;
+    for (const segment of directory.split("/")) {
       folders = folders.flatMap((folder) => {
         if (segment !== "*") return [resolve(folder, segment)];
         return existsSync(folder) ? readdirSync(folder, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => join(folder, entry.name)) : [];
@@ -88,7 +90,6 @@ export const BUILD_SOURCES: readonly string[] = [
   join(PACKAGE_ROOT, "scripts", "third-party-notices.ts"),
   join(PACKAGE_ROOT, "notices"),
   join(PACKAGE_ROOT, "package.json"),
-  join(PACKAGE_ROOT, "..", "cockpit-sdk", "src"),
   join(PACKAGE_ROOT, "..", "ui-kit", "src"),
   ...scannedBy(join(PACKAGE_ROOT, "src", "styles.css")),
 ];

@@ -1,8 +1,9 @@
+import { runSummary } from "./run-summary.ts";
 import { PageLink, useCall, useViewer, type HomeTileProps } from "@niwa-labs/cockpit-sdk";
 import { useEffect, useMemo } from "react";
 import { runsAction, type RunEntry } from "./actions.ts";
 import { catalogueEvents } from "./catalogue-actions.ts";
-import { ActivityLabel, MiniPhaseTrack } from "@niwa-labs/ui-kit";
+import { ActivityLabel, MiniPhaseTrack, CopyValue } from "@niwa-labs/ui-kit";
 import { RunTrack } from "./track.tsx";
 import { RunCommands } from "./run-commands.tsx";
 
@@ -61,13 +62,13 @@ export function DashboardRuns({ project, reportProjects }: HomeTileProps) {
   return (
     <section className="desk-section" data-slot="runs-tile">
       <header className="desk-tools">
-        <h2>Workflow</h2>
+        <h2>Сценарии</h2>
         {viewer.can("workflow.start") && (
           <PageLink
             className="desk-primary"
             to={"/workflows/launch" + (project ? "?project=" + encodeURIComponent(project) : "")}
           >
-            ▶ Запустить workflow
+            Запустить сценарий
           </PageLink>
         )}
         <PageLink to="/workflows">Каталог сценариев</PageLink>
@@ -91,9 +92,6 @@ export function DashboardRuns({ project, reportProjects }: HomeTileProps) {
               .toSorted((a, b) => b.requestedAt.localeCompare(a.requestedAt))
               .map((r, index) => {
                 const compact = entries.length > 4 && index >= 3;
-                const current = r.phases?.flatMap((p, i) =>
-                  p.state === "current" ? [p.title + " (" + (i + 1) + "/" + r.phases!.length + ")"] : [],
-                );
                 return (
                   <article
                     data-slot="run-row"
@@ -111,24 +109,20 @@ export function DashboardRuns({ project, reportProjects }: HomeTileProps) {
                           }))}
                         />
                       )}
-                      {r.state !== "finished" && !!current?.length && (
-                        <small className="desk-current">{current.join(", ")}</small>
-                      )}
                       <small title={r.directory}>
                         {r.directory?.split("/").filter(Boolean).at(-1)} ·{" "}
                         {new Date(r.requestedAt).toLocaleTimeString("ru", { hour: "2-digit", minute: "2-digit" })}
                       </small>
-                      <code>{r.run}</code>
+                      <CopyValue value={r.run}/>
                       <RunCommands run={r.run} state={r.state} workflow={r.workflow} compact={compact} />
                     </div>
                     {compact ? (
                       <ActivityLabel activity={key === "waiting" ? "timer" : key === "running" ? "working" : undefined}>
-                        {r.waiting ?? r.about}
+                        {r.requests ? <PageLink to="/requests">Ждут ответа · {r.requests}</PageLink> : runSummary(r)}
                       </ActivityLabel>
                     ) : (
                       <RunTrack entry={r} />
                     )}
-                    {r.requests > 0 && <PageLink to="/requests">Ждут ответа · {r.requests}</PageLink>}
                   </article>
                 );
               })}

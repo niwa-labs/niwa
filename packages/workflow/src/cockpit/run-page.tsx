@@ -1,3 +1,4 @@
+import { CopyValue, DataValue, FileRef } from "@niwa-labs/ui-kit";
 /** One run: where it stands, and its plan of phases and steps with the controls to run it again or stop it. */
 
 import { EntityLink, PageLink, useAction, useCall, useViewer, type PageProps } from "@niwa-labs/cockpit-sdk";
@@ -20,7 +21,7 @@ function toStep(step: Step): PhasePlanStep {
     ...(step.effect === true ? { effect: true } : {}),
     ...(took === undefined && step.reused !== true
       ? {}
-      : { meta: [step.reused === true ? "from the run before" : undefined, took === undefined ? undefined : formatDuration(took)].filter(Boolean).join(" · ") }),
+      : { meta: [step.reused === true ? "из предыдущего запуска" : undefined, took === undefined ? undefined : formatDuration(took)].filter(Boolean).join(" · ") }),
     ...(step.session === undefined && step.prompt === undefined
       ? {}
       : {
@@ -38,18 +39,18 @@ function RunSessions({ sessions }: { sessions: Inspection["sessions"] }) {
   if (sessions.length === 0) return null;
   const ids = new Map(sessions.map(({ id, ref }) => [ref, id]));
   return (
-    <section aria-label="Run sessions" className="min-w-0 rounded-lg border bg-card text-card-foreground">
-      <h3 className="border-b px-3 py-2 text-sm font-semibold">Run sessions</h3>
+    <section aria-label="Сессии запуска" className="min-w-0 rounded-lg border bg-card text-card-foreground">
+      <h3 className="border-b px-3 py-2 text-sm font-semibold">Сессии запуска</h3>
       <ul className="divide-y px-3" data-slot="run-sessions">
         {sessions.map(({ id, ref, parentSession, startedAt }) => {
           const parent = parentSession === undefined ? undefined : ids.get(parentSession);
           return (
             <li key={id} className="flex min-w-0 flex-wrap items-center gap-2 py-2">
               <EntityLink entity={{ kind: "session", id }} />
-              <span className="min-w-0 truncate text-sm" title={ref}>{ref}</span>
+              <CopyValue value={ref}/>
               {parentSession === undefined ? null : (
                 <span className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                  <span className="shrink-0">Started by</span>
+                  <span className="shrink-0">Запустил</span>
                   {parent === undefined ? (
                     <span className="truncate" title={parentSession}>{parentSession}</span>
                   ) : (
@@ -76,12 +77,12 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
   const resume = useAction(resumeAction);
   const stop = useAction(stopAction);
 
-  if (inspection.isPending) return <p className="p-4 text-sm text-muted-foreground">Loading the run…</p>;
+  if (inspection.isPending) return <p className="p-4 text-sm text-muted-foreground">Загружаю запуск…</p>;
   if (inspection.isError) {
     return (
       <div className="flex flex-col gap-2 p-4">
-        <p role="alert" className="text-sm text-destructive">The run could not be read: {inspection.error.message}</p>
-        <PageLink to="/runs" className="text-sm underline-offset-2 hover:underline">All runs</PageLink>
+        <p role="alert" className="text-sm text-destructive">Не удалось открыть запуск · {inspection.error.message}</p>
+        <PageLink to="/runs" className="text-sm underline-offset-2 hover:underline">Все запуски</PageLink>
       </div>
     );
   }
@@ -102,32 +103,18 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
       <header className="flex min-w-0 flex-col gap-1">
         <div className="flex min-w-0 items-center gap-2">
           <StateRing state={ringOf(status.state)} label={status.state} />
-          <h2 className="min-w-0 truncate text-lg font-semibold">{origin.label ?? origin.file.split("/").at(-1) ?? run}</h2>
+          <h2 className="min-w-0 text-lg font-semibold">{origin.label ?? origin.file.split("/").at(-1) ?? run}</h2>
           <EntityLink entity={{ kind: "run", id: run }} />
         </div>
         <p className="min-w-0 truncate text-xs text-muted-foreground" data-slot="run-directory">
-          {origin.directory === undefined ? "No directory" : origin.directory}
+          {origin.directory ? <FileRef path={origin.directory}/> : "Без рабочего каталога"}
         </p>
-        <p className="text-sm text-muted-foreground">
-          {status.state === "paused"
-            ? (status.reason ?? "Waiting for a decision")
-            : status.outcome?.status === "failed"
-              ? `Failed: ${status.outcome.error.message}`
-              : status.outcome?.status === "cancelled"
-                ? "Stopped"
-                : status.waiting ?? status.state}
-        </p>
-        {status.requests.length === 0 ? null : (
-          <p className="text-sm">
-            Waiting for an answer: <PageLink to="/requests" className="underline-offset-2 hover:underline">{status.requests.length} open</PageLink>
-          </p>
-        )}
       </header>
       <RunCommands run={run} state={status.state} workflow={origin.workflow} />
       <InspectedTrack inspection={inspection.data} detail />
-      {status.outcome?.status === "done" && status.outcome.result !== undefined && <details open><summary>Результат</summary><pre>{JSON.stringify(status.outcome.result, null, 2)}</pre></details>}
+      {status.outcome?.status === "done" && status.outcome.result !== undefined && <details open><summary>Результат</summary><DataValue value={status.outcome.result}/></details>}
       {viewer.owner && origin.sourceSeq && <a className="text-sm underline" target="_blank" rel="noreferrer" href={"/api/source?seq=" + origin.sourceSeq}>Открыть исходник этого запуска ↗</a>}
-      <h3>Управление фазами и шагами</h3>
+      <details className="nw-plan-controls"><summary>Управление фазами и шагами</summary>
       <PhasePlan
         phases={phases}
         onRecompute={viewer.can(resumeAction) ? recompute : undefined}
@@ -145,6 +132,7 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
             : "Stops this step: it ends as cancelled, its sessions are interrupted, and the rest of the run goes on."
         }
       />
+      </details>
       <RunSessions sessions={inspection.data.sessions} />
       {failure === null ? null : <p role="alert" className="text-sm text-destructive">{failure.message}</p>}
     </article>

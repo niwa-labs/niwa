@@ -1608,6 +1608,7 @@ export function workflow(opts: WorkflowOptions = {}) {
             description: one.latest.description,
             version: one.latest.version,
             versions: one.versions.length,
+            ...(one.latest.candidate ? { candidate: true as const } : {}),
             broken: one.latest.broken !== undefined,
             installations: installationsOfWorkflow(one.id),
             ...(one.latest.phases === undefined ? {} : { phases: one.latest.phases }),

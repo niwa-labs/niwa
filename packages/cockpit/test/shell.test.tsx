@@ -185,8 +185,54 @@ test("the journal is a page of the frame: each record is drawn by the view its t
     saw.push?.(demo(12, "demo.other", { note: "plain" }));
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
-  const rows = [...container.querySelectorAll('[data-slot="journal"] li')].map((row) => row.textContent);
-  // Newest first.
-  expect(rows).toEqual(['12demo.other{"note":"plain"}', "seen at 11"]);
+  const rows = [...container.querySelectorAll('[data-slot="journal"] .journal-list > li')];
+  expect(rows).toHaveLength(2);
+  expect(rows[0]?.querySelector("button")?.textContent).toContain("#12demo.otherplain");
+  expect(rows[0]?.querySelector("button time")?.dateTime).toBe("2023-11-14T22:13:20.012Z");
+  expect(rows[0]?.textContent).not.toContain('{"note":');
+  expect(rows[1]?.textContent).toBe("seen at 11");
   expect(container.querySelector('[data-view="demo.seen"]')).not.toBeNull();
+});
+
+test("the journal filters by author, family, time and nested record data", async () => {
+  const saw = seen();
+  const { container } = await open("/journal", stubs({}, saw));
+  await act(async () => {
+    saw.push?.({ ...demo(11, "timer.fired", { timer: "daily" }), at: 1_700_000_000_000 - 7_200_000 });
+    saw.push?.({ ...demo(12, "workflow.run.started", { label: "Release smoke", args: { tag: "blue-orbit" } }), actor: { kind: "client", id: "dispatch" } });
+    saw.push?.({ ...demo(13, "workflow.run.finished", { run: "run-000010" }), actor: { kind: "client", id: "dispatch" } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  });
+  const rows = () => [...container.querySelectorAll('[data-slot="record"]')].map((row) => row.textContent);
+  expect(rows()).toHaveLength(3);
+  expect(container.textContent).toContain("Последние 500 записей");
+  const author = container.querySelectorAll("select")[1]!;
+  await act(async () => {
+    author.value = "dispatch";
+    author.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  expect(rows()).toHaveLength(2);
+  const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, " BLUE-orbit ");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(rows()).toHaveLength(1);
+  expect(rows()[0]).toContain("Release smoke");
+
+  const reset = () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Сбросить фильтры");
+  await act(async () => reset()!.click());
+  const overview = container.querySelector(".journal-overview") as HTMLDetailsElement;
+  overview.open = true;
+  const timer = [...overview.querySelectorAll("button")].find((button) => button.textContent === "Таймеры1")!;
+  await act(async () => timer.click());
+  expect(timer.getAttribute("aria-pressed")).toBe("true");
+  expect(rows()).toHaveLength(1);
+  expect(rows()[0]).toContain("daily");
+  await act(async () => reset()!.click());
+  const oldHour = [...overview.querySelectorAll("button")].filter((button) => button.querySelector("time")).at(-1)!;
+  await act(async () => oldHour.click());
+  expect(oldHour.getAttribute("aria-pressed")).toBe("true");
+  expect(rows()).toHaveLength(1);
+  expect(rows()[0]).toContain("daily");
 });

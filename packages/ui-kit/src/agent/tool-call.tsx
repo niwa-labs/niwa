@@ -1,3 +1,4 @@
+import { DataValue } from "../ui/data-value.tsx";
 /**
  * A tool call inside a turn: what was called, with what, and what came back. Closed it is one
  * line; open it shows the input and the output.
@@ -18,7 +19,7 @@ import {
   TraceTitle,
   type TraceStatus,
 } from "../ui/trace.tsx";
-import { formatDuration, formatPayload } from "./payload.ts";
+import { formatDuration } from "./payload.ts";
 import { StateRing, type WorkState } from "./state.tsx";
 
 export type ToolCallState = Extract<WorkState, "pending" | "running" | "waiting" | "done" | "failed" | "stopped">;
@@ -29,7 +30,7 @@ export type ToolCallProps = {
   /** What the call did, in words; the name when absent. */
   title?: ReactNode;
   state: ToolCallState;
-  /** The input as sent: a string is shown as is, anything else as JSON. */
+  /** The input as sent: structured fields use the same presentation as action results. */
   input?: unknown;
   /** The output as received. */
   output?: unknown;
@@ -51,14 +52,11 @@ function traceStatus(state: ToolCallState): TraceStatus | undefined {
 }
 
 function Payload({ label, value }: { label: string; value: unknown }) {
-  const text = formatPayload(value);
-  if (text === "") return null;
+  if (value === undefined || value === "") return null;
   return (
     <div className="flex min-w-0 flex-col gap-1">
       <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground/80">{label}</span>
-      <pre className="max-h-80 overflow-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs whitespace-pre-wrap text-foreground/90">
-        {text}
-      </pre>
+      <DataValue value={value}/>
     </div>
   );
 }
@@ -91,12 +89,12 @@ export function ToolCall({
         <TraceCollapsible defaultOpen={defaultOpen ?? state === "failed"}>
           <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
           <TraceCollapsibleContent className="flex flex-col gap-2">
-            <Payload label="Input" value={input} />
-            {error === undefined ? <Payload label="Output" value={output} /> : null}
+            <Payload label="Аргументы" value={input} />
+            {error === undefined ? <Payload label="Результат" value={output} /> : null}
             {error === undefined ? null : (
-              <pre className="rounded-md bg-destructive/10 px-2 py-1.5 font-mono text-xs whitespace-pre-wrap text-destructive">
-                {error}
-              </pre>
+              <div className="rounded-md bg-destructive/10 px-2 py-1.5 font-mono text-xs whitespace-pre-wrap text-destructive">
+                <DataValue value={error}/>
+              </div>
             )}
           </TraceCollapsibleContent>
         </TraceCollapsible>

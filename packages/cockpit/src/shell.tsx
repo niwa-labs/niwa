@@ -2,6 +2,7 @@
 
 import { FaultNotice, PageLink, PluginBoundary, Slot, useHost, useRegistry, useViewer } from "@niwa-labs/cockpit-sdk";
 import type { PluginFault } from "@niwa-labs/cockpit-sdk";
+import { useEffect, useRef } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Outlet, useRouterState } from "@tanstack/react-router";
 
@@ -13,6 +14,8 @@ const LINK = "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-ac
 function Navigation() {
   const registry = useRegistry();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const menu = useRef<HTMLDivElement>(null);
+  useEffect(() => { menu.current?.hidePopover?.(); }, [pathname]);
   const active = (path: string): boolean => (path === "/" ? pathname === "/" : pathname === path || pathname.startsWith(`${path}/`));
   const own = (path: string, label: string) => (
     <PageLink to={path} className={`${LINK} ${active(path) ? "bg-accent font-medium" : ""}`}>
@@ -20,6 +23,7 @@ function Navigation() {
     </PageLink>
   );
   return (
+    <>
     <nav aria-label="Pages" className="desk-nav">
       {own("/", "Пульт")}
       {registry.nav.map((item) => (
@@ -34,6 +38,14 @@ function Navigation() {
       ))}
       {own("/journal", "Журнал")}
     </nav>
+    <button className="nw-site-menu-button" popoverTarget="nw-site-menu">Разделы ▾</button>
+    <div className="nw-site-menu" popover="auto" id="nw-site-menu" ref={menu}>
+      <nav aria-label="Все разделы" onClick={()=>menu.current?.hidePopover?.()}>
+        {[{path:"/",label:"Пульт"}, ...registry.nav, {path:"/journal",label:"Журнал"}].map(item=>
+          <PageLink key={item.path} to={item.path} aria-current={active(item.path)?"page":undefined}>{item.label}</PageLink>)}
+      </nav>
+    </div>
+    </>
   );
 }
 
@@ -73,7 +85,7 @@ export function Shell() {
             if (window.confirm("Остановить хост Niwa и его сессии?")) stop.mutate();
           }}>{stop.isSuccess ? "Остановка запрошена" : "Стоп хоста"}</button>}
           {stop.error && <span role="alert">{stop.error.message}</span>}
-          <span className="ml-auto min-w-0 truncate">{viewer.owner ? "owner" : viewer.id}</span>
+          <span className="ml-auto min-w-0 truncate">{viewer.owner ? "Владелец" : viewer.id}</span>
         </footer>
       </div>
     </div>
@@ -83,9 +95,9 @@ export function Shell() {
 export function NotFound() {
   return (
     <div className="flex flex-col gap-2 p-6">
-      <h2 className="text-lg font-semibold">There is no such page</h2>
+      <h2 className="text-lg font-semibold">Страница не найдена</h2>
       <PageLink to="/" className="text-sm underline-offset-2 hover:underline">
-        Back to the home page
+        На пульт
       </PageLink>
     </div>
   );

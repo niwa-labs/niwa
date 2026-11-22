@@ -13,6 +13,11 @@ import { useState, type FormEvent } from "react";
 import { inspectAction as catalogueRunArgs } from "./actions.ts";
 import { catalogue, catalogueEvents } from "./catalogue-actions.ts";
 
+const FILE_ARGS: FormSchema = {
+  title: "Аргументы",
+  type: ["object", "array", "string", "number", "boolean", "null"],
+};
+
 export function LaunchPage({ search }: PageProps) {
   const viewer = useViewer();
   const navigate = useNavigate();
@@ -25,7 +30,7 @@ export function LaunchPage({ search }: PageProps) {
     { enabled: !!id && viewer.can(catalogue.get), refreshOn: catalogueEvents },
   );
   const start = useAction(catalogue.start);
-  const latest = entity.data?.versions.filter((v) => !v.candidate).at(-1);
+  const latest = entity.data?.versions.filter((v) => !v.candidate && !v.superseded).at(-1);
   const fields = latest?.input as FormSchema | undefined;
   const original = useCall(
     catalogueRunArgs,
@@ -34,6 +39,8 @@ export function LaunchPage({ search }: PageProps) {
   );
   const previous = original.data?.origin;
   const args = previous?.args;
+  const showArguments = !!fields || !id || args !== undefined;
+  const schema = fields ?? FILE_ARGS;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (start.isPending) return;
@@ -41,31 +48,27 @@ export function LaunchPage({ search }: PageProps) {
     const label = String(form.get("label") ?? "").trim();
     const directory = String(form.get("directory") ?? "").trim();
     try {
-      let input: unknown;
-      if (fields) {
-        input = readFields(fields, form);
-      } else {
-        const json = String(form.get("json") ?? "").trim();
-        if (json) input = JSON.parse(json);
-      }
+      const file = String(form.get("file") ?? "").trim();
+      if (!id && !file) throw new Error("Укажите файл сценария.");
+      const input = showArguments ? readFields(schema, form) : undefined;
       setError("");
       start.mutate(
         {
-          ...(id ? { id } : { file: String(form.get("file") ?? "").trim() }),
+          ...(id ? { id } : { file }),
           ...(input === undefined ? {} : { args: input }),
           ...(label ? { label } : {}),
           ...(directory ? { directory } : {}),
         },
         { onSuccess: (result) => navigate("/runs/" + encodeURIComponent(result.run)) },
       );
-    } catch {
-      setError("Проверьте JSON в аргументах запуска.");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Проверьте аргументы запуска.");
     }
   };
   return (
     <article className="desk-page">
       <PageLink to="/workflows">← Сценарии</PageLink>
-      <h1>Запустить workflow</h1>
+      <h1>Запустить сценарий</h1>
       {!viewer.can(catalogue.start) ? (
         <p>Нет доступа к запуску.</p>
       ) : (
@@ -107,23 +110,11 @@ export function LaunchPage({ search }: PageProps) {
               placeholder="/путь/к/проекту"
             />
           </label>
-          <fieldset key={id + (latest?.version ?? "")}>
-            {fields ? (
-              <SchemaFields schema={fields} initial={args} />
-            ) : (
-              (!id || latest?.input !== undefined || args !== undefined) && (
-                <label>
-                  Аргументы JSON
-                  <textarea
-                    name="json"
-                    rows={4}
-                    defaultValue={args === undefined ? "" : JSON.stringify(args, null, 2)}
-                    placeholder="{}"
-                  />
-                </label>
-              )
-            )}
-          </fieldset>
+          {showArguments && (
+            <fieldset key={id + (latest?.version ?? "")}>
+              <SchemaFields schema={schema} initial={args} optional={!fields} />
+            </fieldset>
+          )}
           {entity.error && <p role="alert">{entity.error.message}</p>}
           {latest?.broken && <p role="alert">{latest.broken}</p>}
           {!!latest?.on?.length && <p>Этот сценарий запускается по подписке.</p>}

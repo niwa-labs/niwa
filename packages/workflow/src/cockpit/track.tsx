@@ -1,6 +1,8 @@
+import { runSummary } from "./run-summary.ts";
 import { EntityLink, PageLink, useCall, useViewer } from "@niwa-labs/cockpit-sdk";
 import {
   ActivityLabel,
+  DataValue,
   ExecutionTrack,
   PhaseSequence,
   type Activity,
@@ -34,7 +36,7 @@ const schedule = {
   output: z.object({ timers: z.array(z.object({ name: z.string(), nextDue: z.number().nullable() })) }),
 };
 type Timers = z.infer<typeof schedule.output>["timers"];
-function executionStep(s: Step, status: Inspection["status"], timers: Timers): ExecutionStep {
+function executionStep(s: Step, status: Inspection["status"], timers: Timers, answerStep: Step | undefined): ExecutionStep {
   const kind = kindOf(s);
   const live =
     status.state === "running" && !status.manualPause && s.status === "running" && !s.historical && !s.endedAt;
@@ -44,8 +46,8 @@ function executionStep(s: Step, status: Inspection["status"], timers: Timers): E
   const label = s.label === s.action && kind === "question" ? "Ответ владельца" : s.label || s.action;
   let title = <PageLink to={"/journal?record=" + encodeURIComponent(s.id)}>{label}</PageLink>;
   if (s.session) title = <EntityLink entity={{ kind: "session", id: s.session }} label={label} />;
-  if (kind === "question" && status.requests.length === 1 && live)
-    title = <PageLink to={"/requests/" + encodeURIComponent(status.requests[0]!)}>{label}</PageLink>;
+  if (s.id === answerStep?.id)
+    title = <PageLink to={"/requests/" + encodeURIComponent(status.requests[0]!)}>Ответить · {label}</PageLink>;
   const scheduled =
     s.timerName === undefined
       ? []
@@ -67,7 +69,7 @@ function executionStep(s: Step, status: Inspection["status"], timers: Timers): E
 
 function describeRun(status: Inspection["status"], activity: Activity | undefined, open: Step[]) {
   if (status.outcome?.status === "failed") return status.outcome.error.message;
-  if (status.outcome?.status === "cancelled") return "Запуск отменён";
+  if (status.outcome?.status === "cancelled") return "Остановлен";
   if (status.state === "finished") return "Выполнение окончено";
   if (status.reason) return status.reason;
   if (activity === "human") return "Ждёт ответа владельца";
@@ -88,6 +90,9 @@ export function InspectedTrack({ inspection, detail = false }: { inspection: Ins
   );
   const timers = schedules.data?.timers ?? [];
   const activity = runActivity(status, open);
+  const questions = open.filter(step => kindOf(step) === "question");
+  const answerStep = status.state === "running" && !status.manualPause && status.requests.length === 1 && questions.length === 1
+    ? questions[0] : undefined;
   const phases: ExecutionPhase[] = inspection.phases.map((p) => {
     const active = open.filter((s) => s.phase === p.title);
     return {
@@ -96,24 +101,21 @@ export function InspectedTrack({ inspection, detail = false }: { inspection: Ins
       detail: p.detail,
       state: phaseState(p, status),
       activity: p.state === "current" ? runActivity(status, active) : undefined,
-      steps: p.steps.map((s) => executionStep(s, status, timers)),
+      steps: p.steps.map((s) => executionStep(s, status, timers, answerStep)),
     };
   });
-  const visible = phases.filter((p) => p.steps.length || p.state !== "pending");
+  const visible = [...phases];
   if (inspection.steps.length)
     visible.unshift({
       id: "unphased",
       title: phases.length ? "Вне фаз" : "Шаги",
       state: status.state === "finished" ? (status.outcome?.status === "done" ? "done" : "stopped") : "running",
       activity: open.some((s) => !s.phase) ? activity : undefined,
-      steps: inspection.steps.map((s) => executionStep(s, status, timers)),
+      steps: inspection.steps.map((s) => executionStep(s, status, timers, answerStep)),
     });
   const why = describeRun(status, activity, open);
   return (
     <>
-      {phases.length > 0 && (detail || (phases.some((p) => p.state === "pending") && status.state !== "finished")) && (
-        <PhaseSequence phases={phases} />
-      )}
       {visible.length ? (
         <ExecutionTrack
           phases={visible}
@@ -123,9 +125,11 @@ export function InspectedTrack({ inspection, detail = false }: { inspection: Ins
       ) : (
         <p>{status.state === "finished" ? "Фазы не записаны" : "Ожидает первого шага"}</p>
       )}
-      <p className="nw-run-status">
-        <ActivityLabel activity={activity}>{why}</ActivityLabel>
-      </p>
+      {!answerStep && <p className="nw-run-status">
+        {status.requests.length ? <PageLink to={status.requests.length === 1 ? "/requests/"+encodeURIComponent(status.requests[0]!) : "/requests"}>Ждут ответа · {status.requests.length}</PageLink> : <ActivityLabel activity={activity}>{why}</ActivityLabel>}
+      </p>}
+      {!detail && status.outcome?.status === "done" && status.outcome.result != null &&
+        <details className="nw-run-result"><summary>Результат запуска</summary><DataValue value={status.outcome.result} /></details>}
     </>
   );
 }
@@ -157,7 +161,7 @@ export function RunTrack({ entry }: { entry: RunEntry }) {
   return (
     <>
       {!!phases.length && <PhaseSequence phases={phases} />}
-      <p>{inspection.error?.message ?? entry.about}</p>
+      <p>{entry.requests ? <PageLink to="/requests">Ждут ответа · {entry.requests}</PageLink> : inspection.error?.message ?? runSummary(entry)}</p>
     </>
   );
 }

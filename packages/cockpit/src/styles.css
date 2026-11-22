@@ -2,7 +2,8 @@
 @import "@niwa-labs/ui-kit/theme.css";
 
 /* The client modules of the plugins in this repository: their classes are built into the app's stylesheet. */
-@source "../../*/src/cockpit";
+@source "../../*/src/cockpit/**/*.{ts,tsx}";
+@source "../../cockpit-sdk/src";
 
 @layer base {
   html,
@@ -107,7 +108,7 @@
   min-height: calc(100dvh - 60px);
 }
 .desk-body > main {
-  width: min(100%, 1700px);
+  width: min(100%, 1540px);
   margin: 0 auto;
   padding: 28px clamp(16px, 4vw, 70px) 60px;
   flex: 1;
@@ -118,7 +119,7 @@
 }
 .desk-body > main > div > h2:first-child,
 .desk-body > main > [data-slot="journal"] > h1 {
-  font-size: clamp(30px, 3vw, 48px);
+  font-size: clamp(27px, 2.45vw, 36px);
   line-height: 1.1;
   letter-spacing: -0.045em;
   margin-bottom: 12px;
@@ -214,7 +215,7 @@
   border-left: 3px solid var(--tone);
   margin: 0.4rem 0;
 }
-.desk-run .desk-tools > a:first-child,
+.desk-run > .desk-tools > a:first-child,
 .desk-card > a:first-child {
   font-size: 17px;
   font-weight: 650;
@@ -435,3 +436,42 @@
 .desk-time-key { display:flex; flex-wrap:wrap; gap:12px; color:var(--muted-foreground); margin:6px 0 12px; font-size:12px; }
 .desk-time-key i { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; }
 .desk-metrics > div {display:flex; flex-direction:column-reverse; border-top:2px solid var(--border);}
+.desk-panel {max-width:100vw;padding:clamp(16px,2.1vw,30px)}
+.desk-panel .nw-parent {display:none}
+.desk-panel .desk-page h1 {font-size:clamp(23px,2vw,29px);letter-spacing:-.03em}
+.nw-purpose {margin:5px 0 8px;color:var(--muted-foreground);font-size:15px;max-width:72ch}
+.nw-tabs {display:flex;flex-wrap:wrap;gap:4px;padding-bottom:5px;border-bottom:1px solid var(--border)}
+.nw-tabs a {display:inline-flex;align-items:center;padding:5px 12px;border-radius:4px;color:var(--muted-foreground);font-weight:550}
+.nw-tabs a[aria-current=page]{background:var(--accent);color:var(--accent-foreground)}
+.nw-search {display:flex;align-items:center;gap:12px;flex-wrap:wrap;color:var(--muted-foreground);font-size:13px;margin:6px 0 16px}
+.nw-search input {width:min(100%,23rem);padding:6px 10px;border:1px solid var(--input);border-radius:5px;background:var(--background);color:var(--foreground)}
+.desk-version {border:1px solid var(--border);border-radius:6px;padding:12px 15px}
+.desk-version>summary,.nw-contract>summary {cursor:pointer;font-weight:600}
+.nw-contract {padding:8px 0;border-top:1px solid var(--border)}
+.nw-contract>summary {color:var(--foreground);font-size:14px}
+.nw-file-row {display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:12px 0}
+.nw-file-row .nw-copy-wrap{font-size:13px}
+.nw-candidate {border-left:2px solid #dcb771;color:#e5c992;font-size:13px;padding:4px 10px;margin:8px 0}
+.nw-tag[data-tone=amber]{background:#b88a411b;color:#e5c992}
+.desk-version .desk-phases{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(160px,100%),1fr));gap:8px;padding:0;list-style:none}
+.desk-version .desk-phases li{border-left:2px solid var(--state-running);background:var(--background);padding:7px 10px}
+.desk-card .nw-copy-wrap{font-size:12px;margin:0 6px}
+.nw-stat-group{margin:18px 0;max-width:64rem}
+.nw-stat-group h3 {font-size:16px;font-weight:630;margin:0 0 6px}
+.nw-stat-row {display:flex;align-items:center;justify-content:space-between;gap:7px 18px;flex-wrap:wrap;padding:9px 0;border-top:1px solid var(--border)}
+.nw-stat-row>div{flex:1 1 17rem}.nw-stat-row .nw-copy-wrap{font-size:13px}.nw-stat-row b,.desk-metrics dd{font-variant-numeric:tabular-nums}
+.desk-page>.desk-section:has(.desk-catalogue){border-top:0;padding:0}
+.desk-panel .nw-schema li{margin:4px 0;padding:6px 0 6px 10px}
+.desk-page .nw-copy:hover{text-decoration:underline}
+@media(max-width:600px){.desk-panel{border-left:0}.desk-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.desk-metrics div{min-width:0}.desk-heading{align-items:flex-start}.nw-file-row{align-items:flex-start}.nw-fields>div{grid-template-columns:minmax(5rem,32%) minmax(0,1fr)}}
+
+.nw-site-menu-button {flex:none;border:1px solid var(--border);border-radius:5px;padding:4px 8px;font-size:13px;color:var(--primary)}
+.nw-site-menu {position:fixed;inset:47px max(3vw,16px) auto auto;margin:0;padding:8px;max-width:calc(100vw - 20px);background:var(--popover);color:var(--foreground);border:1px solid var(--border);border-radius:7px;box-shadow:0 12px 30px #0005}
+.nw-site-menu nav {display:grid;grid-template-columns:repeat(2,minmax(7rem,1fr));gap:3px}
+.nw-site-menu a {font-size:14px;padding:7px 10px;border-radius:4px}.nw-site-menu a[aria-current=page],.nw-site-menu a:hover{background:var(--accent);color:var(--primary)}
+@media(max-width:850px){.nw-site-menu-button{margin-left:auto}.desk-connection{margin-left:7px}.nw-site-menu{inset:44px 10px auto auto}}
+
+.nw-run-result {margin-top:5px;font-size:13px}.nw-run-result summary {cursor:pointer;color:var(--primary)}
+.schema-form-entry{min-width:0;border-left:2px solid var(--border);padding:.4rem .7rem;margin:.5rem 0}
+
+.nw-plan-controls>summary{cursor:pointer;font-weight:600;margin-bottom:8px}

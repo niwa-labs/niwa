@@ -5,10 +5,10 @@
   min-width: 0;
 }
 .desk-page h1 {
-  font-size: clamp(32px, 4vw, 60px);
+  font-size: clamp(27px, 2.45vw, 36px);
   line-height: 1.1;
   font-weight: 720;
-  letter-spacing: -0.055em;
+  letter-spacing: -0.034em;
   overflow-wrap: anywhere;
 }
 .desk-heading,
@@ -26,14 +26,158 @@
   min-width: 0;
   border-top: 2px solid var(--border);
   padding-top: 0.75rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.65rem;
 }
 .desk-section h2 {
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 680;
   letter-spacing: -0.035em;
   margin: 0 0 0.65rem;
 }
 .desk-section header h2 {
   margin: 0 auto 0 0;
+}
+.nw-copy-wrap {
+  display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.45rem;
+  vertical-align: middle;
+}
+.nw-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--primary);
+  cursor: copy;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.nw-copy svg {
+  flex: none;
+  opacity: 0.72;
+}
+.nw-copy:hover svg,
+.nw-copy:focus-visible svg {
+  opacity: 1;
+}
+.nw-copy-wrap > [role="status"] {
+  color: var(--state-done);
+}
+.nw-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.nw-file b {
+  display: block;
+  font-weight: 600;
+}
+.nw-file small {
+  display: block;
+  color: var(--muted-foreground);
+  line-height: 1.3;
+}
+.nw-fields {
+  display: grid;
+  min-width: 0;
+  margin: 0.3rem 0;
+}
+.nw-fields > div {
+  display: grid;
+  grid-template-columns: minmax(5rem, 27%) minmax(0, 1fr);
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.nw-fields dt,
+.nw-quiet,
+.nw-field-rule {
+  color: var(--muted-foreground);
+}
+.nw-fields dt {
+  font-size: 0.84em;
+}
+.nw-fields dd,
+.nw-value-text,
+.nw-url {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.nw-value-text {
+  white-space: pre-wrap;
+}
+.nw-value-list,
+.nw-schema ul {
+  list-style: none;
+  padding-left: 0;
+}
+.nw-value-list > li {
+  border-left: 2px solid var(--border);
+  padding-left: 0.7rem;
+  margin: 0.25rem 0;
+}
+.nw-tag {
+  display: inline-flex;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font: 500 11px/1.6 system-ui;
+}
+.nw-tag[data-tone="green"],
+.nw-number {
+  color: var(--state-done);
+}
+.nw-tag[data-tone="blue"] {
+  color: var(--state-running);
+  background: color-mix(in srgb, var(--state-running) 10%, transparent);
+}
+.nw-schema {
+  min-width: 0;
+}
+.nw-schema > p {
+  color: var(--muted-foreground);
+  font-size: 13px;
+  margin: 3px 0 6px;
+}
+.nw-schema li {
+  padding: 9px 0 9px 12px;
+  border-left: 2px solid var(--border);
+  margin: 7px 0;
+}
+.nw-field-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.nw-field-heading strong {
+  font: 600 14px/1.4 system-ui;
+}
+.nw-field-heading small,
+.nw-field-rule {
+  font-size: 12px;
+}
+.nw-field-rule {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 2px 12px 2px 0;
+}
+.nw-field-rule b {
+  color: var(--foreground);
+}
+.nw-more,
+.nw-fold > summary,
+.nw-url {
+  color: var(--primary);
+}
+.nw-schema-child {
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  margin-top: 5px;
 }

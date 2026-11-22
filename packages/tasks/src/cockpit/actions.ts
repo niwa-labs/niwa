@@ -41,6 +41,7 @@ export const TaskEntity = z.object({
   reportTo: Address,
   status: TaskStatus,
   outcome: Outcome.optional(),
+  result: z.record(z.string(), z.unknown()).optional(),
 });
 export type TaskEntity = z.infer<typeof TaskEntity>;
 

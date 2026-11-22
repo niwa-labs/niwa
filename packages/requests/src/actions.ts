@@ -81,6 +81,7 @@ export const OpenRequest = z.object({
   question: z.string().min(1),
   input: QuestionSchema,
   from: Address.optional(),
+  deadline: z.number().optional(),
 });
 
 /** A paused invocation is a request with typed choices, listed with the questions. */

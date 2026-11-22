@@ -1,144 +1,78 @@
-/** The questions that wait for an answer, each with the form that answers it. */
+/** Open requests and paused work waiting for a decision. */
 
 import { EntityLink, useAction, useCall, useViewer } from "@niwa-labs/cockpit-sdk";
+import { Badge, Button, DataValue, fieldLabel, PageSection } from "@niwa-labs/ui-kit";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { Badge, Button, cn } from "@niwa-labs/ui-kit";
 
+import { AnswerForm } from "./answer-form.tsx";
+import { openAction, resolveAction, type OpenPaused, type OpenRequest, type Question } from "./actions.ts";
+import { addressText, subjectLines } from "./answers.ts";
 import { RequestHistory } from "./history.tsx";
-import { answerAction, openAction, overrideAction, resolveAction, type OpenPaused, type OpenRequest, type Option } from "./actions.ts";
-import { addressText, answerOf, EMPTY, subjectLines, type Built, type Filled } from "./answers.ts";
 
-function OptionButton({ option, selected, onPick }: { option: Option; selected: boolean; onPick: () => void }) {
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={onPick}
-      className={cn(
-        "flex min-w-0 flex-col items-start rounded-md border px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent",
-        selected && "border-ring bg-accent",
-      )}
-    >
-      <span className="font-medium">{option.label}</span>
-      {option.description === undefined ? null : <span className="text-xs text-muted-foreground">{option.description}</span>}
-    </button>
-  );
-}
+const QUESTION_LABELS: Record<Question["kind"], string> = {
+  choice: "Выбор варианта",
+  multi: "Выбор нескольких вариантов",
+  confirm: "Подтверждение",
+  text: "Вопрос",
+  form: "Форма",
+  permission: "Разрешение",
+};
 
-/** The form of one question: options to pick, a text, or a JSON value, and the button that sends the answer. */
-function AnswerForm({ request, onSent }: { request: OpenRequest; onSent: () => void }) {
-  const question = request.input;
-  const viewer = useViewer();
-  const overriding = viewer.owner && request.to.kind !== "owner" && request.answerPolicy !== "owner-only";
-  const answer = useAction(answerAction);
-  const override = useAction(overrideAction);
-  const send = overriding ? override : answer;
-  const allowed = viewer.can(overriding ? overrideAction : answerAction);
-  const [filled, setFilled] = useState<Filled>(EMPTY);
-  const [problem, setProblem] = useState<string | undefined>();
-
-  const submit = (built: Built): void => {
-    if ("problem" in built) return setProblem(built.problem);
-    setProblem(undefined);
-    send.mutate({ id: request.id, answer: built.answer }, { onSettled: onSent });
-  };
-  const options = "options" in question ? question.options : [];
-  const single = question.kind === "choice" || question.kind === "confirm" || question.kind === "permission";
-  const toggle = (id: string): void =>
-    setFilled((now) => ({ ...now, picked: now.picked.includes(id) ? now.picked.filter((one) => one !== id) : question.kind === "multi" ? [...now.picked, id] : [id] }));
-  const refused = overriding
-    ? override.data?.answered === false ? "The request did not accept the override." : undefined
-    : answer.data?.accepted === false ? `The answer was not taken: the request was ${answer.data.reason ?? "over"}.` : undefined;
-  const typed = question.kind === "text" || question.kind === "form" || ("allowOther" in question && question.allowOther === true);
-
-  return (
-    <form
-      className="flex min-w-0 flex-col gap-2"
-      onSubmit={(event) => {
-        event.preventDefault();
-        submit(answerOf(question, filled));
-      }}
-    >
-      {options.length === 0 ? null : (
-        <div className="flex flex-wrap gap-2" role={single ? "radiogroup" : "group"}>
-          {options.map((option) => (
-            <OptionButton key={option.id} option={option} selected={filled.picked.includes(option.id)} onPick={() => toggle(option.id)} />
-          ))}
-        </div>
-      )}
-      {typed ? (
-        <textarea
-          aria-label={question.kind === "form" ? "The value as JSON" : "Your answer"}
-          rows={question.kind === "form" ? 6 : 2}
-          value={filled.text}
-          onChange={(event) => setFilled((now) => ({ ...now, text: event.target.value }))}
-          placeholder={question.kind === "form" ? "{ }" : "Write an answer"}
-          className={cn("w-full min-w-0 rounded-md border bg-background px-3 py-2 text-sm", question.kind === "form" && "font-mono")}
-        />
-      ) : null}
-      <div className="flex min-w-0 items-center gap-3">
-        <Button type="submit" size="sm" disabled={send.isPending || !allowed}>
-          {send.isPending ? "Sending…" : overriding ? "Override" : "Answer"}
-        </Button>
-        {problem === undefined && refused === undefined && !send.isError ? null : (
-          <span role="alert" className="min-w-0 truncate text-xs text-destructive">
-            {problem ?? refused ?? send.error?.message}
-          </span>
-        )}
-      </div>
-    </form>
-  );
-}
+const CHOICES: Record<string, string> = {
+  retry: "Повторить", cancel: "Отменить", skip: "Пропустить",
+};
 
 function RequestCard({ request, onSent }: { request: OpenRequest; onSent: () => void }) {
   return (
-    <article data-slot="request" data-kind={request.input.kind} className="flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3 text-card-foreground">
-      <header className="flex min-w-0 flex-wrap items-center gap-2">
-        <h3 className="min-w-0 text-sm font-semibold">{request.input.title}</h3>
-        <Badge variant="secondary">{request.question}</Badge>
-        <EntityLink entity={{ kind: "request", id: request.id }} short />
-        <span className="ml-auto text-xs text-muted-foreground">
-          {request.from === undefined ? "" : `from ${addressText(request.from)} `}to {addressText(request.to)}
-        </span>
+    <article data-slot="request" data-kind={request.input.kind} className="min-w-0 flex flex-col gap-3 py-2">
+      <header className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="secondary">{QUESTION_LABELS[request.input.kind]}</Badge>
+          <EntityLink entity={{ kind: "request", id: request.id }} label="Карточка запроса" />
+        </div>
+        <h3 className="mt-2 text-base font-semibold wrap-anywhere">{request.input.title}</h3>
+        <ul className="mt-1 flex min-w-0 flex-wrap gap-2 text-sm text-muted-foreground">
+          {request.from && <li className="min-w-0 wrap-anywhere">Отправитель · {addressText(request.from)}</li>}
+          <li className="min-w-0 wrap-anywhere">Адресат · {addressText(request.to)}</li>
+          {request.deadline !== undefined && <li>Ответ до <DataValue field="at" value={request.deadline} /></li>}
+        </ul>
       </header>
-      {request.input.detail === undefined ? null : <p className="whitespace-pre-wrap text-sm text-muted-foreground">{request.input.detail}</p>}
-      {request.input.kind === "permission" ? (
-        <dl data-slot="subject" className="grid min-w-0 grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-md border bg-muted/40 px-3 py-2 text-xs">
-          {subjectLines(request.input.subject).map((line) => (
-            <div key={line.label} className="contents">
-              <dt className="text-muted-foreground">{line.label}</dt>
-              <dd className="min-w-0 whitespace-pre-wrap break-words font-mono">{line.value}</dd>
-            </div>
+      {request.input.detail && <p className="whitespace-pre-wrap wrap-anywhere">{request.input.detail}</p>}
+      {request.input.kind === "permission" && (
+        <dl data-slot="subject" className="nw-fields">
+          {subjectLines(request.input.subject).map(({ label, value }) => (
+            <div key={label}><dt>{fieldLabel(label)}</dt><dd><DataValue field={label} value={value} /></dd></div>
           ))}
         </dl>
-      ) : null}
+      )}
       <AnswerForm request={request} onSent={onSent} />
     </article>
   );
 }
 
-/** A run or an invocation that stopped and waits for a choice. */
 function PausedCard({ paused, onSent }: { paused: OpenPaused; onSent: () => void }) {
   const resolve = useAction(resolveAction);
+  const viewer = useViewer();
   return (
-    <article data-slot="paused" className="flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3 text-card-foreground">
-      <h3 className="text-sm font-semibold">Paused for a decision</h3>
-      <p className="text-sm text-muted-foreground">{paused.reason ?? "The work stopped and waits for a choice."}</p>
-      <div className="flex flex-wrap gap-2">
-        {paused.choices.map((choice) => (
-          <Button
-            key={choice}
-            size="sm"
-            variant={choice === "cancel" ? "outline" : "default"}
-            disabled={resolve.isPending}
-            onClick={() => resolve.mutate({ invocation: paused.invocation, choice }, { onSettled: onSent })}
-          >
-            {choice}
-          </Button>
-        ))}
-      </div>
-      {resolve.isError ? <p role="alert" className="text-xs text-destructive">{resolve.error.message}</p> : null}
+    <article data-slot="paused" className="min-w-0 flex flex-col gap-3 py-2">
+      <h3 className="text-base font-semibold">Действие приостановлено</h3>
+      {paused.reason && <p className="text-sm wrap-anywhere">{paused.reason}</p>}
+      {viewer.can(resolveAction) && (
+        <div className="flex flex-wrap gap-2">
+          {paused.choices.map((choice) => (
+            <Button
+              key={choice}
+              size="sm"
+              variant={choice === "cancel" ? "outline" : "default"}
+              disabled={resolve.isPending}
+              onClick={() => resolve.mutate({ invocation: paused.invocation, choice }, { onSettled: onSent })}
+            >
+              {CHOICES[choice] ?? choice}
+            </Button>
+          ))}
+        </div>
+      )}
+      {resolve.isError && <p role="alert" className="text-sm text-destructive">Не удалось применить решение.</p>}
     </article>
   );
 }
@@ -149,29 +83,33 @@ export function RequestsPage({ home = false }: { home?: boolean } = {}) {
   const queryClient = useQueryClient();
   const open = useCall(openAction, {}, { refreshOn: { types: ["request.*", "niwa.invocation.state"] } });
   const reread = (): void => void queryClient.invalidateQueries({ queryKey: ["niwa", "call"] });
-  const entries = open.data?.requests.filter(entry => !home || ("kind" in entry && entry.kind === "paused") || ("to" in entry && entry.to.kind === "owner"));
-  if (home && entries?.length === 0) return null;
+  const questions = open.data?.requests.filter((entry): entry is OpenRequest =>
+    "input" in entry && (!home || entry.to.kind === "owner"),
+  ) ?? [];
+  const paused = open.data?.requests.filter((entry): entry is OpenPaused => "invocation" in entry) ?? [];
+  if (home && open.data && questions.length + paused.length === 0) return null;
   return (
-    <div className={home ? "desk-section" : "flex min-w-0 flex-col gap-3 p-4"}>
-      <h2 className="text-lg font-semibold">{home ? "Ждут ответа" : "Requests"}</h2>
-      {open.isPending ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      ) : open.isError ? (
-        <p role="alert" className="text-sm text-destructive">The requests could not be read: {open.error.message}</p>
-      ) : open.data.requests.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Nothing waits for an answer.</p>
-      ) : (
-        <div data-slot="requests" className="flex min-w-0 flex-col gap-3">
-          {(entries ?? []).map((entry) =>
-            "kind" in entry && entry.kind === "paused" ? (
-              <PausedCard key={entry.invocation} paused={entry} onSent={reread} />
-            ) : (
-              <RequestCard key={(entry as OpenRequest).id} request={entry as OpenRequest} onSent={reread} />
-            ),
-          )}
-        </div>
+    <>
+      <PageSection title="Ждут ответа">
+        {open.isPending ? <p role="status">Загружаю запросы…</p> : open.isError ? (
+          <p role="alert">Не удалось загрузить запросы.</p>
+        ) : questions.length === 0 && (!home || paused.length === 0) ? (
+          <p>Запросов без ответа нет.</p>
+        ) : (
+          <div data-slot="requests" className="divide-y">
+            {questions.map((request) => <RequestCard key={request.id} request={request} onSent={reread} />)}
+            {home && paused.map((entry) => <PausedCard key={entry.invocation} paused={entry} onSent={reread} />)}
+          </div>
+        )}
+      </PageSection>
+      {!home && paused.length > 0 && (
+        <PageSection title="Ждут решения">
+          <div className="divide-y">
+            {paused.map((entry) => <PausedCard key={entry.invocation} paused={entry} onSent={reread} />)}
+          </div>
+        </PageSection>
       )}
       {!home && <RequestHistory />}
-    </div>
+    </>
   );
 }

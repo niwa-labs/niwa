@@ -39,7 +39,7 @@ export function Home({ project = "" }: { project?: string }) {
   const directories = [...new Set(Object.values(sources).flat())].sort();
   return (
     <div data-slot="home" className="desk-page">
-      <PageHeading title="Ход запусков" meta={"Журнал #"+seq}>
+      <PageHeading title="Ход запусков" meta={<a href="/journal">Журнал · {seq}</a>}>
         {(directories.length > 0 || project) && (
           <label>
             Проект{" "}
@@ -53,7 +53,7 @@ export function Home({ project = "" }: { project?: string }) {
               <option value="">Все проекты</option>
               {directories.map((dir) => (
                 <option key={dir} value={dir}>
-                  {dir}
+                  {dir.split("/").filter(Boolean).slice(-2).join("/") || dir}
                 </option>
               ))}
             </select>

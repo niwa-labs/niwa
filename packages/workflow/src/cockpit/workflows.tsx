@@ -1,3 +1,5 @@
+import { runSummary } from "./run-summary.ts";
+import { SchemaView, DataValue, CopyValue, FileRef } from "@niwa-labs/ui-kit";
 import { PageHeading, PageSection } from "@niwa-labs/ui-kit";
 import { PageLink, useAction, useCall, useViewer, type PageProps } from "@niwa-labs/cockpit-sdk";
 import { useState } from "react";
@@ -9,33 +11,101 @@ import { runsAction } from "./actions.ts";
 function Contract({ title, value }: { title: string; value: unknown }) {
   if (value === undefined || (Array.isArray(value) && value.length === 0)) return null;
   return (
-    <details>
+    <details className="nw-contract" open={title === "Вход"}>
       <summary>{title}</summary>
-      <pre>{JSON.stringify(value, null, 2)}</pre>
+      {title === "Вход" || title === "Выход" ? <SchemaView schema={value} /> : <DataValue value={value} />}
     </details>
   );
 }
 
-export function WorkflowCatalogue() {
+export function WorkflowCatalogue({ search }: PageProps<"/workflows">) {
   const viewer = useViewer();
   const client = useQueryClient();
   const list = useCall(catalogue.list, {}, { enabled: viewer.can(catalogue.list), refreshOn: catalogueEvents });
   const check = useAction(catalogue.check);
   const register = useAction(catalogue.register);
+  const [query, setQuery] = useState("");
   const [file, setFile] = useState("");
   const [id, setId] = useState("");
   const busy = check.isPending || register.isPending;
+  const tabs = [
+    { key: "catalogue", label: "Каталог", allowed: viewer.can(catalogue.list) },
+    { key: "statistics", label: "Статистика", allowed: viewer.can(catalogue.stats) },
+    { key: "register", label: "Регистрация", allowed: viewer.can(catalogue.check) || viewer.can(catalogue.register) },
+  ].filter((tab) => tab.allowed);
+  const current = tabs.find((tab) => tab.key === search.view)?.key ?? tabs[0]?.key;
+  const needle = query.trim().toLowerCase();
+  const matches = list.data?.items.filter((w) =>
+    [w.description, w.id, w.builtin?.name, ...(w.phases ?? []).map((p) => p.title)]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle),
+  );
   return (
     <article className="desk-page" data-slot="workflows">
       <PageHeading title="Сценарии">
         {viewer.can(catalogue.start) && (
           <PageLink to="/workflows/launch" className="desk-primary">
-            ▶ Запустить workflow
+            Запустить сценарий
           </PageLink>
         )}
       </PageHeading>
-      {viewer.can(catalogue.stats) && <Statistics />}
-      {(viewer.can(catalogue.check) || viewer.can(catalogue.register)) && (
+      <nav className="nw-tabs" aria-label="Разделы сценариев">
+        {tabs.map((tab) => (
+          <PageLink
+            key={tab.key}
+            to={tab.key === "catalogue" ? "/workflows" : "/workflows?view=" + tab.key}
+            aria-current={current === tab.key ? "page" : undefined}
+          >
+            {tab.label}
+          </PageLink>
+        ))}
+      </nav>
+      {!current && <p>Нет доступных разделов сценариев.</p>}
+      {current === "catalogue" && (
+        <PageSection title={<>Зарегистрированные сценарии {list.data && <small>{list.data.items.length}</small>}</>}>
+          <label className="nw-search">
+            <span>Найти сценарий</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Название, фаза или ID"
+            />
+          </label>
+          {!viewer.can(catalogue.list) ? (
+            <p>Каталог недоступен для этого пользователя.</p>
+          ) : list.error ? (
+            <p role="alert">{list.error.message}</p>
+          ) : !list.data ? (
+            <p>Загружаю сценарии…</p>
+          ) : !list.data.items.length ? (
+            <p>Сценариев ещё нет. Зарегистрируйте файл сценария.</p>
+          ) : (
+            <div className="desk-catalogue">
+              {matches?.map((w) => (
+                <article key={w.id} className="desk-card">
+                  <PageLink to={workflowPath(w.id)}>{w.description}</PageLink>
+                  {w.candidate && (
+                    <span className="nw-tag" data-tone="amber">
+                      Кандидат
+                    </span>
+                  )}{" "}
+                  <CopyValue value={w.id} />
+                  <small>
+                    Версия {w.version.slice(0, 8)} · версий {w.versions} · установок {w.installations.length}
+                  </small>
+                  {!!w.phases?.length && <p>{w.phases.map((p) => p.title).join(" → ")}</p>}
+                  {w.broken && <p role="alert">Сценарий требует исправления</p>}
+                </article>
+              ))}
+              {!matches?.length && <p>Совпадений нет.</p>}
+            </div>
+          )}
+        </PageSection>
+      )}
+      {current === "statistics" && <Statistics />}
+      {current === "register" && (
         <PageSection title="Файл сценария">
           <form
             className="desk-form"
@@ -100,10 +170,11 @@ export function WorkflowCatalogue() {
           </form>
           {check.data && (
             <div role="status">
-              <strong>{check.data.ok ? "Проверка пройдена" : "Ошибка проверки"}</strong> · {check.data.file}
+              <strong>{check.data.ok ? "Проверка пройдена" : "Ошибка проверки"}</strong> ·{" "}
+              <FileRef path={check.data.file} />
               {[...check.data.errors, ...(check.data.warnings ?? [])].map((e, i) => (
                 <p key={i}>
-                  {e.file}:{e.line}:{e.column} · {e.message}
+                  <FileRef path={e.file} /> · строка {e.line}, столбец {e.column} · {e.message}
                 </p>
               ))}
               <p>{check.data.description}</p>
@@ -128,31 +199,6 @@ export function WorkflowCatalogue() {
           {(check.error || register.error) && <p role="alert">{(check.error ?? register.error)?.message}</p>}
         </PageSection>
       )}
-      <PageSection title={<>Зарегистрированные сценарии {list.data && <small>{list.data.items.length}</small>}</>}>
-        {!viewer.can(catalogue.list) ? (
-          <p>Каталог недоступен для этого пользователя.</p>
-        ) : list.error ? (
-          <p role="alert">{list.error.message}</p>
-        ) : !list.data ? (
-          <p>Загружаю сценарии…</p>
-        ) : !list.data.items.length ? (
-          <p>Сценариев ещё нет. Зарегистрируйте файл сценария.</p>
-        ) : (
-          <div className="desk-catalogue">
-            {list.data.items.map((w) => (
-              <article key={w.id} className="desk-card">
-                <PageLink to={workflowPath(w.id)}>{w.description}</PageLink>
-                <code>{w.id}</code>
-                <small>
-                  Версия {w.version.slice(0, 8)} · версий {w.versions} · установок {w.installations.length}
-                </small>
-                {!!w.phases?.length && <p>{w.phases.map((p) => p.title).join(" → ")}</p>}
-                {w.broken && <p role="alert">Сценарий требует исправления</p>}
-              </article>
-            ))}
-          </div>
-        )}
-      </PageSection>
     </article>
   );
 }
@@ -168,7 +214,7 @@ function Installation({ id, builtin }: { id: string; builtin: boolean }) {
   const remove = useAction(catalogue.uninstall);
   return (
     <li>
-      <b>{got.data?.description ?? id}</b> <code>{id}</code>
+      <b>{got.data?.description ?? id}</b> <CopyValue value={id} />
       {got.data && <Contract title="Условия запуска" value={got.data.on} />}
       {got.error && <p role="alert">{got.error.message}</p>}
       {!builtin && viewer.can(catalogue.uninstall) && (
@@ -198,19 +244,29 @@ export function WorkflowDetails({ params }: PageProps<"/workflows/$workflowId">)
   if (!entity)
     return (
       <article className="desk-page">
-        <PageLink to="/workflows">← Сценарии</PageLink>
+        <PageLink className="nw-parent" to="/workflows">
+          ← Сценарии
+        </PageLink>
         <p>{!viewer.can(catalogue.get) ? "Нет доступа к сценарию." : (got.error?.message ?? "Загружаю сценарий…")}</p>
       </article>
     );
-  const latest = entity.versions.filter((v) => !v.candidate).at(-1);
+  const latest = entity.versions.filter((v) => !v.candidate && !v.superseded).at(-1);
   const runs = history.data?.entries.filter((r) => r.workflow === id);
   return (
     <article className="desk-page" data-slot="workflow-detail">
-      <PageLink to="/workflows">← Сценарии</PageLink>
+      <PageLink className="nw-parent" to="/workflows">
+        ← Сценарии
+      </PageLink>
       <header className="desk-heading">
         <div>
-          <h1>{entity.description}</h1>
-          <code>{id}</code>
+          <h1>
+            {(latest ?? entity.versions.at(-1))?.file
+              .split(/[\\/]/)
+              .at(-1)
+              ?.replace(/\.[^.]+$/, "") ?? entity.description}
+          </h1>
+          <p className="nw-purpose">{entity.description}</p>
+          <CopyValue value={id} />
         </div>
         {viewer.can(catalogue.start) && latest && !latest.broken && !latest.on?.length && (
           <PageLink to={"/workflows/launch?id=" + encodeURIComponent(id)} className="desk-primary">
@@ -223,12 +279,30 @@ export function WorkflowDetails({ params }: PageProps<"/workflows/$workflowId">)
           Версии <small>{entity.versions.length}</small>
         </h2>
         {entity.versions.toReversed().map((v) => (
-          <details className="desk-version" key={v.version} open={v.version === latest?.version}>
+          <details
+            className="desk-version"
+            key={v.version}
+            open={v.version === (latest ?? entity.versions.at(-1))?.version}
+          >
             <summary>
-              <code>{v.version.slice(0, 8)}</code> ·{" "}
-              {v.candidate ? "Кандидат" : v.version === latest?.version ? "Текущая версия" : v.description}
+              <span className="nw-tag" data-tone="blue">
+                {v.version.slice(0, 8)}
+              </span>{" "}
+              {v.superseded
+                ? "Заменена"
+                : v.candidate
+                  ? "Кандидат"
+                  : v.version === latest?.version
+                    ? "Текущая версия"
+                    : v.description}
             </summary>
-            <p>{v.file}</p>
+            <div className="nw-file-row">
+              <FileRef path={v.file} />
+              <CopyValue value={v.version} label="Хеш версии" />
+            </div>
+            {v.candidate && (
+              <p className="nw-candidate">До принятия эта версия доступна только для проверочного запуска комплекта.</p>
+            )}
             {v.broken && <p role="alert">{v.broken}</p>}
             {!!v.phases?.length && (
               <ol className="desk-phases">
@@ -254,7 +328,7 @@ export function WorkflowDetails({ params }: PageProps<"/workflows/$workflowId">)
           Установки <small>{entity.installations.length}</small>
         </h2>
         {!entity.installations.length && (
-          <p>{latest?.on?.length ? "Подписок пока нет." : "Сценарий запускается вручную."}</p>
+          <p>{latest?.on?.length ? "Подписок пока нет." : "У этой версии нет подписок."}</p>
         )}
         <ul>
           {entity.installations.map((sub) => (
@@ -295,7 +369,7 @@ export function WorkflowDetails({ params }: PageProps<"/workflows/$workflowId">)
                 <PageLink to={"/runs/" + r.run}>
                   {r.name} · {r.run}
                 </PageLink>{" "}
-                · {r.about}
+                · {runSummary(r)}
               </p>
             ))
           ) : (

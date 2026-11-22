@@ -13,8 +13,8 @@ const choice: Question = { kind: "choice", title: "Go?", options };
 const multi: Question = { kind: "multi", title: "Which?", options };
 
 test("a choice takes exactly one option", () => {
-  expect(answerOf(choice, EMPTY)).toEqual({ problem: "Pick one." });
-  expect(answerOf(choice, { picked: ["yes", "no"], text: "" })).toEqual({ problem: "Pick only one." });
+  expect(answerOf(choice, EMPTY)).toEqual({ problem: "Выберите вариант." });
+  expect(answerOf(choice, { picked: ["yes", "no"], text: "" })).toEqual({ problem: "Выберите один вариант." });
   expect(answerOf(choice, { picked: ["yes"], text: "" })).toEqual({ answer: { ids: ["yes"] } });
 });
 
@@ -25,24 +25,23 @@ test("a multiple choice accepts zero or more options", () => {
 
 test("a text question takes a text that is not blank", () => {
   const text: Question = { kind: "text", title: "Why?" };
-  expect(answerOf(text, { picked: [], text: "  " })).toEqual({ problem: "Write an answer." });
+  expect(answerOf(text, { picked: [], text: "  " })).toEqual({ problem: "Напишите ответ." });
   expect(answerOf(text, { picked: [], text: "because" })).toEqual({ answer: { text: "because" } });
   expect(otherAnswer("elsewhere")).toEqual({ answer: { text: "elsewhere" } });
-  expect(otherAnswer("")).toEqual({ problem: "Write an answer." });
+  expect(otherAnswer("")).toEqual({ problem: "Напишите ответ." });
 });
 
-test("a form takes JSON and says what is wrong with text that is none", () => {
+test("a form sends the typed values collected from its fields", () => {
   const form: Question = { kind: "form", title: "Fill", schema: {} };
-  expect(answerOf(form, EMPTY)).toEqual({ problem: "Fill in the value as JSON." });
-  expect(answerOf(form, { picked: [], text: '{"a":1}' })).toEqual({ answer: { form: { a: 1 } } });
-  const bad = answerOf(form, { picked: [], text: "{" });
-  expect("problem" in bad && bad.problem.startsWith("That is not JSON")).toBe(true);
+  expect(answerOf(form, EMPTY)).toEqual({ problem: "Заполните форму." });
+  expect(answerOf(form, { ...EMPTY, form: { a: 1, approved: false } })).toEqual({ answer: { form: { a: 1, approved: false } } });
+  expect(answerOf(form, { ...EMPTY, form: null })).toEqual({ answer: { form: null } });
 });
 
 test("an address is named by its kind and what it names", () => {
-  expect(addressText({ kind: "owner" })).toBe("owner");
-  expect(addressText({ kind: "agent", id: "rin" })).toBe("agent rin");
-  expect(addressText({ kind: "session", harness: "claude", id: "abc" })).toBe("session claude/abc");
+  expect(addressText({ kind: "owner" })).toBe("Владелец");
+  expect(addressText({ kind: "agent", id: "rin" })).toBe("Агент rin");
+  expect(addressText({ kind: "session", harness: "claude", id: "abc" })).toBe("Сессия claude · abc");
 });
 
 test("a permission shows what the owner decides on: the input of the call, the rule and the reason", () => {
@@ -51,7 +50,7 @@ test("a permission shows what the owner decides on: the input of the call, the r
     { label: "who", value: "session:s1" },
     { label: "action", value: "git.push@origin" },
     { label: "rule", value: "call:git.*" },
-    { label: "input", value: '{\n  "branch": "main",\n  "force": true\n}' },
+    { label: "input", value: { branch: "main", force: true } },
     { label: "reason", value: "to ship" },
   ]);
   // Two calls of one action that differ only in their input do not look the same.
@@ -71,7 +70,7 @@ test("a question that takes other sends the text when nothing is picked, and ref
   const open: Question = { kind: "multi", title: "Which?", options, allowOther: true };
   expect(answerOf(open, EMPTY)).toEqual({ answer: { ids: [] } });
   expect(answerOf(open, { picked: [], text: "something else" })).toEqual({ answer: { text: "something else" } });
-  expect(answerOf(open, { picked: ["yes"], text: "something else" })).toEqual({ problem: "Pick from the options or write your own answer, not both." });
+  expect(answerOf(open, { picked: ["yes"], text: "something else" })).toEqual({ problem: "Выберите вариант или напишите свой ответ." });
   expect(answerOf(open, { picked: ["yes"], text: "  " })).toEqual({ answer: { ids: ["yes"] } });
   // The same holds for a choice, which has always taken its other answer.
   expect(answerOf({ ...choice, allowOther: true }, { picked: [], text: "else" })).toEqual({ answer: { text: "else" } });

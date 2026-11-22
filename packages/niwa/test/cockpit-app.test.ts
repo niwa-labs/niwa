@@ -118,6 +118,10 @@ run("the cockpit app in a browser", () => {
   test("the desk shows the four states, filters both projects and opens the workflow catalogue", async () => {
     const page = await open();
     await page.waitForSelector(".desk-strip button[data-kind=decision]");
+    const waiting = page.locator('[data-slot="run-row"]').filter({has:page.locator('a[href^="/requests/"]')}).first();
+    await waiting.locator(".nw-track").waitFor();
+    expect(await waiting.locator(".nw-sequence").count()).toBe(0);
+    expect(await waiting.locator('a[href^="/requests"]').count()).toBe(1);
     await page.getByLabel("Проект", { exact: true }).selectOption("/work/beta");
     await page.waitForFunction(() => document.querySelectorAll('[data-slot="run-row"]').length === 1);
     expect(await page.locator('[data-slot="run-row"]').innerText()).toContain("plain");
@@ -140,7 +144,7 @@ run("the cockpit app in a browser", () => {
     expect(await page.textContent('[data-directory="/work/alpha"] header')).toContain("/work/alpha");
     // The navigation has the pages the modules added.
     const links = await page.$$eval('nav[aria-label="Pages"] a', (nodes) => nodes.map((node) => node.textContent));
-    expect(links).toEqual(expect.arrayContaining(["Пульт", "Сценарии", "Runs", "Sessions", "Requests", "Tasks"]));
+    expect(links).toEqual(expect.arrayContaining(["Пульт", "Сценарии", "Запуски", "Сессии", "Запросы", "Задачи"]));
     expect(await violations(page)).toEqual([]);
     await page.context().close();
   }, 60_000);
@@ -149,8 +153,9 @@ run("the cockpit app in a browser", () => {
     const page = await open();
     await page.waitForSelector('[data-slot="run-row"]');
     await page.click('[data-slot="run-row"] a:has-text("ship")');
+    await page.getByText("Управление фазами и шагами", { exact: true }).click();
     await page.waitForSelector('[data-slot="phase-plan"]');
-    expect(await page.textContent('[data-slot="run-directory"]')).toBe("/work/alpha");
+    expect(await page.locator('[data-slot="run-directory"] button').getAttribute('title')).toBe("/work/alpha");
     const phases = await page.$$eval('[data-slot="plan-phase"]', (nodes) => nodes.map((node) => node.querySelector("span.truncate")?.textContent));
     expect(phases).toEqual(["Plan", "Build"]);
     // The run waits for an answer, so the current phase may be stopped and nothing may be recomputed under it.
@@ -166,6 +171,7 @@ run("the cockpit app in a browser", () => {
     await writeFile(file, `export default workflow({ phases: [{ title: "Hold" }], output: z.string() }, async () => { phase("Hold"); return (await ask.confirm("Hold on?")) ? "yes" : "no"; });`);
     const { run } = await host.call(workflowStart, { file, directory: "/work/gamma", label: "hold" });
     const page = await open(`/runs/${run}`);
+    await page.getByText("Управление фазами и шагами", { exact: true }).click();
     await page.waitForSelector('[data-slot="plan-phase"] [aria-label="Stop"]');
     const stop = page.locator('[aria-label="Stop"]').first();
     const notice = page.locator('[data-slot="guard-notice"]');
@@ -178,11 +184,11 @@ run("the cockpit app in a browser", () => {
     // Undone in time: nothing is stopped.
     await page.click('[data-slot="guard-notice"] button:has-text("Undo")');
     await page.waitForSelector('[data-slot="guard-notice"]', { state: "detached" });
-    expect(await page.textContent('[data-slot="run-page"]')).not.toContain("Stopped");
+    expect(await page.textContent('[data-slot="run-page"]')).not.toContain("Остановлен");
 
     await stop.click();
     await stop.click();
-    await page.waitForSelector("text=Stopped", { timeout: 15_000 });
+    await page.waitForSelector("text=Остановлен", { timeout: 15_000 });
     await page.context().close();
   }, 60_000);
 
@@ -192,6 +198,7 @@ run("the cockpit app in a browser", () => {
     await host.call(workflowWait, { run, timeoutMs: 10_000 });
     const before = (await host.call(workflowInspect, { run })).origin.requestedAt;
     const page = await open(`/runs/${run}`);
+    await page.getByText("Управление фазами и шагами", { exact: true }).click();
     const recompute = page.locator('[aria-label="Recompute from here"]').first();
     await recompute.waitFor();
     await recompute.click();
@@ -213,7 +220,7 @@ run("the cockpit app in a browser", () => {
     expect(await page.textContent('[data-slot="request"]')).toContain("Ship it?");
     await page.click('[data-slot="request"] button[aria-pressed]:first-of-type');
     await page.click('[data-slot="request"] button[type="submit"]');
-    await page.waitForSelector('text=Nothing waits for an answer');
+    await page.waitForSelector('text=Запросов без ответа нет.');
     await page.context().close();
   }, 60_000);
 
@@ -225,7 +232,7 @@ run("the cockpit app in a browser", () => {
     try {
       const card = page.locator('[data-slot="request"]').filter({ hasText: "Which branch?" });
       await card.getByRole("textbox").fill("main");
-      await card.getByRole("button", { name: "Override", exact: true }).click();
+      await card.getByRole("button", { name: "Ответить за адресата", exact: true }).click();
       await card.waitFor({ state: "detached" });
       expect(await host.call(requestGet, { id })).toMatchObject({ status: "answered", answer: { text: "main" } });
       const receipt = (await host.records.read({ types: [RequestAnswered.name] })).find((row) => RequestAnswered.schema.parse(row.data).id === id);
@@ -247,7 +254,7 @@ run("the cockpit app in a browser", () => {
 
   test("the sessions page opens, and says so when the host has none", async () => {
     const page = await open("/sessions");
-    await page.waitForSelector("text=No sessions yet");
+    await page.waitForSelector("text=Сессий пока нет");
     await page.context().close();
   }, 60_000);
 
@@ -255,30 +262,44 @@ run("the cockpit app in a browser", () => {
     const file = join(workDir, "welcome.ts");
     await writeFile(file, 'export default workflow({description:"Welcome someone", input:z.object({ person:z.string() }), output:z.string()}, async ({person}) => "Hello " + person);');
     const page = await open("/workflows");
+    await page.getByRole("link", { name: "Регистрация", exact: true }).click();
     await page.getByLabel("Файл сценария на хосте").fill(file);
     await page.getByRole("button", { name: "Проверить", exact: true }).click();
     await page.getByText("Проверка пройдена", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Зарегистрировать", exact: true }).click();
-    await page.locator(".desk-card a").filter({ hasText: "Welcome someone" }).click();
+    await page.getByRole("status").getByRole("link", { name: "Welcome someone" }).click();
     await page.locator('[data-slot="workflow-detail"]').waitFor();
     await page.getByRole("link", { name: "▶ Запустить", exact: true }).click();
     await page.getByLabel("person").fill("Cockpit");
     await page.getByRole("button", { name: "▶ Запустить", exact: true }).click();
-    await page.getByText('"Hello Cockpit"', { exact: true }).waitFor();
+    await page.getByText("Hello Cockpit", { exact: true }).waitFor();
     await page.context().close();
   }, 60_000);
 
-  test("an empty task list has a host-schema form that creates a task", async () => {
+  test("the tasks page has a host-schema form that creates a task", async () => {
     const page = await open("/tasks");
-    await page.getByRole("button", { name: "Создать задачу", exact: true }).click();
-    const form = page.locator(".desk-commands form");
-    await form.getByLabel("kind *", { exact: true }).first().fill("review");
-    await form.getByLabel("description", { exact: false }).fill("Review cockpit forms");
-    await form.getByLabel("text *", { exact: true }).fill("Check the generated form.");
-    await form.getByLabel("responsible", { exact: true }).selectOption({ label: "owner" });
-    await form.getByRole("button", { name: "Создать задачу" }).click();
-    await page.locator('[data-slot="task-row"]').filter({ hasText: "Review cockpit forms" }).waitFor();
-    await page.context().close();
+    try {
+      await page.getByRole("button", { name: "Создать задачу", exact: true }).click();
+      const form = page.locator(".desk-commands form");
+      await form.getByRole("textbox", { name: "kind", exact: true }).fill("review");
+      await form.getByRole("textbox", { name: "description", exact: true }).fill("Review cockpit forms");
+      await form.getByRole("textbox", { name: "text", exact: true }).fill("Check the generated form.");
+      const responsible = form.getByRole("group", { name: "responsible", exact: true });
+      await responsible.getByRole("combobox").selectOption({ label: "owner" });
+      await form.getByRole("button", { name: "Создать задачу", exact: true }).click();
+      await page.locator('[data-slot="task-row"]').filter({ hasText: "Review cockpit forms" }).waitFor();
+      const created = (await host.records.read({ types: ["task.created"] })).at(-1);
+      expect(created?.data).toMatchObject({
+        kind: "review",
+        description: "Review cockpit forms",
+        text: "Check the generated form.",
+        askedBy: { kind: "owner" },
+        responsible: { kind: "owner" },
+        reportTo: { kind: "owner" },
+      });
+    } finally {
+      await page.context().close();
+    }
   }, 60_000);
 
   test("parallel sleeps have independent countdowns and animated paths that honour reduced motion", async () => {
@@ -302,7 +323,7 @@ run("the cockpit app in a browser", () => {
       expect(await motion()).toEqual([]);
       expect(await page.locator(".nw-step").count()).toBe(3);
       await page.locator(".nw-step a").first().click();
-      await page.locator('#record-title').filter({ hasText:"niwa.step.intent" }).waitFor();
+      await page.locator('#record-title').filter({ hasText:"Начат шаг" }).waitFor();
       expect(await violations(page)).toEqual([]);
     } finally {
       await page.context().close();

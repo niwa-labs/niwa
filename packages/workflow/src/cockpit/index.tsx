@@ -18,7 +18,7 @@ function RunsPage() {
           <PageLink to="/workflows">Каталог сценариев</PageLink>
           {viewer.can("workflow.start") && (
             <PageLink className="desk-primary" to="/workflows/launch">
-              ▶ Запустить workflow
+              Запустить сценарий
             </PageLink>
           )}
         </div>
@@ -31,8 +31,8 @@ function RunsPage() {
 export default definePlugin({
   id: "workflow",
   setup(ctx) {
-    ctx.pages.add({ path: "/runs", title: "Runs", nav: { order: 10 }, component: RunsPage });
-    ctx.pages.add({ path: "/runs/$runId", panel: true, title: "Run", component: RunPage });
+    ctx.pages.add({ path: "/runs", title: "Запуски", nav: { order: 10 }, component: RunsPage });
+    ctx.pages.add({ path: "/runs/$runId", panel: true, title: "Запуск", component: RunPage });
     ctx.pages.add({ path: "/workflows", title: "Сценарии", nav: { order: 9 }, component: WorkflowCatalogue });
     ctx.pages.add({ path: "/workflows/launch", panel: true, title: "Запустить workflow", component: LaunchPage });
     ctx.pages.add({ path: "/workflows/$workflowId", panel: true, title: "Сценарий", component: WorkflowDetails });
@@ -45,6 +45,6 @@ export default definePlugin({
       prefix: "wf",
       href: (id) => "/workflows/" + encodeURIComponent(id),
     });
-    ctx.entities.register("run", { label: "Run", prefix: "run", href: (id) => `/runs/${encodeURIComponent(id)}` });
+    ctx.entities.register("run", { label: "Запуск", prefix: "run", href: (id) => `/runs/${encodeURIComponent(id)}` });
   },
 });

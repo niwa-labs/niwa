@@ -11,6 +11,18 @@ test("the open requests are read from what the host lists", () => {
   expect(unreadable(openAction.output, requestOpen.output)).toEqual([]);
 });
 
+test("an open request keeps its deadline through the host and the cockpit schemas", () => {
+  const deadline = 1_790_000_000_000;
+  const value = requestOpen.output.parse({ requests: [{
+    id: "req-123456",
+    question: "fixture.deadline",
+    input: { kind: "text", title: "When?" },
+    to: { kind: "owner" },
+    deadline,
+  }] });
+  expect(openAction.output.parse(value)).toMatchObject({ requests: [{ deadline }] });
+});
+
 test("an answer is sent as the host takes it, and the host's reply is read", () => {
   expect(answerAction.name).toBe(String(requestAnswer.name));
   expect(unsendable(answerAction.input, requestAnswer.input)).toEqual([]);

@@ -6,14 +6,14 @@ export function useStatus(): string {
   const { status, seq } = useStreamStatus();
   switch (status) {
     case "live":
-      return `live · ${String(seq)}`;
+      return `онлайн · ${String(seq)}`;
     case "connecting":
-      return "connecting…";
+      return "подключение…";
     case "retrying":
-      return "reconnecting…";
+      return "переподключение…";
     case "failed":
-      return "feed lost";
+      return "связь прервана";
     case "idle":
-      return "idle";
+      return "нет соединения";
   }
 }

@@ -383,6 +383,7 @@ export const workflowList = listRef("workflow.list", {
   item: {
     version: WorkflowVersion,
     versions: z.number().int(),
+    candidate: z.literal(true).optional(),
     broken: z.boolean(),
     installations: z.array(InstallationId),
     /** The phases its latest version declares, in order. */

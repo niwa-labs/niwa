@@ -10,7 +10,8 @@ export default definePlugin({
   setup(ctx) {
     ctx.pages.add({
       path: "/requests",
-      title: "Requests",
+      title: "Запросы",
+      commandHeading: true,
       nav: { order: 30 },
       commands: [{ action: "request.ask", label: "Задать вопрос", preset: { to: { kind: "owner" } } }],
       component: () => <RequestsPage />,
@@ -19,7 +20,7 @@ export default definePlugin({
     if (ctx.viewer.can("request.open"))
       ctx.slots.register("home.tile", { key: "questions", order: 10, component: RequestsTile });
     ctx.entities.register("request", {
-      label: "Request",
+      label: "Запрос",
       prefix: "req",
       href: (id) => "/requests/" + encodeURIComponent(id),
     });

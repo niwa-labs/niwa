@@ -9,14 +9,15 @@ export default definePlugin({
   setup(ctx) {
     ctx.pages.add({
       path: "/sessions",
-      title: "Sessions",
+      title: "Сессии",
       nav: { order: 20 },
+      commandHeading: true,
       commands: [{ action: "session.start", label: "Начать сессию" }],
       component: SessionsPage,
     });
     ctx.pages.add({
       path: "/sessions/$sessionId",
-      title: "Session",
+      title: "Сессия",
       commands: ({ params }) => [
         { action: "session.send", label: "Отправить сообщение", preset: { session: params.sessionId } },
         { action: "session.resume", label: "Продолжить сессию", preset: { session: params.sessionId } },
@@ -27,7 +28,7 @@ export default definePlugin({
     if (ctx.viewer.can("session.list"))
       ctx.slots.register("home.main", { key: "sessions", order: 20, component: SessionsTile });
     ctx.entities.register("session", {
-      label: "Session",
+      label: "Сессия",
       prefix: "s",
       href: (id) => `/sessions/${encodeURIComponent(id)}`,
     });

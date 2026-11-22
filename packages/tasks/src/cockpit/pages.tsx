@@ -1,80 +1,102 @@
-/** The tasks of the host and one task with how it ended. */
+/** The host's tasks, grouped by state, with the contract and outcome of each task. */
 
-import { EntityLink, PageLink, useCall, type PageProps } from "@niwa-labs/cockpit-sdk";
-import { Badge, StateRing } from "@niwa-labs/ui-kit";
+import { EntityLink, PageCommands, PageLink, useCall, type PageProps } from "@niwa-labs/cockpit-sdk";
+import { CopyValue, DataValue, PageSection, SchemaView, StateRing } from "@niwa-labs/ui-kit";
+import type { z } from "zod";
 
-import { getAction, listAction, type TaskItem } from "./actions.ts";
+import { getAction, listAction, type Address, type TaskItem } from "./actions.ts";
 
-function who(address: { kind: string; id?: string | undefined; harness?: string | undefined }): string {
-  if (address.harness !== undefined && address.id !== undefined) return `${address.kind} ${address.harness}/${address.id}`;
-  return address.id === undefined ? address.kind : `${address.kind} ${address.id}`;
+const refreshOn = { types: ["task.*"] };
+
+function TaskAddress({ address }: { address: z.infer<typeof Address> }) {
+  if (address.kind === "owner") return <>Владелец</>;
+  if (address.kind === "task" && address.id) return <EntityLink entity={{ kind: "task", id: address.id }} short />;
+  if (address.kind === "session" && address.id) {
+    const label = [address.harness, address.id].filter(Boolean).join(" · ");
+    return <EntityLink entity={address.id} label={label} />;
+  }
+  return <>{address.id ?? address.kind}</>;
 }
 
 function TaskRow({ task }: { task: TaskItem }) {
+  const done = task.status === "done";
   return (
-    <li data-slot="task-row" data-status={task.status} className="flex min-w-0 items-center gap-3 py-2">
-      <StateRing state={task.status === "done" ? "done" : "running"} label={task.status} />
-      <PageLink to={`/tasks/${encodeURIComponent(task.id)}`} className="min-w-0 truncate text-sm font-medium hover:underline">
-        {task.description}
-      </PageLink>
-      <EntityLink entity={{ kind: "task", id: task.id }} short />
-      <Badge variant="secondary">{task.kind}</Badge>
-      <span className="ml-auto shrink-0 text-xs text-muted-foreground">{who(task.responsible)}</span>
+    <li data-slot="task-row" data-status={task.status} className="flex min-w-0 items-start gap-3 py-2">
+      <span className="mt-1 shrink-0">
+        <StateRing state={done ? "done" : "running"} label={done ? "Завершена" : "В работе"} />
+      </span>
+      <div className="min-w-0 flex flex-col gap-1">
+        <PageLink to={"/tasks/" + encodeURIComponent(task.id)} className="text-base font-semibold wrap-anywhere hover:underline">
+          {task.description}
+        </PageLink>
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground wrap-anywhere">
+          <span>{task.kind}</span>
+          <span>Ответственный · <TaskAddress address={task.responsible} /></span>
+        </div>
+      </div>
     </li>
   );
 }
 
 export function TasksPage() {
-  const tasks = useCall(listAction, {}, { refreshOn: { types: ["task.*"] } });
+  const tasks = useCall(listAction, {}, { refreshOn });
+  if (tasks.isPending) return <p role="status">Загружаю задачи…</p>;
+  if (tasks.isError) return <p role="alert">Не удалось загрузить задачи.</p>;
+  const open = tasks.data.items.filter((task) => task.status === "open").toReversed();
+  const done = tasks.data.items.filter((task) => task.status === "done").toReversed();
   return (
-    <div className="flex min-w-0 flex-col gap-3 p-4">
-      <h2 className="text-lg font-semibold">Tasks</h2>
-      {tasks.isPending ? (
-        <p className="text-sm text-muted-foreground">Loading tasks…</p>
-      ) : tasks.isError ? (
-        <p role="alert" className="text-sm text-destructive">The tasks could not be read: {tasks.error.message}</p>
-      ) : tasks.data.items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No tasks yet.</p>
-      ) : (
-        <ul data-slot="tasks" className="divide-y rounded-lg border bg-card px-3 text-card-foreground">
-          {tasks.data.items.map((task) => (
-            <TaskRow key={task.id} task={task} />
-          ))}
-        </ul>
+    <>
+      <PageSection title="В работе">
+        {open.length === 0 ? <p>Открытых задач нет.</p> : (
+          <ul data-slot="tasks" className="divide-y">{open.map((task) => <TaskRow key={task.id} task={task} />)}</ul>
+        )}
+      </PageSection>
+      {done.length > 0 && (
+        <PageSection title="Завершённые">
+          <ul data-slot="completed-tasks" className="divide-y">{done.map((task) => <TaskRow key={task.id} task={task} />)}</ul>
+        </PageSection>
       )}
-    </div>
+    </>
   );
 }
 
 export function TaskPage({ params }: PageProps<"/tasks/$taskId">) {
-  const task = useCall(getAction, { id: params.taskId }, { refreshOn: { types: ["task.*"] } });
-  if (task.isPending) return <p className="p-4 text-sm text-muted-foreground">Loading the task…</p>;
-  if (task.isError) return <p role="alert" className="p-4 text-sm text-destructive">The task could not be read: {task.error.message}</p>;
+  const task = useCall(getAction, { id: params.taskId }, { refreshOn });
+  if (task.isPending) return <p role="status">Загружаю задачу…</p>;
+  if (task.isError) return <p role="alert">Не удалось загрузить задачу.</p>;
   const { data } = task;
+  const state = data.status === "open" ? "running" : data.outcome?.status === "failure" ? "failed" : "done";
+  const status = state === "running" ? "В работе" : state === "failed" ? "Не выполнена" : "Завершена";
   return (
-    <article data-slot="task-page" className="flex min-w-0 flex-col gap-3 p-4">
-      <header className="flex min-w-0 items-center gap-2">
-        <StateRing state={data.status === "done" ? (data.outcome?.status === "failure" ? "failed" : "done") : "running"} label={data.status} />
-        <h2 className="min-w-0 truncate text-lg font-semibold">{data.description}</h2>
-        <EntityLink entity={{ kind: "task", id: data.id }} />
+    <article data-slot="task-page" className="desk-page">
+      <header className="min-w-0 flex flex-col gap-3">
+        <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <StateRing state={state} label={status} />
+          <span>{status} · {data.kind}</span>
+          <CopyValue value={data.id} name="Скопировать номер задачи" />
+        </p>
+        <h2 className="text-2xl font-semibold wrap-anywhere">{data.description}</h2>
+        {data.status === "open" && (
+          <PageCommands commands={[
+            { action: "task.report", label: "Добавить отчёт", preset: { task: data.id } },
+            { action: "task.finish", label: "Завершить задачу", preset: { task: data.id } },
+          ]} />
+        )}
       </header>
-      <p className="whitespace-pre-wrap text-sm">{data.text}</p>
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-muted-foreground">Kind</dt>
-        <dd>{data.kind}</dd>
-        <dt className="text-muted-foreground">Asked by</dt>
-        <dd>{who(data.askedBy)}</dd>
-        <dt className="text-muted-foreground">Responsible</dt>
-        <dd>{who(data.responsible)}</dd>
-        <dt className="text-muted-foreground">Reports to</dt>
-        <dd>{who(data.reportTo)}</dd>
-      </dl>
-      {data.outcome === undefined ? (
-        <p className="text-sm text-muted-foreground">Not finished yet.</p>
-      ) : data.outcome.status === "failure" ? (
-        <p role="status" className="text-sm text-destructive">Failed: {data.outcome.reason}</p>
-      ) : (
-        <pre data-slot="task-result" className="overflow-x-auto rounded-md border bg-muted p-3 text-xs">{JSON.stringify(data.outcome.result, null, 2)}</pre>
+      {data.text !== data.description && <p className="whitespace-pre-wrap wrap-anywhere">{data.text}</p>}
+      <PageSection title="Участники">
+        <dl className="nw-fields">
+          <div><dt>Поставил задачу</dt><dd><TaskAddress address={data.askedBy} /></dd></div>
+          <div><dt>Ответственный</dt><dd><TaskAddress address={data.responsible} /></dd></div>
+          <div><dt>Получатель отчёта</dt><dd><TaskAddress address={data.reportTo} /></dd></div>
+        </dl>
+      </PageSection>
+      {data.outcome?.status === "failure" ? (
+        <PageSection title="Почему задача не выполнена"><DataValue value={data.outcome.reason} /></PageSection>
+      ) : data.outcome?.status === "result" ? (
+        <PageSection title="Результат" data-slot="task-result"><DataValue value={data.outcome.result} /></PageSection>
+      ) : data.result && (
+        <PageSection title="Ожидаемый результат"><SchemaView schema={data.result} /></PageSection>
       )}
     </article>
   );

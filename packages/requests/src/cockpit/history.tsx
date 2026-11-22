@@ -1,98 +1,148 @@
 import { PageLink, useCall, useViewer, type PageProps } from "@niwa-labs/cockpit-sdk";
-import { z } from "zod";
+import { Badge, CopyValue, DataValue, PageSection, SchemaView } from "@niwa-labs/ui-kit";
 import { useState } from "react";
-import { Address } from "./actions.ts";
+import { z } from "zod";
+
+import { Address, Answer, Question } from "./actions.ts";
+import { AnswerForm } from "./answer-form.tsx";
 import { addressText } from "./answers.ts";
 
-const states = ["open", "answered", "cancelled", "expired"] as const;
+const closedStates = ["answered", "cancelled", "expired"] as const;
+const states = z.enum(["open", ...closedStates]);
+type State = z.infer<typeof states>;
+
+const LABELS: Record<State, string> = {
+  open: "Ждёт ответа",
+  answered: "Есть ответ",
+  cancelled: "Отменён",
+  expired: "Срок истёк",
+};
 const glance = z.object({
   id: z.string(),
   description: z.string(),
-  question: z.string(),
-  status: z.enum(states),
+  status: states,
   from: Address.optional(),
   to: Address,
+  deadline: z.number().optional(),
 });
 const list = {
   name: "request.list",
-  input: z.object({ status: z.enum(states).optional() }),
+  input: z.object({ status: states.optional() }),
   output: z.object({ items: z.array(glance) }),
 };
 const get = {
   name: "request.get",
   input: z.object({ id: z.string() }),
   output: glance.extend({
-    input: z.record(z.string(), z.unknown()),
-    answer: z.unknown().optional(),
+    input: Question,
+    question: z.string(),
+    answerPolicy: z.literal("owner-only").optional(),
+    answer: Answer.optional(),
     by: Address.optional(),
   }),
 };
 const refreshOn = { types: ["request.*"] };
+
+function RequestStatus({ status }: { status: State }) {
+  return <Badge variant={status === "answered" ? "default" : "secondary"}>{LABELS[status]}</Badge>;
+}
+
 export function RequestHistory() {
   const viewer = useViewer();
-  const [status, setStatus] = useState<"" | (typeof states)[number]>("");
+  const [status, setStatus] = useState<"" | (typeof closedStates)[number]>("");
   const result = useCall(list, status ? { status } : {}, { enabled: viewer.can(list), refreshOn });
   if (!viewer.can(list)) return null;
+  const entries = result.data?.items.filter((request) => request.status !== "open").toReversed();
   return (
-    <section className="desk-section">
-      <h2>История запросов</h2>
-      <label>
-        Статус{" "}
+    <PageSection title="История запросов" actions={
+      <label className="flex flex-wrap items-center gap-2 text-sm">
+        Статус
         <select
           aria-label="Статус запросов"
+          className="rounded-md border bg-background px-2 py-1"
           value={status}
-          onChange={(e) => setStatus(e.target.value as typeof status)}
+          onChange={(event) => setStatus(event.target.value as typeof status)}
         >
           <option value="">Все</option>
-          {states.map((s) => (
-            <option key={s}>{s}</option>
-          ))}
+          {closedStates.map((state) => <option value={state} key={state}>{LABELS[state]}</option>)}
         </select>
       </label>
-      {result.error ? (
-        <p role="alert">{result.error.message}</p>
-      ) : !result.data ? (
-        <p>Загружаю…</p>
-      ) : !result.data.items.length ? (
-        <p>Запросов с таким статусом пока нет.</p>
+    }>
+      {result.isError ? (
+        <p role="alert">Не удалось загрузить историю запросов.</p>
+      ) : entries === undefined ? (
+        <p role="status">Загружаю историю…</p>
+      ) : entries.length === 0 ? (
+        <p>{status ? "Запросов с таким статусом нет." : "Закрытых запросов пока нет."}</p>
       ) : (
-        <ul className="desk-list">
-          {result.data.items.toReversed().map((r) => (
-            <li key={r.id}>
-              <PageLink to={"/requests/" + r.id}>{r.description}</PageLink>{" "}
-              <small>
-                {r.status} · {r.id} · {addressText(r.to)}
-              </small>
+        <ul className="divide-y">
+          {entries.map((request) => (
+            <li key={request.id} className="min-w-0 flex flex-col gap-1 py-2">
+              <PageLink to={"/requests/" + encodeURIComponent(request.id)} className="text-base font-semibold wrap-anywhere hover:underline">
+                {request.description}
+              </PageLink>
+              <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground wrap-anywhere">
+                <RequestStatus status={request.status} />
+                <span>Адресат · {addressText(request.to)}</span>
+              </div>
             </li>
           ))}
         </ul>
       )}
-    </section>
+    </PageSection>
   );
 }
+
+function AnswerValue({ input, answer }: { input: z.infer<typeof Question>; answer: z.infer<typeof Answer> }) {
+  if ("text" in answer) return <p className="whitespace-pre-wrap wrap-anywhere">{answer.text}</p>;
+  if ("form" in answer) return <DataValue value={answer.form} />;
+  const options = "options" in input ? input.options : [];
+  if (answer.ids.length === 0) return <p>Ни один вариант не выбран.</p>;
+  return (
+    <ul className="list-disc flex flex-col gap-1 px-4">
+      {answer.ids.map((id) => <li className="wrap-anywhere" key={id}>{options.find((option) => option.id === id)?.label ?? id}</li>)}
+    </ul>
+  );
+}
+
 export function RequestDetail({ params }: PageProps<"/requests/$id">) {
   const got = useCall(get, { id: params.id }, { refreshOn });
-  const r = got.data;
+  if (got.isPending) return <p role="status">Загружаю запрос…</p>;
+  if (got.isError) return <p role="alert">Не удалось загрузить запрос.</p>;
+  const request = got.data;
   return (
     <article className="desk-page">
-      <PageLink to="/requests">← Запросы</PageLink>
-      {r ? (
-        <>
-          <h1>{r.description}</h1>
-          <p>
-            {r.id} · {r.status} · {addressText(r.to)}
-          </p>
-          <pre>{JSON.stringify(r.input, null, 2)}</pre>
-          {r.answer !== undefined && (
-            <section>
-              <h2>Ответ</h2>
-              <pre>{JSON.stringify(r.answer, null, 2)}</pre>
-            </section>
-          )}
-          {r.status === "open" && <PageLink to="/requests">Ответить на запрос →</PageLink>}
-        </>
-      ) : (
-        <p>{got.error?.message ?? "Загружаю запрос…"}</p>
+      <header className="min-w-0 flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <RequestStatus status={request.status} />
+          <CopyValue value={request.id} name="Скопировать номер запроса" />
+        </div>
+        <h2 className="text-2xl font-semibold wrap-anywhere">{request.input.title}</h2>
+      </header>
+      {request.input.detail && <p className="whitespace-pre-wrap wrap-anywhere">{request.input.detail}</p>}
+      <dl className="nw-fields">
+        {request.from && <div><dt>Отправитель</dt><dd>{addressText(request.from)}</dd></div>}
+        <div><dt>Адресат</dt><dd>{addressText(request.to)}</dd></div>
+        {request.deadline !== undefined && (
+          <div><dt>Срок ответа</dt><dd><DataValue value={request.deadline} field="at" /></dd></div>
+        )}
+      </dl>
+      {request.input.kind === "form" && (
+        <PageSection title="Поля формы"><SchemaView schema={request.input.schema} /></PageSection>
+      )}
+      {request.input.kind === "permission" && (
+        <PageSection title="Условия разрешения"><DataValue value={request.input.subject} /></PageSection>
+      )}
+      {request.answer !== undefined && (
+        <PageSection title="Ответ">
+          {request.by && <p className="mb-2 text-sm text-muted-foreground wrap-anywhere">Ответил · {addressText(request.by)}</p>}
+          <AnswerValue input={request.input} answer={request.answer} />
+        </PageSection>
+      )}
+      {request.status === "open" && (
+        <PageSection title="Ответ">
+          <AnswerForm request={request} onSent={() => void got.refetch()} />
+        </PageSection>
       )}
     </article>
   );

@@ -1,6 +1,6 @@
 /** Rendering slots, pages and entity links, each module's part inside its own boundary. */
 
-import { IdChip } from "@niwa-labs/ui-kit";
+import { IdChip, PageHeading } from "@niwa-labs/ui-kit";
 import { Fragment, type ComponentType, type ReactNode } from "react";
 
 import { PageCommands } from "./commands.tsx";
@@ -74,6 +74,7 @@ export function PageView({ page, params, search }: { page: RegisteredPage; param
 function PageContent({ page, params, search }: { page: RegisteredPage; params: Readonly<Record<string, string>>; search: SearchParams }) {
   const Page = page.component;
   const commands = typeof page.commands === "function" ? page.commands({ params, search }) : page.commands;
+  if(page.commandHeading) return <article className="desk-page"><PageHeading title={page.title}>{commands && <PageCommands commands={commands}/>}</PageHeading><Page params={params} search={search}/></article>;
   return <>{commands && <PageCommands commands={commands} />}<Page params={params} search={search} /></>;
 }
 
@@ -127,11 +128,12 @@ export function EntityLink({ entity, label, short, className }: EntityLinkProps)
 }
 
 /** A link to a cockpit page that navigates without reloading on a plain click. */
-export function PageLink({ to, replace, className, children }: { to: string; replace?: boolean; className?: string; children?: ReactNode }) {
+export function PageLink({ to, replace, className, children, "aria-current": current }: { "aria-current"?: "page" | undefined; to: string; replace?: boolean; className?: string; children?: ReactNode }) {
   const { navigator } = useCockpit();
   return (
     <a
       href={to}
+      aria-current={current}
       className={className}
       onClick={(event) => {
         if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;

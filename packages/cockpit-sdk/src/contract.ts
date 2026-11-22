@@ -66,6 +66,8 @@ export type PageSpec<P extends string = string> = {
   component: ComponentType<PageProps<P>>;
   /** Open above the referring list. A direct URL still opens as its own page. */
   panel?: boolean;
+  /** Render the registered page title together with its available commands. */
+  commandHeading?: boolean;
   commands?: readonly import("./commands.tsx").PageCommand[] | ((props: PageProps<P>) => readonly import("./commands.tsx").PageCommand[]);
   /** Show the page in the navigation. Pages with parameters are reached by links instead. */
   nav?: NavEntry | undefined;

@@ -36,7 +36,9 @@
   place-items: center;
   width: 24px;
   height: 24px;
-  font: 12px var(--font-mono, monospace);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 580;
   border: 1px solid currentColor;
   border-radius: 50%;
   color: var(--state-done);
@@ -80,7 +82,9 @@
   max-width: 100%;
   padding-right: 7px;
   background: var(--card);
-  font: 12px var(--font-mono, monospace);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 580;
   overflow-wrap: anywhere;
 }
 .nw-phase-title .nw-node[data-state="running"] {
@@ -320,4 +324,14 @@
       #497b96;
     animation: nw-across 1.8s linear infinite;
   }
+}
+
+@media (max-width: 600px) {
+  .nw-track[data-detail="false"] { display: block; overflow: visible; }
+  .nw-track[data-detail="false"] .nw-phase { margin-left: 12px; padding: 0 0 10px 20px; }
+  .nw-track[data-detail="false"] .nw-phase:not(:last-child) { border-left: 1px solid var(--border); }
+  .nw-track[data-detail="false"] .nw-phase::before { display: none; }
+  .nw-track[data-detail="false"] .nw-phase-title { margin-left: -33px; width: auto; }
+  .nw-track[data-detail="false"] .nw-phase:last-child { padding-bottom: 0; }
+  .nw-track[data-detail="false"] .nw-branches { margin: 4px 0 0 0; }
 }

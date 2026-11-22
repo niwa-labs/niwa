@@ -1,14 +1,15 @@
-import { PageSection } from "@niwa-labs/ui-kit";
 /** The sessions of the host and the transcript of one of them. */
 
 import { EntityLink, PageLink, useCall, type PageProps } from "@niwa-labs/cockpit-sdk";
 import {
+  FileRef,
   Markdown,
   Message,
   MessageAvatar,
   MessageBubble,
   MessageContent,
   MessageHeader,
+  PageSection,
   StateRing,
   ToolCall,
   Transcript,
@@ -22,31 +23,37 @@ import { listAction, readAction, type SessionEntry } from "./actions.ts";
 import { itemsOf, type TranscriptItem } from "./transcript.ts";
 
 const RING: Readonly<Record<SessionEntry["state"], WorkState>> = { running: "running", idle: "waiting", ended: "done", unknown: "pending" };
+const SESSION_STATE_LABEL: Readonly<Record<SessionEntry["state"], string>> = {
+  running: "Идёт ход",
+  idle: "Между ходами",
+  ended: "Завершена",
+  unknown: "Состояние неизвестно",
+};
 
 function SessionRow({ entry }: { entry: SessionEntry }) {
-  const id = entry.id;
+  const session = entry.id ?? entry.ref;
+  const title = entry.title?.trim() || entry.model || entry.ref;
   return (
-    <li data-slot="session-row" data-state={entry.state} className="flex min-w-0 items-center gap-3 py-2">
-      <StateRing state={RING[entry.state]} label={entry.state} />
-      {id === undefined ? (
-        <PageLink to={"/sessions/" + encodeURIComponent(entry.ref)} className="min-w-0 truncate text-sm hover:underline">{entry.title ?? entry.ref}</PageLink>
-      ) : (
-        <PageLink to={`/sessions/${encodeURIComponent(id)}`} className="min-w-0 truncate text-sm font-medium hover:underline">
-          {entry.title ?? entry.ref}
+    <li data-slot="session-row" data-state={entry.state} className="flex min-w-0 flex-col gap-1 py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <StateRing state={RING[entry.state]} label={SESSION_STATE_LABEL[entry.state]} aria-hidden="true" />
+        <PageLink to={`/sessions/${encodeURIComponent(session)}`} className="min-w-0 wrap-anywhere text-sm font-semibold hover:underline focus-visible:underline">
+          {title}
+          {title !== session && <span className="sr-only"> · {session}</span>}
         </PageLink>
-      )}
-      {id === undefined ? null : <EntityLink entity={{ kind: "session", id }} short />}
-      {entry.cwd === undefined ? null : (
-        <span className="hidden min-w-0 truncate text-xs text-muted-foreground sm:inline" title={entry.cwd}>
-          {entry.cwd}
-        </span>
-      )}
-      {entry.model === undefined ? null : <span className="shrink-0 text-xs text-muted-foreground">{entry.model}</span>}
-      {entry.lastActivityAt === undefined ? null : (
-        <time className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums" dateTime={new Date(entry.lastActivityAt).toISOString()}>
-          {formatAgo(entry.lastActivityAt)}
-        </time>
-      )}
+      </div>
+      <div data-slot="session-meta" className="flex min-w-0 flex-wrap items-center gap-2 pl-4 text-xs text-muted-foreground">
+        <span>{SESSION_STATE_LABEL[entry.state]}</span>
+        {entry.id && <EntityLink entity={{ kind: "session", id: entry.id }} short />}
+        {entry.run && <EntityLink entity={{ kind: "run", id: entry.run }} short />}
+        {entry.model && entry.model !== title && <span className="min-w-0 wrap-anywhere">{entry.model}</span>}
+        {entry.lastActivityAt !== undefined && (
+          <time className="tabular-nums" dateTime={new Date(entry.lastActivityAt).toISOString()}>
+            {formatAgo(entry.lastActivityAt)}
+          </time>
+        )}
+      </div>
+      {entry.cwd && <div className="min-w-0 pl-4 text-xs"><FileRef path={entry.cwd} /></div>}
     </li>
   );
 }
@@ -62,34 +69,55 @@ export function SessionsTile({ project, reportProjects }: HomeTileProps) {
 }
 
 export function SessionsPage() {
+  const [source, setSource] = useState<"managed" | "all">("managed");
+  return (
+    <>
+      <div className="desk-tools" role="group" aria-label="Источник сессий">
+        <button type="button" className={source === "managed" ? "desk-primary" : undefined} aria-pressed={source === "managed"} onClick={() => setSource("managed")}>
+          Сессии Niwa
+        </button>
+        <button type="button" className={source === "all" ? "desk-primary" : undefined} aria-pressed={source === "all"} onClick={() => setSource("all")}>
+          Вся история с диска
+        </button>
+      </div>
+      <SessionResults key={source} managedOnly={source === "managed"} />
+    </>
+  );
+}
+
+function SessionResults({ managedOnly }: { managedOnly: boolean }) {
   const [cursors, setCursors] = useState<string[]>([]);
   const cursor = cursors.at(-1);
-  const sessions = useCall(listAction, { limit: 100, ...(cursor && { cursor }) }, { refreshOn: { types: ["session.*"] } });
+  const sessions = useCall(listAction, { managedOnly, limit: 100, ...(cursor && { cursor }) }, { refreshOn: { types: ["session.*"] } });
+  const nextCursor = sessions.data?.nextCursor;
   return (
-    <div className="flex min-w-0 flex-col gap-3 p-4">
-      <h2 className="text-lg font-semibold">Sessions</h2>
+    <div className="flex min-w-0 flex-col gap-3">
       {sessions.data?.unreadable?.map(h => <p role="status" key={h.harness}>{h.harness} · {h.reason}</p>)}
-      <div className="desk-tools">{cursor && <button onClick={() => setCursors(c => c.slice(0, -1))}>← Предыдущие сессии</button>}
-        {sessions.data?.nextCursor && <button onClick={() => setCursors(c => [...c, sessions.data.nextCursor!])}>Следующие сессии →</button>}</div>
       {sessions.isPending ? (
-        <p className="text-sm text-muted-foreground">Loading sessions…</p>
+        <p role="status" className="text-sm text-muted-foreground">{managedOnly ? "Загружаю сессии…" : "Читаю историю с диска…"}</p>
       ) : sessions.isError ? (
-        <p role="alert" className="text-sm text-destructive">The sessions could not be read: {sessions.error.message}</p>
+        <p role="alert" className="text-sm text-destructive">Не удалось прочитать сессии: {sessions.error.message}</p>
       ) : sessions.data.sessions.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No sessions yet.</p>
+        <p className="text-sm text-muted-foreground">Сессий пока нет.</p>
       ) : (
         <>
-          <ul data-slot="sessions" className="divide-y rounded-lg border bg-card px-3 text-card-foreground">
+          <ul data-slot="sessions" aria-label={managedOnly ? "Сессии Niwa" : "Вся история с диска"} className="m-0 list-none divide-y rounded-lg border bg-card px-3 text-card-foreground">
             {sessions.data.sessions.map((entry) => (
               <SessionRow key={entry.ref} entry={entry} />
             ))}
           </ul>
           {sessions.data.total > sessions.data.sessions.length ? (
             <p className="text-xs text-muted-foreground">
-              {sessions.data.sessions.length} of {sessions.data.total} sessions, the latest first.
+              Показано {sessions.data.sessions.length} из {sessions.data.total} сессий.
             </p>
           ) : null}
         </>
+      )}
+      {(cursor || nextCursor) && (
+        <nav className="desk-tools" aria-label="Страницы списка сессий">
+          {cursor && <button type="button" onClick={() => setCursors(c => c.slice(0, -1))}>← Предыдущие сессии</button>}
+          {nextCursor && <button type="button" onClick={() => setCursors(c => [...c, nextCursor])}>Следующие сессии →</button>}
+        </nav>
       )}
     </div>
   );
