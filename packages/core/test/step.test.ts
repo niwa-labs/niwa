@@ -26,7 +26,7 @@ type Handle = (data: unknown, step: Parameters<InvocationSpec["handler"]>[1]) =>
 async function bench(options: { intercepts?: Intercepts; artifacts?: ArtifactStore } = {}) {
   const path = await mkdtemp(join(tmpdir(), "niwa-step-test-"));
   homes.push(path);
-  const journal = openJournal(path);
+  let journal = openJournal(path);
   const wake = journal.append({
     id: recordId("rec-wake"),
     stream: streamId("test"),
@@ -40,7 +40,7 @@ async function bench(options: { intercepts?: Intercepts; artifacts?: ArtifactSto
   /** Decides which writes are refused: the test's way to cut a run off. */
   let refuse: ((recs: NewRecord[]) => boolean) | undefined;
   const deps: RunnerDeps = {
-    journal,
+    get journal() { return journal; },
     now: () => 0,
     append: (recs) => {
       if (refuse?.(recs) === true) throw new Error("cut off");
@@ -50,6 +50,7 @@ async function bench(options: { intercepts?: Intercepts; artifacts?: ArtifactSto
     resolveAction: () => undefined,
     interceptsOf: () => options.intercepts ?? NO_INTERCEPTS,
     emit: () => Promise.reject(new Error("no emit in this test")),
+    admitEmit: () => { throw new Error("no emit in this test"); },
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
   };
   const spec = (handler: Handle): InvocationSpec => ({
@@ -60,7 +61,11 @@ async function bench(options: { intercepts?: Intercepts; artifacts?: ArtifactSto
     handler: async (data, step) => handler(data, step),
   });
   return {
-    journal,
+    get journal() { return journal; },
+    reopen: () => {
+      journal.close();
+      journal = openJournal(path);
+    },
     /** Run the handler once more over the same journal; a refused write ends the run as a throw. */
     run: async (handler: Handle): Promise<RunResult | "cut off"> => {
       try {
@@ -252,6 +257,53 @@ test("a call that a check found complete gives its value as the output schema re
   b.close();
 });
 
+
+test.each(["owner", "audit"] as const)("a recorded owner pause takes precedence over a sibling wait with %s first", async (first) => {
+  let denied = true;
+  const b = await bench({ intercepts: { adjusts: [], guards: [() => denied ? deny("not now") : undefined] } });
+  const { made, calls } = counted("step.bind", "do-not-repeat", Any, () => ({ n: 1 }));
+  const key = "@lane.owner.label:bind";
+  const waitKey = "@lane.audit.label:sleep";
+  const handler: Handle = async (_data, step) => {
+    const owner = () => step(made, {}, { key });
+    const audit = () => step.wait(Note, { key: waitKey });
+    const ownerFirst = first === "owner";
+    const started = ownerFirst ? owner() : audit();
+    const [settledFirst] = await Promise.allSettled([started]);
+    const [settledSecond] = await Promise.allSettled([ownerFirst ? audit() : owner()]);
+    // The workflow runner drains sibling calls and passes the parked wait back to Core.
+    const waited = ownerFirst ? settledSecond : settledFirst;
+    if (waited.status === "rejected") throw waited.reason;
+  };
+  const paused = { state: "paused", key, reason: `step ${key}: denied`, choices: ["retry", "skip", "cancel"] };
+  try {
+    expect(await b.run(handler)).toBe("paused");
+    expect(b.lastState()).toMatchObject(paused);
+
+    b.reopen();
+    denied = false;
+    expect(await b.run(handler)).toBe("paused");
+    expect(b.lastState()).toMatchObject(paused);
+    expect(calls.count).toBe(0);
+
+    b.journal.append({
+      id: recordId("rec-retry"),
+      stream: streamId("test"),
+      type: CORE_TYPES.invocationResolved,
+      schema: 1,
+      data: { invocation: INVOCATION, key, choice: "retry", attempt: 0 },
+      actor: { kind: "host" },
+      cause: recordId("rec-wake"),
+      root: recordId("rec-wake"),
+    });
+    expect(await b.run(handler)).toBe("waiting");
+    expect(b.lastState()).toMatchObject({ state: "waiting" });
+    expect(b.lastState()).not.toHaveProperty("key");
+    expect(calls.count).toBe(1);
+  } finally {
+    b.close();
+  }
+});
 
 test("a replayed wait gives back the record as its type reads it", async () => {
   const b = await bench();

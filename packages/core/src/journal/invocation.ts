@@ -207,7 +207,7 @@ interface RunContext {
   pause: string | undefined;
   /** The step the first pause happened on, when it happened on a step. */
   pauseKey: StepKey | undefined;
-  /** True when this run signalled a suspend that the handler swallowed. */
+  /** True when this run signalled or returned a suspend. */
   suspended: boolean;
   /** True once the handler said its work is no longer wanted: a step that fails from then on pauses nothing. */
   abandoned: boolean;
@@ -337,26 +337,26 @@ export async function runInvocation(deps: RunnerDeps, inv: InvocationSpec): Prom
       scope.closed = true;
     }
   } catch (error) {
-    // The journal refused the write: the host has to hear about it, not about a paused handler.
-    if (ctx.failure !== undefined) throw ctx.failure.cause;
     if (error instanceof SuspendSignal) {
-      writeState(ctx, "waiting");
-      return "waiting";
+      ctx.suspended = true;
+    } else {
+      // The journal refused the write: the host has to hear about it, not about a paused handler.
+      if (ctx.failure !== undefined) throw ctx.failure.cause;
+      // The work was given up and a step of it failed after that: nobody is left to decide about it.
+      if (error instanceof AbandonSignal) {
+        writeState(ctx, "done");
+        return "done";
+      }
+      const reason =
+        error instanceof PauseSignal ? error.reason : `handler error: ${messageOf(error)}`;
+      writeState(ctx, "paused", reason, ctx.pauseKey);
+      return "paused";
     }
-    // The work was given up and a step of it failed after that: nobody is left to decide about it.
-    if (error instanceof AbandonSignal) {
-      writeState(ctx, "done");
-      return "done";
-    }
-    const reason =
-      error instanceof PauseSignal ? error.reason : `handler error: ${messageOf(error)}`;
-    writeState(ctx, "paused", reason, ctx.pauseKey);
-    return "paused";
   }
-  // The handler caught the refusal of the journal and returned anyway: the host still hears it.
+  // The host still hears a refusal if the handler returned or suspended afterward.
   if (ctx.failure !== undefined) throw ctx.failure.cause;
-  // The handler caught the pause or the suspend and returned anyway: the invocation still ends as
-  // it was signalled, because the decision it needs did not go away.
+  // A sibling can suspend after another branch signalled a pause, or the handler can catch both
+  // signals and return. In either case the decision is still needed while the wait is parked.
   if (ctx.pause !== undefined) {
     writeState(ctx, "paused", ctx.pause, ctx.pauseKey);
     return "paused";
