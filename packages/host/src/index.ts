@@ -8,3 +8,4 @@ export * from "./doors.ts";
 export * from "./plugin-install.ts";
 export * from "./describe.ts";
 export * from "./host-types.ts";
+export { secretStore } from "./stores.ts";

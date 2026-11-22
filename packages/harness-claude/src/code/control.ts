@@ -37,6 +37,7 @@ import type {
   SessionId,
 } from "@niwa-labs/harness";
 import { CLAUDE_CODE_LAUNCH } from "./launch.ts";
+import type { ClaudeBoxedApiKey } from "./needs.ts";
 import type { ClaudeOptions } from "./options.ts";
 import { modeOf, requireLaunch, HarnessIdSchema, findBundled } from "@niwa-labs/harness";
 
@@ -77,6 +78,8 @@ export type PermissionDecision =
  * How the control side is set up.
  */
 export interface ClaudeCodeControlOptions {
+  /** Existing host secret for direct Anthropic API access in a box. */
+  readonly boxedApiKey?: ClaudeBoxedApiKey;
   /** The harness instance id: half of a session's identity. */
   readonly harness: string;
 
@@ -207,6 +210,7 @@ export function claudeCodeControl(options: ClaudeCodeControlOptions): ClaudeCode
     unsetEnv: ["CLAUDECODE"],
     claude: options.claude,
     home: options.home,
+    boxedApiKey: options.boxedApiKey,
     callTimeoutMs: options.callTimeoutMs,
     turnTimeoutMs: options.turnTimeoutMs,
     stopGraceMs: options.stopGraceMs,

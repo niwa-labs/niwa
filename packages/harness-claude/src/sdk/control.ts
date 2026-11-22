@@ -18,7 +18,6 @@ import type {
   SDKResultMessage,
   SDKUserMessage,
   SpawnOptions,
-  SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 
@@ -59,7 +58,9 @@ import type {
 import { LIVE_PROCESS_REFUSAL, requireBox, spawnAgentNow } from "@niwa-labs/sandbox";
 
 import { localClaude } from "../code/control.ts";
-import { claudeHomeEnv } from "../code/needs.ts";
+import { claudeHomeEnv, claudePrivateEnv, claudeTempEnv } from "../code/needs.ts";
+import type { ClaudeBoxedApiKey } from "../code/needs.ts";
+import { StartupDiagnostics } from "../startup-diagnostics.ts";
 import { claudeBlockOf, claudeEnv } from "../code/options.ts";
 import type { ClaudeOptions } from "../code/options.ts";
 
@@ -78,8 +79,23 @@ type ProcessPlan = Pick<StartOptions, "env" | "tools" | "box" | "reverse" | "ser
   readonly effort: string | undefined;
 };
 
+type ProcessSdkOptions = Omit<SdkOptions, "spawnClaudeCodeProcess"> & {
+  spawnClaudeCodeProcess: (options: SpawnOptions) => ReturnType<typeof spawnAgentNow>;
+};
+
 /** The SDK's tool that asks a person questions. */
 const ASK_USER_QUESTION = "AskUserQuestion";
+
+function resultError(result: SDKResultMessage): string | undefined {
+  if (result.subtype !== "success") return result.errors.join("\n");
+  return result.is_error ? result.result : undefined;
+}
+
+function resultAccessFailure(result: SDKResultMessage): string | undefined {
+  const diagnostics = new StartupDiagnostics();
+  diagnostics.error(resultError(result));
+  return diagnostics.accessFailure();
+}
 
 /** A tool the session asks to use. */
 export interface PermissionRequest {
@@ -132,6 +148,8 @@ const PERMISSION_MODES = { ask: "default", auto: "auto", full: "bypassPermission
 
 /** What the control side needs. */
 export interface ClaudeSdkControlOptions {
+  /** Existing host secret for direct Anthropic API access in a box. */
+  readonly boxedApiKey?: ClaudeBoxedApiKey;
   /** The harness instance id: half of a session's identity. */
   readonly harness: string;
   /** The model, when the caller does not choose one per start. */
@@ -393,7 +411,12 @@ class LiveSession {
     this.#stopAsking();
     if (ran) {
       const outcome = result.subtype === "success" && !result.is_error ? "completed" : "failed";
-      this.emit({ kind: "turn-ended", turn: this.turn, at: Date.now(), outcome });
+      const diagnostic = resultAccessFailure(result);
+      this.emit({
+        kind: "turn-ended", turn: this.turn, at: Date.now(), outcome,
+        ...(result.subtype === "success" && diagnostic === undefined ? { answer: result.result } : {}),
+        ...(diagnostic === undefined ? {} : { diagnostic }),
+      });
     }
     for (const waiter of this.resultWaiters.splice(0)) waiter(result);
     this.#drain();
@@ -413,7 +436,10 @@ class LiveSession {
     if (this.ended) return;
     this.ended = true;
     this.running = false;
-    for (const entry of this.pending.splice(0)) entry.drop(reason);
+    for (const entry of this.pending.splice(0)) {
+      entry.drop(reason);
+      this.emit({ kind: "turn-discarded", turn: entry.turn });
+    }
     this.#stopAsking();
     for (const waiter of this.resultWaiters.splice(0)) waiter(undefined);
     for (const waiter of this.nameWaiters.splice(0)) waiter.reject(new Error(reason));
@@ -441,6 +467,7 @@ export class ClaudeSdkControl implements SessionControl {
   readonly #query: SdkQuery;
   readonly #claude: ClaudeOptions;
   readonly #home: string | undefined;
+  readonly #privateEnv: ReturnType<typeof claudePrivateEnv>;
   /** The sessions reachable by id. */
   readonly #sessions = new Map<string, LiveSession>();
   /** Every query this side started and has not seen end, so none can be forgotten. */
@@ -462,6 +489,7 @@ export class ClaudeSdkControl implements SessionControl {
     this.#mode = options.mode;
     this.#claude = options.claude ?? {};
     this.#home = options.home;
+    this.#privateEnv = claudePrivateEnv(options.boxedApiKey);
     this.#permissions = options.permissions ?? "allow";
     this.#turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
     this.#startTimeoutMs = options.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
@@ -515,11 +543,12 @@ export class ClaudeSdkControl implements SessionControl {
     // The program names a session only once its first turn has begun, so the caller cannot be told
     // the name before the prompt goes out: `named` is not called, and a start cut off in between
     // leaves a session nobody can find.
-    const session = this.#open(this.#sdkOptions(model, system, plan), "", plan.reverse);
+    const startup = new StartupDiagnostics();
+    const session = this.#open(this.#sdkOptions(model, system, plan), "", plan.reverse, startup);
     let first: DeliveryReceipt | undefined;
     const nativeId = await this.#ownedBy(session, async () => {
       first = this.#submit(session, turn);
-      return await this.#awaitName(session);
+      return await this.#awaitName(session, startup);
     });
     this.#sessions.set(nativeId, session);
     this.#plans.set(nativeId, plan);
@@ -688,29 +717,79 @@ export class ClaudeSdkControl implements SessionControl {
   // -- the internals --------------------------------------------------------
 
   /** Starts a query that reads its messages from a stream; it is owned from here on. */
-  #open(options: SdkOptions, nativeId: string, reverse: ReverseHandler | undefined): LiveSession {
+  #open(options: ProcessSdkOptions, nativeId: string, reverse: ReverseHandler | undefined, startup?: StartupDiagnostics): LiveSession {
     if (this.#disposed) throw this.#unavailable("start", "the control side is disposed");
     const input = new MessageStream();
     const abort = new AbortController();
     // `full` lets every tool run and asks nothing, but a session with a place for its reverse
     // requests still takes the questions of its agent.
     const gated = options.permissionMode !== "bypassPermissions" || reverse !== undefined;
-    const query = this.#query({
-      prompt: input,
-      options: {
-        ...options,
-        abortController: abort,
-        ...(gated ? { canUseTool: (tool, toolInput, context) => this.#canUseTool(session, tool, toolInput, context) } : {}),
-      },
-    });
+    const spawn = options.spawnClaudeCodeProcess;
+    let childClosed: Promise<void> | undefined;
+    const startupFailure = async (reason: string): Promise<string> => {
+      // The SDK can settle on exit before a custom spawn's stderr pipe finishes draining.
+      if (childClosed !== undefined) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const grace = new Promise<void>((resolve) => { timer = setTimeout(resolve, 100); });
+        await Promise.race([childClosed, grace]);
+        clearTimeout(timer);
+      }
+      startup?.finishStderr();
+      return startup?.describe(reason) ?? reason;
+    };
+    let query: ReturnType<SdkQuery>;
+    try {
+      query = this.#query({
+        prompt: input,
+        options: {
+          ...options,
+          abortController: abort,
+          ...(gated ? { canUseTool: (tool, toolInput, context) => this.#canUseTool(session, tool, toolInput, context) } : {}),
+          ...(startup === undefined ? {} : {
+            spawnClaudeCodeProcess: (spawnOptions) => {
+              const child = spawn(spawnOptions);
+              const stderr = child.stderr;
+              stderr.setEncoding("utf8");
+              stderr.on("data", startup.stderr);
+              childClosed = new Promise<void>((resolve) => {
+                child.once("close", () => resolve());
+              });
+              child.once("error", (error) => startup.error(error));
+              child.once("exit", (code) => startup.exit(code));
+              return child;
+            },
+          }),
+        },
+      });
+    } catch (error) {
+      if (startup === undefined || error instanceof Unavailable) throw error;
+      abort.abort();
+      startup.error(error);
+      throw this.#unavailable("start", startup.describe("Claude SDK query creation failed"));
+    }
     const session = new LiveSession(query, input, abort, nativeId, reverse);
     this.#owned.add(session);
     void (async () => {
       try {
-        for await (const message of query) this.#handle(session, message);
-        session.end("the query ended");
+        for await (const message of query) {
+          if (startup !== undefined && session.nativeId === "" && message.type === "result") {
+            startup.error(resultError(message));
+            session.end(await startupFailure("Claude SDK returned a result before system/init"));
+            return;
+          }
+          if (message.type === "system" && message.subtype === "init") startup?.finishStderr();
+          this.#handle(session, message);
+        }
+        session.end(startup !== undefined && session.nativeId === ""
+          ? await startupFailure("Claude SDK query ended before system/init")
+          : "the query ended");
       } catch (error) {
-        session.end(`the query failed: ${String(error)}`);
+        if (startup !== undefined && session.nativeId === "") {
+          startup.error(error);
+          session.end(await startupFailure("Claude SDK query failed before system/init"));
+        } else {
+          session.end(`the query failed: ${String(error)}`);
+        }
       } finally {
         this.#owned.delete(session);
       }
@@ -719,13 +798,13 @@ export class ClaudeSdkControl implements SessionControl {
   }
 
   /** The options of the SDK, built from what the caller asked for. */
-  #sdkOptions(model: string | undefined, system: string, plan: ProcessPlan): SdkOptions {
+  #sdkOptions(model: string | undefined, system: string, plan: ProcessPlan): ProcessSdkOptions {
     const claude = claudeEnv(plan.claude);
     const home = claudeHomeEnv(this.#home);
     const env = Object.keys(home).length === 0 && Object.keys(claude).length === 0 ? plan.env : { ...home, ...plan.env, ...claude };
     const restricted = plan.tools !== undefined && plan.tools !== "all";
     const servers = mcpServersOf(plan.servers);
-    const options: SdkOptions = {
+    const options: ProcessSdkOptions = {
       ...(model === undefined ? {} : { model }),
       ...(plan.cwd === undefined ? {} : { cwd: plan.cwd }),
       ...(plan.effort === undefined || plan.effort === "" ? {} : { effort: EffortLevel.parse(plan.effort) }),
@@ -756,17 +835,19 @@ export class ClaudeSdkControl implements SessionControl {
    * whole environment, and the funnel takes what differs from the inherited one as the additions,
    * so a box is given only what is listed, not everything this process holds.
    */
-  #spawn(spawnOptions: SpawnOptions, plan: ProcessPlan): SpawnedProcess {
+  #spawn(spawnOptions: SpawnOptions, plan: ProcessPlan): ReturnType<typeof spawnAgentNow> {
     const additions: Record<string, string> = {};
+    const explicit = { ...claudeHomeEnv(this.#home), ...plan.env, ...claudeEnv(plan.claude) };
     for (const [name, value] of Object.entries(spawnOptions.env)) {
-      if (value !== undefined && process.env[name] !== value) additions[name] = value;
+      if (value !== undefined && (Object.hasOwn(explicit, name) || process.env[name] !== value)) additions[name] = value;
     }
     const child = spawnAgentNow({
       harness: this.#harness,
       program: spawnOptions.command,
       args: spawnOptions.args,
       cwd: spawnOptions.cwd,
-      env: additions,
+      env: { ...additions, ...claudeTempEnv(plan.box !== undefined, plan.env) },
+      privateEnv: this.#privateEnv,
       unset: Object.keys(process.env).filter((name) => !(name in spawnOptions.env)),
       box: plan.box,
     });
@@ -883,8 +964,8 @@ export class ClaudeSdkControl implements SessionControl {
       throw this.#unavailable("turn", "the turn did not end in time");
     }
     if (result.subtype !== "success" || result.is_error) {
-      const reason = result.subtype === "success" ? result.result : result.errors.join("; ");
-      throw this.#unavailable("turn", reason || `the turn failed: ${result.subtype}`);
+      const reason = resultError(result);
+      throw this.#unavailable("turn", resultAccessFailure(result) ?? (reason || `the turn failed: ${result.subtype}`));
     }
     return result;
   }
@@ -895,23 +976,12 @@ export class ClaudeSdkControl implements SessionControl {
    * A first turn that ends before the session was named never will be: that is a refusal, not a
    * wait until the timeout.
    */
-  #awaitName(session: LiveSession): Promise<string> {
+  #awaitName(session: LiveSession, startup: StartupDiagnostics): Promise<string> {
     if (session.nativeId !== "") return Promise.resolve(session.nativeId);
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(this.#unavailable("start", "the SDK did not name the session in time"));
+        reject(this.#unavailable("start", startup.describe("Claude SDK timed out waiting for system/init")));
       }, this.#startTimeoutMs);
-      session.resultWaiters.push((result) => {
-        if (session.nativeId !== "") return;
-        clearTimeout(timer);
-        const reason =
-          result === undefined
-            ? "the query ended"
-            : result.subtype === "success"
-              ? result.result
-              : result.errors.join("; ");
-        reject(this.#unavailable("start", `the first turn ended before the SDK named the session: ${reason}`));
-      });
       session.nameWaiters.push({
         resolve: (id) => {
           clearTimeout(timer);
@@ -919,7 +989,7 @@ export class ClaudeSdkControl implements SessionControl {
         },
         reject: (error) => {
           clearTimeout(timer);
-          reject(error);
+          reject(this.#unavailable("start", error.message));
         },
       });
     });

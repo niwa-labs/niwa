@@ -27,11 +27,13 @@
 
 import { BUILTIN_TOOL_NAMES } from "@anthropic-ai/claude-agent-sdk";
 
+import { StartupDiagnostics } from "../../startup-diagnostics.ts";
 import { patchAdapter } from "./adapter-patch.ts";
 import { toolGuardHooks } from "./tool-guard.ts";
 
 // The patched adapter reads its guard from here: a build that lacks it fails the session's start.
 Object.assign(globalThis, {
+  NiwaClaudeStartupDiagnostics: StartupDiagnostics,
   niwaToolGuardHooks: (niwa: Parameters<typeof toolGuardHooks>[0]) => toolGuardHooks(niwa, BUILTIN_TOOL_NAMES),
 });
 
@@ -124,8 +126,8 @@ console.log = console.error;
 console.info = console.error;
 console.warn = console.error;
 console.debug = console.error;
-process.on("unhandledRejection", (reason, promise) => {
-  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+process.on("unhandledRejection", () => {
+  console.error("Unhandled rejection in the Claude ACP adapter");
 });
 runAcp();
 process.stdin.resume();

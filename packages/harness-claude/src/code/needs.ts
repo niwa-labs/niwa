@@ -5,6 +5,8 @@ import { BUILTIN_TOOL_NAMES } from "@anthropic-ai/claude-agent-sdk";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SecretRef } from "@niwa-labs/core";
+import type { SecretStore } from "@niwa-labs/core";
 import { homePath } from "@niwa-labs/sandbox";
 import type { BoxProfile } from "@niwa-labs/sandbox";
 
@@ -27,11 +29,10 @@ function packageRootOf(specifier: string): string[] {
 
 /**
  * What a Claude Code installation needs inside a box: the `claude` it runs, the runtime and the
- * packages niwa's own adapter runs on, its directory (sign-in, sessions, settings, plugins) and,
+ * packages niwa's own adapter runs on, its directory (sessions, settings, plugins) and,
  * for the default directory, the configuration file beside it, and the endpoint of its model.
  *
- * Its sign-in on macOS is in the Keychain, which is no path: no profile can keep another box from
- * asking the Keychain for it, and none can give it to this one.
+ * The macOS Keychain services are closed by nono. The optional host API key uses the existing API domain.
  */
 export function claudeProfile(home: string, executable: string | undefined): BoxProfile {
   return ({ bin }) => ({
@@ -55,6 +56,32 @@ export function claudeProfile(home: string, executable: string | undefined): Box
  */
 export function claudeHomeEnv(home: string | undefined): Record<string, string> {
   return home === undefined || home === DEFAULT_HOME ? {} : { [CONFIG_DIR_ENV]: home };
+}
+
+/** Claude Code chooses its own temp root unless it is explicitly bound to the box's TMPDIR. */
+export function claudeTempEnv(boxed: boolean, env?: Readonly<Record<string, string>>): Record<string, string> {
+  return boxed && env?.TMPDIR ? { CLAUDE_CODE_TMPDIR: env.TMPDIR } : {};
+}
+
+/** Owner configuration for one boxed Claude installation. */
+export interface ClaudeBoxedApiKey {
+  readonly ref: SecretRef;
+  readonly store: Pick<SecretStore, "resolve">;
+}
+
+export function claudePrivateEnv(auth: ClaudeBoxedApiKey | undefined): (() => Record<string, string>) | undefined {
+  if (auth === undefined) return undefined;
+  const { secret } = SecretRef.parse(auth.ref);
+  return () => {
+    let key: string;
+    try {
+      key = auth.store.resolve(secret);
+    } catch {
+      throw new Error("Claude host API key unavailable");
+    }
+    if (key.length === 0 || /[\r\n\0]/.test(key)) throw new Error("Claude host API key unavailable");
+    return { ANTHROPIC_API_KEY: key, ANTHROPIC_BASE_URL: "https://api.anthropic.com" };
+  };
 }
 
 /**

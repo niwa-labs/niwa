@@ -55,6 +55,7 @@ async function fakeAgent(options: {
   cancelLagMs?: number;
   refuseModel?: boolean;
   refuseMode?: boolean;
+  promptError?: { code: number; message: string; data?: { details: string } };
   /** The model the program names in its `system/init` message, which the adapter forwards with the first turn. */
   runs?: string;
 }) {
@@ -98,6 +99,11 @@ async function drain() {
       continue;
     }
     if (turn === ${options.crashAt ?? 0}) process.exit(1);
+    const promptError = ${JSON.stringify(options.promptError ?? null)};
+    if (promptError !== null) {
+      out({ jsonrpc: "2.0", id: job.id, error: promptError });
+      continue;
+    }
     out({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "fake-session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: ${options.word === true} ? JSON.stringify({ word: "ok" }) : "ok" } } } });
     out({ jsonrpc: "2.0", id: job.id, result: { stopReason: "end_turn" } });
   }
@@ -177,6 +183,19 @@ async function collect(
 
 const kinds = (events: LifeEvent[]): string[] =>
   events.flatMap((event) => (event.kind === "turn-started" || event.kind === "turn-ended" ? [`${event.kind}:${event.turn}`] : []));
+
+test("ACP exposes a safe proxy denial after the session is named", async () => {
+  const privateText = "synthetic-private-provider-details";
+  const command = await fakeAgent({
+    turnMs: 0,
+    promptError: { code: -32603, message: "Internal error", data: { details: `CONNECT tunnel failed, response 403 ${privateText}` } },
+  });
+  control = claudeCodeControl({ harness: "fake", command: [command], executable: "/usr/bin/true" });
+  const { session } = await control.start({ prompt: promptFromText("one") });
+  const events = await collect(control.life(session), (seen) => kinds(seen).includes("turn-ended:1"));
+  expect(events.find((event) => event.kind === "turn-ended")).toMatchObject({ outcome: "unknown", diagnostic: "network denied" });
+  expect(JSON.stringify(events)).not.toContain(privateText);
+});
 
 const repliesOf = async (): Promise<unknown[]> =>
   (await readFile(join(dir, "replies.log"), "utf8"))

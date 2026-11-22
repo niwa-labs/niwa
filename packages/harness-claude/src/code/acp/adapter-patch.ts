@@ -1,8 +1,6 @@
 /**
- * The lines niwa's entry changes in the source of Claude Code's ACP adapter as it loads
- * (`adapter.ts`). Each is replaced whole; a source that lacks one is a build of the adapter niwa
- * does not know, and it fails to load: a session must never run with a tool on by accident, or
- * off silently.
+ * The source anchors niwa replaces as Claude Code's ACP adapter loads (`adapter.ts`).
+ * An adapter build with missing anchors fails to load.
  */
 
 /** One change: what it does, the line as the adapter has it, and the line niwa runs instead. */
@@ -13,6 +11,48 @@ export interface AdapterPatch {
 }
 
 export const ADAPTER_PATCHES: readonly AdapterPatch[] = [
+  {
+    what: "begin creating a session",
+    from: "async createSession(params, creationOpts = {}) {",
+    to: `async createSession(params, creationOpts = {}) {
+        const niwaStartup = new globalThis.NiwaClaudeStartupDiagnostics();
+        let niwaStage = "settings";
+        try {`,
+  },
+  {
+    what: "load Claude settings before creating a query",
+    from: "await settingsManager.initialize();",
+    to: 'await settingsManager.initialize();\n        niwaStage = "query";',
+  },
+  {
+    what: "receive Claude stderr",
+    from: "stderr: (err) => this.logger.error(err),",
+    to: "stderr: niwaStartup.stderr,",
+  },
+  {
+    what: "initialize the query and discover models",
+    from: `const initializationResult = await q.initializationResult();
+        const models = await getAvailableModels(q, initializationResult.models, settingsManager);`,
+    to: `niwaStage = "initializationResult";
+        const initializationResult = await q.initializationResult();
+        niwaStage = "model discovery";
+        const models = await getAvailableModels(q, initializationResult.models, settingsManager);`,
+  },
+  {
+    what: "finish creating the session",
+    from: `    }
+}
+async function getAvailableModels(`,
+    to: `        } catch (error) {
+            niwaStartup.error(error);
+            throw RequestError.internalError(niwaStartup.report(niwaStage));
+        } finally {
+            niwaStartup.finishStderr();
+        }
+    }
+}
+async function getAvailableModels(`,
+  },
   {
     what: "switch AskUserQuestion off",
     from: 'const disallowedTools = ["AskUserQuestion"];',

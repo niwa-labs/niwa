@@ -70,6 +70,7 @@ import { AcpClient, answerText, acpVariant, readVariant } from "@niwa-labs/acp";
 import type { AgentNotification, AgentRequest, RpcOutcome, UnknownVariant, Written } from "@niwa-labs/acp";
 import { claudeBlockOf, claudeEnv } from "../options.ts";
 import type { ClaudeOptions } from "../options.ts";
+import { StartupDiagnostics } from "../../startup-diagnostics.ts";
 import { CLAUDE_CODE_LAUNCH } from "../launch.ts";
 import {
   Acp,
@@ -79,7 +80,8 @@ import {
   ClaudeAgentRequest,
   claudeToolName,
 } from "./protocol.ts";
-import { claudeHomeEnv, claudeToolsOff } from "../needs.ts";
+import { claudeHomeEnv, claudePrivateEnv, claudeTempEnv, claudeToolsOff } from "../needs.ts";
+import type { ClaudeBoxedApiKey } from "../needs.ts";
 
 /**
  * The adapter's mode for each working mode. The adapter takes no `auto`: it answers "Invalid Mode"
@@ -140,6 +142,7 @@ export type ClaudeAcpPermissionPolicy =
  * How the control side is set up.
  */
 export interface ClaudeAcpControlOptions {
+  readonly boxedApiKey?: ClaudeBoxedApiKey;
   /**
    * The harness instance id. It is half of a session's identity: the pair of harness id and
    * the id the harness gave the session.
@@ -236,9 +239,6 @@ const DEFAULT_STOP_GRACE_MS = 500;
 
 /** The most bytes one line of the output stream may hold. */
 const MAX_FRAME_BYTES = 16 * 1024 * 1024;
-
-/** How much of stderr is kept to explain a death. */
-const STDERR_TAIL_CHARS = 2_000;
 
 /** The child is not a person; it should not phone home. */
 const CHILD_ENV: Readonly<Record<string, string>> = {
@@ -337,6 +337,7 @@ const UNWATCHED_LIMIT = 64;
  * people watching.
  */
 class LiveSession {
+  readonly startup = new StartupDiagnostics();
   /** The id the agent gave the session. */
   nativeId = "";
 
@@ -477,7 +478,10 @@ class LiveSession {
 
   /** Drop what waits behind the running turn; a question that waited is told why. */
   dropQueue(reason: string): void {
-    for (const message of this.queue.splice(0)) message.ask?.reject(new Error(reason));
+    for (const message of this.queue.splice(0)) {
+      message.ask?.reject(new Error(reason));
+      this.emit({ kind: "turn-discarded", turn: message.turn });
+    }
   }
 
   /** Announce a sign of life to everyone watching. */
@@ -507,6 +511,7 @@ class LiveSession {
  * It owns every process it starts, and it terminates them itself.
  */
 export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSessionControl {
+  const privateEnv = claudePrivateEnv(options.boxedApiKey);
   const [program, ...args] = options.command;
   const callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   const turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
@@ -930,6 +935,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       CLAUDE_CODE_EXECUTABLE: executable,
       ...claudeHomeEnv(options.home),
       ...plan.env,
+      ...claudeTempEnv(plan.box !== undefined, plan.env),
       // The adapter passes its environment to Claude Code. A session's own options stand over the instance's.
       ...claudeEnv({ ...options.claude, ...claudeBlockOf(plan.blocks) }),
     };
@@ -941,13 +947,12 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     const attach = (child: AgentProcess): LiveSession => {
       const session = new LiveSession(child);
       owned.add(session);
-      let stderrTail = "";
       session.client = new AcpClient({
         write: (line) => writeLine(session, line),
         onRequest: (request) => answerAgentRequest(session, request),
         onNotification: (notification) => handleNotification(session, notification),
-        onUnreadable: (_line, error) =>
-          session.emit({ kind: "activity", at: Date.now(), detail: `a line of the output stream could not be read: ${String(error)}` }),
+        onUnreadable: () =>
+          session.emit({ kind: "activity", at: Date.now(), detail: "a line of the output stream could not be read" }),
         onOverflow: () => {
           // One line longer than the budget is a transport failure, not a session.
           session.end("a line of the output stream was longer than the frame budget");
@@ -961,32 +966,27 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       child.stdout?.on("data", (chunk: string) => session.client.feed(chunk));
 
       child.stderr?.setEncoding("utf8");
-      child.stderr?.on("data", (chunk: string) => {
-        // stderr is where a failure before any frame shows: not signed in, unknown flag.
-        stderrTail = `${stderrTail}${chunk}`.slice(-STDERR_TAIL_CHARS);
-        const detail = chunk.trim();
-        if (detail === "") return;
-        session.emit({ kind: "activity", at: Date.now(), detail: `stderr: ${detail}` });
-      });
+      child.stderr?.on("data", session.startup.stderr);
 
       // A write to a dead child is reported by the closing child, not thrown as an unhandled event.
       child.stdin?.on("error", () => {});
 
       child.on("error", (error) => {
         owned.delete(session);
-        session.end(`the session process failed: ${error.message}`);
+        session.startup.error(error);
+        session.end(session.startup.describe("the session process failed"));
       });
 
-      child.on("close", () => {
+      child.on("close", (code) => {
+        session.startup.exit(code);
+        session.startup.finishStderr();
         owned.delete(session);
         // Whatever the agent started may outlive it; the group is the unit of cleanup.
         if (child.pid !== undefined) signalGroup(session, child.pid, "SIGKILL");
         session.end(
           session.stopping
             ? "the session was stopped"
-            : stderrTail.trim() === ""
-              ? "the session process closed"
-              : stderrTail.trim(),
+            : session.startup.describe("the session process closed"),
         );
       });
       return session;
@@ -1002,6 +1002,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
       detached: true,
       unset: options.unsetEnv,
       env: childEnv,
+      privateEnv,
       box: plan.box,
     }).catch((error: unknown) => {
       if (error instanceof SandboxUnavailable) throw error;
@@ -1035,7 +1036,7 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
         harnessId,
         "control",
         ability,
-        `${[program, ...args].join(" ")}: ${initialized.error ?? "the agent did not answer the handshake"}`,
+        `${[program, ...args].join(" ")}: ${session.startup.rpc("initialize", initialized)}`,
       );
     }
 
@@ -1303,8 +1304,9 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
           ...sessionMetaOf(disabled, startOptions.tools, startOptions.effort ?? defaultEffort, startOptions.reverse, startOptions.servers),
         });
         if (!created.ok) {
-          throw unavailable("start", created.error ?? "the agent did not start a session");
+          throw unavailable("start", session.startup.rpc("session/new", created));
         }
+        session.startup.finishStderr();
 
         const nativeId = sessionIdOf(created.result);
         if (nativeId === undefined) {
@@ -1534,8 +1536,9 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
         ...sessionMetaOf(disabled, resumeOptions?.tools, defaultEffort, resumeOptions?.reverse, resumeOptions?.servers),
       });
       if (!loaded.ok) {
-        throw unavailable("resume", loaded.error ?? "the agent did not resume the session");
+        throw unavailable("resume", session.startup.rpc("session/load", loaded));
       }
+      session.startup.finishStderr();
       session.disabledTools = disabled;
       session.reverse = resumeOptions?.reverse;
       const nativeId = sessionIdOf(loaded.result);
@@ -1644,8 +1647,15 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
   }
 
   /** The reason a call failed: why the session went, when it is known, else what the client said. */
+  function promptAccessFailure(outcome: Extract<RpcOutcome, { ok: false }>): string | undefined {
+    const diagnostics = new StartupDiagnostics();
+    diagnostics.rpc("session/prompt", outcome);
+    return diagnostics.accessFailure();
+  }
+
   function failureOf(session: LiveSession, outcome: Extract<RpcOutcome, { ok: false }>): string {
-    return outcome.dispatch === "unsent" && session.failure !== undefined ? session.failure : outcome.error;
+    if (outcome.dispatch === "unsent" && session.failure !== undefined) return session.failure;
+    return promptAccessFailure(outcome) ?? outcome.error;
   }
 
   /**
@@ -1678,7 +1688,11 @@ export function claudeAcpControl(options: ClaudeAcpControlOptions): ClaudeAcpSes
     const text = finalSegment(session);
 
     session.settleIdle();
-    session.emit({ kind: "turn-ended", turn, at: Date.now(), outcome: turnOutcomeOf(answered) });
+    const diagnostic = answered.ok ? undefined : promptAccessFailure(answered);
+    session.emit({
+      kind: "turn-ended", turn, at: Date.now(), outcome: turnOutcomeOf(answered),
+      ...(diagnostic === undefined ? { answer: text } : { diagnostic }),
+    });
 
     if (!answered.ok && answered.unconfirmed === true) {
       // The agent did not answer the cancel: it still holds a prompt this side has given up on, so

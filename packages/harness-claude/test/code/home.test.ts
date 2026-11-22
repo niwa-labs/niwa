@@ -1,3 +1,4 @@
+import { claudeTempEnv } from "../../src/code/needs.ts";
 /** An instance bound to a Claude Code installation: its processes write where its reading side looks. */
 
 import { expect, test } from "bun:test";
@@ -65,4 +66,11 @@ test("a query of the SDK is bound to the installation of its instance", async ()
     await bound.dispose();
     await plain.dispose();
   }
+});
+
+test("only boxed Claude launches use the assigned session temporary directory", () => {
+  const env = { TMPDIR: "/session/temp", CLAUDE_CODE_TMPDIR: "/other" };
+  expect(claudeTempEnv(true, env)).toEqual({ CLAUDE_CODE_TMPDIR: "/session/temp" });
+  expect(claudeTempEnv(false, env)).toEqual({});
+  expect(claudeTempEnv(true, {})).toEqual({});
 });
