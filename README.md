@@ -5,6 +5,12 @@ workflow runs, messages, requests and tasks in a journal. The CLI, web Cockpit
 and stdio MCP server connect to the same host. Plugins add actions, record
 types, workflows and Cockpit pages.
 
+## Install from npm
+
+Install Bun and run `npm install @niwa-labs/niwa` in your project. The package
+provides the `niwa` command. The [package quickstart](packages/niwa/README.md#install-and-start)
+creates your first host and opens its Cockpit.
+
 ## Run from source
 
 Use Git and Bun on your PATH. The commands below use a shell and were tested
@@ -165,12 +171,6 @@ surface alongside [Cockpit](packages/cockpit/README.md) and [MCP](packages/mcp/R
 The companion guides show the sibling checkout names and composition order.
 Install Niwa before installing a companion checkout. Rin and pstack also
 need the `plugins` checkout.
-
-## Packages
-
-The planned npm package is `@niwa-labs/niwa`. After it is published, install it
-in a Bun project with `bun add @niwa-labs/niwa` and run its `niwa` command with
-`bun run niwa`.
 
 ## License
 
