@@ -6,7 +6,8 @@
  * what a caller needs to talk to it and wait for it.
  */
 
-import type { BoxSpec } from "./spec.ts";
+import { LoopbackListenSchema, listenerName, sameListener } from "./spec.ts";
+import type { BoxSpec, LoopbackListen } from "./spec.ts";
 
 export type SandboxName = "srt" | "nono" | "gondolin" | "boxlite";
 export type SandboxClass = "process" | "vm";
@@ -22,8 +23,10 @@ export interface BoxPolicy {
   readonly devices: readonly string[];
   /** Reads: only the places listed, or every place but those listed. */
   readonly read: { readonly only: readonly string[] } | { readonly except: readonly string[] };
-  /** The only hosts the process may reach. */
+  /** The only hosts the process may connect to. */
   readonly net: readonly string[];
+  /** The sole host-reachable inbound TCP listener the sandbox applies. */
+  readonly listen?: LoopbackListen;
 }
 
 /** The full configuration a sandbox will be given for one spec. A pure value of the spec. */
@@ -73,9 +76,9 @@ export interface Sandbox<M extends SandboxManifest = SandboxManifest> {
   readonly class: SandboxClass;
   /** Probes the machine: the binary is there and can really wrap a process. */
   available(): Promise<boolean>;
-  /** Pure and deterministic: the same spec gives the same manifest. Recorded in the journal before launch. */
+  /** Pure and deterministic. A requested listener must match `policy.listen` exactly or be refused. */
   manifest(spec: BoxSpec): M;
-  /** Starts `argv` inside the box. Throws SandboxUnavailable when the sandbox cannot run here. */
+  /** Starts `argv` inside the box. Refuses any spec the sandbox cannot enforce before spawning. */
   launch(spec: BoxSpec, argv: readonly string[], options?: LaunchOptions): Promise<LaunchedBox>;
 }
 
@@ -94,12 +97,26 @@ export interface BoxRefusal {
   /**
    * `unknown-profile`: a name no profile has. `closed`: a place another box's profile or the closed
    * list keeps. `not-granted`: wider than the host's default, and no rule of the grant covers it.
-   * `no-network`: a host asked of a box that reaches none. `adapter`: the sandbox cannot say it.
+   * `no-network`: network access was asked for and disabled. `adapter`: the sandbox cannot hold it.
    */
   readonly code: "unknown-profile" | "closed" | "not-granted" | "no-network" | "adapter";
   readonly message: string;
   /** The rule of a grant that would cover what was refused. */
   readonly rule?: string;
+}
+
+/** A backend may enforce exactly the declared listener, or refuse the spec. */
+export function listenRefusal(spec: BoxSpec, manifest: SandboxManifest): BoxRefusal | undefined {
+  const applied = manifest.policy?.listen;
+  if (spec.listen === undefined && applied === undefined) return undefined;
+  const confirmed = LoopbackListenSchema.safeParse(applied);
+  if (spec.listen !== undefined && confirmed.success && sameListener(spec.listen, confirmed.data)) return undefined;
+  return {
+    code: "adapter",
+    message: spec.listen === undefined
+      ? "the sandbox applies an unrequested TCP loopback listener"
+      : `the sandbox does not confirm an exact listener on ${listenerName(spec.listen)} for ${spec.listen.from}`,
+  };
 }
 
 /**

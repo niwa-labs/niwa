@@ -19,8 +19,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { BoxRefused, admit, boxManifest, boxSpec, itemOf, nono, resolveProfile, sandbox, srt } from "@niwa-labs/sandbox";
-import type { BoxRefusal, Sandbox } from "@niwa-labs/sandbox";
+import { BoxManifestSchema, BoxRefused, LoopbackListenSchema, admit, boxManifest, boxSpec, itemOf, nono, planSpec, resolveProfile, sandbox, srt } from "@niwa-labs/sandbox";
+import type { BoxRefusal, LoopbackListen, Sandbox } from "@niwa-labs/sandbox";
 import { catalog } from "@niwa-labs/sandbox/profiles";
 
 let root = "";
@@ -61,6 +61,88 @@ function host() {
   made.install("pi", { write: [at("pi")] });
   return made;
 }
+
+const LOOPBACK = { host: "127.0.0.1", port: 0 } as const;
+
+test("a TCP listener comes only from a selected profile and retains its origin", () => {
+  const made = sandbox({ profiles: { service: { listen: LOOPBACK } } });
+  made.install("server", { listen: LOOPBACK, net: ["registry.example"] });
+  const input = { cwd: at("work"), defaults: { allow: [{ net: "127.0.0.1" }] }, network: true } as const;
+  const outbound = made.plan(input);
+  expect(outbound.net).toEqual([{ host: "127.0.0.1", from: "host" }]);
+  expect(outbound.listen).toBeUndefined();
+  expect(planSpec(outbound).listen).toBeUndefined();
+
+  const named = made.plan({ ...input, request: { allow: ["service"] } });
+  expect(named.listen).toEqual({ ...LOOPBACK, from: "profile:service" });
+  expect(named.rules).toEqual(["box.use@service"]);
+
+  const owned = made.plan({ ...input, owner: "server", request: { only: [] } });
+  expect(owned.listen).toEqual({ ...LOOPBACK, from: "harness:server" });
+  expect(owned.net).toEqual([{ host: "registry.example", from: "harness:server" }]);
+  expect(owned.rules).toEqual([]);
+
+  const disabled = made.plan({ ...input, owner: "server", request: { only: [] }, network: false });
+  expect(disabled.listen).toBeUndefined();
+  expect(disabled.net).toEqual([]);
+  expect(disabled.refusals).toMatchObject([{ code: "no-network", message: expect.stringContaining("harness:server") }]);
+});
+
+test("TCP listener declarations allow exact loopback addresses and bounded ports", () => {
+  const valid = { host: "::1", port: 65535 } as const;
+  expect(LoopbackListenSchema.parse(valid)).toEqual(valid);
+  for (const listen of [
+    { host: "localhost", port: 80 },
+    { host: "0.0.0.0", port: 80 },
+    { host: "::", port: 80 },
+    { host: "127.0.0.1", port: -1 },
+    { host: "127.0.0.1", port: 65536 },
+    { host: "127.0.0.1", port: 1.5 },
+    { ...LOOPBACK, protocol: "udp" },
+  ]) {
+    expect(LoopbackListenSchema.safeParse(listen).success).toBe(false);
+  }
+  expect(() => resolveProfile({ listen: { ...LOOPBACK, port: -1 } }, "invalid", { home: "/home", env: {} }))
+    .toThrow("profile invalid: invalid TCP loopback listener");
+});
+
+test("a box with conflicting TCP listener requirements refuses the combined plan", () => {
+  const made = sandbox({ profiles: { service: { listen: { host: "::1", port: 8000 } } } });
+  made.install("server", { listen: LOOPBACK });
+  const plan = made.plan({ cwd: at("work"), defaults: { allow: ["service"] }, owner: "server", network: true });
+  expect(plan.refusals[0]?.message).toContain("TCP [::1]:8000");
+  expect(plan.refusals[0]?.message).toContain("harness:server");
+});
+
+test("admission requires an exact applied listener and records its provenance", () => {
+  const made = sandbox();
+  made.install("server", { listen: LOOPBACK });
+  const input = { cwd: at("work"), defaults: { allow: [] }, network: true } as const;
+  const plan = made.plan({ ...input, owner: "server" });
+  const backend = (listen?: LoopbackListen): Sandbox => ({
+    name: "gondolin",
+    class: "vm",
+    available: async () => true,
+    manifest: (spec) => ({
+      sandbox: "gondolin",
+      cwd: spec.cwd,
+      env: spec.env,
+      policy: { read: { only: [] }, write: [], devices: [], net: [], ...(listen === undefined ? {} : { listen }) },
+    }),
+    launch: async () => { throw new Error("admission must never spawn"); },
+  });
+  expect(() => admit(plan, backend(), () => undefined)).toThrow(BoxRefused);
+  expect(() => admit(plan, backend({ ...LOOPBACK, port: 8090 }), () => undefined)).toThrow(BoxRefused);
+  const admitted = admit(plan, backend(LOOPBACK), () => undefined);
+  expect(admitted.spec.listen).toEqual({ ...LOOPBACK, from: "harness:server" });
+  const manifest = BoxManifestSchema.parse(boxManifest(plan, admitted.rules, admitted.manifest));
+  expect(manifest.listen).toEqual(admitted.spec.listen);
+  expect(manifest.policy.listen).toEqual(LOOPBACK);
+  const bare = made.plan(input);
+  expect(() => admit(bare, backend(LOOPBACK), () => undefined)).toThrow(BoxRefused);
+  const legacy = admit(bare, backend(), () => undefined);
+  expect(BoxManifestSchema.parse(boxManifest(bare, legacy.rules, legacy.manifest)).listen).toBeUndefined();
+});
 
 test("a profile is paths or a function of the machine, and bin finds a program, its real path and its package", () => {
   const plain = resolveProfile({ read: ["~/.gitconfig"], write: ["/x/cache"] }, "plain", { home: "/home/u", env: {} });

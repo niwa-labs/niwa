@@ -3,6 +3,8 @@
  * A kind is code and is resolved by name; an instance is an installation and has the id.
  */
 
+import { z } from "zod";
+
 import type { Harness, HarnessId, HarnessKind, HarnessBinary } from "./instance.ts";
 import { harnessId, harnessKind, machineId } from "./instance.ts";
 import type { HarnessInsert } from "./insert.ts";
@@ -12,7 +14,8 @@ import type { HarnessDetection } from "./discover.ts";
 import type { KindOptions } from "./options.ts";
 import type { HarnessSide, SideCapabilities } from "./capabilities.ts";
 import { CapabilityExceeded, KindCapabilitiesSchema, excessOf, narrowSides, sidesOf } from "./declaration.ts";
-import type { BoxProfile, ProfilePaths } from "@niwa-labs/sandbox";
+import { LoopbackListenSchema } from "@niwa-labs/sandbox";
+import type { BoxProfile, LoopbackListen, ProfilePaths } from "@niwa-labs/sandbox";
 import type { KindCapabilities } from "./declaration.ts";
 
 /**
@@ -35,9 +38,16 @@ export interface InstanceOptions {
   readonly binary?: HarnessBinary;
   /**
    * Hosts its model is reached at besides the ones its kind knows: a provider of the owner's own.
-   * They go into the installation's profile, so a box its sessions run in reaches them.
+   * Use `boxProfile.net` to replace the default list.
    */
   readonly net?: readonly string[];
+  /** The installation's overrides for the network fields of its kind's box profile. */
+  readonly boxProfile?: {
+    /** The outbound host list, including any explicit `*.example.com` patterns. Omit to inherit. */
+    readonly net?: readonly string[];
+    /** Replace the local listener. Omit to inherit or pass null to remove it. */
+    readonly listen?: LoopbackListen | null;
+  };
   /**
    * What the installation claims: what was found on the machine, which may narrow what the kind
    * declares and never widen it. Default: the kind's own sides.
@@ -123,11 +133,36 @@ export interface HarnessKindSpec<Options extends InstanceOptions> {
   readonly profile: KindProfile<Options>;
 }
 
-/** A profile with the hosts the owner gave an installation added to its own. */
-function withHosts(profile: BoxProfile, net: readonly string[] | undefined): BoxProfile {
-  if (net === undefined || net.length === 0) return profile;
-  const add = (paths: ProfilePaths): ProfilePaths => ({ ...paths, net: [...(paths.net ?? []), ...net] });
-  return typeof profile === "function" ? (context) => add(profile(context)) : add(profile);
+const HostnameSchema = z.hostname();
+const BoxProfileHostSchema = z.union([
+  HostnameSchema,
+  z.ipv6(),
+  z.string().refine((host) => host.startsWith("*.") && HostnameSchema.safeParse(host.slice(2)).success),
+], { error: "use a hostname, IP address, or subdomain pattern such as *.example.com" });
+
+const BoxProfileOverrideSchema = z.strictObject({
+  net: z.array(BoxProfileHostSchema).optional(),
+  listen: LoopbackListenSchema.nullable().optional(),
+});
+
+/** Apply only the network fields the owner named, preserving the kind's filesystem paths. */
+function withProfileOverrides(
+  profile: BoxProfile,
+  extraHosts: readonly string[] | undefined,
+  override: z.output<typeof BoxProfileOverrideSchema> | undefined,
+): BoxProfile {
+  if (override?.net === undefined && override?.listen === undefined && !extraHosts?.length) return profile;
+  const apply = (paths: ProfilePaths): ProfilePaths => {
+    const { listen: defaultListen, ...rest } = paths;
+    const listen = override?.listen === undefined ? defaultListen : override.listen;
+    const net = override?.net ?? (extraHosts?.length ? [...(paths.net ?? []), ...extraHosts] : paths.net);
+    return {
+      ...rest,
+      ...(net === undefined ? {} : { net }),
+      ...(listen == null ? {} : { listen }),
+    };
+  };
+  return typeof profile === "function" ? (context) => apply(profile(context)) : apply(profile);
 }
 
 /** Which sides a kind has code for, as `narrowSides` takes them. */
@@ -170,8 +205,9 @@ export function defineHarnessKind<Options extends InstanceOptions>(spec: Harness
         throw new CapabilityExceeded(id, kind, [`control.launch.model (asked for "${options.model}")`]);
       }
       const home = options.home ?? spec.home(options);
+      const profileOverride = BoxProfileOverrideSchema.optional().parse(options.boxProfile);
       const bound = spec.bind({ ...options, id, home });
-      const profile = withHosts(spec.profile.of({ ...options, id, home }), options.net);
+      const profile = withProfileOverrides(spec.profile.of({ ...options, id, home }), options.net, profileOverride);
       const missing = spec.implements.filter((side) => bound[side] === undefined);
       if (missing.length > 0) throw new Error(`harness kind "${kind}" bound "${id}" without its ${missing.join(", ")} side`);
       const instance: Harness = {

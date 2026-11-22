@@ -27,10 +27,10 @@ import { z } from "zod";
 import { covers, homeExpanded, linkPlace, programPaths, realPlace, resolveProfile } from "./profile.ts";
 import type { BoxProfile, ResolvedProfile } from "./profile.ts";
 import { catalog } from "./profiles.ts";
-import { BoxRefused } from "./sandbox.ts";
+import { BoxRefused, listenRefusal } from "./sandbox.ts";
 import type { BoxPolicy, BoxRefusal, Sandbox, SandboxManifest } from "./sandbox.ts";
-import { EnvNameSchema, boxSpec } from "./spec.ts";
-import type { BoxSpec } from "./spec.ts";
+import { EnvNameSchema, ListenNeedSchema, LoopbackListenSchema, boxSpec, listenerName, sameListener } from "./spec.ts";
+import type { BoxSpec, ListenNeed } from "./spec.ts";
 import type { BoxSandboxName } from "./launch.ts";
 
 /**
@@ -105,6 +105,8 @@ export interface BoxPlan {
   /** Guaranteed reachable. */
   readonly paths: readonly PathNeed[];
   readonly net: readonly { readonly host: string; readonly from: Origin }[];
+  /** A required host-reachable TCP listener and the profile that supplied it. */
+  readonly listen?: ListenNeed;
   /** Guaranteed closed. */
   readonly closed: readonly { readonly path: string; readonly from: Origin }[];
   readonly skipped: readonly Skipped[];
@@ -140,7 +142,7 @@ export interface PlanInput {
   readonly writes?: readonly { readonly path: string; readonly from: Origin }[];
   /** Places closed to the box besides the profiles' and the built-in list (niwa's own). */
   readonly closed?: readonly { readonly path: string; readonly from: Origin }[];
-  /** Whether the box may reach a network at all. A box that may not refuses every host asked of it. */
+  /** Whether this box may use networking at all, including outbound hosts and inbound listeners. */
   readonly network: boolean;
   /**
    * Why `"project"` gives nothing, when it does not: a box whose working directory nobody chose
@@ -252,6 +254,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
   const skipped: Skipped[] = [];
   const paths: PathNeed[] = [];
   const net: { host: string; from: Origin }[] = [];
+  let listen: ListenNeed | undefined;
 
   const resolved = new Map<string, ResolvedProfile>();
   const profileOf = (name: string, profile: BoxProfile): ResolvedProfile => {
@@ -264,6 +267,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
         read: [...new Set(given.read.map(place))],
         write: [...new Set(given.write.map(place))],
         net: given.net,
+        ...(given.listen === undefined ? {} : { listen: given.listen }),
         programs: [...new Set(given.programs.flatMap((path) => [place(path), path]))],
       };
       resolved.set(name, found);
@@ -289,6 +293,15 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     for (const host of profile.net) {
       if (input.network) net.push({ host, from });
       else skipped.push({ place: host, from, why: "this box reaches no network" });
+    }
+    if (profile.listen !== undefined) {
+      const endpoint = listenerName(profile.listen);
+      if (!input.network) refusals.push({ code: "no-network", message: `${from} requires a listener on ${endpoint}, but this box reaches no network` });
+      else if (listen === undefined) listen = { ...profile.listen, from };
+      else if (!sameListener(profile.listen, listen)) refusals.push({
+        code: "adapter",
+        message: `${from} requires a listener on ${endpoint}; ${listen.from} already requires a different listener on ${listenerName(listen)}`,
+      });
     }
     takenPaths.push(...profile.read, ...profile.write);
   };
@@ -434,7 +447,17 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     }
   }
 
-  return { cwd: given, request, paths: distinctNeeds(paths), net: distinctHosts(net), closed, skipped, rules, refusals };
+  return {
+    cwd: given,
+    request,
+    paths: distinctNeeds(paths),
+    net: distinctHosts(net),
+    ...(listen === undefined ? {} : { listen }),
+    closed,
+    skipped,
+    rules,
+    refusals,
+  };
 }
 
 /** The needs with each path once, writable when any need writes it, from the first that named it. */
@@ -549,6 +572,7 @@ export function planSpec(plan: BoxPlan, extra: { readonly env?: Readonly<Record<
     write: plan.paths.filter((need) => need.mode === "write").map((need) => need.path),
     closed: [...new Set(plan.closed.map((one) => one.path))],
     net: plan.net.map((one) => one.host),
+    ...(plan.listen === undefined ? {} : { listen: plan.listen }),
     env: { ...extra.env },
     sockets: [...(extra.sockets ?? [])],
   });
@@ -560,6 +584,7 @@ export const BoxPolicySchema = z.object({
   devices: z.array(z.string()),
   read: z.union([z.object({ only: z.array(z.string()) }), z.object({ except: z.array(z.string()) })]),
   net: z.array(z.string()),
+  listen: LoopbackListenSchema.optional(),
 });
 
 /**
@@ -577,6 +602,7 @@ export const BoxManifestSchema = z.object({
   }),
   paths: z.array(z.object({ path: z.string(), mode: z.enum(["read", "write"]), from: z.string() })),
   net: z.array(z.object({ host: z.string(), from: z.string() })),
+  listen: ListenNeedSchema.optional(),
   closed: z.array(z.object({ path: z.string(), from: z.string() })),
   skipped: z.array(z.object({ place: z.string(), from: z.string(), why: z.string() })),
   rules: z.array(z.string()),
@@ -594,6 +620,7 @@ export function boxManifest(plan: BoxPlan, rules: readonly string[], made: Sandb
     request: { mode: plan.request.mode, items: plan.request.items.map((one) => ({ item: one.item, from: one.from })) },
     paths: [...plan.paths],
     net: [...plan.net],
+    ...(plan.listen === undefined ? {} : { listen: { ...plan.listen } }),
     closed: [...plan.closed],
     skipped: [...plan.skipped],
     rules: [...rules],
@@ -602,6 +629,7 @@ export function boxManifest(plan: BoxPlan, rules: readonly string[], made: Sandb
       devices: [...policy.devices],
       read: "only" in policy.read ? { only: [...policy.read.only] } : { except: [...policy.read.except] },
       net: [...policy.net],
+      ...(policy.listen === undefined ? {} : { listen: { ...policy.listen } }),
     },
     env: Object.keys(made.env).map((name) => EnvNameSchema.parse(name)),
   };
@@ -633,6 +661,8 @@ export function admit(
   let manifest: SandboxManifest | undefined;
   try {
     manifest = sandbox.manifest(spec);
+    const listener = listenRefusal(spec, manifest);
+    if (listener !== undefined) reasons.push(listener);
   } catch (error) {
     if (!(error instanceof BoxRefused)) throw error;
     reasons.push(...error.reasons);

@@ -120,6 +120,10 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
 
   // Relative paths are read from the box's working directory, where srt is run, not from the host's.
   const manifest = (given: BoxSpec): SrtManifest => {
+    // SRT can enable all local bindings on macOS or isolate the whole network namespace on Linux.
+    if (given.listen !== undefined) {
+      throw new BoxRefused([{ code: "adapter", message: "srt cannot restrict a TCP loopback listener to the requested address and port" }], "srt");
+    }
     const spec = anchoredSpec(given);
     const reasons: BoxRefusal[] = [];
     // On Linux srt cannot filter a socket by its path: the list is ignored, and the box would run

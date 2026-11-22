@@ -254,6 +254,10 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
   const system = systemReads(platform).map(expanded);
 
   const manifest = (given: BoxSpec): NonoManifest => {
+    // macOS opens all addresses and ports for a listen grant; Linux can match the port only.
+    if (given.listen !== undefined) {
+      throw new BoxRefused([{ code: "adapter", message: "nono cannot restrict a TCP loopback listener to the requested address and port" }], "nono");
+    }
     // Relative paths are read from the box's working directory, which is where nono is run: the same
     // place for the flags and for the check below.
     const spec = anchoredSpec(given);

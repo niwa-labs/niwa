@@ -10,11 +10,17 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
-/** What a profile names: the places read, the places written (and read), the hosts reached. */
+import { LoopbackListenSchema } from "./spec.ts";
+import type { LoopbackListen } from "./spec.ts";
+
+/** What a profile names: the places read and written and the network access needed. */
 export interface ProfilePaths {
   readonly read?: readonly string[];
   readonly write?: readonly string[];
+  /** Outbound hosts. */
   readonly net?: readonly string[];
+  /** The inbound TCP loopback listener this program needs. */
+  readonly listen?: LoopbackListen;
 }
 
 /** What a profile is resolved against: the machine it runs on. */
@@ -39,6 +45,7 @@ export interface ResolvedProfile {
   readonly read: readonly string[];
   readonly write: readonly string[];
   readonly net: readonly string[];
+  readonly listen?: LoopbackListen;
   /** The paths `bin` gave: programs and their packages, which are never closed to other boxes. */
   readonly programs: readonly string[];
 }
@@ -131,10 +138,13 @@ export function resolveProfile(profile: BoxProfile, of: string, machine: { home:
     },
   };
   const paths = typeof profile === "function" ? profile(context) : profile;
+  const listen = LoopbackListenSchema.optional().safeParse(paths.listen);
+  if (!listen.success) throw new TypeError(`profile ${of}: invalid TCP loopback listener`, { cause: listen.error });
   return {
     read: checked(paths.read, machine.home, of),
     write: checked(paths.write, machine.home, of),
     net: [...(paths.net ?? [])],
+    ...(listen.data === undefined ? {} : { listen: listen.data }),
     programs: [...new Set(programs)],
   };
 }

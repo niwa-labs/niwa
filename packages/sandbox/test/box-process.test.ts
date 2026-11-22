@@ -121,6 +121,34 @@ function fake(box: () => LaunchedBox): Sandbox {
   };
 }
 
+test("a direct boxed launch must confirm its exact TCP listener before probing or spawning", async () => {
+  let probed = false;
+  let spawned = false;
+  const adapter = {
+    ...fake(() => {
+      spawned = true;
+      throw new Error("a refused launch must not spawn");
+    }),
+    available: async () => {
+      probed = true;
+      return true;
+    },
+  };
+  const launch = {
+    harness: "server",
+    program: "/bin/sh",
+    args: [],
+    box: { sandbox: adapter, spec: { cwd: "/", listen: { host: "127.0.0.1", port: 0, from: "harness:server" } } },
+  } as const;
+  await expect(spawnAgent(launch)).rejects.toThrow(BoxRefused);
+  const child = spawnAgentNow(launch);
+  const error = await new Promise<Error>((resolve) => child.once("error", resolve));
+  expect(error).toBeInstanceOf(BoxRefused);
+  expect(error.message).toContain("exact listener on TCP 127.0.0.1:0");
+  expect(probed).toBe(false);
+  expect(spawned).toBe(false);
+});
+
 const bytes = (size: number) => new Uint8Array(size).fill(97);
 const inert = { write: () => undefined, end: () => undefined };
 
@@ -249,6 +277,23 @@ test("a relative working directory is resolved once, against the host's", () => 
   expect(manifest.cwd).toBe(resolve("work"));
   expect(manifest.flags).toContain(resolve("work", "out"));
 });
+
+for (const platform of ["darwin", "linux"] as const) {
+  for (const adapter of [
+    nono({ platform, binary: "/nonexistent/nono" }),
+    srt({ platform, command: ["/nonexistent/srt"] }),
+  ]) {
+    test(`${adapter.name} on ${platform} refuses a TCP loopback listener before running the wrapper`, async () => {
+      const spec = boxSpec({
+        cwd: "/",
+        net: ["127.0.0.1"],
+        listen: { host: "127.0.0.1", port: 43210, from: "harness:opencode" },
+      });
+      expect(() => adapter.manifest(spec)).toThrow(BoxRefused);
+      await expect(adapter.launch(spec, ["true"])).rejects.toThrow(BoxRefused);
+    });
+  }
+}
 
 test("a wrapper that is not there is SandboxUnavailable, and a working directory that is not there is not", async () => {
   const spec = boxSpec({ cwd: await tempDir("box-missing") });

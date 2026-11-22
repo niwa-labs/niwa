@@ -17,7 +17,7 @@ import { PassThrough } from "node:stream";
 import type { Readable, Writable } from "node:stream";
 
 import { nono } from "./nono.ts";
-import { requireSandbox } from "./sandbox.ts";
+import { BoxRefused, listenRefusal, requireSandbox } from "./sandbox.ts";
 import type { LaunchedBox, Sandbox, SandboxManifest, SandboxName } from "./sandbox.ts";
 import { boxSpec } from "./spec.ts";
 import type { BoxSpec, BoxSpecInput } from "./spec.ts";
@@ -330,15 +330,19 @@ function announce(launch: AgentLaunch, argv: readonly string[], sandbox: Sandbox
 }
 
 /** The spec with its environment, the manifest made from it, and the listeners told: all before anything starts. */
-async function admitBox(launch: AgentLaunch, request: BoxRequest): Promise<{ sandbox: Sandbox; spec: BoxSpec }> {
+async function admitBox(launch: AgentLaunch, request: BoxRequest, probeAfterManifest = false): Promise<{ sandbox: Sandbox; spec: BoxSpec }> {
   const sandbox = sandboxOf(request.sandbox);
   const spec = boxedSpec(launch, request);
+  const manifest = sandbox.manifest(spec);
+  const listener = listenRefusal(spec, manifest);
+  if (listener !== undefined) throw new BoxRefused([listener], sandbox.name);
+  if (probeAfterManifest) await requireSandbox(sandbox);
   const record: BoxRecord = {
     harness: launch.harness,
     ...(request.mark === undefined ? {} : { mark: request.mark }),
     sandbox: sandbox.name,
     spec,
-    manifest: sandbox.manifest(spec),
+    manifest,
   };
   for (const listener of boxListeners) await listener(record);
   return { sandbox, spec };
@@ -375,8 +379,10 @@ function spawned(child: PipedProcess): Promise<PipedProcess> {
 /** The funnel: every agent process is started here. Any refusal is typed and comes before the process. */
 export async function spawnAgent(launch: AgentLaunch): Promise<AgentProcess> {
   if (launch.box === undefined) return await spawned(spawnPlain(launch));
-  await requireBox(launch.box);
-  const { sandbox, spec } = await admitBox(launch, launch.box);
+  const needsListener = launch.box.spec.listen !== undefined;
+  // The manifest can refuse unsupported listeners without probing the runtime.
+  if (!needsListener) await requireBox(launch.box);
+  const { sandbox, spec } = await admitBox(launch, launch.box, needsListener);
   announce(launch, argvOf(launch), sandbox.name);
   const child = new BoxedProcess();
   child.attach(await sandbox.launch(spec, argvOf(launch), { detached: launch.detached ?? false }));

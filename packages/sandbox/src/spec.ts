@@ -19,6 +19,26 @@ export const NetHostSchema = z
   .brand<"NetHost">();
 export type NetHost = z.output<typeof NetHostSchema>;
 
+/** One inbound TCP listener, reachable from the host only on this IP and port. */
+export const LoopbackListenSchema = z.strictObject({
+  host: z.enum(["127.0.0.1", "::1"]),
+  /** Zero permits one ephemeral port chosen by the OS at bind time. */
+  port: z.int().min(0).max(65535),
+});
+export type LoopbackListen = Readonly<z.output<typeof LoopbackListenSchema>>;
+
+export const ListenNeedSchema = LoopbackListenSchema.extend({ from: z.string().min(1) });
+export type ListenNeed = Readonly<z.output<typeof ListenNeedSchema>>;
+
+export function sameListener(one: LoopbackListen, another: LoopbackListen): boolean {
+  return one.host === another.host && one.port === another.port;
+}
+
+export function listenerName(listener: LoopbackListen): string {
+  const host = listener.host === "::1" ? "[::1]" : listener.host;
+  return `TCP ${host}:${listener.port}`;
+}
+
 /** The name of an environment variable the process receives. */
 export const EnvNameSchema = z
   .string()
@@ -41,8 +61,10 @@ export const BoxSpecSchema = z.object({
    * them closed or refuses the spec. Empty unless the caller sets it.
    */
   closed: z.array(BoxPathSchema).default([]),
-  /** The only hosts the process may reach. Empty: no network. */
+  /** The only hosts the process may connect to. Empty: no outbound hosts. */
   net: z.array(NetHostSchema).default([]),
+  /** The required inbound TCP listener. Absent: no host-reachable listener is granted. */
+  listen: ListenNeedSchema.optional(),
   /** The whole environment of the process. */
   env: z.record(EnvNameSchema, z.string()).default({}),
   /** Unix sockets the process may connect to (niwa's own socket must be reachable inside). */

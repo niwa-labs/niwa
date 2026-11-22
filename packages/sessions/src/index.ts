@@ -878,7 +878,6 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     const launchFor = async (rules: Grant, cwd: string | undefined, harness: string, request: BoxAccessInput | undefined, caller: Caller, defaults: BoxAccessInput | BoxAccess = boxDefault): Promise<Launch> => {
       const tools = toolsOfGrant(rules);
       const adapter = sandboxOf(boxes.adapter ?? "srt");
-      await requireSandbox(adapter);
       const temp = realpathSync(mkdtempSync(join(tmpdir(), "niwa-box-")));
       const rights = api.rights(caller);
       try {
@@ -894,6 +893,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
           network: true,
         });
         const admitted = admit(plan, adapter, (needed) => heldRule(rights, needed), { sockets: [api.socket()] });
+        await requireSandbox(adapter);
         return { ...(tools === undefined ? {} : { tools }), box: { sandbox: adapter, spec: admitted.spec }, plan, rules: admitted.rules, temp };
       } catch (error) {
         rmSync(temp, { recursive: true, force: true });

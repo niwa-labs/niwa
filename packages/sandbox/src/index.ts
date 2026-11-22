@@ -6,8 +6,8 @@
  * or not.
  */
 
-export { BoxPathSchema, BoxSpecSchema, EnvNameSchema, NetHostSchema, boxSpec } from "./spec.ts";
-export type { BoxPath, BoxSpec, BoxSpecInput, EnvName, NetHost } from "./spec.ts";
+export { BoxPathSchema, BoxSpecSchema, EnvNameSchema, LoopbackListenSchema, NetHostSchema, boxSpec } from "./spec.ts";
+export type { BoxPath, BoxSpec, BoxSpecInput, EnvName, ListenNeed, LoopbackListen, NetHost } from "./spec.ts";
 export { BoxRefused, SandboxUnavailable, requireSandbox } from "./sandbox.ts";
 export type { BoxPolicy, BoxRefusal, LaunchedBox, Sandbox, SandboxClass, SandboxManifest, SandboxName } from "./sandbox.ts";
 export {
