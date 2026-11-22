@@ -16,6 +16,49 @@ const CARRIED = "NIWA_BOX__";
 const SHELL_ADDED = ["PWD", "OLDPWD", "SHLVL", "_"];
 
 /**
+ * The wrapper supplies proxy variables and a loopback bypass. Keep explicitly granted loopback
+ * requests on the enforcing proxy, leaving the other bypass entries and the host environment alone.
+ * A port in the grant still belongs to the proxy's destination filter.
+ */
+export function proxyCommand(hosts: readonly string[], argv: readonly string[]): readonly string[] {
+  const local = new Set<string>();
+  for (const host of hosts) {
+    const name = /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.exec(host)?.[1]?.toLowerCase();
+    if (name === "[::1]" || host === "::1") {
+      local.add("::1");
+      local.add("[::1]");
+    } else if (name !== undefined) local.add(name);
+  }
+  if (local.size === 0 || !argv.length || argv[0]?.includes("=")) return argv;
+  const script = `
+granted=$1
+shift
+filter() {
+  /usr/bin/awk -v granted="$granted" -F, '
+    BEGIN {
+      count = split(granted, hosts, ",")
+      for (i = 1; i <= count; i++) skip[hosts[i]] = 1
+    }
+    {
+      for (i = 1; i <= NF; i++) {
+        entry = tolower($i)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", entry)
+        if (entry in skip) continue
+        sub(/:[0-9]+$/, "", entry)
+        if (entry in skip) continue
+        printf "%s%s", separator, $i
+        separator = ","
+      }
+    }'
+}
+if [ "\${NO_PROXY+x}" ]; then NO_PROXY=$(printf "%s" "$NO_PROXY" | filter); export NO_PROXY; fi
+if [ "\${no_proxy+x}" ]; then no_proxy=$(printf "%s" "$no_proxy" | filter); export no_proxy; fi
+exec /usr/bin/env -- "$@"
+`;
+  return ["/bin/sh", "-c", script, "niwa-proxy", [...local].join(","), ...argv];
+}
+
+/**
  * The command a wrapper runs, and the variables it has to be started with for that command.
  *
  * The wrapper is the host's own process: it locates system tools and loads libraries before any

@@ -29,7 +29,7 @@ import { BoxRefused, SandboxUnavailable } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
-import { SYSTEM_PATH, probe, spawnBox } from "./spawn.ts";
+import { SYSTEM_PATH, probe, proxyCommand, spawnBox } from "./spawn.ts";
 
 /** A path with a leading `~` made the home directory, and otherwise as it is spelled. */
 function homeExpanded(path: string): string {
@@ -71,38 +71,6 @@ function grant(path: string, mode: "read" | "write"): string[] {
   const file = isFile(path);
   if (mode === "read") return [file ? "--read-file" : "--read", path];
   return [file ? "--allow-file" : "--allow", path];
-}
-
-/**
- * nono supplies proxy variables to the confined child, including a bypass list for loopback.
- * A domain grant opens the proxy only. Send requests for the granted loopback names through
- * that proxy too, keeping every other bypass entry and the parent's environment intact.
- */
-function proxyCommand(hosts: readonly string[], argv: readonly string[]): readonly string[] {
-  const local = hosts.filter((host) => ["127.0.0.1", "localhost", "::1", "[::1]"].includes(host));
-  if (local.length === 0 || !argv.length || argv[0]?.includes("=")) return argv;
-  const script = `
-granted=$1
-shift
-filter() {
-  /usr/bin/awk -v granted="$granted" -F, '
-    BEGIN {
-      count = split(granted, hosts, ",")
-      for (i = 1; i <= count; i++) skip[hosts[i]] = 1
-    }
-    {
-      for (i = 1; i <= NF; i++) {
-        if ($i in skip) continue
-        printf "%s%s", separator, $i
-        separator = ","
-      }
-    }'
-}
-if [ "\${NO_PROXY+x}" ]; then NO_PROXY=$(printf "%s" "$NO_PROXY" | filter); export NO_PROXY; fi
-if [ "\${no_proxy+x}" ]; then no_proxy=$(printf "%s" "$no_proxy" | filter); export no_proxy; fi
-exec /usr/bin/env -- "$@"
-`;
-  return ["/bin/sh", "-c", script, "niwa-proxy", local.join(","), ...argv];
 }
 
 /**

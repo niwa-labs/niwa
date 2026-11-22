@@ -22,7 +22,7 @@ import type { BoxRefusal } from "./sandbox.ts";
 import type { BoxSpec } from "./spec.ts";
 import { boxSpec } from "./spec.ts";
 import { anchoredSpec } from "./paths.ts";
-import { SYSTEM_PATH, probe, spawnBox } from "./spawn.ts";
+import { SYSTEM_PATH, probe, proxyCommand, spawnBox } from "./spawn.ts";
 
 /**
  * A path as srt is to read it: the name and nothing else. A plain string is also a pattern wherever
@@ -181,7 +181,7 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
         const path = join(dir, "settings.json");
         await writeFile(path, JSON.stringify(config.settings), { mode: 0o600 });
         // srt runs from the directory that holds its settings: no one but this process has written there.
-        return spawnBox("srt", wrapped(path), { cwd: config.cwd, env: config.env, argv }, LAUNCHER_ENV, dir, cleanup, options);
+        return spawnBox("srt", wrapped(path), { cwd: config.cwd, env: config.env, argv: proxyCommand(spec.net, argv) }, LAUNCHER_ENV, dir, cleanup, options);
       } catch (error) {
         await cleanup();
         throw error;

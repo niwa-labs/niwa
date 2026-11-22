@@ -162,17 +162,50 @@ for (const sandbox of [srt(), nono()]) {
       }
     });
 
-    test.skipIf(!present || sandbox.name !== "nono")("routes a granted loopback host through the domain filter", async () => {
+    test.skipIf(!present)("routes a granted loopback host through the domain filter", async () => {
       const cwd = await realpath(await tempDir("box-loopback"));
-      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("allowed") });
+      let requests = 0;
+      const server = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        fetch: () => {
+          requests += 1;
+          return new Response("allowed");
+        },
+      });
       try {
         const spec = boxSpec({ cwd, net: ["127.0.0.1"], env: { PATH: "/usr/bin:/bin" } });
-        const ok = await run(sandbox, spec, CURL(`http://127.0.0.1:${server.port}/`));
+        const allowed = CURL(`http://127.0.0.1:${server.port}/`);
+        const ok = await run(sandbox, spec, allowed);
         expect(ok.stdout).toBe("200");
-        const other = await run(sandbox, spec, CURL(`http://localhost:${server.port}/`));
+        const other = await run(sandbox, spec, `${CURL(`http://localhost:${server.port}/`)} --noproxy ''`);
         expect(other.stdout).not.toBe("200");
+        const direct = await run(sandbox, spec, `${allowed} --noproxy '*'`);
+        expect(direct.code).not.toBe(0);
+        expect(requests).toBe(1);
       } finally {
         await server.stop(true);
+        await rm(cwd, { recursive: true, force: true });
+      }
+    });
+
+    test.skipIf(!present || sandbox.name !== "srt")("keeps an explicit loopback destination port in the proxy allowlist", async () => {
+      const cwd = await realpath(await tempDir("box-loopback-port"));
+      let deniedRequests = 0;
+      const allowed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("allowed") });
+      const denied = Bun.serve({
+        hostname: "127.0.0.1", port: 0,
+        fetch: () => {
+          deniedRequests += 1;
+          return new Response("denied");
+        },
+      });
+      try {
+        const spec = boxSpec({ cwd, net: [`127.0.0.1:${allowed.port}`], env: { PATH: "/usr/bin:/bin" } });
+        expect((await run(sandbox, spec, CURL(`http://127.0.0.1:${allowed.port}/`))).stdout).toBe("200");
+        expect((await run(sandbox, spec, CURL(`http://127.0.0.1:${denied.port}/`))).stdout).toBe("403");
+        expect(deniedRequests).toBe(0);
+      } finally {
+        await Promise.all([allowed.stop(true), denied.stop(true)]);
         await rm(cwd, { recursive: true, force: true });
       }
     });
