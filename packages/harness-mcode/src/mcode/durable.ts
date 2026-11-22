@@ -11,7 +11,8 @@
  * Two kinds carry the conversation: `history.v1.full` (`reason` seed or adopt, `envelopes[]`) states
  * it whole, `history.v1.append` (`envelopes[]`) adds to it. An envelope is `{message_id, turn_id,
  * message}`: the line of a journal. The active view is the last `full` and the appends after it,
- * a message once. Other kinds (the offloads of tool output) are not conversation.
+ * a message once. Ncode offload events can change an envelope in that view without adding a
+ * message.
  *
  * The database is only ever opened read-only; this module writes nothing.
  */
@@ -33,6 +34,7 @@ const CODEC_GZIP = 2;
 
 const FULL = "history.v1.full";
 const APPEND = "history.v1.append";
+const OFFLOAD = "history.v2.offload";
 
 export const DURABLE_DIR = "durable-history";
 export const DURABLE_NAME = "sessions.g1.db";
@@ -270,12 +272,24 @@ interface Located {
   readonly envelopes: unknown[];
 }
 
+const offloadSchema = z.object({
+  seq: z.int().nonnegative(),
+  blockIdx: z.int().nonnegative(),
+  artifactRef: z.string().regex(/\S/u),
+  contentBlockIdx: z.int().nonnegative().optional(),
+  replacement: z.string().regex(/\S/u).optional(),
+});
+
+interface LocatedOffload {
+  readonly kind: typeof OFFLOAD;
+  readonly event: z.output<typeof offloadSchema>;
+}
+
 /**
- * The conversation entries of a session in the order they were written, one batch decoded at a
- * time and only as far as the caller goes. The listing is built on the first of them; a batch is
- * not decoded for an entry that is not conversation. Runs in one read transaction: a snapshot.
+ * The history entries of a session in the order they were written, one batch decoded at a time
+ * and only as far as the caller goes. Runs in one read transaction: a snapshot.
  */
-function* entriesOf(db: Database, native: string, sessionFile = false, afterSeq = -1): Generator<Located> {
+function* entriesOf(db: Database, native: string, sessionFile = false, afterSeq = -1): Generator<Located | LocatedOffload> {
   const [low, high] = rangeOf(native);
   const rows = db
     .query(
@@ -300,13 +314,22 @@ function* entriesOf(db: Database, native: string, sessionFile = false, afterSeq 
       continue;
     }
     const { kind, payload: body } = entry as { kind?: unknown; payload?: unknown };
-    if (typeof kind !== "string" || !kind.startsWith("history.")) continue;
+    if (typeof kind !== "string" || !kind.startsWith("history.")) {
+      if (sessionFile && (body as { sessionId?: unknown } | null)?.sessionId === native) {
+        throw new Error(`ncode: cannot materialize the active view for ${String(kind)}`);
+      }
+      continue;
+    }
     if (sessionFile && ((entry as { id?: unknown }).id !== row.entry_id ||
       (body as { sessionId?: unknown } | null)?.sessionId !== native)) {
       throw new Error("ncode: session history entry identity mismatch");
     }
     const envelopes = (body as { envelopes?: unknown } | null | undefined)?.envelopes;
-    if (sessionFile && kind === "history.v2.tombstone") {
+    if (sessionFile && kind === OFFLOAD) {
+      const parsed = offloadSchema.safeParse(body);
+      if (!parsed.success) throw new Error("ncode: invalid history.v2.offload payload");
+      yield { kind, event: parsed.data };
+    } else if (sessionFile && kind === "history.v2.tombstone") {
       yield { seq: row.seq, ordinal: row.ordinal, kind: FULL, envelopes: [] };
     } else if (sessionFile && kind === "history.v2.replace" && Array.isArray(envelopes)) {
       yield { seq: row.seq, ordinal: row.ordinal, kind: FULL, envelopes };
@@ -326,6 +349,7 @@ const checkpointSchema = z.object({
   backendGeneration: z.int().positive(),
   backendSeq: z.int().nonnegative(),
   fold: z.object({
+    headSeq: z.int().nonnegative(),
     lastEntryId: z.string(),
     segmentCounts: z.array(z.int().nonnegative()),
     segmentSeqs: z.array(z.int().nonnegative()),
@@ -334,7 +358,7 @@ const checkpointSchema = z.object({
 });
 
 /** Ncode's disposable materialized fold. Validate its carrier and anchor in this read transaction. */
-function checkpointOf(db: Database, path: string, native: string): Located | undefined {
+function checkpointOf(db: Database, path: string, native: string): z.output<typeof checkpointSchema> | undefined {
   const carrier = dirname(path);
   const cache = join(dirname(dirname(carrier)), "fold-cache");
   const file = join(cache, basename(carrier) + ".json");
@@ -348,6 +372,8 @@ function checkpointOf(db: Database, path: string, native: string): Located | und
     if (sessionId !== native || backendDirectory !== carrier || basename(path) !== `sessions.g${backendGeneration}.db`) return undefined;
     if (fold.segmentCounts.length !== fold.segmentSeqs.length ||
       fold.segmentCounts.reduce((sum, count) => sum + count, 0) !== fold.envelopes.length ||
+      new Set(fold.segmentSeqs).size !== fold.segmentSeqs.length ||
+      fold.segmentSeqs.some((seq) => seq > fold.headSeq) ||
       !fold.lastEntryId.startsWith(native + "|")) return undefined;
     if (db.query("select 1 from entries where seq >= ? limit 1").get(backendSeq) === null) return undefined;
     const [low, high] = rangeOf(native);
@@ -355,16 +381,68 @@ function checkpointOf(db: Database, path: string, native: string): Located | und
       "select entry_id from entries where entry_id >= ? and entry_id < ? and seq <= ? order by seq desc, ordinal desc limit 1",
     ).get(low, high, backendSeq) as { entry_id: string } | null;
     if (anchor?.entry_id !== fold.lastEntryId) return undefined;
-    return { kind: FULL, seq: backendSeq, ordinal: 0, envelopes: fold.envelopes };
+    return parsed.data;
   } catch {
     return undefined;
   }
 }
 
-function* activeEntries(db: Database, path: string, native: string, sessionFile: boolean): Generator<Located> {
+interface Segment {
+  readonly seq: number;
+  readonly ordinal: number;
+  readonly indexOffset: number;
+  readonly envelopes: unknown[];
+}
+
+/** Ncode keys deltas by logical entry number, independently of SQLite batch sequence numbers. */
+function activeSegments(db: Database, path: string, native: string, sessionFile: boolean): Iterable<Segment> {
   const checkpoint = sessionFile ? checkpointOf(db, path, native) : undefined;
-  if (checkpoint !== undefined) yield checkpoint;
-  yield* entriesOf(db, native, sessionFile, checkpoint?.seq);
+  const segments = new Map<number, Segment>();
+  let logicalSeq = 0;
+  if (checkpoint !== undefined) {
+    const { backendSeq, fold } = checkpoint;
+    logicalSeq = fold.headSeq;
+    let offset = 0;
+    for (const [index, seq] of fold.segmentSeqs.entries()) {
+      const end = offset + fold.segmentCounts[index]!;
+      // Preserve established checkpoint locators, whose envelope indices are into the flattened fold.
+      segments.set(seq, { seq: backendSeq, ordinal: 0, indexOffset: offset, envelopes: fold.envelopes.slice(offset, end) });
+      offset = end;
+    }
+  }
+  for (const entry of entriesOf(db, native, sessionFile, checkpoint?.backendSeq)) {
+    logicalSeq++;
+    if (entry.kind === OFFLOAD) {
+      applyOffload(segments, entry.event);
+      continue;
+    }
+    if (entry.kind === FULL) segments.clear();
+    segments.set(logicalSeq, { seq: entry.seq, ordinal: entry.ordinal, indexOffset: 0, envelopes: entry.envelopes });
+  }
+  return segments.values();
+}
+
+function applyOffload(segments: ReadonlyMap<number, Segment>, { seq, blockIdx, replacement }: LocatedOffload["event"]): void {
+  // The append already contains the image artifact reference.
+  if (replacement === undefined) return;
+  const segment = segments.get(seq);
+  const envelope = segment?.envelopes[blockIdx] as { message?: { content?: unknown } } | null | undefined;
+  if (segment === undefined || typeof envelope?.message !== "object" || envelope.message === null ||
+    Array.isArray(envelope.message)) {
+    throw new Error("ncode: invalid history.v2.offload target");
+  }
+  const { content } = envelope.message;
+  segment.envelopes[blockIdx] = {
+    ...envelope,
+    message: {
+      ...envelope.message,
+      content: Array.isArray(content)
+        ? [{ type: "text", text: replacement }, ...content.filter(
+          (block) => block && typeof block === "object" && block.type !== "text",
+        )]
+        : replacement,
+    },
+  };
 }
 
 export function readView(path: string, native: string, sessionFile = false): DurableTurn[] {
@@ -372,20 +450,19 @@ export function readView(path: string, native: string, sessionFile = false): Dur
   const db = open(path);
   try {
     db.run("begin");
-    let view: DurableTurn[] = [];
+    const view: DurableTurn[] = [];
     const seen = new Set<string>();
-    for (const entry of activeEntries(db, path, native, sessionFile)) {
-      if (entry.kind === FULL) {
-        view = [];
-        seen.clear();
-      }
+    for (const entry of activeSegments(db, path, native, sessionFile)) {
       for (const [index, raw] of entry.envelopes.entries()) {
         const messageId = messageIdOf(raw);
         if (messageId !== undefined) {
           if (seen.has(messageId)) continue;
           seen.add(messageId);
         }
-        view.push({ seq: entry.seq, ordinal: entry.ordinal, index, messageId, raw, record: parseNativeRecord(raw) });
+        view.push({
+          seq: entry.seq, ordinal: entry.ordinal, index: entry.indexOffset + index, messageId, raw,
+          record: parseNativeRecord(raw),
+        });
       }
     }
     return view;
@@ -414,6 +491,7 @@ export function durableFirst<T>(
     try {
       db.run("begin");
       for (const entry of entriesOf(db, native)) {
+        if (entry.kind === OFFLOAD) continue;
         for (const [index, raw] of entry.envelopes.entries()) {
           const taken = pick({
             seq: entry.seq,

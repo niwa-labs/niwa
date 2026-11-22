@@ -44,7 +44,7 @@ interface Entry {
 }
 
 /** A batch of entries, encoded as the harness encodes it. */
-function putBatch(entries: Entry[], codec: 1 | 2 = 1): void {
+function putBatch(entries: Entry[], codec: 1 | 2 = 1, sharedSeq = false): void {
   const json = Buffer.from(JSON.stringify(entries.map((e) => ({ ...e, parentId: null }))));
   const frame = codec === 1 ? Buffer.from(Bun.zstdCompressSync(json)) : gzipSync(json);
   const header = Buffer.alloc(21);
@@ -54,9 +54,11 @@ function putBatch(entries: Entry[], codec: 1 | 2 = 1): void {
   header.writeBigUInt64BE(BigInt(frame.length), 13);
   const batch = nextBatch++;
   db.run("insert into batches values (?, ?, 1, ?)", [batch, 0, Buffer.concat([header, frame])]);
+  const seq = nextSeq;
   for (const [ordinal, entry] of entries.entries()) {
-    db.run("insert into entries values (?, ?, ?, ?)", [entry.id, nextSeq++, ordinal, batch]);
+    db.run("insert into entries values (?, ?, ?, ?)", [entry.id, sharedSeq ? seq : nextSeq++, ordinal, batch]);
   }
+  if (sharedSeq) nextSeq++;
 }
 
 const envelope = (messageId: string, message: object) => ({ message_id: messageId, turn_id: "t1", message });
@@ -86,6 +88,12 @@ const append = (native: string, envelopes: object[]): Entry => ({
   id: `${native}|turn:history:${uid++}|x`,
   kind: "history.v1.append",
   payload: { sessionId: native, turnId: "t1", operationId: "op", envelopes },
+});
+
+const offload = (native: string, position: object): Entry => ({
+  id: `${native}|offload|${uid++}`,
+  kind: "history.v2.offload",
+  payload: { kind: "history.v2.offload", sessionId: native, artifactRef: "fixture-artifact", ...position },
 });
 
 /** A session directory with the manifest and an empty journal. */
@@ -641,6 +649,121 @@ test("the fork reads the active generation in the session's own database through
   expect(await reader.coverage(target, records[1]!.locator)).toEqual({ status: "empty" });
   expect(texts(await all(native))).toEqual(["earlier"]);
   await expect(Array.fromAsync(reader.read(id(native)))).rejects.toThrow("another harness installation");
+});
+
+test("Ncode still reads older sessions in the shared v1 store and the journal", async () => {
+  const reader = new McodeReading({ harness: harnessId("ncode-test"), home, perSessionHistory: true });
+  sessionDir("mvs_old_shared", "");
+  putBatch([
+    full("mvs_old_shared", "seed", [envelope("first", user("old question"))]),
+    append("mvs_old_shared", [envelope("second", assistant("old answer"))]),
+  ]);
+  sessionDir("mvs_old_journal", JSON.stringify(envelope("journal", user("from journal"))) + "\n");
+  const shared = sessionId(harnessId("ncode-test"), "mvs_old_shared");
+  const journal = sessionId(harnessId("ncode-test"), "mvs_old_journal");
+  const records = await Array.fromAsync(reader.read(shared));
+  expect(texts(records)).toEqual(["old question", "old answer"]);
+  expect(texts(await Array.fromAsync(reader.read(shared, records[0]!.locator)))).toEqual(["old answer"]);
+  expect(texts(await Array.fromAsync(reader.read(journal)))).toEqual(["from journal"]);
+});
+
+test("Ncode folds text and image offloads in logical order within a backend commit", async () => {
+  const native = "mvs_offload";
+  const directory = join(home, "durable-history", "sessions", native);
+  mkdirSync(directory, { recursive: true });
+  const target = sessionId(harnessId("ncode-test"), native);
+  const reader = new McodeReading({ harness: target.harness, home, perSessionHistory: true });
+  const output = envelope("result", { ...toolResult("call", "original"), content: [
+    { type: "text", text: "original" },
+    { type: "image", mimeType: "image/png", sha256: "fixture-artifact", artifact: "/fixture/image.png", bytes: 12 },
+    { type: "text", text: "more original" },
+  ] });
+  putBatch([
+    full(native, "seed", [envelope("question", user("question"))]),
+    append(native, [envelope("answer", assistant("running", { id: "call", name: "bash" })), output]),
+    offload(native, { seq: 2, blockIdx: 1, contentBlockIdx: 1 }),
+  ], 1, true);
+  const path = join(directory, "sessions.g1.db");
+  db.run("vacuum into ?", [path]);
+  const before = await Array.fromAsync(reader.read(target));
+  expect(before.map((record) => record.kind)).toEqual(["user", "assistant", "tool-call", "tool-result"]);
+  expect(await reader.raw(target, before[3]!.locator)).toEqual(output);
+  putBatch([
+    offload(native, { seq: 2, blockIdx: 1, replacement: "archived output" }),
+    append(native, [envelope("next", assistant("done")), output]),
+  ], 2, true);
+  rmSync(path);
+  db.run("vacuum into ?", [path]);
+  const after = await Array.fromAsync(reader.read(target));
+  expect(after.map((record) => record.kind)).toEqual(["user", "assistant", "tool-call", "tool-result", "assistant"]);
+  expect(after.slice(0, 4).map((record) => record.locator)).toEqual(before.map((record) => record.locator));
+  expect(await reader.raw(target, after[3]!.locator)).toEqual({
+    ...output, message: { ...output.message, content: [
+      { type: "text", text: "archived output" }, output.message.content[1],
+    ] },
+  });
+  expect(await Array.fromAsync(reader.read(target, before[2]!.locator))).toEqual(after.slice(3));
+  expect(texts(await Array.fromAsync(reader.read(target, before[3]!.locator)))).toEqual(["done"]);
+  expect(await reader.coverage(target, after[4]!.locator)).toEqual({ status: "empty" });
+});
+
+test("a Ncode checkpoint keeps logical segments addressable by later text offloads", async () => {
+  const native = "mvs_checkpoint_offload";
+  const storage = join(home, "durable-history");
+  const directory = join(storage, "sessions", native);
+  const cache = join(storage, "fold-cache");
+  mkdirSync(directory, { recursive: true });
+  mkdirSync(cache);
+  const target = sessionId(harnessId("ncode-test"), native);
+  const reader = new McodeReading({ harness: target.harness, home, perSessionHistory: true });
+  const question = envelope("question", user("question"));
+  const result = envelope("result", { ...toolResult("call", "original"), content: "original" });
+  const base = full(native, "seed", [question]);
+  const tail = append(native, [result]);
+  putBatch([base, tail], 1, true);
+  putBatch([
+    offload(native, { seq: 2, blockIdx: 0, replacement: "first receipt" }),
+    append(native, [envelope("new-result", toolResult("next-call", "later result"))]),
+    offload(native, { seq: 4, blockIdx: 0, replacement: "second receipt" }),
+  ], 1, true);
+  db.run("vacuum into ?", [join(directory, "sessions.g1.db")]);
+  writeFileSync(join(cache, native + ".json"), JSON.stringify({
+    schema: 1, sessionId: native, backendDirectory: directory, backendGeneration: 1, backendSeq: 1,
+    fold: { headSeq: 2, lastEntryId: tail.id, segmentCounts: [1, 1], segmentSeqs: [1, 2], envelopes: [question, result] },
+  }));
+  const records = await Array.fromAsync(reader.read(target));
+  expect(records).toMatchObject([
+    { kind: "user", text: "question" },
+    { kind: "tool-result", output: "first receipt" },
+    { kind: "tool-result", output: "second receipt" },
+  ]);
+  expect(records[1]!.locator).toStartWith("mcode-db:v1:1:0:1:");
+});
+
+test("Ncode reports invalid offload payloads and unresolved text positions", async () => {
+  const native = "mvs_invalid_offload";
+  const directory = join(home, "durable-history", "sessions", native);
+  mkdirSync(directory, { recursive: true });
+  const target = sessionId(harnessId("ncode-test"), native);
+  const reader = new McodeReading({ harness: target.harness, home, perSessionHistory: true });
+  putBatch([full(native, "seed", [envelope("result", toolResult("call", "original"))])]);
+  const path = join(directory, "sessions.g1.db");
+  for (const [position, reason] of [
+    [{ seq: 1, blockIdx: 0, replacement: null }, "invalid history.v2.offload payload"],
+    [{ seq: 2, blockIdx: 0, replacement: "receipt" }, "invalid history.v2.offload target"],
+    [{ seq: 1, blockIdx: 1, replacement: "receipt" }, "invalid history.v2.offload target"],
+  ] as const) {
+    const entry = offload(native, position);
+    putBatch([entry]);
+    db.run("vacuum into ?", [path]);
+    await expect(Array.fromAsync(reader.read(target))).rejects.toThrow(reason);
+    expect(await reader.coverage(target)).toMatchObject({ status: "failed", reason: expect.stringContaining(reason) });
+    rmSync(path);
+    db.run("delete from entries where entry_id = ?", [entry.id]);
+  }
+  putBatch([{ id: native + "|future", kind: "history.v3.unknown", payload: { sessionId: native } }]);
+  db.run("vacuum into ?", [path]);
+  await expect(Array.fromAsync(reader.read(target))).rejects.toThrow("cannot materialize the active view for history.v3.unknown");
 });
 
 test("Ncode lists a database-only session by its stored native identity", async () => {
