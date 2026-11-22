@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { Badge, Button, cn } from "@niwa-labs/ui-kit";
 
+import { RequestHistory } from "./history.tsx";
 import { answerAction, openAction, overrideAction, resolveAction, type OpenPaused, type OpenRequest, type Option } from "./actions.ts";
 import { addressText, answerOf, EMPTY, subjectLines, type Built, type Filled } from "./answers.ts";
 
@@ -142,13 +143,17 @@ function PausedCard({ paused, onSent }: { paused: OpenPaused; onSent: () => void
   );
 }
 
-export function RequestsPage() {
+export function RequestsTile() { return <RequestsPage home />; }
+
+export function RequestsPage({ home = false }: { home?: boolean } = {}) {
   const queryClient = useQueryClient();
   const open = useCall(openAction, {}, { refreshOn: { types: ["request.*", "niwa.invocation.state"] } });
   const reread = (): void => void queryClient.invalidateQueries({ queryKey: ["niwa", "call"] });
+  const entries = open.data?.requests.filter(entry => !home || ("kind" in entry && entry.kind === "paused") || ("to" in entry && entry.to.kind === "owner"));
+  if (home && entries?.length === 0) return null;
   return (
-    <div className="flex min-w-0 flex-col gap-3 p-4">
-      <h2 className="text-lg font-semibold">Requests</h2>
+    <div className={home ? "desk-section" : "flex min-w-0 flex-col gap-3 p-4"}>
+      <h2 className="text-lg font-semibold">{home ? "Ждут ответа" : "Requests"}</h2>
       {open.isPending ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : open.isError ? (
@@ -157,7 +162,7 @@ export function RequestsPage() {
         <p className="text-sm text-muted-foreground">Nothing waits for an answer.</p>
       ) : (
         <div data-slot="requests" className="flex min-w-0 flex-col gap-3">
-          {open.data.requests.map((entry) =>
+          {(entries ?? []).map((entry) =>
             "kind" in entry && entry.kind === "paused" ? (
               <PausedCard key={entry.invocation} paused={entry} onSent={reread} />
             ) : (
@@ -166,6 +171,7 @@ export function RequestsPage() {
           )}
         </div>
       )}
+      {!home && <RequestHistory />}
     </div>
   );
 }

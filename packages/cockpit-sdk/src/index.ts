@@ -1,3 +1,6 @@
+export { SchemaFields, readFields, type FormSchema } from "./schema-form.tsx";
+export { PageCommands, type PageCommand } from "./commands.tsx";
+
 // The SDK of cockpit modules: the plugin contract, the host as the browser reaches it, the live
 // record stream, and the React parts a module renders with.
 
@@ -12,6 +15,7 @@ export {
   type CockpitPlugin,
   type EntityChipProps,
   type EntityRef,
+  type HomeTileProps,
   type EntitySpec,
   type NavEntry,
   type PageProps,

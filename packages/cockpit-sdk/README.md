@@ -38,3 +38,18 @@ export default definePlugin({
 All modules are trusted and share one document. React, React DOM and TanStack Query are peer
 dependencies: the cockpit provides one copy of them, of this SDK and of the ui-kit, and every
 module uses it.
+
+## Pages and actions
+
+A page can offer a named action with `commands: [{ action: "task.create",
+label: "Create task" }]`. Commands can also be a function of the route
+parameters, for example to prefill the id of the session being viewed. The
+SDK checks the viewer's grants, reads the current action schema when the
+form opens, and submits to the host. A module can still provide its own
+form when a workflow needs a specialized interaction.
+
+Set `panel: true` on a detail page to open it over the referring list and
+return with Escape or Back. Its URL can also be opened directly. On the
+desk, use `home.summary` for counts, `home.main` for work and `home.tile`
+for the sidebar. Home contributions receive the selected project and may
+report the project directories in their data.

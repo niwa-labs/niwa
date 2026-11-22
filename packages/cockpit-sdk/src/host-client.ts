@@ -67,7 +67,7 @@ export interface HostClient {
   call<I, O, In = I>(action: ActionRefLike<I, O, In>, input: NoInfer<In>, opts?: CallOptions): Promise<Wire<O>>;
   /** Call an action by name: nothing is known about its types. */
   call(action: string, input: unknown, opts?: CallOptions): Promise<unknown>;
-  info(opts?: CallOptions): Promise<HostInfo>;
+  info(opts?: CallOptions & { action?: string }): Promise<HostInfo>;
   records: {
     /**
      * The records that answer a query and are committed now, after its `from` position, as many
@@ -234,7 +234,7 @@ export function httpHostClient(options: HttpHostClientOptions = {}): HostClient 
   return {
     call: call as HostClient["call"],
     info: async (opts) => {
-      const response = await request("/api/info", { signal: opts?.signal });
+      const response = await request(opts?.action ? "/api/info?action=" + encodeURIComponent(opts.action) : "/api/info", { signal: opts?.signal });
       const body: unknown = await response.json();
       if (body === null || typeof body !== "object" || !Array.isArray((body as { actions?: unknown }).actions)) {
         throw new HostCallError(502, "the host info has no list of actions");

@@ -1,9 +1,11 @@
 /** The observed timeline of a workflow run, projected from its journal. */
 
-import { CORE_TYPES, recordId } from "@niwa-labs/core";
+import { CORE_TYPES, WAIT_ACTION, recordId } from "@niwa-labs/core";
 import type { JournalReader, RecordTypeName, Seq, StoredRecord } from "@niwa-labs/core";
 import { requestAsk } from "@niwa-labs/requests/records";
 import { NiwaSessionIdSchema, SessionStarted } from "@niwa-labs/sessions/records";
+import { SleepRequested } from "@niwa-labs/timer/records";
+import { WAIT_NAME } from "./bridge.ts";
 import { z } from "zod";
 
 import { InstallationId, RunFinished, RunId, RunRequested, RunStarted, StepPhase, StepReused, WorkflowId, WorkflowVersion } from "./records.ts";
@@ -18,6 +20,12 @@ export const WorkflowStep = z.object({
   action: z.string(),
   branch: z.string().optional(),
   prompt: z.string().optional(),
+  waitEvent: z.string().optional(),
+  dueAt: ReceivedAt.optional(),
+  /** A predictable timer.fired filter: empty matches the next scheduled timer. */
+  timerName: z.string().optional(),
+  /** Open work from a previous invocation no longer executes. */
+  historical: z.boolean().optional(),
   startedAt: ReceivedAt,
   endedAt: ReceivedAt.optional(),
   status: z.enum(["running", "paused", "completed", "failed", "unknown", "skipped", "cancelled"]),
@@ -34,14 +42,17 @@ export type WorkflowStep = z.infer<typeof WorkflowStep>;
 export const WorkflowInspection = z.object({
   run: RunId,
   status: RunStatus,
+  observedAt: ReceivedAt.optional(),
   origin: z.object({
     file: z.string(),
+    args: z.unknown().optional(),
     label: z.string().optional(),
     workflow: WorkflowId.optional(),
     version: WorkflowVersion.optional(),
     installation: InstallationId.optional(),
     directory: z.string().optional(),
     requestedAt: ReceivedAt,
+    sourceSeq: z.number().optional(),
     startedAt: ReceivedAt.optional(),
     finishedAt: ReceivedAt.optional(),
   }),
@@ -63,6 +74,7 @@ const Intent = z.object({
 const Outcome = z.object({ outcome: z.object({ status: z.enum(["completed", "failed", "denied", "unknown", "cancelled"]) }) });
 const Resolution = z.object({ key: z.string(), choice: z.enum(["retry", "skip", "cancel"]), attempt: z.number().int() });
 const State = z.object({ state: z.string(), reason: z.string().optional(), key: z.string().optional() });
+const WaitInput = z.object({ type: z.string(), place: z.string().optional(), filter: z.looseObject({ key: z.string().optional(), timer: z.string().optional() }).optional() });
 const Prompt = z.object({
   prompt: z.union([z.string(), z.object({ sections: z.array(z.object({ text: z.string() })) }).transform(({ sections }) => sections.map(({ text }) => text).join("\n\n"))]),
 });
@@ -96,7 +108,7 @@ export function inspectRun(journal: JournalReader, run: RunId): WorkflowInspecti
   const started = starts.findLast((row) => row.seq > requested.seq);
   const finished = forRun(RunFinished.name).findLast((row) => row.seq > requested.seq);
   const status = statusOf(journal, run);
-  const { file, label, workflow, version, installation, directory } = RunRequested.schema.parse(requested.data);
+  const { file, args, label, workflow, version, installation, directory } = RunRequested.schema.parse(requested.data);
   // The phase of each step, by its invocation and its key.
   const stepPhases = new Map<string, string>();
   for (const row of forRun(StepPhase.name)) {
@@ -113,13 +125,16 @@ export function inspectRun(journal: JournalReader, run: RunId): WorkflowInspecti
   const steps: WorkflowStep[] = [];
   const cancellation = finished !== undefined && status.outcome?.status === "cancelled" ? finished : undefined;
   let ended = finished;
+  let observed: number = finished?.at ?? requested.at;
   for (const start of starts) {
     if (start.actor.kind !== "handler") continue;
     const invocation = start.actor.invocation;
     const projected = invocationSteps(journal, invocation, start.seq > requested.seq ? cancellation : undefined);
+    observed = Math.max(observed, start.at, projected.observed);
     if (start === started && status.outcome?.status === "cancelled") ended ??= projected.cancelled;
     for (const { step } of projected.steps) {
       const phase = stepPhases.get(`${invocation} ${step.key}`);
+      if (start !== started && step.endedAt === undefined) step.historical = true;
       if (phase !== undefined) step.phase = phase;
       if (reused.has(`${invocation} ${step.key}`)) step.reused = true;
       (phases.find((one) => one.title === phase)?.steps ?? steps).push(step);
@@ -128,7 +143,8 @@ export function inspectRun(journal: JournalReader, run: RunId): WorkflowInspecti
   return {
     run,
     status,
-    origin: { file, label, workflow, version, installation, directory, requestedAt: at(requested), startedAt: started && at(started), finishedAt: ended && at(ended) },
+    observedAt: new Date(observed).toISOString(),
+    origin: { file, args, ...(started && { sourceSeq: started.seq }), label, workflow, version, installation, directory, requestedAt: at(requested), startedAt: started && at(started), finishedAt: ended && at(ended) },
     phases,
     steps,
     sessions: forRun(SessionStarted.name).map((row) => {
@@ -142,7 +158,7 @@ function invocationSteps(
   journal: JournalReader,
   invocation: string,
   cancelledByRun: StoredRecord | undefined,
-): { steps: Array<{ row: StoredRecord; step: WorkflowStep }>; cancelled?: StoredRecord } {
+): { steps: Array<{ row: StoredRecord; step: WorkflowStep }>; cancelled?: StoredRecord; observed: number } {
   const rows = (type: RecordTypeName) => journal.find({ type, field: "invocation", equals: invocation });
   const stateRow = rows(CORE_TYPES.invocationState).at(-1);
   const state = stateRow === undefined ? undefined : State.parse(stateRow.data);
@@ -187,7 +203,14 @@ function invocationSteps(
     const cancelledDuringCall = cancelled !== undefined && row.seq < cancelled.seq && (settledAt === undefined || cancelled.seq < settledAt.seq);
     const end = resolution?.choice === "skip" ? resolution.row : cancelledDuringCall ? cancelled : settledAt;
     const prompt = action === requestAsk.name ? Question.safeParse(input).data?.input.title : Prompt.safeParse(input).data?.prompt;
+    const wait = action === WAIT_ACTION || action === WAIT_NAME ? WaitInput.safeParse(input).data : undefined;
+    const sleep = wait && end === undefined
+      ? journal.find({ type: SleepRequested.name, field: "key", equals: wait.place ?? wait.filter?.key ?? `${invocation}:${key}` }).at(-1)
+      : undefined;
     const step: WorkflowStep = {
+      ...(wait && { waitEvent: wait.type }),
+      ...(wait?.type === "timer.fired" && Object.keys(wait.filter ?? {}).every(k => k === "timer") && { timerName: wait.filter?.timer ?? "" }),
+      ...(sleep && { dueAt: new Date(SleepRequested.schema.parse(sleep.data).at).toISOString() }),
       id: row.id,
       key,
       label: labeled ?? action,
@@ -206,5 +229,7 @@ function invocationSteps(
     steps.push({ row, step });
     owners.set(namespace, { step, outcomeSeq: outcome?.seq });
   }
-  return { steps, cancelled };
+  let observed = Math.max(stateRow?.at ?? 0, intents.at(-1)?.row.at ?? 0);
+  for (const outcome of outcomes.values()) observed = Math.max(observed, outcome.at);
+  return { steps, cancelled, observed };
 }

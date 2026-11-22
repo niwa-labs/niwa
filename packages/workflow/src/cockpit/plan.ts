@@ -28,13 +28,13 @@ export function stepDuration(step: Step): number | undefined {
 }
 
 /** The state of a declared phase: a current phase takes on how the run ended or why it waits. */
-function phaseState(phase: Inspection["phases"][number], status: Inspection["status"]): WorkState {
+export function phaseState(phase: Inspection["phases"][number], status: Inspection["status"]): WorkState {
   if (phase.state === "done") return "done";
   if (phase.state === "ahead") return "pending";
   if (status.state === "paused") return "waiting";
   if (status.outcome?.status === "failed") return "failed";
   if (status.outcome?.status === "cancelled") return "stopped";
-  return "running";
+  return status.state === "finished" ? "done" : "running";
 }
 
 /** The state of the run's own phase, for a script that declares none. */

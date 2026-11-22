@@ -13,6 +13,7 @@ import {
   HostCallError,
   httpHostClient,
   loadPlugins,
+  matchPath,
   parseCatalogue,
   type CockpitRuntime,
   type HostClient,
@@ -117,6 +118,14 @@ export async function bootCockpit(options: BootOptions = {}): Promise<Cockpit> {
     }
 
     const faults = new FaultLog(loaded.faults);
+    // Bookmarks of the single-page JS cockpit used the section as the hash.
+    if (!options.history && typeof window !== "undefined" && window.location.pathname === "/" && window.location.hash) {
+      const section = window.location.hash.slice(1);
+      const path = section === "home" ? "/" : "/" + section;
+      if (path === "/" || path === "/journal" || loaded.registry.pages.some(page => page.path === path)) {
+        window.history.replaceState(window.history.state, "", path + window.location.search);
+      }
+    }
     const router = createCockpitRouter(loaded.registry, options.history);
     const runtime: CockpitRuntime = {
       viewer,
@@ -124,7 +133,13 @@ export async function bootCockpit(options: BootOptions = {}): Promise<Cockpit> {
       records: stream,
       registry: loaded.registry,
       navigator: {
-        navigate: (to, opts) => (opts?.replace === true ? router.history.replace(to) : router.history.push(to)),
+        navigate: (to, opts) => {
+          const location = router.history.location;
+          const target = loaded.registry.pages.find(page => page.panel && matchPath(page.path, to));
+          const state = target ? { deskBehind: location.state.deskBehind ?? location.href } : {};
+          if (opts?.replace) router.history.replace(to, state);
+          else router.history.push(to, state);
+        },
       },
       reportFault: (fault: PluginFault) => faults.add(fault),
     };

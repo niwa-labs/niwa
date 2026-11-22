@@ -64,6 +64,9 @@ export type PageSpec<P extends string = string> = {
   path: P;
   title: string;
   component: ComponentType<PageProps<P>>;
+  /** Open above the referring list. A direct URL still opens as its own page. */
+  panel?: boolean;
+  commands?: readonly import("./commands.tsx").PageCommand[] | ((props: PageProps<P>) => readonly import("./commands.tsx").PageCommand[]);
   /** Show the page in the navigation. Pages with parameters are reached by links instead. */
   nav?: NavEntry | undefined;
 };
@@ -83,6 +86,11 @@ export type SlotKind = "single" | "list" | "keyed";
 /** What a slot is: its kind and the props its owner passes to every contribution. */
 export type SlotSpec<K extends SlotKind = SlotKind, P extends object = object> = { kind: K; props: P };
 
+export interface HomeTileProps {
+  project?: string | undefined;
+  reportProjects?: (directories: readonly string[]) => void;
+}
+
 /**
  * The slots and their props, by name. The cockpit's own slots are listed here; a module that
  * owns a place declares its slot at setup and adds it to this interface:
@@ -97,7 +105,9 @@ export type SlotSpec<K extends SlotKind = SlotKind, P extends object = object> =
  */
 export interface SlotMap {
   /** Tiles on the home page. */
-  "home.tile": SlotSpec<"list", Record<never, never>>;
+  "home.tile": SlotSpec<"list", HomeTileProps>;
+  "home.main": SlotSpec<"list", HomeTileProps>;
+  "home.summary": SlotSpec<"list", HomeTileProps>;
   /** Small items in the status bar of the frame. */
   "shell.status": SlotSpec<"list", Record<never, never>>;
   /** How a record is shown in the journal, keyed by record type name. */
@@ -123,6 +133,8 @@ export type SlotContribution<P extends object = object> = {
 /** The slots the cockpit itself owns. */
 export const CORE_SLOTS: ReadonlyArray<{ name: SlotName; kind: SlotKind }> = [
   { name: "home.tile", kind: "list" },
+  { name: "home.main", kind: "list" },
+  { name: "home.summary", kind: "list" },
   { name: "shell.status", kind: "list" },
   { name: "record.view", kind: "keyed" },
 ];

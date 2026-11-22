@@ -286,6 +286,7 @@
       "name": "@niwa-labs/messages",
       "version": "0.0.0",
       "dependencies": {
+        "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
         "@niwa-labs/sessions": "workspace:*",
@@ -293,7 +294,19 @@
       },
       "devDependencies": {
         "@niwa-labs/testing": "workspace:*",
+        "@types/react": "^19.3.0",
+        "@types/react-dom": "^19.3.0",
+        "react": "^19.3.1",
+        "react-dom": "^19.3.1",
       },
+      "peerDependencies": {
+        "react": "^19.3.1",
+        "react-dom": "^19.3.1",
+      },
+      "optionalPeers": [
+        "react",
+        "react-dom",
+      ],
     },
     "packages/niwa": {
       "name": "@niwa-labs/niwa",
@@ -523,13 +536,26 @@
       "name": "@niwa-labs/timer",
       "version": "0.0.0",
       "dependencies": {
+        "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
         "zod": "^4.6.7",
       },
       "devDependencies": {
         "@niwa-labs/testing": "workspace:*",
+        "@types/react": "^19.3.0",
+        "@types/react-dom": "^19.3.0",
+        "react": "^19.3.1",
+        "react-dom": "^19.3.1",
       },
+      "peerDependencies": {
+        "react": "^19.3.1",
+        "react-dom": "^19.3.1",
+      },
+      "optionalPeers": [
+        "react",
+        "react-dom",
+      ],
     },
     "packages/ui-kit": {
       "name": "@niwa-labs/ui-kit",

@@ -16,6 +16,10 @@ export const RunEntry = z.object({
   state: RunState,
   directory: z.string().optional(),
   requestedAt: z.string(),
+  workflow: z.string().optional(),
+  phases: z.array(z.object({ title: z.string(), detail: z.string().optional(), state: z.enum(["done", "current", "ahead"]) })).optional(),
+  waiting: z.string().optional(),
+  manualPause: z.boolean().optional(),
   about: z.string(),
   requests: z.number(),
 });
@@ -35,6 +39,10 @@ export const Step = z.object({
   key: z.string(),
   action: z.string(),
   prompt: z.string().optional(),
+  waitEvent: z.string().optional(),
+  dueAt: z.string().optional(),
+  timerName: z.string().optional(),
+  historical: z.boolean().optional(),
   startedAt: z.string(),
   endedAt: z.string().optional(),
   status: StepStatus,
@@ -52,24 +60,30 @@ export type Step = z.infer<typeof Step>;
 const PhaseState = z.enum(["done", "current", "ahead"]);
 
 export const Inspection = z.object({
+  observedAt: z.string().optional(),
   run: z.string(),
   status: z.object({
     run: z.string(),
     state: RunState,
     outcome: z
       .discriminatedUnion("status", [
-        z.object({ status: z.literal("done") }),
+        z.object({ status: z.literal("done"), result: z.unknown().optional() }),
         z.object({ status: z.literal("failed"), error: z.object({ message: z.string() }) }),
         z.object({ status: z.literal("cancelled") }),
       ])
       .optional(),
     reason: z.string().optional(),
+    manualPause: z.object({ id: z.string(), state: z.string() }).optional(),
     choices: z.array(z.string()).optional(),
     requests: z.array(z.string()),
     waiting: z.string().optional(),
   }),
   origin: z.object({
     file: z.string(),
+    sourceSeq: z.number().optional(),
+    workflow: z.string().optional(),
+    version: z.string().optional(),
+    args: z.unknown().optional(),
     label: z.string().optional(),
     directory: z.string().optional(),
     requestedAt: z.string(),

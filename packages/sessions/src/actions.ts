@@ -58,6 +58,7 @@ export const SessionEntrySchema = z.object({
    * from a person, trimmed to about 60 characters. Absent when neither is known.
    */
   title: z.string().optional(),
+  run: z.string().optional(),
   cwd: z.string().optional(),
   model: z.string().optional(),
   startedAt: z.number().int().nonnegative().optional(),

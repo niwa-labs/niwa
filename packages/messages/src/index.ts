@@ -26,7 +26,8 @@ import type { z } from "zod";
 
 import { NotSent, UnknownId, action, actionName } from "@niwa-labs/core";
 import type { Action, ActionContext, ActionName, Address, Caller, IdIndex } from "@niwa-labs/core";
-import { bindingOf, plugin } from "@niwa-labs/plugin";
+import { fileURLToPath } from "node:url";
+import { COCKPIT_MODULE, bindingOf, plugin } from "@niwa-labs/plugin";
 import type { CallerBinding, MessagesOptions, Plugin } from "@niwa-labs/plugin";
 import { sessionSend } from "@niwa-labs/sessions/records";
 
@@ -178,6 +179,7 @@ export function messageReceive(
  */
 export function messages(opts?: MessagesOptions): Plugin {
   return plugin("messages", (api) => {
+    api.offer(COCKPIT_MODULE, { id: "messages", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     const ids = messageIds(() => api.journal?.());
     api.declare(MessageSent, MessageReceived, MessageDelivered);
     api.action(messageSend(opts, ids));

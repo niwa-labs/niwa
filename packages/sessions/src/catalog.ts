@@ -25,6 +25,7 @@ export interface SessionEntry {
   readonly id?: NiwaSessionId;
   /** A readable title, as the reading side gives it. */
   readonly title?: string;
+  readonly run?: string | undefined;
   readonly cwd?: string;
   /** The model the harness named for the session; absent until it names one. */
   readonly model?: string;
@@ -70,6 +71,7 @@ export class SessionCatalog {
     }
     this.entries.set(entry.ref, {
       ref: known.ref,
+      ...(known.run ?? entry.run ? { run: known.run ?? entry.run } : {}),
       id: known.id ?? entry.id,
       title: known.title ?? entry.title,
       cwd: known.cwd ?? entry.cwd,
@@ -115,6 +117,7 @@ export class SessionCatalog {
       catalog.remember({
         ref,
         id: start.id,
+        ...(start.run ? { run: start.run } : {}),
         cwd: start.cwd,
         model: models.get(ref),
         startedAt: start.at,

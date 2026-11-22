@@ -451,6 +451,10 @@ export const RunEntry = z.object({
   state: RunState,
   /** The directory the run was started for; absent for a run started with none. */
   directory: z.string().optional(),
+  workflow: z.string().optional(),
+  phases: z.array(PhaseProgress).optional(),
+  waiting: z.string().optional(),
+  manualPause: z.boolean().optional(),
   /** When the run was last asked for: its start, or the resume that began it again. */
   requestedAt: z.iso.datetime(),
   /** A few words of what the run is up to or how it ended. */
@@ -468,6 +472,10 @@ export function runEntry(journal: JournalReader, run: string): RunEntry {
   return {
     run,
     name: nameOfRun(journal, run),
+    ...(data?.workflow && { workflow: data.workflow }),
+    ...(status.phases && { phases: status.phases }),
+    ...(status.waiting && { waiting: status.waiting }),
+    ...(status.manualPause && { manualPause: true }),
     state: status.state,
     ...(data?.directory === undefined ? {} : { directory: data.directory }),
     requestedAt: new Date(requested?.at ?? 0).toISOString(),

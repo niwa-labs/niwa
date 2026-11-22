@@ -208,6 +208,8 @@ test("a phase a branch entered and ended is ahead while another branch has not r
   expect(status.currentPhases).toEqual(["Ревью"]);
   expect(status.phases?.map((phase) => phase.state)).toEqual(["current", "ahead", "ahead"]);
 
+  // The other branch can leave before the waiter installs its intent. Send the live event only once it is listening.
+  await eventually(async () => (await host.call(workflowInspect, { run })).phases.some(p => p.steps.some(s => s.waitEvent === "test.go")), 15_000);
   await host.emit(Go, {});
   await eventually(async () => (await host.call(workflowInspect, { run })).status.currentPhases?.[0] === "Отчёт", 15_000);
   status = (await host.call(workflowInspect, { run })).status;

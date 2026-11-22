@@ -3,6 +3,7 @@
 import { IdChip } from "@niwa-labs/ui-kit";
 import { Fragment, type ComponentType, type ReactNode } from "react";
 
+import { PageCommands } from "./commands.tsx";
 import { PluginBoundary } from "./boundary.tsx";
 import type { EntityRef, SlotName, SlotPropsOf } from "./contract.ts";
 import type { SearchParams } from "./paths.ts";
@@ -62,13 +63,18 @@ export function SlotItem<K extends SlotName>(props: { name: K; itemKey: string; 
 
 /** A registered page with its parameters, inside its module's boundary. */
 export function PageView({ page, params, search }: { page: RegisteredPage; params: Readonly<Record<string, string>>; search: SearchParams }) {
-  const Page = page.component;
   const resetKey = JSON.stringify([params, search]);
   return (
     <PluginBoundary plugin={page.plugin} place={page.path} resetKey={resetKey}>
-      <Page params={params} search={search} />
+      <PageContent key={resetKey} page={page} params={params} search={search} />
     </PluginBoundary>
   );
+}
+
+function PageContent({ page, params, search }: { page: RegisteredPage; params: Readonly<Record<string, string>>; search: SearchParams }) {
+  const Page = page.component;
+  const commands = typeof page.commands === "function" ? page.commands({ params, search }) : page.commands;
+  return <>{commands && <PageCommands commands={commands} />}<Page params={params} search={search} /></>;
 }
 
 /** The address of an entity's page, from a reference or a prefixed id. */

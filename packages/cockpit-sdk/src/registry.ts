@@ -33,6 +33,8 @@ export type RegisteredPage = {
   path: string;
   title: string;
   component: ComponentType<PageProps>;
+  commands?: PageSpec["commands"];
+  panel?: boolean;
   nav: NavEntry | undefined;
 };
 
@@ -123,6 +125,8 @@ export function draftContext(plugin: string, services: Services): { ctx: PluginC
           title: page.title,
           component: page.component as ComponentType<PageProps>,
           nav: page.nav,
+          ...(page.panel && { panel: true }),
+          ...(page.commands && { commands: page.commands }),
         });
       },
     },

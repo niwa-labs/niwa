@@ -279,7 +279,7 @@ async function route(context: Context, request: Request): Promise<Response> {
     case "/api/catalogue":
       return json(200, app === undefined ? await catalogueOf(api) : { modules: await context.builds.catalogue(api, app) });
     case "/api/info":
-      return cockpitInfo(api);
+      return cockpitInfo(api, url.searchParams.get("action"));
     case "/api/source": {
       if (!speaksForOwner) return text(403, "The source is available to the owner only");
       const at = position(url.searchParams.get("seq") ?? "");
@@ -459,9 +459,15 @@ function isActionName(name: string): boolean {
  * that wants the latest records starts), and the facts of the host the pages read. The host may load a subset of the
  * plugins this page supports.
  */
-async function cockpitInfo(api: NiwaApi): Promise<Response> {
+async function cockpitInfo(api: NiwaApi, action: string | null): Promise<Response> {
   const description = await api.describe();
   const { actions } = await viewerOf(api, WEB_CLIENT_ID);
+  if (action !== null) {
+    if (!actions.includes(action)) return text(403, "this action is not available");
+    const definition = description.actions.find(item => String(item.name) === action);
+    if (!definition) return text(404, "unknown action");
+    return json(200, { actions: [action], action: { name: action, input: definition.input, description: definition.description, destructive: definition.destructive || definition.effect === "irreversible" } });
+  }
   const recordFields = Object.fromEntries(
     description.types.map(({ name, schema }) => [name, schemaFields(schema.properties)]),
   );

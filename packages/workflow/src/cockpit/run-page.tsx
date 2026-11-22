@@ -1,11 +1,14 @@
 /** One run: where it stands, and its plan of phases and steps with the controls to run it again or stop it. */
 
-import { EntityLink, PageLink, useAction, useCall, type PageProps } from "@niwa-labs/cockpit-sdk";
+import { EntityLink, PageLink, useAction, useCall, useViewer, type PageProps } from "@niwa-labs/cockpit-sdk";
 import { useQueryClient } from "@tanstack/react-query";
 import { PhasePlan, StateRing, formatAgo, formatDuration, type PhasePlanStep, type PlanTarget } from "@niwa-labs/ui-kit";
 
 import { inspectAction, resumeAction, stopAction, type Inspection, type Step } from "./actions.ts";
 import { planOf, recomputeOf, stepDuration, stepState, stopOf } from "./plan.ts";
+import { InspectedTrack } from "./track.tsx";
+import { catalogueEvents } from "./catalogue-actions.ts";
+import { RunCommands } from "./run-commands.tsx";
 import { ringOf } from "./runs.tsx";
 
 function toStep(step: Step): PhasePlanStep {
@@ -67,8 +70,9 @@ function RunSessions({ sessions }: { sessions: Inspection["sessions"] }) {
 
 export function RunPage({ params }: PageProps<"/runs/$runId">) {
   const run = params.runId;
+  const viewer = useViewer();
   const queryClient = useQueryClient();
-  const inspection = useCall(inspectAction, { run }, { refreshOn: { types: ["workflow.*", "niwa.step.*", "niwa.invocation.state", "session.started"] } });
+  const inspection = useCall(inspectAction, { run }, { refreshOn: catalogueEvents });
   const resume = useAction(resumeAction);
   const stop = useAction(stopAction);
 
@@ -119,10 +123,15 @@ export function RunPage({ params }: PageProps<"/runs/$runId">) {
           </p>
         )}
       </header>
+      <RunCommands run={run} state={status.state} workflow={origin.workflow} />
+      <InspectedTrack inspection={inspection.data} detail />
+      {status.outcome?.status === "done" && status.outcome.result !== undefined && <details open><summary>Результат</summary><pre>{JSON.stringify(status.outcome.result, null, 2)}</pre></details>}
+      {viewer.owner && origin.sourceSeq && <a className="text-sm underline" target="_blank" rel="noreferrer" href={"/api/source?seq=" + origin.sourceSeq}>Открыть исходник этого запуска ↗</a>}
+      <h3>Управление фазами и шагами</h3>
       <PhasePlan
         phases={phases}
-        onRecompute={recompute}
-        onStop={halt}
+        onRecompute={viewer.can(resumeAction) ? recompute : undefined}
+        onStop={viewer.can(stopAction) ? halt : undefined}
         canRecompute={() => status.state !== "running"}
         canStop={(target: PlanTarget) => status.state !== "finished" && (target.step !== undefined || target.phase === current)}
         explainRecompute={(target: PlanTarget) =>

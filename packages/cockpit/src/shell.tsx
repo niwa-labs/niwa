@@ -1,7 +1,8 @@
 /** The frame of the cockpit: navigation, the status bar and the place a page is drawn in. */
 
-import { FaultNotice, PageLink, PluginBoundary, Slot, useRegistry, useViewer } from "@niwa-labs/cockpit-sdk";
+import { FaultNotice, PageLink, PluginBoundary, Slot, useHost, useRegistry, useViewer } from "@niwa-labs/cockpit-sdk";
 import type { PluginFault } from "@niwa-labs/cockpit-sdk";
+import { useMutation } from "@tanstack/react-query";
 import { Outlet, useRouterState } from "@tanstack/react-router";
 
 import { useFaults } from "./faults.tsx";
@@ -19,8 +20,8 @@ function Navigation() {
     </PageLink>
   );
   return (
-    <nav aria-label="Pages" className="flex min-w-0 flex-col gap-0.5">
-      {own("/", "Home")}
+    <nav aria-label="Pages" className="desk-nav">
+      {own("/", "Пульт")}
       {registry.nav.map((item) => (
         <PageLink key={item.path} to={item.path} className={`${LINK} ${active(item.path) ? "bg-accent font-medium" : ""}`}>
           {item.icon === undefined ? null : (
@@ -31,7 +32,7 @@ function Navigation() {
           <span className="min-w-0 truncate">{item.label}</span>
         </PageLink>
       ))}
-      {own("/journal", "Journal")}
+      {own("/journal", "Журнал")}
     </nav>
   );
 }
@@ -49,22 +50,29 @@ function Faults({ faults }: { faults: readonly PluginFault[] }) {
 
 export function Shell() {
   const viewer = useViewer();
+  const host = useHost();
+  const stop = useMutation({ mutationFn: () => host.call("niwa.host.stop", {}) });
   const faults = useFaults();
   const status = useStatus();
   return (
-    <div data-slot="shell" className="flex h-full min-h-0 min-w-0">
-      <aside className="flex w-48 shrink-0 flex-col gap-4 border-r p-3">
-        <span className="px-2 text-sm font-semibold tracking-tight">niwa</span>
+    <div data-slot="shell" className="desk-shell">
+      <header className="desk-bar">
+        <PageLink to="/" className="desk-brand"><i aria-hidden>✳</i> niwa</PageLink>
         <Navigation />
-      </aside>
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <span className="desk-connection">{status}</span>
+      </header>
+      <div className="desk-body">
         <Faults faults={faults} />
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+        <main>
           <Outlet />
         </main>
         <footer data-slot="status-bar" className="flex min-w-0 items-center gap-3 border-t px-3 py-1 text-xs text-muted-foreground">
-          <span title="The feed of records">{status}</span>
+
           <Slot name="shell.status" />
+          {viewer.can("niwa.host.stop") && <button disabled={stop.isPending || stop.isSuccess} onClick={() => {
+            if (window.confirm("Остановить хост Niwa и его сессии?")) stop.mutate();
+          }}>{stop.isSuccess ? "Остановка запрошена" : "Стоп хоста"}</button>}
+          {stop.error && <span role="alert">{stop.error.message}</span>}
           <span className="ml-auto min-w-0 truncate">{viewer.owner ? "owner" : viewer.id}</span>
         </footer>
       </div>

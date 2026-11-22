@@ -69,7 +69,8 @@ import type {
   StoredRecord,
   Timestamp,
 } from "@niwa-labs/core";
-import { TIMER_OFFER, plugin, trigger } from "@niwa-labs/plugin";
+import { fileURLToPath } from "node:url";
+import { COCKPIT_MODULE, TIMER_OFFER, plugin, trigger } from "@niwa-labs/plugin";
 import type { MissedRule, Plugin, ServiceContext, StateHandle, TimerDef, TimerOffer, Trigger } from "@niwa-labs/plugin";
 import { z } from "zod";
 
@@ -380,6 +381,7 @@ export function timers(defs: readonly (TimerDef | ScheduledTimerTrigger)[]): Plu
     ids.add(id);
   }
   return plugin("timers", (api) => {
+    api.offer(COCKPIT_MODULE, { id: "timers", entry: fileURLToPath(new URL("./cockpit/index.tsx", import.meta.url)) });
     api.declare(TimerFired, SleepRequested, TimerSlept);
     /**
      * The timers of the host: the listed ones, then the ones the plugins offer (`TIMER_OFFER`). A listed

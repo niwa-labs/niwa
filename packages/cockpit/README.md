@@ -17,7 +17,10 @@ modules in `niwa.cockpit.catalog`.
 4. Only then make the router, from the pages the modules registered. No module is added later.
 
 The shell is the navigation, the status bar of the feed, the faults and the place a page is drawn
-in. The home page is the tiles that modules put in the `home.tile` slot. The journal, at `/journal`,
+in. Plugins can contribute to the home status strip (`home.summary`), work column (`home.main`),
+or sidebar (`home.tile`). The project selector passes the chosen directory to each contribution.
+A plugin can register page commands. The client renders the current host input schema on demand
+and uses the viewer’s grants to determine which commands to show. The journal, at `/journal`,
 shows the latest records newest first: each is drawn by the view a module gave its type in the
 `record.view` slot, and by a plain row when no module did.
 

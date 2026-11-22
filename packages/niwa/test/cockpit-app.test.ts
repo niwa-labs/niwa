@@ -19,7 +19,7 @@ import { RequestAnswered } from "@niwa-labs/requests/records";
 import { baseStack, connectAsOwner, createNiwa, eventually, tempHome } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
 import { taskCreate } from "@niwa-labs/tasks";
-import { workflow, workflowInspect, workflowStart, workflowWait } from "@niwa-labs/workflow";
+import { workflow, workflowCancel, workflowInspect, workflowStart, workflowWait } from "@niwa-labs/workflow";
 import type { WebServer } from "@niwa-labs/web";
 import { chromium } from "playwright-core";
 import type { Browser, BrowserContext, ConsoleMessage, Page } from "playwright-core";
@@ -115,8 +115,21 @@ run("the cockpit app in a browser", () => {
     return page;
   }
 
-  test("the home page shows the runs in blocks by directory", async () => {
+  test("the desk shows the four states, filters both projects and opens the workflow catalogue", async () => {
     const page = await open();
+    await page.waitForSelector(".desk-strip button[data-kind=decision]");
+    await page.getByLabel("Проект", { exact: true }).selectOption("/work/beta");
+    await page.waitForFunction(() => document.querySelectorAll('[data-slot="run-row"]').length === 1);
+    expect(await page.locator('[data-slot="run-row"]').innerText()).toContain("plain");
+    expect(await page.locator(".desk-strip button").count()).toBe(4);
+    await page.getByText("Каталог сценариев", { exact: true }).click();
+    await page.waitForSelector('[data-slot="workflows"]');
+    expect(await page.getByRole("heading", { name: "Зарегистрированные сценарии" }).count()).toBe(1);
+    await page.context().close();
+  }, 60_000);
+
+  test("the runs page keeps the directory view", async () => {
+    const page = await open("/runs");
     await page.waitForSelector('[data-slot="run-block"]');
     const blocks = await page.$$eval('[data-slot="run-block"]', (nodes) => nodes.map((node) => ({ directory: node.getAttribute("data-directory"), runs: node.querySelectorAll('[data-slot="run-row"]').length })));
     expect(blocks.sort((a, b) => (a.directory ?? "").localeCompare(b.directory ?? ""))).toEqual([
@@ -127,7 +140,7 @@ run("the cockpit app in a browser", () => {
     expect(await page.textContent('[data-directory="/work/alpha"] header')).toContain("/work/alpha");
     // The navigation has the pages the modules added.
     const links = await page.$$eval('nav[aria-label="Pages"] a', (nodes) => nodes.map((node) => node.textContent));
-    expect(links).toEqual(expect.arrayContaining(["Home", "Runs", "Sessions", "Requests", "Tasks"]));
+    expect(links).toEqual(expect.arrayContaining(["Пульт", "Сценарии", "Runs", "Sessions", "Requests", "Tasks"]));
     expect(await violations(page)).toEqual([]);
     await page.context().close();
   }, 60_000);
@@ -236,6 +249,65 @@ run("the cockpit app in a browser", () => {
     const page = await open("/sessions");
     await page.waitForSelector("text=No sessions yet");
     await page.context().close();
+  }, 60_000);
+
+  test("an owner checks and registers a script, then fills its input schema and launches it", async () => {
+    const file = join(workDir, "welcome.ts");
+    await writeFile(file, 'export default workflow({description:"Welcome someone", input:z.object({ person:z.string() }), output:z.string()}, async ({person}) => "Hello " + person);');
+    const page = await open("/workflows");
+    await page.getByLabel("Файл сценария на хосте").fill(file);
+    await page.getByRole("button", { name: "Проверить", exact: true }).click();
+    await page.getByText("Проверка пройдена", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Зарегистрировать", exact: true }).click();
+    await page.locator(".desk-card a").filter({ hasText: "Welcome someone" }).click();
+    await page.locator('[data-slot="workflow-detail"]').waitFor();
+    await page.getByRole("link", { name: "▶ Запустить", exact: true }).click();
+    await page.getByLabel("person").fill("Cockpit");
+    await page.getByRole("button", { name: "▶ Запустить", exact: true }).click();
+    await page.getByText('"Hello Cockpit"', { exact: true }).waitFor();
+    await page.context().close();
+  }, 60_000);
+
+  test("an empty task list has a host-schema form that creates a task", async () => {
+    const page = await open("/tasks");
+    await page.getByRole("button", { name: "Создать задачу", exact: true }).click();
+    const form = page.locator(".desk-commands form");
+    await form.getByLabel("kind *", { exact: true }).first().fill("review");
+    await form.getByLabel("description", { exact: false }).fill("Review cockpit forms");
+    await form.getByLabel("text *", { exact: true }).fill("Check the generated form.");
+    await form.getByLabel("responsible", { exact: true }).selectOption({ label: "owner" });
+    await form.getByRole("button", { name: "Создать задачу" }).click();
+    await page.locator('[data-slot="task-row"]').filter({ hasText: "Review cockpit forms" }).waitFor();
+    await page.context().close();
+  }, 60_000);
+
+  test("parallel sleeps have independent countdowns and animated paths that honour reduced motion", async () => {
+    const file = join(workDir, "parallel-timers.js");
+    await writeFile(file, `export default workflow({phases:[{title:"Prepare"},{title:"Check"},{title:"Report"}]}, async () => {
+      phase("Prepare"); await now();
+      phase("Check"); await parallel([()=>sleep("1h",{label:"one"}),()=>sleep("2h",{label:"two"})]);
+    });`);
+    const { run } = await host.call(workflowStart, { file, label:"parallel timers" });
+    const page = await open("/runs/"+run);
+    try {
+      await page.getByText("⑂ Параллельные ветки").waitFor();
+      const clocks = page.locator(".nw-countdown");
+      expect(await clocks.count()).toBe(2);
+      expect(await clocks.first().getAttribute("datetime")).not.toBe(await clocks.last().getAttribute("datetime"));
+      const previous = await clocks.first().textContent();
+      await eventually(async () => await clocks.first().textContent() !== previous, 4000);
+      const motion = () => page.evaluate<string[]>('document.getAnimations().map(a=>a.animationName).filter(n=>n?.startsWith("nw-"))');
+      expect(await motion()).toEqual(expect.arrayContaining(["nw-breathe","nw-across","nw-down"]));
+      await page.emulateMedia({ reducedMotion:"reduce" });
+      expect(await motion()).toEqual([]);
+      expect(await page.locator(".nw-step").count()).toBe(3);
+      await page.locator(".nw-step a").first().click();
+      await page.locator('#record-title').filter({ hasText:"niwa.step.intent" }).waitFor();
+      expect(await violations(page)).toEqual([]);
+    } finally {
+      await page.context().close();
+      await host.call(workflowCancel, { run });
+    }
   }, 60_000);
 
   test("one copy of React serves the app and the modules, and nothing was refused or failed", async () => {

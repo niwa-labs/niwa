@@ -1,3 +1,4 @@
+import { PageSection } from "@niwa-labs/ui-kit";
 /** The sessions of the host and the transcript of one of them. */
 
 import { EntityLink, PageLink, useCall, type PageProps } from "@niwa-labs/cockpit-sdk";
@@ -15,6 +16,8 @@ import {
   type WorkState,
 } from "@niwa-labs/ui-kit";
 
+import { useEffect, useMemo, useState } from "react";
+import type { HomeTileProps } from "@niwa-labs/cockpit-sdk";
 import { listAction, readAction, type SessionEntry } from "./actions.ts";
 import { itemsOf, type TranscriptItem } from "./transcript.ts";
 
@@ -26,7 +29,7 @@ function SessionRow({ entry }: { entry: SessionEntry }) {
     <li data-slot="session-row" data-state={entry.state} className="flex min-w-0 items-center gap-3 py-2">
       <StateRing state={RING[entry.state]} label={entry.state} />
       {id === undefined ? (
-        <span className="min-w-0 truncate text-sm">{entry.title ?? entry.ref}</span>
+        <PageLink to={"/sessions/" + encodeURIComponent(entry.ref)} className="min-w-0 truncate text-sm hover:underline">{entry.title ?? entry.ref}</PageLink>
       ) : (
         <PageLink to={`/sessions/${encodeURIComponent(id)}`} className="min-w-0 truncate text-sm font-medium hover:underline">
           {entry.title ?? entry.ref}
@@ -48,11 +51,26 @@ function SessionRow({ entry }: { entry: SessionEntry }) {
   );
 }
 
+export function SessionsTile({ project, reportProjects }: HomeTileProps) {
+  const sessions = useCall(listAction, { managedOnly: true, limit: 500 }, { refreshOn: { types: ["session.*"] } });
+  const dirs = useMemo(() => [...new Set(sessions.data?.sessions.flatMap(s => s.cwd ? [s.cwd] : []))], [sessions.data]);
+  useEffect(() => reportProjects?.(dirs), [dirs, reportProjects]);
+  const rows = sessions.data?.sessions.filter(s => !s.run && (!project || s.cwd === project)).slice(0, 30);
+  return <PageSection title="Самостоятельные сессии">
+    {sessions.error ? <p role="alert">{sessions.error.message}</p> : !rows ? <p>Загружаю…</p> : rows.length ? <ul>{rows.map(s => <SessionRow key={s.ref} entry={s} />)}</ul> : <p>Нет сессий вне запусков.</p>}
+    <PageLink to="/sessions">Все сессии →</PageLink></PageSection>;
+}
+
 export function SessionsPage() {
-  const sessions = useCall(listAction, { limit: 100 }, { refreshOn: { types: ["session.*"] } });
+  const [cursors, setCursors] = useState<string[]>([]);
+  const cursor = cursors.at(-1);
+  const sessions = useCall(listAction, { limit: 100, ...(cursor && { cursor }) }, { refreshOn: { types: ["session.*"] } });
   return (
     <div className="flex min-w-0 flex-col gap-3 p-4">
       <h2 className="text-lg font-semibold">Sessions</h2>
+      {sessions.data?.unreadable?.map(h => <p role="status" key={h.harness}>{h.harness} · {h.reason}</p>)}
+      <div className="desk-tools">{cursor && <button onClick={() => setCursors(c => c.slice(0, -1))}>← Предыдущие сессии</button>}
+        {sessions.data?.nextCursor && <button onClick={() => setCursors(c => [...c, sessions.data.nextCursor!])}>Следующие сессии →</button>}</div>
       {sessions.isPending ? (
         <p className="text-sm text-muted-foreground">Loading sessions…</p>
       ) : sessions.isError ? (
@@ -107,8 +125,13 @@ function Item({ item }: { item: TranscriptItem }) {
 }
 
 export function SessionPage({ params }: PageProps<"/sessions/$sessionId">) {
-  const id = params.sessionId;
-  const read = useCall(readAction, { session: id, window: { limit: 200 } }, { refreshOn: { types: ["session.*"] } });
+  return <SessionTranscript key={params.sessionId} id={params.sessionId} />;
+}
+
+function SessionTranscript({ id }: { id: string }) {
+  const [anchors, setAnchors] = useState<string[]>([]);
+  const before = anchors.at(-1);
+  const read = useCall(readAction, { session: id, window: { limit: 200, ...(before && { before }) } }, { refreshOn: { types: ["session.*"] } });
   return (
     <div data-slot="session-page" className="flex h-full min-h-0 min-w-0 flex-col">
       <header className="flex min-w-0 items-center gap-2 border-b px-4 py-3">
@@ -118,6 +141,7 @@ export function SessionPage({ params }: PageProps<"/sessions/$sessionId">) {
         <span className="text-muted-foreground">/</span>
         <EntityLink entity={{ kind: "session", id }} />
       </header>
+      {read.data?.coverage?.reason && <p role="alert">{read.data.coverage.reason}</p>}
       {read.isPending ? (
         <p className="p-4 text-sm text-muted-foreground">Loading the transcript…</p>
       ) : read.isError ? (
@@ -131,7 +155,8 @@ export function SessionPage({ params }: PageProps<"/sessions/$sessionId">) {
           className="min-h-80"
         />
       )}
-      {read.data?.page?.hasEarlier === true ? <p className="border-t px-4 py-2 text-xs text-muted-foreground">Earlier records are not shown.</p> : null}
+      <div className="desk-tools">{read.data?.page?.hasEarlier && read.data.records[0]?.locator && <button onClick={() => setAnchors(a => [...a, read.data.records[0]!.locator!])}>← Предыдущие сообщения</button>}
+        {before && <button onClick={() => setAnchors(a => a.slice(0, -1))}>Следующие сообщения →</button>}</div>
     </div>
   );
 }

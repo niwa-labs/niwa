@@ -12,6 +12,7 @@ export const SessionState = z.enum(["running", "idle", "ended", "unknown"]);
 export const SessionEntry = z.object({
   id: z.string().optional(),
   ref: z.string(),
+  run: z.string().optional(),
   title: z.string().optional(),
   cwd: z.string().optional(),
   model: z.string().optional(),
@@ -23,8 +24,8 @@ export type SessionEntry = z.infer<typeof SessionEntry>;
 
 export const listAction = {
   name: "session.list",
-  input: z.object({ limit: z.number().int().positive().optional(), managedOnly: z.boolean().optional() }),
-  output: z.object({ sessions: z.array(SessionEntry), total: z.number(), hint: z.string().optional() }),
+  input: z.object({ limit: z.number().int().positive().optional(), cursor: z.string().optional(), managedOnly: z.boolean().optional() }),
+  output: z.object({ sessions: z.array(SessionEntry), total: z.number(), nextCursor: z.string().optional(), unreadable: z.array(z.object({ harness: z.string(), reason: z.string() })).optional(), hint: z.string().optional() }),
 } as const;
 
 const Base = { locator: z.string().optional(), at: z.number().optional() };
@@ -47,5 +48,5 @@ export type TranscriptRecord = z.infer<typeof TranscriptRecord>;
 export const readAction = {
   name: "session.read",
   input: z.object({ session: z.string(), window: z.object({ limit: z.number().int().positive().max(250), before: z.string().optional() }).optional() }),
-  output: z.object({ records: z.array(TranscriptRecord), page: z.object({ hasEarlier: z.boolean() }).optional() }),
+  output: z.object({ records: z.array(TranscriptRecord), coverage: z.object({ status: z.string(), reason: z.string().optional() }).optional(), page: z.object({ hasEarlier: z.boolean() }).optional() }),
 } as const;
