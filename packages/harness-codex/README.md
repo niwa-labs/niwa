@@ -10,3 +10,8 @@ Codex supports the default tool mode and `tools: "all"`. Its app-server thread A
 cannot enforce an exact tool list across built-ins, feature groups and configured
 MCP servers. Starts and cold resumes requesting `niwa-only` or `{ allow: [...] }`
 return `Unsupported` before launching a process.
+
+For a session-supplied MCP server, Codex uses the exact tool names Niwa supplies
+as that server's `enabled_tools` on start and cold resume. An absent list leaves
+the server's tool selection to Codex. An empty list exposes no tools from that
+server.

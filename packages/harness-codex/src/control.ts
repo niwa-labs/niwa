@@ -14,7 +14,7 @@ import { existsSync } from "node:fs";
 
 import { z } from "zod";
 
-import { assertNever, timestamp } from "@niwa-labs/core";
+import { assertNever, stableJson, timestamp } from "@niwa-labs/core";
 import type { Answer, Question } from "@niwa-labs/core";
 import type {
   AskAnswer,
@@ -1235,19 +1235,14 @@ function sameConfig(
   b: Record<string, unknown> | undefined,
 ): boolean {
   if (a === undefined || b === undefined) return a === b;
-  const keys = Object.keys(a);
-  if (keys.length !== Object.keys(b).length) return false;
-  return keys.every(
-    (key) => key in b && JSON.stringify(a[key]) === JSON.stringify(b[key]),
-  );
+  return stableJson(a) === stableJson(b);
 }
 
 /**
  * The Codex config of a thread, in the dialect Codex speaks.
  *
- * Codex takes a flat map of dotted keys, each with a JSON value, and merges it into the thread
- * as if it were given with `-c`. A server becomes three keys, a tool that is switched off
- * becomes one.
+ * Codex merges the JSON overrides as if they were given with `-c`. Server names are keys
+ * of a table: a name that contains a dot must stay a single key.
  */
 function codexConfig(
   harness: HarnessId,
@@ -1257,10 +1252,13 @@ function codexConfig(
 ): Record<string, unknown> | undefined {
   const config: Record<string, unknown> = {};
 
-  for (const server of servers ?? []) {
-    config[`mcp_servers.${server.name}.command`] = server.command;
-    config[`mcp_servers.${server.name}.args`] = [...server.args];
-    if (Object.keys(server.env).length > 0) config[`mcp_servers.${server.name}.env`] = { ...server.env };
+  if (servers !== undefined && servers.length > 0) {
+    config.mcp_servers = Object.fromEntries(servers.map((server) => [server.name, {
+      command: server.command,
+      args: [...server.args],
+      ...(Object.keys(server.env).length === 0 ? {} : { env: { ...server.env } }),
+      ...(server.tools === undefined ? {} : { enabled_tools: [...new Set(server.tools)].sort() }),
+    }]));
   }
 
   for (const tool of visible?.disabledTools ?? []) {

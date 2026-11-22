@@ -761,16 +761,25 @@ test("a session is given its server and its switched-off tools in the config of 
         command: "/usr/bin/niwa",
         args: ["/tmp/home", "--stdio"],
         env: { NIWA_VISIBLE: "task.create" },
+        tools: ["task_create"],
       },
+      { name: "fixture.empty", command: "fixture", args: [], env: {}, tools: [] },
+      { name: "fixture-unfiltered", command: "fixture", args: [], env: {} },
     ],
     visible: { actions: ["task.create"], disabledTools: ["shell", "web_search"] },
   });
 
-  // Codex takes a flat map of dotted keys, each with a JSON value.
   expect(await threadConfig("thread/start")).toEqual({
-    "mcp_servers.niwa.command": "/usr/bin/niwa",
-    "mcp_servers.niwa.args": ["/tmp/home", "--stdio"],
-    "mcp_servers.niwa.env": { NIWA_VISIBLE: "task.create" },
+    mcp_servers: {
+      niwa: {
+        command: "/usr/bin/niwa",
+        args: ["/tmp/home", "--stdio"],
+        env: { NIWA_VISIBLE: "task.create" },
+        enabled_tools: ["task_create"],
+      },
+      "fixture.empty": { command: "fixture", args: [], enabled_tools: [] },
+      "fixture-unfiltered": { command: "fixture", args: [] },
+    },
     "features.shell_tool": false,
     web_search: "disabled",
   });
@@ -781,17 +790,19 @@ test("a session is given its server and its switched-off tools in the config of 
 test("a resumed session is given its server and its switched-off tools too", async () => {
   process.env.FAKE_MODE = "hold";
   const codex = control({ mode: "full" });
-  const { session: id } = await codex.start({ prompt: promptFromText("") });
+  const { session: id } = await codex.start({
+    prompt: promptFromText(""),
+    servers: [{ name: "niwa", command: "niwa", args: [], env: {}, tools: ["task_create"] }],
+  });
   await codex.stop(id);
 
   await codex.resume(id, {
-    servers: [{ name: "niwa", command: "niwa", args: [], env: {} }],
-    visible: { actions: [], disabledTools: ["web_search"] },
+    servers: [{ name: "niwa", command: "niwa", args: [], env: {}, tools: ["session_open_questions"] }],
+    visible: { actions: ["session.open-questions"], disabledTools: ["web_search"] },
   });
 
   expect(await threadConfig("thread/resume")).toEqual({
-    "mcp_servers.niwa.command": "niwa",
-    "mcp_servers.niwa.args": [],
+    mcp_servers: { niwa: { command: "niwa", args: [], enabled_tools: ["session_open_questions"] } },
     web_search: "disabled",
   });
 
@@ -885,16 +896,14 @@ test("a thread with nothing to set is given no config at all", async () => {
 test("a running session cannot take another server or tool set", async () => {
   process.env.FAKE_MODE = "hold";
   const codex = control();
-  const { session: id } = await codex.start({
-    prompt: promptFromText(""),
-    servers: [{ name: "niwa", command: "niwa", args: [], env: {} }],
-  });
+  const niwa = { name: "niwa", command: "niwa", args: [], env: {}, tools: ["task_create", "task_finish"] };
+  const other = { name: "other", command: "other-mcp", args: [], env: {} };
+  const { session: id } = await codex.start({ prompt: promptFromText(""), servers: [niwa, other] });
 
-  const failure = await codex
-    .resume(id, { servers: [{ name: "other", command: "other-mcp", args: [], env: {} }] })
-    .catch((error: unknown) => error);
+  await codex.resume(id, { servers: [other, { ...niwa, tools: ["task_finish", "task_create"] }] });
+  await expect(codex.resume(id, { servers: [other] })).rejects.toBeInstanceOf(Unsupported);
+  await expect(codex.resume(id, { servers: [{ ...niwa, tools: [] }, other] })).rejects.toBeInstanceOf(Unsupported);
 
-  expect(failure).toBeInstanceOf(Unsupported);
   // The thread was not asked for again: the refusal came first.
   expect((await requests()).filter((frame) => frame.method === "thread/resume")).toEqual([]);
 

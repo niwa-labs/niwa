@@ -92,9 +92,10 @@ export interface McpServerSpec {
   /** The environment the server is given. */
   readonly env: Readonly<Record<string, string>>;
   /**
-   * The names of the tools the server lists, when niwa knows them without connecting (its own
-   * server does: they are the tools of the actions the session may see). A harness whose tool
-   * allow-list also filters MCP tools adds them to it; a foreign server has none here.
+   * The exact MCP tool names available to the session, when niwa knows them without connecting.
+   * Its own server uses the tool names of the actions the session may see. A harness can use
+   * the list to restrict this server or to include its tools in a session-wide allow-list.
+   * Omit the list when the tools are unknown. An empty list names no tools.
    */
   readonly tools?: readonly string[];
 }
