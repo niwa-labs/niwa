@@ -2,6 +2,7 @@
 const signals = [
   ["permission denied", /\b(?:EACCES|EPERM)\b|operation not permitted|permission denied/i],
   ["missing file or executable", /\bENOENT\b|no such file or directory|command not found/i],
+  ["runtime dependency unavailable", /cannot find (?:package|module)\s+['"]|\b(?:ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND)\b/i],
   ["not signed in", /not signed in|not logged in|authentication required|please (?:run [^\n]*\/login|log in)/i],
   ["host API key unavailable", /Claude host API key unavailable/i],
   ["authentication rejected", /\bauthentication_failed\b|invalid x-api-key|\bAPI Error: 401\b/i],

@@ -27,9 +27,9 @@ import { z } from "zod";
 import { covers, homeExpanded, linkPlace, programPaths, realPlace, resolveProfile } from "./profile.ts";
 import type { BoxProfile, ResolvedProfile } from "./profile.ts";
 import { catalog } from "./profiles.ts";
-import { BoxRefused, listenRefusal, socketBindRefusals } from "./sandbox.ts";
+import { BoxRefused, keychainReadRefusal, listenRefusal, socketBindRefusals } from "./sandbox.ts";
 import type { BoxPolicy, BoxRefusal, Sandbox, SandboxManifest } from "./sandbox.ts";
-import { EnvNameSchema, ListenNeedSchema, LoopbackListenSchema, UnixSocketBindDirSchema, boxSpec, listenerName, sameListener } from "./spec.ts";
+import { EnvNameSchema, KeychainReadSchema, ListenNeedSchema, LoopbackListenSchema, UnixSocketBindDirSchema, boxSpec, listenerName, sameListener } from "./spec.ts";
 import type { BoxSpec, ListenNeed } from "./spec.ts";
 import type { BoxSandboxName } from "./launch.ts";
 
@@ -107,6 +107,8 @@ export interface BoxPlan {
   readonly net: readonly { readonly host: string; readonly from: Origin }[];
   /** A required host-reachable TCP listener and the profile that supplied it. */
   readonly listen?: ListenNeed;
+  /** Private to the installation that owns the plan. */
+  readonly keychainRead?: readonly string[];
   readonly unixSocketBind?: readonly { readonly dir: string; readonly from: Origin }[];
   /** Guaranteed closed. */
   readonly closed: readonly { readonly path: string; readonly from: Origin }[];
@@ -290,6 +292,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     else refusals.push({ code: "unknown-profile", message: unknown(item) });
   }
   const ownerOrigin = input.owner === undefined ? undefined : `harness:${input.owner}`;
+  let keychainRead: readonly string[] | undefined;
   const takenPaths: string[] = [];
   const addProfile = (from: Origin, profile: ResolvedProfile) => {
     for (const path of profile.read) paths.push({ path, mode: "read", from });
@@ -321,7 +324,11 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
   };
   if (input.owner !== undefined && ownerOrigin !== undefined) {
     const own = registry.installations.get(input.owner);
-    if (own !== undefined) addProfile(ownerOrigin, profileOf(ownerOrigin, own));
+    if (own !== undefined) {
+      const profile = profileOf(ownerOrigin, own);
+      keychainRead = profile.keychainRead;
+      addProfile(ownerOrigin, profile);
+    }
   }
   for (const name of taken) {
     const profile = known.get(name);
@@ -477,6 +484,7 @@ function planBox(input: PlanInput, registry: Registry): BoxPlan {
     paths: distinctNeeds(paths),
     net: distinctHosts(net),
     ...(listen === undefined ? {} : { listen }),
+    ...(keychainRead === undefined ? {} : { keychainRead }),
     ...(unixSocketBind.size === 0 ? {} : { unixSocketBind: [...unixSocketBind.values()] }),
     closed,
     skipped,
@@ -632,6 +640,7 @@ export function planSpec(plan: BoxPlan, extra: { readonly env?: Readonly<Record<
     closed: [...new Set(plan.closed.map((one) => one.path))],
     net: plan.net.map((one) => one.host),
     ...(plan.listen === undefined ? {} : { listen: plan.listen }),
+    ...(plan.keychainRead === undefined ? {} : { keychainRead: [...plan.keychainRead] }),
     env: { ...extra.env },
     sockets: [...(extra.sockets ?? [])],
     unixSocketBind: (plan.unixSocketBind ?? []).map((grant) => grant.dir),
@@ -645,6 +654,7 @@ export const BoxPolicySchema = z.object({
   read: z.union([z.object({ only: z.array(z.string()) }), z.object({ except: z.array(z.string()) })]),
   net: z.array(z.string()),
   listen: LoopbackListenSchema.optional(),
+  keychainRead: KeychainReadSchema,
   unixSocketBind: z.array(UnixSocketBindDirSchema).optional(),
 });
 
@@ -664,6 +674,7 @@ export const BoxManifestSchema = z.object({
   paths: z.array(z.object({ path: z.string(), mode: z.enum(["read", "write"]), from: z.string() })),
   net: z.array(z.object({ host: z.string(), from: z.string() })),
   listen: ListenNeedSchema.optional(),
+  keychainRead: KeychainReadSchema,
   unixSocketBind: z.array(z.object({ dir: UnixSocketBindDirSchema, from: z.string() })).optional(),
   closed: z.array(z.object({ path: z.string(), from: z.string() })),
   skipped: z.array(z.object({ place: z.string(), from: z.string(), why: z.string() })),
@@ -680,6 +691,7 @@ export function boxManifest(plan: BoxPlan, rules: readonly string[], made: Sandb
     sandbox: made.sandbox,
     cwd: plan.cwd,
     request: { mode: plan.request.mode, items: plan.request.items.map((one) => ({ item: one.item, from: one.from })) },
+    ...(plan.keychainRead === undefined ? {} : { keychainRead: [...plan.keychainRead] }),
     paths: [...plan.paths],
     net: [...plan.net],
     ...(plan.listen === undefined ? {} : { listen: { ...plan.listen } }),
@@ -688,6 +700,7 @@ export function boxManifest(plan: BoxPlan, rules: readonly string[], made: Sandb
     skipped: [...plan.skipped],
     rules: [...rules],
     policy: {
+      ...(policy.keychainRead === undefined ? {} : { keychainRead: [...policy.keychainRead] }),
       write: [...policy.write],
       devices: [...policy.devices],
       read: "only" in policy.read ? { only: [...policy.read.only] } : { except: [...policy.read.except] },
@@ -727,6 +740,8 @@ export function admit(
     manifest = sandbox.manifest(spec);
     const listener = listenRefusal(spec, manifest);
     if (listener !== undefined) reasons.push(listener);
+    const keychain = keychainReadRefusal(spec, manifest);
+    if (keychain !== undefined) reasons.push(keychain);
     reasons.push(...socketBindRefusals(spec, manifest));
   } catch (error) {
     if (!(error instanceof BoxRefused)) throw error;

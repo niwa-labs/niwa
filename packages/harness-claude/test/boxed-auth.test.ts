@@ -1,19 +1,40 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { secret } from "@niwa-labs/core";
 import { harnessId, promptFromText } from "@niwa-labs/harness";
-import { nono, onBoxManifest, onSpawn, spawnAgent } from "@niwa-labs/sandbox";
+import { homePath, nono, onBoxManifest, onSpawn, resolveProfile, spawnAgent } from "@niwa-labs/sandbox";
 import { fakeSdkQuery, tempDir } from "@niwa-labs/testing";
 
 import { claudeCodeControl } from "../src/code/control.ts";
+import { claudeCodeKind } from "../src/code/index.ts";
 import { ClaudeSdkControl } from "../src/sdk/control.ts";
+import { claudeSdkKind } from "../src/sdk/index.ts";
 import type { SdkQuery } from "../src/sdk/control.ts";
 import { StartupDiagnostics } from "../src/startup-diagnostics.ts";
 
 const SYNTHETIC = "synthetic-api-key";
 const harness = harnessId("boxed-auth-test");
+
+test("both Claude installations declare only their OAuth service for local login", async () => {
+  const defaultHome = homePath(".claude");
+  const customHome = join(await tempDir("claude-custom-profile"), "Cafe\u0301");
+  const suffix = createHash("sha256").update(customHome.normalize("NFC")).digest("hex").slice(0, 8);
+  const machine = { home: homePath(), env: process.env };
+  for (const kind of [claudeCodeKind, claudeSdkKind]) {
+    for (const [home, names] of [
+      [defaultHome, ["Claude Code-credentials"]],
+      [customHome, [`Claude Code-credentials-${suffix}`]],
+    ] as const) {
+      const binding = kind.bind({ id: "claude-local", home });
+      const profile = resolveProfile(binding.profile, "claude-local", machine);
+      expect(profile.keychainRead).toEqual(process.platform === "darwin" ? names : undefined);
+      expect(profile.net).toEqual(process.platform === "darwin" ? ["api.anthropic.com", "platform.claude.com"] : ["api.anthropic.com"]);
+    }
+  }
+});
 
 for (const kind of ["ACP", "SDK"] as const) {
   test(`${kind} supplies a configured key only to its boxed child`, async () => {

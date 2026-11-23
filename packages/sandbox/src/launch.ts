@@ -17,7 +17,7 @@ import { PassThrough, Writable } from "node:stream";
 import type { Readable } from "node:stream";
 
 import { nono } from "./nono.ts";
-import { BoxRefused, listenRefusal, requireSandbox, socketBindRefusals } from "./sandbox.ts";
+import { BoxRefused, keychainReadRefusal, listenRefusal, requireSandbox, socketBindRefusals } from "./sandbox.ts";
 import type { LaunchedBox, Sandbox, SandboxManifest, SandboxName } from "./sandbox.ts";
 import { boxSpec } from "./spec.ts";
 import type { BoxSpec, BoxSpecInput } from "./spec.ts";
@@ -146,9 +146,16 @@ export function useSandbox(name: BoxSandboxName, sandbox: Sandbox): () => void {
   };
 }
 
-/** Refuses a start whose box cannot run here: `SandboxUnavailable`, before any process exists. */
+/** Refuses a start whose box cannot enforce Keychain access or cannot run here. */
 export async function requireBox(box: BoxRequest | undefined): Promise<void> {
-  if (box !== undefined) await requireSandbox(sandboxOf(box.sandbox));
+  if (box === undefined) return;
+  const sandbox = sandboxOf(box.sandbox);
+  if (box.spec.keychainRead?.length) {
+    const spec = boxSpec(box.spec);
+    const refusal = keychainReadRefusal(spec, sandbox.manifest(spec));
+    if (refusal !== undefined) throw new BoxRefused([refusal], sandbox.name);
+  }
+  await requireSandbox(sandbox);
 }
 
 function inherited(unset: readonly string[]): Record<string, string> {
@@ -388,6 +395,8 @@ async function admitBox(launch: AgentLaunch, request: BoxRequest, probeAfterMani
   const manifest = sandbox.manifest(spec);
   const listener = listenRefusal(spec, manifest);
   const refusals = socketBindRefusals(spec, manifest);
+  const keychain = keychainReadRefusal(spec, manifest);
+  if (keychain !== undefined) refusals.push(keychain);
   if (listener !== undefined) refusals.push(listener);
   if (refusals.length > 0) throw new BoxRefused(refusals, sandbox.name);
   if (probeAfterManifest) await requireSandbox(sandbox);
@@ -439,10 +448,11 @@ function spawned(child: PipedProcess): Promise<PipedProcess> {
 /** The funnel: every agent process is started here. Any refusal is typed and comes before the process. */
 export async function spawnAgent(launch: AgentLaunch): Promise<AgentProcess> {
   if (launch.box === undefined) return await spawned(spawnPlain(launch));
-  const needsBind = launch.box.spec.listen !== undefined || Boolean(launch.box.spec.unixSocketBind?.length);
-  // The manifest can refuse unsupported bindings without probing the runtime.
-  if (!needsBind) await requireBox(launch.box);
-  const { sandbox, spec } = await admitBox(launch, launch.box, needsBind);
+  const specInput = launch.box.spec;
+  const needsManifest = specInput.listen !== undefined || Boolean(specInput.unixSocketBind?.length || specInput.keychainRead?.length);
+  // The manifest can refuse unsupported grants without probing the runtime.
+  if (!needsManifest) await requireBox(launch.box);
+  const { sandbox, spec } = await admitBox(launch, launch.box, needsManifest);
   const options = boxLaunchOptions(launch);
   announce(launch, argvOf(launch), sandbox.name);
   const child = new BoxedProcess();

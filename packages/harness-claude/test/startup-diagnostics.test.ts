@@ -21,6 +21,21 @@ test("ACP classifies legacy error.data and ignores arbitrary text and unknown re
   })).toBe("session/new failed (RPC -32603): permission denied, unsupported command-line option");
 });
 
+test("ACP initialize reports a missing runtime dependency without stderr details", async () => {
+  const dir = await tempDir("claude-initialize");
+  const adapter = join(dir, "adapter");
+  await writeFile(adapter, `#!/bin/sh\nprintf '%s\\n' "error: Cannot find package 'minimatch' from '${PRIVATE}'" >&2\nexit 1\n`, { mode: 0o755 });
+  const control = claudeCodeControl({ harness: "claude-initialize", executable: "/usr/bin/true", command: [adapter] });
+  try {
+    const failure = await control.start({ cwd: dir, prompt: promptFromText(PRIVATE) }).catch(String);
+    expect(failure).toContain("initialize failed: runtime dependency unavailable, exit 1");
+    expect(failure).not.toContain(PRIVATE);
+    expect(failure).not.toContain("minimatch");
+  } finally {
+    await control.dispose();
+  }
+});
+
 for (const kind of ["ACP", "SDK"] as const) {
   test(`${kind} start reports a safe diagnosis when the configured executable exits early`, async () => {
     const dir = await tempDir("claude-startup");

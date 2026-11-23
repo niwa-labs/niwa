@@ -29,6 +29,8 @@ export interface BoxPolicy {
   readonly net: readonly string[];
   /** The sole host-reachable inbound TCP listener the sandbox applies. */
   readonly listen?: LoopbackListen;
+  /** Generic-password services readable for the current macOS account. */
+  readonly keychainRead?: readonly string[];
   /** Directories where the adapter applies direct-child Unix socket bind permissions. */
   readonly unixSocketBind?: readonly string[];
 }
@@ -123,6 +125,14 @@ export function listenRefusal(spec: BoxSpec, manifest: SandboxManifest): BoxRefu
       ? "the sandbox applies an unrequested TCP loopback listener"
       : `the sandbox does not confirm an exact listener on ${listenerName(spec.listen)} for ${spec.listen.from}`,
   };
+}
+
+/** An adapter must confirm exactly the Keychain services in the spec. */
+export function keychainReadRefusal(spec: BoxSpec, manifest: SandboxManifest): BoxRefusal | undefined {
+  const wanted = new Set(spec.keychainRead);
+  const applied = new Set(manifest.policy?.keychainRead);
+  if (wanted.size === applied.size && [...wanted].every((service) => applied.has(service))) return undefined;
+  return { code: "adapter", message: "the sandbox does not confirm the exact requested Keychain services" };
 }
 
 /** An adapter must report the exact requested directory set and preserve closed paths. */

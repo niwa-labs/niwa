@@ -95,6 +95,37 @@ test("nono flags are the spec's write, net and sockets; no net is a blocked net"
   expect(nono().manifest(spec).env).toEqual({ NIWA_TOKEN: "k3f9" });
 });
 
+test("nono mediates exactly the requested Keychain read commands for the current account", () => {
+  const account = Bun.spawnSync(["/usr/bin/id", "-un"]).stdout.toString().trim();
+  const services = ["login", "alternate login"] as const;
+  const adapter = nono({ platform: "darwin" });
+  const request = boxSpec({ cwd: "/work", keychainRead: [...services, services[0]], env: { USER: "other-account" } });
+  const manifest = adapter.manifest(request);
+  expect(manifest.env["USER"]).toBe(account);
+  expect(manifest.policy.keychainRead).toEqual(services);
+  expect(manifest.profile.command_policies).toEqual({
+    commands: {
+      security: {
+        executable: "/usr/bin/security",
+        from: {
+          session: {
+            sandbox: { keychain_access: "read" },
+            invocation_policy: {
+              default: "deny",
+              allow: services.map((service) => ({ argv: { exact: ["find-generic-password", "-a", account, "-w", "-s", service] } })),
+            },
+          },
+        },
+      },
+    },
+  });
+  const empty = boxSpec({ cwd: "/work", keychainRead: [] });
+  expect(adapter.manifest(empty)).toEqual(adapter.manifest(boxSpec({ cwd: "/work" })));
+  expect(nono({ platform: "linux" }).manifest(empty).policy.keychainRead).toBeUndefined();
+  expect(srt().manifest(empty).policy.keychainRead).toBeUndefined();
+  expect(() => boxSpec({ cwd: "/work", keychainRead: [""] })).toThrow();
+});
+
 test("nono needs no flag for a closed place it never granted, and refuses one it would have to carve out", () => {
   const closed = nono().manifest(boxSpec({ cwd: "/x", closed: ["~/.ssh", "~/.niwa/owner.token"] }));
   expect(closed.flags).toEqual(nono().manifest(boxSpec({ cwd: "/x" })).flags);

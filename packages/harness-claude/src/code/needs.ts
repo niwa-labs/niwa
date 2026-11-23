@@ -2,6 +2,9 @@
 
 import { BUILTIN_TOOL_NAMES } from "@anthropic-ai/claude-agent-sdk";
 
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,15 +19,63 @@ const DEFAULT_HOME = homePath(".claude");
 /** The variable that tells Claude Code where its directory is. */
 const CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR";
 
-/** The root of an installed package, from the module it resolves to. */
-function packageRootOf(specifier: string): string[] {
-  try {
-    const entry = fileURLToPath(import.meta.resolve(specifier));
-    const at = entry.lastIndexOf(`/node_modules/${specifier}/`);
-    return at < 0 ? [] : [entry.slice(0, at + `/node_modules/${specifier}`.length)];
-  } catch {
-    return [];
+/** The exact installed directory of a dependency, including with Bun's isolated linker. */
+function packageRootOf(specifier: string, from: string): string | undefined {
+  for (const request of [`${specifier}/package.json`, specifier]) {
+    try {
+      const entry = Bun.resolveSync(request, from);
+      const marker = `/node_modules/${specifier}`;
+      const at = entry.lastIndexOf(`${marker}/`);
+      if (at >= 0) return entry.slice(0, at + marker.length);
+    } catch {
+      // Some packages export only their code, others only subpaths.
+    }
   }
+  return undefined;
+}
+
+/** The ACP adapter imports its dependencies inside the box, each from its own package directory. */
+function runtimePackages(): ReadonlySet<string> {
+  const roots = new Set<string>();
+  const visited = new Set<string>();
+  const add = (specifier: string, from: string): void => {
+    const root = packageRootOf(specifier, from);
+    if (root === undefined) return;
+    const real = realpathSync(root);
+    roots.add(real);
+    // Bun returns the resolved file. Its loader still traverses the importer's package link,
+    // which Seatbelt must be allowed to read separately from the target.
+    const lookup = createRequire(join(from, "package.json")).resolve.paths(specifier) ?? [];
+    for (const dir of lookup) {
+      const candidate = join(dir, specifier);
+      try {
+        if (realpathSync(candidate) !== real) continue;
+      } catch {
+        continue;
+      }
+      roots.add(candidate);
+      break;
+    }
+    if (visited.has(real)) return;
+    visited.add(real);
+    const { dependencies, optionalDependencies, peerDependencies } = JSON.parse(readFileSync(join(real, "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+    };
+    for (const name of Object.keys({ ...dependencies, ...optionalDependencies, ...peerDependencies })) add(name, real);
+  };
+  add("@anthropic-ai/claude-agent-sdk", import.meta.dir);
+  add("@zed-industries/claude-code-acp", import.meta.dir);
+  const adapterRoot = packageRootOf("@zed-industries/claude-code-acp", import.meta.dir);
+  if (adapterRoot !== undefined) {
+    const installed = realpathSync(adapterRoot);
+    const store = "/node_modules/.bun";
+    const offset = installed.lastIndexOf(`${store}/`);
+    // Bun resolves imports through sibling links in its isolated install store.
+    if (offset >= 0) roots.add(installed.slice(0, offset + store.length));
+  }
+  return roots;
 }
 
 /**
@@ -32,19 +83,22 @@ function packageRootOf(specifier: string): string[] {
  * packages niwa's own adapter runs on, its directory (sessions, settings, plugins) and,
  * for the default directory, the configuration file beside it, and the endpoint of its model.
  *
- * The macOS Keychain services are closed by nono. The optional host API key uses the existing API domain.
+ * On macOS the local login uses the installation's OAuth credentials.
  */
 export function claudeProfile(home: string, executable: string | undefined): BoxProfile {
+  const localLogin = process.platform === "darwin";
+  const suffix = home === DEFAULT_HOME ? "" : `-${createHash("sha256").update(home.normalize("NFC")).digest("hex").slice(0, 8)}`;
   return ({ bin }) => ({
+    ...(localLogin ? { keychainRead: [`Claude Code-credentials${suffix}`] } : {}),
     // Programs and the packages they run, all through `bin`: they are never closed to another box.
     read: [
       ...bin(executable ?? "claude"),
       ...bin(process.execPath),
       ...bin(fileURLToPath(new URL("../..", import.meta.url))),
-      ...packageRootOf("@anthropic-ai/claude-agent-sdk").flatMap((root) => bin(root)),
+      ...[...runtimePackages()].flatMap((root) => bin(root)),
     ],
     write: [home, ...(home === DEFAULT_HOME ? [join(dirname(home), ".claude.json")] : [])],
-    net: ["api.anthropic.com"],
+    net: localLogin ? ["api.anthropic.com", "platform.claude.com"] : ["api.anthropic.com"],
   });
 }
 

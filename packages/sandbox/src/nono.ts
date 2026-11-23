@@ -97,6 +97,7 @@ const TRUSTED_DIRECTORY = "/usr/share";
  */
 export interface NonoProfile {
   readonly meta: { readonly name: string };
+  readonly command_policies?: ReturnType<typeof keychainPolicy>;
   readonly extends: "default";
   readonly groups: { readonly exclude: readonly string[] };
   readonly filesystem: { readonly read: readonly string[]; readonly write: readonly string[]; readonly write_file: readonly string[] };
@@ -199,6 +200,39 @@ function resolvesAsSaid(binary: string, path: string, platform: NodeJS.Platform)
   });
 }
 
+/** Bun's os.userInfo() can use the environment instead of the effective UID. */
+function keychainAccount(): string {
+  const id = Bun.spawnSync(["/usr/bin/id", "-un"], {
+    cwd: TRUSTED_DIRECTORY, env: { PATH: SYSTEM_PATH }, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 5_000,
+  });
+  const account = id.stdout.toString().trim();
+  if (id.exitCode !== 0 || account.length === 0 || /[\x00-\x1f\x7f]/u.test(account)) {
+    throw new BoxRefused([{ code: "adapter", message: "nono cannot resolve the current macOS Keychain account" }], "nono");
+  }
+  return account;
+}
+
+function keychainPolicy(services: readonly string[], account: string) {
+  return {
+    commands: {
+      security: {
+        executable: "/usr/bin/security",
+        from: {
+          session: {
+            sandbox: { keychain_access: "read" },
+            invocation_policy: {
+              default: "deny",
+              allow: services.map((service) => ({
+                argv: { exact: ["find-generic-password", "-a", account, "-w", "-s", service] },
+              })),
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 export interface NonoManifest extends SandboxManifest {
   readonly sandbox: "nono";
   readonly policy: BoxPolicy;
@@ -246,6 +280,7 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
   const platform = options.platform ?? process.platform;
   let probed: Promise<boolean> | undefined;
   let supportsSocketBind: boolean | undefined;
+  let accountName: string | undefined;
   const system = systemReads(platform).map(expanded);
 
   const manifest = (given: BoxSpec): NonoManifest => {
@@ -256,6 +291,9 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     // Relative paths are read from the box's working directory, which is where nono is run: the same
     // place for the flags and for the check below.
     const spec = anchoredSpec(given);
+    const services = distinct(spec.keychainRead ?? []);
+    if (services.length > 0 && platform !== "darwin") throw new BoxRefused([{ code: "adapter", message: "Keychain requires macOS" }], "nono");
+    const account = services.length === 0 ? undefined : (accountName ??= keychainAccount());
     const bindDirs = checkedBindDirs(spec, platform);
     // A socket is granted for reading as well, so it is a place the box may read; so is every place
     // the profile grants on its own.
@@ -277,15 +315,16 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
     const config: NonoManifest = {
       sandbox: "nono",
       cwd: spec.cwd,
-      env: spec.env,
+      env: account === undefined ? spec.env : { ...spec.env, USER: account },
       policy: {
         write: distinct(spec.write.map(homeExpanded)),
         devices: systemWrites(platform),
         read: { only: distinct([...[spec.cwd, ...spec.read, ...spec.write, ...spec.sockets].map(homeExpanded), ...systemReads(platform)]) },
         net: spec.net,
+        ...(services.length === 0 ? {} : { keychainRead: services }),
         ...(bindDirs.length === 0 ? {} : { unixSocketBind: bindDirs }),
       },
-      profile: profileFor(platform),
+      profile: { ...profileFor(platform), ...(account === undefined ? {} : { command_policies: keychainPolicy(services, account) }) },
       flags: [
         "--silent",
         "--read", spec.cwd,
@@ -358,7 +397,8 @@ export function nono(options: NonoOptions = {}): Sandbox<NonoManifest> {
       if (config.policy.unixSocketBind?.length) requireSocketBindFlag();
       const wrapper = await wrapped(config);
       try {
-        return spawnBox("nono", wrapper.command, { cwd: config.cwd, env: config.env, argv: proxyCommand(spec.net, argv) }, launcherEnv(), TRUSTED_DIRECTORY, wrapper.cleanup, options);
+        const guest = { cwd: config.cwd, env: config.env, keychain: config.policy.keychainRead !== undefined, argv: proxyCommand(spec.net, argv) };
+        return spawnBox("nono", wrapper.command, guest, launcherEnv(), TRUSTED_DIRECTORY, wrapper.cleanup, options);
       } catch (error) {
         await wrapper.cleanup();
         throw error;

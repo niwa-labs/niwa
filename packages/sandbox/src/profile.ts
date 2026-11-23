@@ -10,7 +10,7 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
-import { LoopbackListenSchema, UnixSocketBindSchema } from "./spec.ts";
+import { KeychainReadSchema, LoopbackListenSchema, UnixSocketBindSchema } from "./spec.ts";
 import type { LoopbackListen, UnixSocketBind } from "./spec.ts";
 
 /** What a profile names: the places read and written and the network access needed. */
@@ -21,6 +21,8 @@ export interface ProfilePaths {
   readonly net?: readonly string[];
   /** The inbound TCP loopback listener this program needs. */
   readonly listen?: LoopbackListen;
+  /** Generic-password services readable by this installation's sessions on macOS. */
+  readonly keychainRead?: readonly string[];
   /** Directories for Unix socket bind. The session temp directory is resolved at launch planning. */
   readonly unixSocketBind?: readonly UnixSocketBind[];
 }
@@ -48,6 +50,7 @@ export interface ResolvedProfile {
   readonly write: readonly string[];
   readonly net: readonly string[];
   readonly listen?: LoopbackListen;
+  readonly keychainRead?: readonly string[];
   readonly unixSocketBind?: readonly UnixSocketBind[];
   /** The paths `bin` gave: programs and their packages, which are never closed to other boxes. */
   readonly programs: readonly string[];
@@ -145,6 +148,8 @@ export function resolveProfile(profile: BoxProfile, of: string, machine: { home:
   if (!listen.success) throw new TypeError(`profile ${of}: invalid TCP loopback listener`, { cause: listen.error });
   const bind = UnixSocketBindSchema.array().optional().safeParse(paths.unixSocketBind);
   if (!bind.success) throw new TypeError(`profile ${of}: invalid unixSocketBind: ${bind.error.message}`, { cause: bind.error });
+  const keychain = KeychainReadSchema.safeParse(paths.keychainRead);
+  if (!keychain.success) throw new TypeError(`profile ${of}: invalid keychainRead`, { cause: keychain.error });
   return {
     read: checked(paths.read, machine.home, of),
     write: checked(paths.write, machine.home, of),
@@ -153,6 +158,7 @@ export function resolveProfile(profile: BoxProfile, of: string, machine: { home:
     ...(bind.data === undefined ? {} : {
       unixSocketBind: bind.data.map((entry) => entry === "sessionTemp" ? entry : { dir: realPlace(entry.dir, machine.home) }),
     }),
+    ...(keychain.data?.length ? { keychainRead: keychain.data } : {}),
     programs: [...new Set(programs)],
   };
 }

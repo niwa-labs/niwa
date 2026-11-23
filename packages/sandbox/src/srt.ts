@@ -124,6 +124,7 @@ export function srt(options: SrtOptions = {}): Sandbox<SrtManifest> {
     if (given.listen !== undefined) {
       throw new BoxRefused([{ code: "adapter", message: "srt cannot restrict a TCP loopback listener to the requested address and port" }], "srt");
     }
+    if (given.keychainRead?.length) throw new BoxRefused([{ code: "adapter", message: "srt cannot restrict Keychain reads to the requested services" }], "srt");
     if (given.unixSocketBind.length > 0) {
       throw new BoxRefused([{ code: "adapter", message: "srt cannot restrict Unix socket bind to the requested directories" }], "srt");
     }

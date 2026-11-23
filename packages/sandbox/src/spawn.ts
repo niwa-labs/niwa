@@ -75,7 +75,7 @@ exec /usr/bin/env -- "$@"
 export function insideBox(
   sandbox: SandboxName,
   launcher: Readonly<Record<string, string>>,
-  guest: { readonly cwd: string; readonly env: Readonly<Record<string, string>> },
+  guest: { readonly keychain?: boolean; readonly cwd: string; readonly env: Readonly<Record<string, string>> },
   argv: readonly string[],
 ): { readonly command: string[]; readonly carried: Record<string, string> } {
   const program = argv[0];
@@ -87,12 +87,22 @@ export function insideBox(
   if (names.some((name) => !EnvNameSchema.safeParse(name).success)) {
     throw new BoxRefused([{ code: "adapter", message: "invalid boxed environment variable name" }], sandbox);
   }
-  const unset = [...Object.keys(launcher), ...SHELL_ADDED].filter((name) => !(name in guest.env)).flatMap((name) => ["-u", name]);
+  const unset = [...Object.keys(launcher), ...SHELL_ADDED]
+    .filter((name) => !(name in guest.env) && !(guest.keychain && name === "PATH"))
+    .flatMap((name) => ["-u", name]);
   // Only validated names are interpolated in the shell script.
   const script = [
     'cd -- "$1" || exit 126',
     "shift",
+    // Save the enforcing shim before installing the guest's PATH.
+    ...(guest.keychain ? [
+      'shim=$(command -v security)',
+      'case "$shim" in /*/nono-tool-sandbox-*/shims/security) ;; *) echo "nono Keychain command shim unavailable" >&2; exit 126 ;; esac',
+    ] : []),
     ...names.map((name) => `export ${name}="$${CARRIED}${name}" || exit 126; unset ${CARRIED}${name}`),
+    ...(guest.keychain ? [
+      names.includes("PATH") ? 'export PATH="${shim%/*}:$PATH"' : 'export PATH="${shim%/*}:/usr/bin:/bin"',
+    ] : []),
     `exec /usr/bin/env ${unset.join(" ")} -- "$@"`,
   ].join("\n");
   return {
@@ -133,7 +143,7 @@ function requireDirectory(cwd: string): void {
 export function spawnBox(
   sandbox: SandboxName,
   wrapper: readonly string[],
-  guest: { readonly cwd: string; readonly env: Readonly<Record<string, string>>; readonly argv: readonly string[] },
+  guest: { readonly keychain?: boolean; readonly cwd: string; readonly env: Readonly<Record<string, string>>; readonly argv: readonly string[] },
   launcher: Readonly<Record<string, string>>,
   home: string,
   cleanup: () => Promise<void>,
@@ -142,7 +152,7 @@ export function spawnBox(
   if (missing(wrapper[0], launcher)) throw new SandboxUnavailable(sandbox, `${wrapper[0] ?? "the wrapper"} is not there`);
   requireDirectory(guest.cwd);
   const env = options.privateEnv === undefined ? guest.env : { ...guest.env, ...options.privateEnv };
-  const stage = insideBox(sandbox, launcher, { cwd: guest.cwd, env }, guest.argv);
+  const stage = insideBox(sandbox, launcher, { ...guest, env }, guest.argv);
   const argv = [...wrapper, ...stage.command];
   let child: ReturnType<typeof Bun.spawn<"pipe", "pipe", "pipe">>;
   try {

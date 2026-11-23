@@ -58,6 +58,8 @@ export const EnvNameSchema = z
   .brand<"EnvName">();
 export type EnvName = z.output<typeof EnvNameSchema>;
 
+export const KeychainReadSchema = z.array(z.string().min(1).regex(/^[^\x00-\x1f\x7f]+$/u)).readonly().optional();
+
 export const BoxSpecSchema = z.object({
   /** The working directory of the process. It is not made writable by being the cwd: list it in `write`. */
   cwd: BoxPathSchema,
@@ -77,6 +79,8 @@ export const BoxSpecSchema = z.object({
   net: z.array(NetHostSchema).default([]),
   /** The required inbound TCP listener. Absent: no host-reachable listener is granted. */
   listen: ListenNeedSchema.optional(),
+  /** Generic-password services readable for the current macOS account. */
+  keychainRead: KeychainReadSchema,
   /** The whole environment of the process. */
   env: z.record(EnvNameSchema, z.string()).default({}),
   /** Unix sockets the process may connect to (niwa's own socket must be reachable inside). */

@@ -53,6 +53,26 @@ async function ran(sandbox: Sandbox, spec: Parameters<Sandbox["launch"]>[0], arg
   return { stdout, code };
 }
 
+test("nono preserves the Keychain shim ahead of the guest PATH and fails closed without it", async () => {
+  const dir = await tempDir("keychain-shim");
+  const paths = join(dir, "nono-tool-sandbox-test", "shims");
+  await Bun.$`mkdir -p ${paths}`.quiet();
+  await writeFile(join(paths, "security"), "#!/bin/sh\necho mediated\n", { mode: 0o755 });
+  const wrapper = join(dir, "wrapper");
+  await writeFile(wrapper, `#!/bin/sh
+export PATH='${paths}':"$PATH"
+while [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+`, { mode: 0o755 });
+  const spec = boxSpec({ cwd: dir, keychainRead: ["sample"], env: { PATH: "/guest/bin:/usr/bin:/bin" } });
+  const mediated = nono({ platform: "darwin", binary: wrapper });
+  expect(await ran(mediated, spec, ["/bin/sh", "-c", "security"])).toEqual({ code: 0, stdout: "mediated\n" });
+  const { path } = await recordingWrapper(dir);
+  const noShim = nono({ platform: "darwin", binary: path });
+  expect(await ran(noShim, spec, ["/bin/sh", "-c", "echo started"])).toEqual({ code: 126, stdout: "" });
+});
+
 test("the wrapper that applies the restrictions runs with the host's environment, not the command's", async () => {
   for (const { sandbox, seen, dir } of await wrapped()) {
     const spec = boxSpec({ cwd: dir, env: { ...HOSTILE, PATH: "/custom/bin:/usr/bin:/bin", MARKER: "for-the-command" } });

@@ -64,6 +64,37 @@ function host() {
 
 const LOOPBACK = { host: "127.0.0.1", port: 0 } as const;
 
+test("Keychain reads come only from the owning installation and survive the manifest", () => {
+  const services = ["login-one", "login-two"] as const;
+  const host = sandbox({ profiles: { helper: { keychainRead: ["helper-login"] } } });
+  host.install("claude", { keychainRead: services });
+  host.install("empty", { keychainRead: [] });
+  const input = { cwd: at("work"), defaults: { allow: ["helper", "toolchains"] }, network: false } as const;
+  const adapter = nono({ platform: "darwin" });
+  const plan = host.plan({ ...input, owner: "claude" });
+  const admitted = admit(plan, adapter, () => undefined);
+  expect(admitted.spec.keychainRead).toEqual(services);
+  expect(BoxManifestSchema.parse(boxManifest(plan, admitted.rules, admitted.manifest))).toMatchObject({
+    keychainRead: services,
+    policy: { keychainRead: services },
+  });
+  for (const owner of [undefined, "empty", "other"]) {
+    const unprivileged = admit(host.plan({ ...input, owner }), adapter, () => undefined);
+    expect(unprivileged.spec.keychainRead).toBeUndefined();
+    expect(adapter.manifest(unprivileged.spec).profile.command_policies).toBeUndefined();
+  }
+  expect(() => admit(plan, srt(), () => undefined)).toThrow(/Keychain/);
+  expect(() => admit(plan, nono({ platform: "linux" }), () => undefined)).toThrow(/requires macOS/);
+  const overgranting = {
+    ...adapter,
+    manifest(spec: typeof admitted.spec) {
+      const manifest = adapter.manifest(spec);
+      return { ...manifest, policy: { ...manifest.policy, keychainRead: [...services, "helper-login"] } };
+    },
+  };
+  expect(() => admit(plan, overgranting, () => undefined)).toThrow(/exact requested Keychain services/);
+});
+
 test("socket bind comes from selected profiles and resolves only to named directories", () => {
   const temp = at("socket-temp");
   const explicit = at("socket-explicit");
