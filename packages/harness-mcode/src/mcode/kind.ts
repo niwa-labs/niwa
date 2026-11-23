@@ -25,7 +25,7 @@ import { McodeReading } from "./reading.ts";
  * asked for JSON that matches the schema and the control side validates the answer: `ask` returns
  * a value that passed the schema.
  */
-export function minimaxSides(niwaOnly = false): SideCapabilities {
+export function minimaxSides(niwaOnly = false, allow = false): SideCapabilities {
   return {
     reading: { list: true, read: true, watch: false },
     control: {
@@ -36,7 +36,7 @@ export function minimaxSides(niwaOnly = false): SideCapabilities {
       ask: true,
       structuredOutput: true,
       launch: MCODE_LAUNCH,
-      tools: { niwaOnly, allow: false },
+      tools: { niwaOnly, allow },
     },
   };
 }
@@ -45,7 +45,9 @@ export function minimaxSides(niwaOnly = false): SideCapabilities {
  * What the two kinds declare they can serve. The upstream build is proved against a live
  * MiniMax Code; of the fork, only a start with a permission answered is proved live, and the rest
  * is taken from the code it shares with the upstream build. The fork can provide tool isolation
- * when the selected launcher advertises both ACP options.
+ * when the selected launcher advertises both ACP options, and an exact per-session tool set
+ * through its ACP capability (`minimax-code/toolPolicy`); a build too old for the capability is
+ * refused by name when a session asks for it.
  */
 export function minimaxCapabilities(lineage: MinimaxLineage): KindCapabilities {
   const proved = lineage === "upstream" ? VERIFIED : ADMITTED;
@@ -59,7 +61,10 @@ export function minimaxCapabilities(lineage: MinimaxLineage): KindCapabilities {
       ask: proved,
       structuredOutput: proved,
       launch: { model: proved, effort: MCODE_LAUNCH.effort, modes: MCODE_LAUNCH.modes },
-      tools: { niwaOnly: lineage === "fork" ? ADMITTED : UNSUPPORTED, allow: UNSUPPORTED },
+      tools: {
+        niwaOnly: lineage === "fork" ? ADMITTED : UNSUPPORTED,
+        allow: lineage === "fork" ? ADMITTED : UNSUPPORTED,
+      },
     },
     insert: NO_INSERT,
   };
@@ -142,7 +147,10 @@ export function minimaxKind(spec: MinimaxKindSpec) {
     bind(options: McodeInstanceOptions) {
       const launcher = ncodeLauncher(binaryOf(options));
       const supported = launcher !== undefined && externalToolsProgram(launcher) !== undefined;
-      const sides = options.sides ?? minimaxSides(supported);
+      // The fork's control side speaks the ACP tool policy whatever the
+      // launcher probes: a binary too old for it is refused by name when a
+      // session asks for an exact tool set, never left with tools on silently.
+      const sides = options.sides ?? minimaxSides(supported, true);
       const control = sides.control;
       return kind.bind({
         ...options,

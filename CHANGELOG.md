@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Start or resume Ncode sessions with `tools: { allow: [...] }` (the empty
+  list included): the exact built-in tools the session may use travel to the
+  fork as `_meta["minimax-code/toolPolicy"]`, and the fork's
+  `mcode/session/tools` advertisement is the gate — a build without it is
+  refused with `Unsupported` before any session is asked for, and a daemon
+  older than its binary with the advice to restart `mcoded`. Cold resumes
+  re-bind the session's own allowance — including when the resume names none,
+  which re-sends what the session was started with — and a warm one cannot
+  change the mode. Under an exact policy only the MCP servers given with the
+  session stay reachable. `toolsOf` on the control side reads the fork's
+  listing: the policy, the stable catalog and the session's effective set.
+  Upstream MCode supports the default tool set and refuses explicit tool
+  lists and Niwa-only isolation.
+
 ## 0.1.0 — 2026-11-22
 
 - Use `tools: "niwa-only"` on Ncode installations whose ACP executable

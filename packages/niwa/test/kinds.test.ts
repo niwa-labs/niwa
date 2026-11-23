@@ -260,7 +260,8 @@ test("the ncode kind serves the reading side and the control side, as its own ki
   expect(String(kind.instance.kind)).toBe("ncode");
   expect(String(kind.instance.kind)).not.toBe(String(mcode().instance.kind));
   checkSides(kind, controlOf(ncodeSides));
-  expect(ncodeSides).toEqual(mcodeSides);
+  // The fork alone takes an exact tool set: its ACP tool policy needs no launcher probe.
+  expect(ncodeSides).toEqual({ ...mcodeSides, control: { ...mcodeSides.control, tools: { niwaOnly: false, allow: true } } });
   expect(ncodeSides).not.toBe(mcodeSides);
 });
 

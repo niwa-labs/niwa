@@ -17,7 +17,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { z } from "zod";
 
 import {
@@ -43,7 +43,7 @@ import { homeNameOfProfile, homeOfProfile } from "../src/mcode/paths.ts";
 import { mcode, mcodeKind } from "../src/mcode/index.ts";
 import { ncode, ncodeKind } from "../src/ncode/index.ts";
 import { eventually, tempDir, live } from "@niwa-labs/testing";
-import { resolveProfile } from "@niwa-labs/sandbox";
+import { onSpawn, resolveProfile } from "@niwa-labs/sandbox";
 
 let dir = "";
 let control: McodeSessionControl | undefined;
@@ -287,6 +287,8 @@ for await (const chunk of Bun.stdin.stream()) {
         ...(existsSync(${JSON.stringify(join(dir, "steer"))}) ? ["mcode/session/steer"] : []),
         ...(forked || existsSync(${JSON.stringify(join(dir, "status"))}) ? ["mcode/session/turn_status"] : []),
         ...(forked ? ["session/history"] : []),
+        // The file "tools-method" makes the fake a build with the fork's tool policy capability.
+        ...(existsSync(${JSON.stringify(join(dir, "tools-method"))}) ? ["mcode/session/tools"] : []),
       ];
       const meta = methods.length > 0 ? { "minimax-code/extensions": { version: 1, methods, notifications: [] } } : undefined;
       send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: 1, _meta: meta } });
@@ -317,6 +319,33 @@ for await (const chunk of Bun.stdin.stream()) {
     else if ((message.method === "session/new" || message.method === "session/load") && existsSync(${JSON.stringify(join(dir, "refuse-mode"))})) {
       // The file "refuse-mode" is an old daemon: it cannot take the mode of a session.
       send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "runtime does not support per-session permissionMode; restart mcoded" } });
+    }
+    else if ((message.method === "session/new" || message.method === "session/load") && existsSync(${JSON.stringify(join(dir, "refuse-tool-policy"))})) {
+      // The file "refuse-tool-policy" is a daemon older than the binary's advertisement: it
+      // cannot take the tool policy of a session.
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "runtime does not support per-session tool policy; restart mcoded" } });
+    }
+    else if ((message.method === "session/new" || message.method === "session/load") && existsSync(${JSON.stringify(join(dir, "refuse-tools-unknown"))})) {
+      // The file "refuse-tools-unknown" is the fork's fail-closed answer to a policy naming a
+      // tool outside its stable catalog.
+      send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "unknown tool names in \\"minimax-code/toolPolicy\\": no_such_tool", data: { unknown: ["no_such_tool"] } } });
+    }
+    else if (message.method === "mcode/session/tools") {
+      appendFileSync(${JSON.stringify(join(dir, "tools.log"))}, JSON.stringify(message.params) + "\\n");
+      // Answers as the fork does: the policy the LAST session request bound, and the effective
+      // set it keeps. The file "ignore-policy" makes it answer legacy instead: a build that
+      // nods at the _meta but keeps every tool.
+      const logged = existsSync(${JSON.stringify(join(dir, "sessions.log"))})
+        ? readFileSync(${JSON.stringify(join(dir, "sessions.log"))}, "utf8").trim().split("\\n").filter((line) => line !== "")
+        : [];
+      const last = logged.length > 0 ? JSON.parse(logged[logged.length - 1]) : {};
+      const bound = existsSync(${JSON.stringify(join(dir, "ignore-policy"))}) ? undefined : last._meta?.["minimax-code/toolPolicy"];
+      const catalog = [{ name: "read", source: "builtin" }, { name: "bash", source: "builtin" }];
+      send({ jsonrpc: "2.0", id: message.id, result: {
+        policy: bound === undefined ? { mode: "legacy" } : { mode: "allow", allow: bound.allow, servers: [] },
+        catalog,
+        effective: bound === undefined ? catalog.map((entry) => entry.name) : bound.allow.filter((name) => catalog.some((entry) => entry.name === name)),
+      } });
     }
     else if (message.method === "session/new") {
       appendFileSync(${JSON.stringify(join(dir, "sessions.log"))}, JSON.stringify(message.params) + "\\n");
@@ -723,7 +752,9 @@ test("the registry advertises isolation only for a fork executable with both ACP
   kinds.register(ncodeKind);
   kinds.register(mcodeKind);
   expect(ncodeKind.capabilities.control.tools.niwaOnly).toMatchObject({ supported: true, status: "admitted" });
+  expect(ncodeKind.capabilities.control.tools.allow).toMatchObject({ supported: true, status: "admitted" });
   expect(mcodeKind.capabilities.control.tools.niwaOnly.supported).toBe(false);
+  expect(mcodeKind.capabilities.control.tools.allow.supported).toBe(false);
 
   const installations = new HarnessInstanceRegistry(kinds);
   for (const [harness, help, supported] of [
@@ -734,7 +765,9 @@ test("the registry advertises isolation only for a fork executable with both ACP
     await writeFile(join(dir, "tool-help"), help);
     const bound = ncodeKind.bind({ id: harness, control: { binary } });
     installations.register(bound);
-    expect(installations.resolve(harness).sides.control?.tools).toEqual({ niwaOnly: supported, allow: false });
+    // The exact tool set rides the ACP capability for every fork launcher: a binary too old
+    // for it is refused by name when a session asks for one, never left with tools on silently.
+    expect(installations.resolve(harness).sides.control?.tools).toEqual({ niwaOnly: supported, allow: true });
     if (!supported) {
       await expect(bound.control!.start({ prompt: promptFromText(""), cwd: dir, tools: "niwa-only" }))
         .rejects.toMatchObject({ code: "Unsupported" });
@@ -746,6 +779,8 @@ test("the registry advertises isolation only for a fork executable with both ACP
   installations.register(upstream);
   expect(installations.resolve("upstream").sides.control?.tools).toEqual({ niwaOnly: false, allow: false });
   await expect(upstream.control!.start({ prompt: promptFromText(""), cwd: dir, tools: "niwa-only" }))
+    .rejects.toMatchObject({ code: "Unsupported" });
+  await expect(upstream.control!.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read"] } }))
     .rejects.toMatchObject({ code: "Unsupported" });
   await expect(upstream.control!.resume(sessionId(harnessId("upstream"), "fake-1"), { cwd: dir, tools: "niwa-only" }))
     .rejects.toMatchObject({ code: "Unsupported" });
@@ -769,6 +804,169 @@ test("an isolated fork starts and cold-resumes with both gates and the supplied 
   await writeFile(join(dir, "tool-help"), "");
   await expect(control.resume(id, { cwd: dir, tools: "niwa-only" })).rejects.toMatchObject({ code: "Unsupported" });
   expect(await argvOf()).toHaveLength(2);
+});
+
+test("a fork start with a tool allowance sends the policy in the session _meta", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method"] });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read", "bash"] } });
+  const meta = (await sessionRequestsOf())[0]?._meta as Record<string, unknown>;
+  expect(meta).toMatchObject({
+    "minimax-code/permissionMode": "bypassPermissions",
+    "minimax-code/toolPolicy": { allow: ["read", "bash"] },
+  });
+  // The empty allowance is valid on the wire: no built-in tool at all.
+  const second = await control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: [] } });
+  expect(((await sessionRequestsOf())[1]?._meta as Record<string, unknown>)["minimax-code/toolPolicy"]).toEqual({ allow: [] });
+  await control.stop(second);
+  await control.stop(id);
+});
+
+test("a cold resume that names no mode re-sends the session's own tool policy", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method"] });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read", "bash"] } });
+  await control.stop(id);
+  // Omission is not widening: the process is new, the policy is the session's own.
+  await control.resume(id, { cwd: dir });
+  const sessions = await sessionRequestsOf();
+  expect(sessions[1]?.["sessionId"]).toBe("fake-1");
+  expect((sessions[1]?._meta as Record<string, unknown>)["minimax-code/toolPolicy"]).toEqual({ allow: ["read", "bash"] });
+});
+
+test("a cold resume re-binds an explicitly named tool policy on session/load", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method"] });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read"] } });
+  await control.stop(id);
+  await control.resume(id, { cwd: dir, tools: { allow: ["read"] } });
+  const sessions = await sessionRequestsOf();
+  expect(sessions[1]?.["sessionId"]).toBe("fake-1");
+  expect((sessions[1]?._meta as Record<string, unknown>)["minimax-code/toolPolicy"]).toEqual({ allow: ["read"] });
+});
+
+test("a warm resume cannot change the tool mode of a running ncode process", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method"] });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read", "bash"] } });
+  // The same allowance stays, whatever its order; another one is refused.
+  await control.resume(id, { tools: { allow: ["bash", "read"] } });
+  await expect(control.resume(id, { tools: { allow: ["read"] } })).rejects.toMatchObject({ code: "Unsupported" });
+  await expect(control.resume(id, { tools: { allow: ["read", "bash", "grep"] } })).rejects.toMatchObject({ code: "Unsupported" });
+  await expect(control.resume(id, { tools: "all" })).rejects.toMatchObject({ code: "Unsupported" });
+  await expect(control.resume(id, { tools: "niwa-only" })).rejects.toMatchObject({ code: "Unsupported" });
+  await control.stop(id);
+});
+
+test("the fork's own tool listing answers through mcode/session/tools", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method"] });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read"] } });
+  const tools = await control.toolsOf(id);
+  expect(tools.policy).toEqual({ mode: "allow", allow: ["read"], servers: [] });
+  expect(tools.catalog).toEqual([
+    { name: "read", source: "builtin" },
+    { name: "bash", source: "builtin" },
+  ]);
+  expect(tools.effective).toEqual(["read"]);
+  expect(await readFile(join(dir, "tools.log"), "utf8")).toContain("fake-1");
+  await control.stop(id);
+});
+
+test("a start fails when the agent does not hold the session to its tool policy", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method", "ignore-policy"] });
+  await expect(
+    control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read"] } }),
+  ).rejects.toMatchObject({
+    code: "Unavailable",
+    message: expect.stringContaining("did not hold the session to its tool policy"),
+  });
+});
+
+test("a cold resume cannot change the exact tool mode a session was started with", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method"] });
+  const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read", "bash"] } });
+  await control.stop(id);
+  await expect(control.resume(id, { cwd: dir, tools: "all" })).rejects.toMatchObject({ code: "Unsupported" });
+  await expect(control.resume(id, { cwd: dir, tools: { allow: ["read"] } })).rejects.toMatchObject({ code: "Unsupported" });
+  await expect(control.resume(id, { cwd: dir, tools: "niwa-only" })).rejects.toMatchObject({ code: "Unsupported" });
+});
+
+test("a session asked to run plain keeps its exact tool set, and no box is asked for", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method"] });
+  // `box: false` is a launch that names no box: the process is the host's own, at the start and
+  // at each cold resume alike, and the tool set rides beside it.
+  const launches: Array<string | undefined> = [];
+  const unlisten = onSpawn((event) => {
+    if (event.harness === harnessId("mcode-fake")) launches.push(event.sandbox);
+  });
+  try {
+    const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["read"] } });
+    await control.stop(id);
+    await control.resume(id, { cwd: dir });
+    await expect(control.resume(id, { tools: "all" })).rejects.toMatchObject({ code: "Unsupported" });
+    expect(launches).toEqual([undefined, undefined]);
+    const policies = (await sessionRequestsOf()).map(
+      (request) => (request._meta as Record<string, unknown>)["minimax-code/toolPolicy"],
+    );
+    expect(policies).toEqual([{ allow: ["read"] }, { allow: ["read"] }]);
+    expect((await control.toolsOf(id)).policy).toEqual({ mode: "allow", allow: ["read"], servers: [] });
+    await control.stop(id);
+  } finally {
+    unlisten();
+  }
+});
+
+/**
+ * A stand-in for `ps`, first on PATH: it answers an empty table and writes down that it was
+ * asked, so a test can tell whether a stop went looking for marked processes without the real
+ * process list. Returns the log and what takes the stand-in off PATH again.
+ */
+async function psOnPath(): Promise<{ readonly log: string; readonly restore: () => void }> {
+  const own = await tempDir("ps-stand-in");
+  const log = join(own, "ps.log");
+  await writeFile(join(own, "ps"), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\n`);
+  await chmod(join(own, "ps"), 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${own}${delimiter}${path}`;
+  return { log, restore: () => void (process.env.PATH = path) };
+}
+
+test("an upstream stop still looks for the MCP processes of a session, servers given or none", async () => {
+  control = await fakeControl({ lineage: "upstream" });
+  const { log, restore } = await psOnPath();
+  try {
+    const { session: id } = await control.start({ prompt: promptFromText(""), cwd: dir });
+    await control.stop(id);
+    expect(await readFile(log, "utf8")).toContain("eww -ax -o pid=,command=");
+  } finally {
+    restore();
+  }
+});
+
+test("a fork stop looks for the MCP processes only when the session was given a server", async () => {
+  control = await fakeControl({ lineage: "fork" });
+  const { log, restore } = await psOnPath();
+  try {
+    const bare = await control.start({ prompt: promptFromText(""), cwd: dir });
+    await control.stop(bare.session);
+    expect(existsSync(log)).toBe(false);
+    // The same stand-in does answer once the fork has a server to find: the check above was not
+    // a stand-in that never could.
+    const served = await control.start({
+      prompt: promptFromText(""), cwd: dir,
+      servers: [{ name: "niwa", command: "bun", args: ["mcp"], env: {} }],
+    });
+    await control.stop(served.session);
+    expect(await readFile(log, "utf8")).toContain("eww -ax -o pid=,command=");
+  } finally {
+    restore();
+  }
+});
+
+test("the fork's refusal of an unknown tool name fails the start", async () => {
+  control = await fakeControl({ lineage: "fork", files: ["tools-method", "refuse-tools-unknown"] });
+  await expect(
+    control.start({ prompt: promptFromText(""), cwd: dir, tools: { allow: ["no_such_tool"] } }),
+  ).rejects.toMatchObject({
+    code: "Unavailable",
+    message: expect.stringContaining("unknown tool names"),
+  });
 });
 
 test("the isolation probe uses the host launcher and never the session cwd or environment", async () => {

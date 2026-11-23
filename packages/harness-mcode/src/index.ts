@@ -10,4 +10,13 @@ export { minimaxCapabilities } from "./mcode/kind.ts";
 export { FIXTURE_HARNESS, writeMcodeFixtures } from "./mcode/fixtures.ts";
 export { logPathOf, nativeIdFromDirName } from "./mcode/paths.ts";
 export { McodeAgentNotification, McodeAgentRequest } from "./mcode/protocol.ts";
-export { NcodeSessionUpdate, ncodeMarks, refusesSessionMode } from "./ncode/protocol.ts";
+export {
+  NcodeSessionUpdate,
+  NcodeToolPolicy,
+  ncodeMarks,
+  refusesSessionMode,
+  refusesToolPolicy,
+  SESSION_TOOLS,
+  SessionToolsResult,
+  TOOL_POLICY_META,
+} from "./ncode/protocol.ts";

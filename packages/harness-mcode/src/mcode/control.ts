@@ -23,7 +23,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
-import { assertNever, timestamp } from "@niwa-labs/core";
+import { assertNever, NotSent, timestamp } from "@niwa-labs/core";
 import type { Answer, Question } from "@niwa-labs/core";
 import {
   InputNotSent,
@@ -72,15 +72,20 @@ import type { AgentNotification, AgentRequest, RequestId, RpcOutcome, UnknownVar
 import {
   NCODE_ACP_PROTOCOL,
   PERMISSION_MODE_META,
+  SESSION_TOOLS,
+  SessionToolsResult as SessionToolsResultSchema,
+  TOOL_POLICY_META,
   TURN_STATUS,
   TurnStatusResult,
   ncodeMarks,
   refusesSessionMode,
+  refusesToolPolicy,
 } from "../ncode/protocol.ts";
 import type {
   NcodePermissionMark,
   NcodeSessionMeta,
   NcodeUpdateMarks,
+  SessionToolsResult,
   TurnStatusResult as TurnStatus,
 } from "../ncode/protocol.ts";
 import { homeOfProfile } from "./paths.ts";
@@ -185,6 +190,12 @@ export interface McodeSessionControl extends SessionControl {
   /** Stops a session and lets it go: the contract's release of one session. */
   close(id: SessionId): Promise<void>;
 
+  /**
+   * The built-in tool surface of one running ncode session, as the fork's `mcode/session/tools`
+   * answers it: the policy, the stable catalog and the session's effective set.
+   */
+  toolsOf(id: SessionId): Promise<SessionToolsResult>;
+
   /** Stops a session and the process it owns. */
   stop(id: SessionId): Promise<void>;
   /** Stops every process this control side started, including a start still in progress. */
@@ -228,7 +239,7 @@ const STDERR_TAIL_CHARS = 2_000;
 const EXTENSION_META = { [EXTENSIONS_META]: { version: 1, notifications: true } } as const;
 
 /** Whether an initialize reply advertises one of the extension methods (the fork's included). */
-function servesMethod(reply: Record<string, unknown>, method: McodeMethod | typeof TURN_STATUS): boolean {
+function servesMethod(reply: Record<string, unknown>, method: McodeMethod | typeof TURN_STATUS | typeof SESSION_TOOLS): boolean {
   const meta = McodeInitializeMeta.safeParse(reply["_meta"]);
   return meta.success && meta.data[EXTENSIONS_META].methods.includes(method);
 }
@@ -461,6 +472,14 @@ class AcpSession {
    * over (`turn_status`). Unset, such a turn fails at the end of the grace and what waits goes out.
    */
   follow: ((turn: number, cancelledAt: number) => void) | undefined;
+
+  /** The built-in tool names the session was started with (`_meta["minimax-code/toolPolicy"]`); the fork's alone. */
+  toolAllow: readonly string[] | undefined;
+  /**
+   * Whether the fork's stop goes looking for the MCP servers the agent was given: only when it was
+   * given some, since nothing else was told the session's mark. Upstream mcode always looks.
+   */
+  hasMarkedServers = false;
 
   constructor(
     readonly child: AgentProcess,
@@ -772,13 +791,20 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   const launching = new Set<Promise<AcpSession>>();
   let disposed = false;
 
-  /** Both lineages refuse per-tool policies. Only the fork can take the two isolation flags. */
+  /**
+   * Upstream mcode refuses every per-tool policy. The fork takes the two isolation flags and the
+   * ACP tool policy (`_meta["minimax-code/toolPolicy"]`): an allow-list is checked against the
+   * binary's own advertisement in the handshake, so a build too old for it is refused by name
+   * before any session is asked for.
+   */
   function checkTools(ability: string, visible: VisibleActions | undefined, tools?: ToolsMode): void {
-    if (typeof tools === "object" || (tools === "niwa-only" && lineage !== "fork")) {
-      const detail = lineage === "fork"
-        ? "ncode's ACP takes no exact tool flag"
-        : "mcode's ACP takes no tool flag, and its --permission policy belongs to `mcode exec`";
-      throw new Unsupported(harnessId, "control", ability, `${describeToolsMode(tools)}: ${detail}`);
+    if (tools !== undefined && tools !== "all" && lineage !== "fork") {
+      throw new Unsupported(
+        harnessId,
+        "control",
+        ability,
+        `${describeToolsMode(tools)}: mcode's ACP takes no tool flag, and its --permission policy belongs to \`mcode exec\``,
+      );
     }
     const disabled = visible?.disabledTools ?? [];
     if (disabled.length > 0) {
@@ -795,8 +821,31 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     return new Unavailable(harnessId, "control", ability, detail);
   }
 
-  /** A failure of the wire, as the refusal the contract names. */
-  function refusal(ability: string, error: unknown): Unavailable {
+  /** Whether a live session already runs in this tool mode: the isolation flag and the allow-list as a set. */
+  function sameToolMode(mode: ToolsMode, session: AcpSession): boolean {
+    if ((mode === "niwa-only") !== session.niwaOnly) return false;
+    if (typeof mode !== "object") return session.toolAllow === undefined;
+    if (session.toolAllow === undefined) return false;
+    const wanted = [...mode.allow].sort().join("\u0000");
+    const held = [...session.toolAllow].sort().join("\u0000");
+    return wanted === held;
+  }
+
+  /** Whether two tool modes name the same allowance, order aside. */
+  function sameToolAllowance(a: ToolsMode | undefined, b: ToolsMode | undefined): boolean {
+    if (a === b) return true;
+    if (typeof a !== "object" || typeof b !== "object") return false;
+    return a.allow.length === b.allow.length && [...a.allow].every((name) => b.allow.includes(name));
+  }
+
+  /**
+   * A failure of the wire, as the refusal the contract names. The fork's `NotSent` refusal — an
+   * ability this build cannot hold, such as a tool mode its ACP has no capability for — passes
+   * through as it is: the contract names `Unsupported`, never a wire failure in its place.
+   * Upstream mcode keeps its refusals as they were.
+   */
+  function refusal(ability: string, error: unknown): Error {
+    if (lineage === "fork" && error instanceof NotSent) return error;
     if (error instanceof Unavailable) return error;
     return unavailable(ability, error instanceof Error ? error.message : String(error));
   }
@@ -1241,11 +1290,16 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     throw new RequestFailed(outcome.error, outcome.dispatch);
   }
 
-  /** The refusal of an old daemon, which cannot take the mode of a session, as an error that says what to do. */
+  /** The refusal of an old daemon, which cannot take the mode or the tool policy of a session, as an error that says what to do. */
   function withModeSupport(error: unknown, method: string): unknown {
     if (error instanceof AgentRefusal && refusesSessionMode(error.code, error.message)) {
       return new Error(
         `${method} was refused: the running mcode daemon cannot take a permission mode per session; restart mcoded (the agent said: ${error.message})`,
+      );
+    }
+    if (error instanceof AgentRefusal && refusesToolPolicy(error.code, error.message)) {
+      return new Error(
+        `${method} was refused: the running mcode daemon cannot take a tool policy per session; restart mcoded (the agent said: ${error.message})`,
       );
     }
     return error;
@@ -1259,6 +1313,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     mode: SessionMode,
     existing: string | undefined,
     servers: readonly McpServerSpec[] | undefined,
+    tools?: ToolsMode,
   ): Promise<string> {
     const initialized = await request(
       session,
@@ -1289,13 +1344,33 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       session.follow = (turn, cancelledAt) => void followForeignTurn(session, turn, cancelledAt);
     }
 
+    // An exact tool set rides the fork's own ACP capability: a build that does not advertise
+    // `mcode/session/tools` cannot hold a session to it, and the request is refused here — a
+    // tool left on silently would be a promise broken.
+    const toolAllow = typeof tools === "object" ? [...tools.allow] : undefined;
+    if (typeof tools === "object" && !servesMethod(initialized, SESSION_TOOLS)) {
+      throw new Unsupported(
+        harnessId,
+        "control",
+        existing === undefined ? "start" : "resume",
+        `${describeToolsMode(tools)}: this ncode build advertises no ${SESSION_TOOLS}, so it cannot hold a session to an exact tool set`,
+      );
+    }
+
     const permissionMode = PERMISSION_MODES[mode];
     const params: Record<string, unknown> = { cwd: session.cwd, mcpServers: mcpServersOf(servers, session.mark) };
+    session.hasMarkedServers = (servers?.length ?? 0) > 0;
     const method = existing === undefined ? "session/new" : "session/load";
     if (existing !== undefined) params["sessionId"] = existing;
     // The fork binds the mode of a session on each open: a load that names none opens it in
-    // `default`, not in the mode it had before.
-    if (lineage === "fork") params["_meta"] = { [PERMISSION_MODE_META]: permissionMode } satisfies NcodeSessionMeta;
+    // `default`, not in the mode it had before. The tool policy binds beside it: a load that
+    // names none keeps the tools the session already had (the fork narrows, never widens).
+    if (lineage === "fork") {
+      params["_meta"] = {
+        [PERMISSION_MODE_META]: permissionMode,
+        ...(toolAllow === undefined ? {} : { [TOOL_POLICY_META]: { allow: toolAllow } }),
+      } satisfies NcodeSessionMeta;
+    }
     const result = await request(session, method, params, method).catch((error: unknown) => {
       throw lineage === "fork" ? withModeSupport(error, method) : error;
     });
@@ -1309,6 +1384,24 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       throw new Error("the agent named another session than the one that was resumed");
     }
     session.named(reported);
+    session.toolAllow = toolAllow;
+    if (existing !== undefined && toolAllow === undefined && lineage === "fork" && servesMethod(initialized, SESSION_TOOLS)) {
+      const listing = SessionToolsResultSchema.parse(
+        await request(session, SESSION_TOOLS, { sessionId: reported }, SESSION_TOOLS),
+      );
+      if (listing.policy.mode === "allow") {
+        if (tools !== undefined) {
+          throw new Unsupported(harnessId, "control", "resume", "the session holds a persisted exact tool set");
+        }
+        session.toolAllow = listing.policy.allow;
+      }
+    }
+    // Remembered for the cold resume that names no mode: the session keeps the
+    // tools it was started with (the contract's rule), so this side re-sends
+    // them instead of letting a fresh process widen the session to legacy.
+    if (session.toolAllow !== undefined) rememberedTools.set(reported, { allow: session.toolAllow });
+    else if (tools === "niwa-only") rememberedTools.set(reported, tools);
+    else rememberedTools.delete(reported);
 
     // The model and the permission mode are config options, applied after the session opens.
     // The model must be one the session advertises: the agent refuses anything else.
@@ -1560,6 +1653,41 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   /** The cold resumes in progress, by native session id: a session has one process, however many ask for it. */
   const resuming = new Map<string, Promise<void>>();
 
+  /**
+   * The tool mode each named session last ran with (`niwa-only` or an allow-list). A resume that
+   * names none re-sends what the session had; a resume that names one must name the same.
+   */
+  const rememberedTools = new Map<string, ToolsMode>();
+
+  /**
+   * The agent's own word that it held the session to the exact tool set: after binding, the
+   * listing must report an allow-list no wider than the one sent. A build that nods at the
+   * `_meta` but keeps every tool answers legacy, and the start/resume refuses.
+   */
+  async function verifyToolPolicyHeld(
+    session: AcpSession,
+    allow: readonly string[],
+    ability: "start" | "resume",
+    servers: readonly McpServerSpec[] | undefined,
+  ): Promise<void> {
+    const result = await request(session, SESSION_TOOLS, { sessionId: session.nativeId }, SESSION_TOOLS);
+    const parsed = SessionToolsResultSchema.safeParse(result);
+    const held = parsed.success && parsed.data.policy.mode === "allow" ? parsed.data.policy.allow : undefined;
+    if (
+      !parsed.success ||
+      held === undefined ||
+      held.some((name) => !allow.includes(name)) ||
+      parsed.data.policy.mode !== "allow" ||
+      parsed.data.policy.servers === undefined ||
+      parsed.data.policy.servers.some((name) => !servers?.some((server) => server.name === name)) ||
+      parsed.data.effective.some((name) => !held.includes(name))
+    ) {
+      throw unavailable(ability, "the agent did not hold the session to its tool policy");
+    }
+    session.toolAllow = held;
+    rememberedTools.set(session.nativeId, { allow: held });
+  }
+
   async function resume(id: SessionId, resumeOptions?: ResumeOptions): Promise<void> {
     for (;;) {
       if (disposed) throw unavailable("resume", "the control side is closed");
@@ -1570,7 +1698,7 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       // its context, and the prompt is another turn of it.
       if (session !== undefined && !session.ended && !session.stopping) {
         const requested = resumeOptions?.tools;
-        if (requested !== undefined && (requested === "niwa-only") !== session.niwaOnly) {
+        if (requested !== undefined && !sameToolMode(requested, session)) {
           throw new Unsupported(harnessId, "control", "resume", "cannot change the tool mode of a running Ncode process");
         }
         if (resumeOptions?.box !== undefined) {
@@ -1614,10 +1742,27 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
   ): Promise<void> {
     const mode = modeOf(resumeOptions?.mode, options.mode, MCODE_LAUNCH);
     requireLaunch(harnessId, MCODE_LAUNCH, { mode });
-    const fresh = await startProcess("resume", resumeOptions?.cwd ?? lastCwd ?? process.cwd(), resumeOptions ?? {});
+    // A resume that names no tool mode keeps the session's own: this side
+    // re-sends what it last ran with, so a fresh process cannot widen the
+    // session to legacy tools by omission. A session that was started with
+    // an exact tool set keeps it for its whole life: naming another mode on
+    // resume is refused, never silently dropped.
+    const remembered = rememberedTools.get(id.native);
+    const tools = resumeOptions?.tools ?? remembered;
+    if (remembered !== undefined && typeof remembered === "object" && !sameToolAllowance(tools, remembered)) {
+      throw new Unsupported(
+        harnessId,
+        "control",
+        "resume",
+        "cannot change the tool mode of a session on resume: it was started with an exact tool set",
+      );
+    }
+    const plan = { ...(resumeOptions ?? {}), ...(tools === undefined ? {} : { tools }) };
+    const fresh = await startProcess("resume", resumeOptions?.cwd ?? lastCwd ?? process.cwd(), plan);
     fresh.reverse = resumeOptions?.reverse;
     try {
-      const nativeId = await handshake(fresh, resumeOptions?.model ?? defaultModel, defaultEffort, mode, id.native, resumeOptions?.servers);
+      const nativeId = await handshake(fresh, resumeOptions?.model ?? defaultModel, defaultEffort, mode, id.native, resumeOptions?.servers, tools);
+      if (typeof tools === "object") await verifyToolPolicyHeld(fresh, tools.allow, "resume", resumeOptions?.servers);
       // The session may still have a turn running: the one that was cut off with the process
       // that sent it. What comes next waits behind it.
       await adoptActiveTurn(fresh);
@@ -1651,7 +1796,11 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
           mode,
           undefined,
           startOptions.servers,
+          startOptions.tools,
         );
+        if (typeof startOptions.tools === "object") {
+          await verifyToolPolicyHeld(session, startOptions.tools.allow, "start", startOptions.servers);
+        }
       } catch (error) {
         // A session whose start failed is not handed to anyone, so nobody could stop it later.
         await stopSession(session);
@@ -1802,6 +1951,17 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
       return session.running ? "running" : "idle";
     },
 
+  /** The fork's own listing: the session's policy, the stable catalog, the effective set. */
+  async toolsOf(id: SessionId): Promise<SessionToolsResult> {
+    const session = sessionOf(id, "toolsOf");
+    const result = await request(session, SESSION_TOOLS, { sessionId: id.native }, SESSION_TOOLS);
+    const parsed = SessionToolsResultSchema.safeParse(result);
+    if (!parsed.success) {
+      throw unavailable("toolsOf", `${SESSION_TOOLS} answered a shape this side cannot read`);
+    }
+    return parsed.data;
+  },
+
     /** The release the shared contract names: stops this session's process and no other. */
     async close(id: SessionId): Promise<void> {
       const session = sessions.get(id.native);
@@ -1848,8 +2008,10 @@ export function mcodeControl(options: McodeControlOptions): McodeSessionControl 
     }
     // The agent's own children may outlive the leader, so the group gets the last word.
     signalGroup(session, "SIGKILL");
-    // The MCP servers the agent was given are not in its group: they go by their mark.
-    await stopMarked(session.mark);
+    // The MCP servers the agent was given are not in its group: they go by their mark. Upstream
+    // mcode keeps its cleanup as it was, servers given or none. The fork, which takes a session
+    // given no server at all, skips the search then: nothing was told its mark.
+    if (lineage !== "fork" || session.hasMarkedServers) await stopMarked(session.mark);
   }
 }
 

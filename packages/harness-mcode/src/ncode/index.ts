@@ -13,8 +13,12 @@ import type { McodeOptions, MinimaxKindSpec } from "../mcode/kind.ts";
 
 export type { McodeInstanceOptions as NcodeInstanceOptions, McodeOptions as NcodeOptions } from "../mcode/kind.ts";
 
-/** The sides a fork instance has by default. */
-export const ncodeSides: SideCapabilities = minimaxSides();
+/**
+ * The sides a fork instance has by default: tool isolation only after the launcher proves it,
+ * the exact per-session tool set through the fork's ACP capability (a binary too old for it is
+ * refused by name when a session asks for one).
+ */
+export const ncodeSides: SideCapabilities = minimaxSides(false, true);
 
 /** How the fork is found: its launcher (`ncode`), and the directory it keeps its sessions in. */
 const NCODE_KIND: MinimaxKindSpec = {

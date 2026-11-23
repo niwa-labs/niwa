@@ -8,6 +8,9 @@
  *
  * - the working mode of a session, `_meta["minimax-code/permissionMode"]` on `session/new`,
  *   `session/load` and `session/resume`, and the -32603 refusal of a daemon that cannot take it;
+ * - the built-in tools a session may use, `_meta["minimax-code/toolPolicy"]` on the same three
+ *   requests (the exact names it keeps), with the -32603 refusal of a daemon that cannot take it
+ *   and the method `mcode/session/tools` that lists the catalog and the session's effective set;
  * - the decision on a tool call, `_meta["minimax-code/permission"]`, and the parent tool call of a
  *   delegated one, `_meta["minimax-code/parentToolCallId"]`, on `tool_call` and `tool_call_update`;
  * - service speech, `_meta.informational`, on `agent_message_chunk`;
@@ -27,8 +30,27 @@ export const NCODE_ACP_PROTOCOL = ProtocolNameSchema.parse(`acp-${Acp.ACP_SDK_VE
 /** The `_meta` key of the working mode of a session. */
 export const PERMISSION_MODE_META = "minimax-code/permissionMode";
 
-/** The `_meta` of `session/new`, `session/load` and `session/resume`: upstream's `permissionMode` values, per session. */
-export const NcodeSessionMeta = z.object({ [PERMISSION_MODE_META]: McodePermissionMode });
+/** The `_meta` key of the built-in tools a session may use: the exact names it keeps. */
+export const TOOL_POLICY_META = "minimax-code/toolPolicy";
+
+/**
+ * An allow-list of the fork's built-in tools, as the fork's `_meta` carries it. The empty list is
+ * valid (no built-in tool at all); niwa's `niwa-only` mode is the same intent with the stronger
+ * launcher gates, but the wire accepts what the fork accepts.
+ */
+export const NcodeToolPolicy = z.object({ allow: z.array(z.string().min(1)) }).strict();
+export type NcodeToolPolicy = z.output<typeof NcodeToolPolicy>;
+
+/**
+ * The `_meta` of `session/new`, `session/load` and `session/resume`: upstream's `permissionMode`
+ * values, per session, and the fork's tool policy beside them. The tool policy is optional: a
+ * session that names none keeps the fork's previous mode (every built-in tool when it never had
+ * one).
+ */
+export const NcodeSessionMeta = z.object({
+  [PERMISSION_MODE_META]: McodePermissionMode,
+  [TOOL_POLICY_META]: NcodeToolPolicy.optional(),
+});
 export type NcodeSessionMeta = z.output<typeof NcodeSessionMeta>;
 
 /**
@@ -41,6 +63,46 @@ export const MODE_UNSUPPORTED = { code: -32603, message: "runtime does not suppo
 export function refusesSessionMode(code: number | undefined, message: string): boolean {
   return code === MODE_UNSUPPORTED.code && message.includes(MODE_UNSUPPORTED.message);
 }
+
+/**
+ * The refusal of a daemon too old to take the tool policy of a session: -32603 with this message,
+ * and no data.
+ */
+export const TOOL_POLICY_UNSUPPORTED = { code: -32603, message: "runtime does not support per-session tool policy; restart mcoded" } as const;
+
+/** Whether a refusal of `session/new`, `session/load` or `session/resume` is that of a daemon too old for the policy. */
+export function refusesToolPolicy(code: number | undefined, message: string): boolean {
+  return code === TOOL_POLICY_UNSUPPORTED.code && message.includes(TOOL_POLICY_UNSUPPORTED.message);
+}
+
+/** `mcode/session/tools`: the built-in tool surface of one session, as the fork serves it. */
+export const SESSION_TOOLS = "mcode/session/tools";
+
+/** The stable catalog entry of one built-in tool: its name and where it comes from. */
+export const NcodeSessionTool = z.object({ name: z.string().min(1), source: z.enum(["builtin", "builtin-matrix"]) });
+
+/**
+ * The answer of `mcode/session/tools`: the policy (the supplied MCP server names beside the
+ * allow-list), the stable catalog, the basis `effective` was computed on, and the effective set.
+ * `basis` is optional so an older fork's answer (before the field existed) still parses.
+ */
+export const SessionToolsResult = z.object({
+  policy: z.union([
+    z.object({ mode: z.literal("legacy") }).strict(),
+    z
+      .object({
+        mode: z.literal("allow"),
+        allow: z.array(z.string().min(1)),
+        /** The MCP server names the session's client supplied; other servers' tools are off. */
+        servers: z.array(z.string().min(1)).optional(),
+      })
+      .strict(),
+  ]),
+  catalog: z.array(NcodeSessionTool),
+  basis: z.enum(["catalog", "external-tools-only"]).optional(),
+  effective: z.array(z.string().min(1)),
+});
+export type SessionToolsResult = z.output<typeof SessionToolsResult>;
 
 /** The decision the fork marks a tool call with. */
 export const NcodePermissionMark = z.object({
