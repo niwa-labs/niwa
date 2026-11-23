@@ -23,7 +23,7 @@ import {
   ToolsModeSchema,
   VariantNameSchema,
 } from "@niwa-labs/harness";
-import { BoxAccessSchema, BoxManifestSchema } from "@niwa-labs/sandbox";
+import { BoxAccessSchema, BoxManifestSchema, SessionBoxSchema } from "@niwa-labs/sandbox";
 
 import { NiwaSessionIdSchema, SessionRefSchema } from "./identity.ts";
 import type { DeliveryReceipt } from "@niwa-labs/harness";
@@ -84,7 +84,7 @@ export const SessionStarted = record(
     /** The tools the session was started with, so a resume launches it with the same; absent for the harness's own. */
     tools: ToolsModeSchema.optional(),
     /** What the start asked of its box, so a resume launches it in the same; absent when it asked nothing. */
-    box: BoxAccessSchema.optional(),
+    box: SessionBoxSchema.optional(),
     /** How long, in milliseconds, a turn may go with no progress before the session counts as stuck; absent when none was set. */
     stuckAfter: z.number().int().positive().optional(),
   }),

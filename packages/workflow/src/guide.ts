@@ -63,6 +63,8 @@ Calling actions:
   (the project and the toolchains), and { box: { only: [{ read: "." }] } } gives it that instead; an item is a profile's
   name, "project", "toolchains", { read }, { write } or { net }. The session always has its own installation's profile.
   Beyond the default the run's uses needs the rule: "box.use@bun", "box.read@/path/*", "box.write@...", "box.net@<host>".
+  Both session({ box: false, ... }) and ask({ box: false, ... }, prompt) launch a plain session when the run is plain and
+  holds "box.plain" in uses. A boxed ancestor blocks the launch. Omitting box keeps the host's box defaults.
 - ask({ schema }, prompt) with a zod schema gives a typed answer. z is a global (zod, no import): write the schema
   with z.object({ ... }), pass it, and the call gives the answer already parsed, typed as z.infer<typeof Schema>.
   Without schema the call gives { answer }, the text. The schema goes to the host as JSON Schema and is part of the

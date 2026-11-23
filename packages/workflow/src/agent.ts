@@ -16,7 +16,7 @@ import { WorktreeOption, gitWorktreeGet, gitWorktreeRemove } from "@niwa-labs/gi
 import type { WorktreeOptionGiven } from "@niwa-labs/git/records";
 import { PromptSchema, SessionModeSchema, ToolsModeSchema, blocksOf, withBlocks } from "@niwa-labs/harness";
 import type { OptionBlocks } from "@niwa-labs/harness";
-import { BoxAccessSchema } from "@niwa-labs/sandbox";
+import { SessionBoxSchema } from "@niwa-labs/sandbox";
 import { SUBMIT_ANSWER_ACTION, harnessGet, sessionAsk, sessionEnd, sessionStart } from "@niwa-labs/sessions/records";
 import { z } from "zod";
 
@@ -69,8 +69,8 @@ const agentFields = (launch: HarnessLaunch) =>
     schema: JsonSchemaValue.optional(),
     /** How long, in milliseconds, a turn of the session may go with no progress before it counts as stuck. */
     stuckAfter: z.number().int().positive().optional(),
-    /** What the session's box has besides the host's default (`allow`) or instead of it (`only`). */
-    box: BoxAccessSchema.optional(),
+    /** The session's box access, or a request for a plain session. */
+    box: SessionBoxSchema.optional(),
   });
 
 /** Every key of an agent call that is not one of its fields is an options block, an object named after the kind. */

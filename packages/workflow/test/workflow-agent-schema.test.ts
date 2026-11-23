@@ -14,13 +14,15 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { actionName, seq } from "@niwa-labs/core";
+import { AccessGranted, CORE_TYPES, actionName, seq } from "@niwa-labs/core";
 import type { StoredRecord } from "@niwa-labs/core";
 import { harnessId, machineId } from "@niwa-labs/harness";
-import type { Harness, LifeEvent, SessionControl, SessionId } from "@niwa-labs/harness";
-import { createNiwa, sessions, eventually, openBoxes, tempHome } from "@niwa-labs/testing";
+import type { Harness, LifeEvent, SessionControl, SessionId, StartOptions } from "@niwa-labs/harness";
+import { onSpawn, spawnAgent, useSandbox } from "@niwa-labs/sandbox";
+import { SessionBoxManifest, SessionMarked, SessionStarted, SessionStartReserved, sessionStart } from "@niwa-labs/sessions/records";
+import { createNiwa, sessions, eventually, openBoxes, tempHome, unconfined } from "@niwa-labs/testing";
 import type { Host } from "@niwa-labs/testing";
-import { RunFinished, workflow, workflowCheck } from "../src/index.ts";
+import { RunFinished, workflow, workflowCheck, workflowRegister, workflowStart } from "../src/index.ts";
 import type { RunStatus } from "../src/status.ts";
 
 const HARNESS = harnessId("fake-harness");
@@ -47,6 +49,7 @@ class FakeControl implements SessionControl {
   keepAlive = false;
   private readonly untilClosed = new Map<string, () => void>();
   beforeAsk?: () => Promise<void>;
+  beforeStart?: (options: StartOptions) => Promise<void>;
 
   async close(id: SessionId): Promise<void> {
     this.closed.add(id.native);
@@ -55,7 +58,8 @@ class FakeControl implements SessionControl {
     this.untilClosed.get(id.native)?.();
   }
 
-  async start(): Promise<{ session: SessionId }> {
+  async start(options: StartOptions): Promise<{ session: SessionId }> {
+    await this.beforeStart?.(options);
     this.counter += 1;
     return { session: { harness: HARNESS, native: `session-${String(this.counter)}` as never } };
   }
@@ -110,7 +114,7 @@ const instance: Harness = {
   home: "/tmp/fake-home",
   sides: {
     reading: { list: true, read: true, watch: false },
-    control: { start: true, resume: false, send: true, interrupt: true, ask: true, structuredOutput: true, launch: { model: true, effort: ["low"], modes: ["auto"] } },
+    control: { start: true, resume: false, send: true, interrupt: true, ask: true, structuredOutput: true, launch: { model: true, effort: ["low"], modes: ["auto"] }, tools: { niwaOnly: true, allow: false } },
   },
 };
 
@@ -143,6 +147,98 @@ async function scriptIn(home: string, name: string, lines: readonly string[]): P
 
 const statusOf = async (host: Host, run: string): Promise<RunStatus> =>
   (await host.call(WAIT, { run, timeoutMs: 20_000 })) as RunStatus;
+
+test("child session and standalone ask require both plain workflow isolation and the plain launch grant", async () => {
+  const restore = useSandbox("srt", unconfined());
+  const launches: Array<string | undefined> = [];
+  const unlisten = onSpawn((event) => { if (event.harness === HARNESS) launches.push(event.sandbox); });
+  try {
+    const { host, home, control } = await served({ openBox: true });
+    control.reply = { answer: "answer" };
+    const asked: StartOptions[] = [];
+    control.beforeStart = async (options) => {
+      asked.push(options);
+      const child = await spawnAgent({
+        harness: HARNESS,
+        program: "/bin/sh",
+        args: ["-c", "exit 0"],
+        cwd: options.cwd,
+        env: options.env,
+        box: options.box,
+      });
+      await new Promise<void>((resolve) => child.once("close", () => resolve()));
+    };
+    const script = (name: string, rule: boolean, plain: boolean) => scriptIn(home, `${name}.ts`, [
+      `export default workflow({ description: "Try both session launch entry points", uses: ["session.start.fake-harness", "session.ask", "session.end"${rule ? ', "box.plain"' : ""}], output: z.json() }, async () => {`,
+      `  const options = { harness: "fake-harness", model: "example", effort: "low", mode: "auto", tools: "niwa-only"${plain ? ", box: false" : ""} } as const;`,
+      '  const conversation = async () => { const s = await session(options); await s.end(); return "closed"; };',
+      '  const once = async () => (await ask(options, "one question")).answer;',
+      '  const attempt = async (work: () => Promise<string>) => { try { return await work(); } catch (error) { return String(error); } };',
+      '  return [await attempt(conversation), await attempt(once)];',
+      '});',
+    ]);
+
+    const plain = await host.call(workflowStart, { file: await script("plain", true, true), box: false, wait: true, timeoutMs: 20_000 });
+    expect(plain.outcome).toEqual({ status: "done", result: ["closed", "answer"] });
+    expect(launches).toEqual([undefined, undefined]);
+    for (const options of asked) {
+      expect(options).toMatchObject({ model: "example", effort: "low", mode: "auto", tools: "niwa-only" });
+      expect(options.box).toBeUndefined();
+    }
+    const boxed = await host.call(workflowStart, { file: await script("boxed", true, true), box: true, wait: true, timeoutMs: 20_000 });
+    expect(boxed.outcome).toEqual({ status: "done", result: Array(2).fill(expect.stringContaining("PauseSignal")) });
+    const denied = await host.call(workflowStart, { file: await script("denied", false, true), wait: true, timeoutMs: 20_000 });
+    expect(denied.outcome).toEqual({ status: "done", result: Array(2).fill(expect.stringContaining("PauseSignal")) });
+    const { id } = await host.call(workflowRegister, { file: await script("nested", true, true) });
+    const parent = await scriptIn(home, "parent.ts", [
+      "export default workflow({ output: z.json() }, async () => {",
+      `  return await niwa.flow["${id}"]({});`,
+      "});",
+    ]);
+    const nested = await host.call(workflowStart, { file: parent, box: true, wait: true, timeoutMs: 20_000 });
+    expect(nested.outcome).toEqual({ status: "done", result: Array(2).fill(expect.stringContaining("PauseSignal")) });
+    const refusals = (await host.records.read()).filter((row) => row.type === CORE_TYPES.stepOutcome)
+      .map((row) => row.data as { outcome: { error?: string; effectPossible?: boolean } });
+    const isolationRefusals = refusals.filter(({ outcome }) => outcome.error?.includes("requires a plain workflow"));
+    const grantRefusals = refusals.filter(({ outcome }) => outcome.error?.includes("requires box.plain"));
+    expect(isolationRefusals).toHaveLength(4);
+    expect(grantRefusals).toHaveLength(2);
+    expect([...isolationRefusals, ...grantRefusals].every(({ outcome }) => outcome.effectPossible === false)).toBe(true);
+    await expect(host.call(sessionStart, { harness: HARNESS, prompt: "", box: false })).rejects.toThrow(/plain workflow/);
+    expect(asked).toHaveLength(2);
+    expect(launches).toHaveLength(2);
+
+    const defaults = await host.call(workflowStart, { file: await script("defaults", false, false), wait: true, timeoutMs: 20_000 });
+    expect(defaults.outcome).toEqual({ status: "done", result: ["closed", "answer"] });
+    expect(launches).toEqual([undefined, undefined, "srt", "srt"]);
+    const started = (await host.records.read({ types: [SessionStarted] })).map((row) => SessionStarted.schema.parse(row.data));
+    expect(started.map(({ run, box }) => ({ run, box }))).toEqual([
+      { run: plain.run, box: false }, { run: plain.run, box: false },
+      { run: defaults.run, box: undefined }, { run: defaults.run, box: undefined },
+    ]);
+    expect(await host.records.read({ types: [SessionStartReserved] })).toHaveLength(4);
+    const marks = (await host.records.read({ types: [SessionMarked] })).map((row) => SessionMarked.schema.parse(row.data));
+    const grants = (await host.records.read({ types: [AccessGranted] })).map((row) => AccessGranted.schema.parse(row.data));
+    const plainMarks = marks.filter(({ session }) => started.some((row) => row.session === session && row.run === plain.run));
+    for (const { mark } of plainMarks) {
+      const issued = grants.find(({ principal }) => principal.kind === "session" && principal.id === mark);
+      expect(issued?.parent?.principal).toMatchObject({ kind: "run", id: plain.run });
+    }
+    const manifests = (await host.records.read({ types: [SessionBoxManifest] })).map((row) => SessionBoxManifest.schema.parse(row.data));
+    expect(manifests.map(({ mark, sandbox }) => ({ mark, sandbox }))).toEqual(
+      marks.filter(({ session }) => started.some((row) => row.session === session && row.run === defaults.run))
+        .map(({ mark }) => ({ mark, sandbox: "srt" })),
+    );
+    expect(manifests).toHaveLength(2);
+
+    const plainNested = await host.call(workflowStart, { file: parent, box: false, wait: true, timeoutMs: 20_000 });
+    expect(plainNested.outcome).toEqual({ status: "done", result: ["closed", "answer"] });
+    expect(launches.slice(-2)).toEqual([undefined, undefined]);
+  } finally {
+    unlisten();
+    restore();
+  }
+}, 60_000);
 
 const REVIEW = [
   'const Review = z.object({ verdict: z.enum(["approve", "changes"]), notes: z.array(z.string()), tag: z.string().default("none") });',

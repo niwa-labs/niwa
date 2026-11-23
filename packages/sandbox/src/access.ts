@@ -82,6 +82,13 @@ export const BoxAccessSchema = z
   .refine((access) => access.allow === undefined || access.only === undefined, "a box takes allow or only, not both");
 export type BoxAccessInput = z.output<typeof BoxAccessSchema>;
 
+/** The isolation requested for a session launch. Leaving it out takes the host box defaults. */
+export const SessionBoxSchema = z.union([BoxAccessSchema, z.literal(false)]);
+export type SessionBoxInput = z.output<typeof SessionBoxSchema>;
+
+/** The grant rule a plain workflow needs to request a plain session. */
+export const PLAIN_CHILD_RULE = "box.plain";
+
 /** Where a path, a host or an item of a box came from. */
 export type Origin = string;
 

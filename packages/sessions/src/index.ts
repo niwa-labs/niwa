@@ -101,11 +101,12 @@ import type {
   ToolAllowance,
   VisibleActions,
 } from "@niwa-labs/harness";
-import { BoxRefused, admit, boxManifest, onBoxManifest, requireSandbox, sandbox as sandboxHost, sandboxOf } from "@niwa-labs/sandbox";
-import type { BoxAccess, BoxAccessInput, BoxPlan, BoxRequest, SandboxHost } from "@niwa-labs/sandbox";
+import { BoxRefused, PLAIN_CHILD_RULE, admit, boxManifest, onBoxManifest, requireSandbox, sandbox as sandboxHost, sandboxOf } from "@niwa-labs/sandbox";
+import type { BoxAccess, BoxAccessInput, BoxPlan, BoxRequest, SandboxHost, SessionBoxInput } from "@niwa-labs/sandbox";
 import { RequestCreated, requestOpen } from "@niwa-labs/requests/records";
 
 import { heldRule, inheritedLaunch, isLaunchRule, toolsOfGrant, toolsOfSession } from "./box.ts";
+import { plainWorkflow } from "./plain-child.ts";
 import { SessionRefusal } from "./refusal.ts";
 import { REVERSE_TYPES, installReverse } from "./reverse.ts";
 import { askNonNative, questionText, submitAnswerAction, SUBMIT_ANSWER_ACTION } from "./ask.ts";
@@ -912,6 +913,18 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     const tokenFor = (mark: string, rules: Grant, parent: Caller): Token =>
       api.issueToken("session", mark, { grant: rules, parent });
 
+    const requirePlainChild = (request: SessionBoxInput | undefined, caller: Caller): void => {
+      if (request !== false) return;
+      const journal = api.journal?.();
+      if (caller.kind !== "client" || caller.principal === undefined || journal === undefined ||
+          !plainWorkflow(journal, caller.principal)) {
+        throw new SessionRefusal("box-refused", "box: false requires a plain workflow with no boxed parent");
+      }
+      if (heldRule(api.rights(caller), PLAIN_CHILD_RULE) === undefined) {
+        throw new SessionRefusal("box-refused", `box: false requires ${PLAIN_CHILD_RULE}`);
+      }
+    };
+
     /**
      * The launch of a session: the tools its grant allows, and its box. The box is the host's
      * default, what the start asks for, and the installation's profile, with a temp directory of
@@ -919,8 +932,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
      * box that cannot be had stops the start with every reason: this runs before a mark, a token
      * or a process exists.
      */
-    const launchFor = async (rules: Grant, cwd: string | undefined, harness: string, request: BoxAccessInput | undefined, caller: Caller, defaults: BoxAccessInput | BoxAccess = boxDefault): Promise<Launch> => {
+    const launchFor = async (rules: Grant, cwd: string | undefined, harness: string, request: SessionBoxInput | undefined, caller: Caller, defaults: BoxAccessInput | BoxAccess = boxDefault): Promise<Launch> => {
       const tools = toolsOfGrant(rules);
+      if (request === false) return { tools };
       const adapter = sandboxOf(boxes.adapter ?? "srt");
       const temp = realpathSync(mkdtempSync(join(tmpdir(), "niwa-box-")));
       const rights = api.rights(caller);
@@ -940,7 +954,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         });
         const admitted = admit(plan, adapter, (needed) => heldRule(rights, needed), { sockets: [api.socket()] });
         await requireSandbox(adapter);
-        return { ...(tools === undefined ? {} : { tools }), box: { sandbox: adapter, spec: admitted.spec }, plan, rules: admitted.rules, temp };
+        return { tools, boxed: { box: { sandbox: adapter, spec: admitted.spec }, plan, rules: admitted.rules, temp } };
       } catch (error) {
         rmSync(temp, { recursive: true, force: true });
         if (error instanceof BoxRefused) throw new SessionRefusal("box-refused", error.message);
@@ -952,18 +966,23 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
     const launchOptions = (launch: Launch | undefined, mark: string) =>
       launch === undefined
         ? {}
-        : { ...(launch.tools === undefined ? {} : { tools: launch.tools }), box: { ...launch.box, mark } };
+        : {
+          ...(launch.tools === undefined ? {} : { tools: launch.tools }),
+          ...(launch.boxed === undefined ? {} : { box: { ...launch.boxed.box, mark } }),
+        };
 
     /** What the process of a launch is given besides its token: its own temp directory. */
-    const launchEnv = (launch: Launch | undefined): Record<string, string> => (launch === undefined ? {} : { TMPDIR: launch.temp });
+    const launchEnv = (launch: Launch | undefined): Record<string, string> =>
+      launch?.boxed === undefined ? {} : { TMPDIR: launch.boxed.temp };
 
     /**
      * Runs the launch of a session whose process is born in a box, with the manifest of that box
      * written to the journal by the action that launches it, before the process starts.
      */
     const recording = async <T>(mark: string, harness: string, launch: Launch | undefined, ctx: ActionContext, work: () => Promise<T>): Promise<T> => {
-      if (launch === undefined) return await work();
-      boxManifests.set(mark, (made) => ctx.emit(SessionBoxManifest, { mark, harness, ...boxManifest(launch.plan, launch.rules, made) }));
+      const boxed = launch?.boxed;
+      if (boxed === undefined) return await work();
+      boxManifests.set(mark, (made) => ctx.emit(SessionBoxManifest, { mark, harness, ...boxManifest(boxed.plan, boxed.rules, made) }));
       try {
         return await work();
       } finally {
@@ -1389,10 +1408,13 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       // Refused before a mark or a token is made: a start that asks for too much, or for a
       // box this machine cannot give, creates nothing.
       const rules = grantOfSession(ctx.caller, requested, visible);
+      requirePlainChild(input.box, ctx.caller);
       // A session asked to run in a worktree gets one made by the git module, and runs in it.
       const worktree = input.worktree === undefined ? undefined : await worktreeFor(ctx, input.harness, input.worktree, input.cwd);
       const cwd = worktree?.path ?? input.cwd ?? parent?.cwd;
-      const launch = await launchFor(rules, cwd, input.harness, input.box, ctx.caller, parent?.run !== undefined ? parent.boxAccess : parent?.box?.only === undefined ? undefined : parent.box);
+      const parentBox = parent?.box;
+      const defaults = parent?.run !== undefined ? parent.boxAccess : parentBox && parentBox.only !== undefined ? parentBox : undefined;
+      const launch = await launchFor(rules, cwd, input.harness, input.box, ctx.caller, defaults);
       // The mode asked for, within the allow-list of the grant: what the grant adds is held too.
       const toolRequest = parent?.tools === "niwa-only" ? "niwa-only" :
         toolsOfSession(input.tools, typeof parent?.tools === "object" ? parent.tools : undefined);
@@ -1401,7 +1423,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       // The mark is made in the run: a replay returns what the run returned, and the mark
       // is in the journal with the session it names.
       const mark = randomUUID();
-      const context = { run, execution, parentSession, disabledTools: [...visible.disabledTools], boxAccess: { only: launch.plan.request.items.map(({ item }) => item) }, tools: run === undefined && parent === undefined ? input.tools : tools };
+      const boxed = launch.boxed;
+      const boxAccess = boxed === undefined ? undefined : { only: boxed.plan.request.items.map(({ item }) => item) };
+      const context = { run, execution, parentSession, disabledTools: [...visible.disabledTools], boxAccess, tools: run === undefined && parent === undefined ? input.tools : tools };
       // A harness at its ceiling takes the start once one of its turns ends.
       const slot = await caps.admit(instance.id);
       // Written before the harness is asked: from here on a retry never asks it again.
@@ -1409,8 +1433,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
       let servers: readonly McpServerSpec[] | undefined;
       try {
         const current = grantOfSession(ctx.caller, requested, visible);
+        requirePlainChild(input.box, ctx.caller);
         if (stableJson(specsOf(current)) !== stableJson(specsOf(rules)) ||
-            launch.plan.rules.some((needed) => heldRule(api.rights(ctx.caller), needed) === undefined) ||
+            boxed?.plan.rules.some((needed) => heldRule(api.rights(ctx.caller), needed) === undefined) ||
             (parent?.run !== undefined && parentSession !== undefined && ended(parentSession))) {
           throw new SessionRefusal("grant-changed", "the parent grant changed while the session was starting");
         }
@@ -1418,7 +1443,7 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
         servers = serversOf(visible.actions, mark, token);
       } catch (error) {
         slot.release();
-        rmSync(launch.temp, { recursive: true, force: true });
+        if (boxed !== undefined) rmSync(boxed.temp, { recursive: true, force: true });
         throw error;
       }
       await ctx.emit(SessionStartReserved, { operation, digest, mark, ...context, ...(cwd === undefined ? {} : { cwd }) }).catch((error: unknown) => {
@@ -1538,7 +1563,9 @@ export function sessions(options: SessionsOptions = {}): SessionsPlugin {
             if (gone) restart(ref);
             // The directory the session was started in: a harness that loads a session by it needs the same one.
             const startedIn = restored?.cwd ?? startedOf(ref)?.cwd;
-            const launch = launches ? await launchFor(rules, startedIn, id.harness, owned?.run === undefined ? owned?.box : owned.boxAccess, issuer, owned?.run === undefined ? undefined : owned.boxAccess) : undefined;
+            const request = owned?.box === false || owned?.run === undefined ? owned?.box : owned.boxAccess;
+            if (launches) requirePlainChild(request, issuer);
+            const launch = launches ? await launchFor(rules, startedIn, id.harness, request, issuer, owned?.run === undefined ? undefined : owned.boxAccess) : undefined;
             // A process launched again keeps the tools the session was started with, within its grant.
             const tools = launch === undefined ? undefined : toolsOfSession(startedOf(ref)?.tools, launch.tools);
             // Relaunch the same run-owned principal, including its current grant
@@ -1966,7 +1993,11 @@ type SandboxManifestOf = Parameters<Parameters<typeof onBoxManifest>[0]>[0]["man
 
 /** What a start or a resume launches with: its tools, and its box with the plan it was resolved from. */
 interface Launch {
-  readonly tools?: ToolAllowance;
+  readonly tools: ToolAllowance | undefined;
+  readonly boxed?: BoxedLaunch;
+}
+
+interface BoxedLaunch {
   readonly box: BoxRequest;
   readonly plan: BoxPlan;
   /** The rules of the caller's grant the box took. */

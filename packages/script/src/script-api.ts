@@ -97,9 +97,9 @@ export interface SessionOptions {
   worktree?: true | { repo?: string; base?: string; description?: string };
   /**
    * What the session's box has besides the host's default (`allow`) or instead of it (`only`): `"project"`,
-   * `"toolchains"`, a profile by its name, `{ read }`, `{ write }`, `{ net }`. Beyond the default takes the run's `box.*` rules.
+   * `"toolchains"`, a profile by its name, `{ read }`, `{ write }`, `{ net }`. Beyond the default takes the run's `box.*` rules. `false` requests a plain session from a plain run holding `box.plain`.
    */
-  box?: { allow: BoxItem[] } | { only: BoxItem[] };
+  box?: false | { allow: BoxItem[] } | { only: BoxItem[] };
   /** Claude Code (`claude-code`, `claude-sdk`): `advisor: false` takes its advisor tool away from the session. */
   claude?: { advisor?: boolean };
   codex?: Record<string, never>;

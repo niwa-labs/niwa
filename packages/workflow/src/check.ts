@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 import { isOwnerGrant, isRuleTemplate, narrow, rule, ruleTemplate, ruleText } from "@niwa-labs/core";
 import type { ActionDescription, ActionName, Grant, JsonSchema } from "@niwa-labs/core";
+import { PLAIN_CHILD_RULE } from "@niwa-labs/sandbox";
 import { bare, declarationField, declarationOf, literalOf, onOf, placeOf } from "@niwa-labs/script";
 import type { ScriptSource } from "@niwa-labs/script";
 import type * as Ts from "typescript";
@@ -849,7 +850,7 @@ async function check(source: ScriptSource, catalogue: Catalogue): Promise<TextCh
       errors.push({ ...place, message: `uses "${use.mask}" is not an action name, a rule or a target template` });
     } else if (!isRuleTemplate(use.mask) && wider.has(ruleText(rule(use.mask)))) {
       errors.push({ ...place, message: `uses "${use.mask}" is wider than the caller's rights` });
-    } else if (!catalogue.callable.some((callable) => matches(name, callable))) {
+    } else if (use.mask !== PLAIN_CHILD_RULE && !catalogue.callable.some((callable) => matches(name, callable))) {
       errors.push({ ...place, message: `uses "${use.mask}" names no action the caller may call` });
     }
   }

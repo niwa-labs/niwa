@@ -29,7 +29,7 @@ import {
   UserRecordSchema,
 } from "@niwa-labs/harness";
 import { SessionWorktree, WorktreeOption } from "@niwa-labs/git/records";
-import { BoxAccessSchema } from "@niwa-labs/sandbox";
+import { SessionBoxSchema } from "@niwa-labs/sandbox";
 import { CoverageSchema, ReadAnswerSchema, SearchMatchSchema, SearchQuerySchema, readInput } from "@niwa-labs/history/records";
 
 import { NiwaSessionIdSchema } from "./identity.ts";
@@ -252,9 +252,10 @@ const SessionStartFields = z.object({
    * What the session's box has besides the host's default (`allow`) or instead of it (`only`):
    * `"project"` (the working directory, writable), `"toolchains"`, a profile by its name, or a path
    * (`{ read }`, `{ write }`) or a host (`{ net }`). The profile of the installation is always in it.
-   * Wider than the host's default takes the caller's `box.*` rules.
+   * Wider than the host's default takes the caller's `box.*` rules. `false` takes `box.plain`
+   * and a plain workflow as the caller.
    */
-  box: BoxAccessSchema.optional(),
+  box: SessionBoxSchema.optional(),
   /**
    * The tools the session may use, for its whole life: `all` (the harness's own, the default),
    * `niwa-only` (only the tools of niwa's MCP servers), or `{ allow }` (exactly these of the

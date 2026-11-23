@@ -82,7 +82,7 @@ type NiwaWorktreeOption = true | { repo?: string; base?: string; description?: s
 /** One thing a box asks for: a profile by its name, "project", "toolchains", or a path or a host. */
 type NiwaBoxItem = string | { read: string } | { write: string } | { net: string };
 /** What ask({ box }) takes: items added to the host's default (allow), or put instead of it (only). Beyond the default takes the run's box.* rules. */
-type NiwaBoxAccess = { allow: NiwaBoxItem[] } | { only: NiwaBoxItem[] };
+type NiwaSessionBox = false | { allow: NiwaBoxItem[] } | { only: NiwaBoxItem[] };
 declare function session(options: NiwaSessionOptions): Pick<NiwaSession, "ask" | "send" | "end"> & PromiseLike<NiwaSession>;
 declare function agent(name: "agent.tell" extends keyof NiwaActions ? string : never): { tell(text: string, options?: NiwaCallOptions): Promise<{ message: string }> };
 /** Sleep; a replay does not sleep from the start. */
@@ -232,7 +232,7 @@ function blocksTyping(names: readonly OptionsBlock[], own: OptionsBlock | undefi
  */
 function agentTyping(description: readonly ActionDescription[], callable: ReadonlySet<string>, blocks: ReadonlyMap<string, HarnessBlock>): string {
   const names = blockNames(blocks);
-  const common = `{ label?: string; visible?: string[]; tools?: "all" | "niwa-only" | { allow: readonly string[] }; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption; stuckAfter?: NiwaDuration; box?: NiwaBoxAccess }`;
+  const common = `{ label?: string; visible?: string[]; tools?: "all" | "niwa-only" | { allow: readonly string[] }; mode?: "ask" | "auto" | "full"; cwd?: string; worktree?: NiwaWorktreeOption; stuckAfter?: NiwaDuration; box?: NiwaSessionBox }`;
   const hosted = description.filter((action) => harnessOfAction(action.name) !== undefined);
   const served = hosted.filter((action) => callable.has(action.name));
   const variants =
