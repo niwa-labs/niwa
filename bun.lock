@@ -11,7 +11,7 @@
     },
     "packages/acp": {
       "name": "@niwa-labs/acp",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
@@ -23,7 +23,7 @@
     },
     "packages/agent": {
       "name": "@niwa-labs/agent",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/history": "workspace:*",
@@ -38,7 +38,7 @@
     },
     "packages/cli": {
       "name": "@niwa-labs/cli",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/client": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -50,7 +50,7 @@
     },
     "packages/client": {
       "name": "@niwa-labs/client",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "zod": "^4.6.7",
@@ -58,7 +58,7 @@
     },
     "packages/cockpit": {
       "name": "@niwa-labs/cockpit",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/client": "workspace:*",
         "@niwa-labs/cockpit-sdk": "workspace:*",
@@ -84,7 +84,7 @@
     },
     "packages/cockpit-sdk": {
       "name": "@niwa-labs/cockpit-sdk",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/client": "workspace:*",
         "@niwa-labs/ui-kit": "workspace:*",
@@ -107,14 +107,14 @@
     },
     "packages/core": {
       "name": "@niwa-labs/core",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "zod": "^4.6.7",
       },
     },
     "packages/digest": {
       "name": "@niwa-labs/digest",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/harness": "workspace:*",
         "zod": "^4.6.7",
@@ -122,7 +122,7 @@
     },
     "packages/flow": {
       "name": "@niwa-labs/flow",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/script": "workspace:*",
         "zod": "^4.6.7",
@@ -133,7 +133,7 @@
     },
     "packages/flow-code": {
       "name": "@niwa-labs/flow-code",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/flow": "workspace:*",
         "@niwa-labs/git": "workspace:*",
@@ -146,7 +146,7 @@
     },
     "packages/flow-eval": {
       "name": "@niwa-labs/flow-eval",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/flow": "workspace:*",
       },
@@ -157,7 +157,7 @@
     },
     "packages/git": {
       "name": "@niwa-labs/git",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
@@ -170,7 +170,7 @@
     },
     "packages/harness": {
       "name": "@niwa-labs/harness",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/sandbox": "workspace:*",
@@ -179,7 +179,7 @@
     },
     "packages/harness-claude": {
       "name": "@niwa-labs/harness-claude",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.325",
         "@niwa-labs/acp": "workspace:*",
@@ -195,7 +195,7 @@
     },
     "packages/harness-codex": {
       "name": "@niwa-labs/harness-codex",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
@@ -209,7 +209,7 @@
     },
     "packages/harness-mcode": {
       "name": "@niwa-labs/harness-mcode",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/acp": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -223,7 +223,7 @@
     },
     "packages/harness-opencode": {
       "name": "@niwa-labs/harness-opencode",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
@@ -241,7 +241,7 @@
     },
     "packages/harness-pi": {
       "name": "@niwa-labs/harness-pi",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
@@ -254,7 +254,7 @@
     },
     "packages/harness-zcode": {
       "name": "@niwa-labs/harness-zcode",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/harness": "workspace:*",
@@ -268,7 +268,7 @@
     },
     "packages/history": {
       "name": "@niwa-labs/history",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/digest": "workspace:*",
@@ -279,7 +279,7 @@
     },
     "packages/host": {
       "name": "@niwa-labs/host",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/client": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -292,7 +292,7 @@
     },
     "packages/mcp": {
       "name": "@niwa-labs/mcp",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.32.2",
         "@niwa-labs/client": "workspace:*",
@@ -302,7 +302,7 @@
     },
     "packages/messages": {
       "name": "@niwa-labs/messages",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -329,7 +329,7 @@
     },
     "packages/niwa": {
       "name": "@niwa-labs/niwa",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "bin": {
         "niwa": "./bin/niwa.ts",
       },
@@ -381,7 +381,7 @@
     },
     "packages/plugin": {
       "name": "@niwa-labs/plugin",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "zod": "^4.6.7",
@@ -389,7 +389,7 @@
     },
     "packages/proc": {
       "name": "@niwa-labs/proc",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/core": "workspace:*",
         "@niwa-labs/plugin": "workspace:*",
@@ -402,7 +402,7 @@
     },
     "packages/requests": {
       "name": "@niwa-labs/requests",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -432,7 +432,7 @@
     },
     "packages/sandbox": {
       "name": "@niwa-labs/sandbox",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@anthropic-ai/sandbox-runtime": "^0.0.83",
         "zod": "^4.6.7",
@@ -443,7 +443,7 @@
     },
     "packages/script": {
       "name": "@niwa-labs/script",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "typescript": "~5.9.3",
         "zod": "^4.6.7",
@@ -451,7 +451,7 @@
     },
     "packages/sessions": {
       "name": "@niwa-labs/sessions",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -486,7 +486,7 @@
     },
     "packages/tasks": {
       "name": "@niwa-labs/tasks",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -517,7 +517,7 @@
     },
     "packages/telegram": {
       "name": "@niwa-labs/telegram",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/agent": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -532,7 +532,7 @@
     },
     "packages/testing": {
       "name": "@niwa-labs/testing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.325",
         "@niwa-labs/client": "workspace:*",
@@ -554,7 +554,7 @@
     },
     "packages/timer": {
       "name": "@niwa-labs/timer",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -580,7 +580,7 @@
     },
     "packages/ui-kit": {
       "name": "@niwa-labs/ui-kit",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@base-ui/react": "^1.9.0",
         "@pierre/diffs": "^1.6.4",
@@ -607,14 +607,14 @@
     },
     "packages/upstream-map": {
       "name": "@niwa-labs/upstream-map",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "zod": "^4.6.7",
       },
     },
     "packages/web": {
       "name": "@niwa-labs/web",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/client": "workspace:*",
         "@niwa-labs/core": "workspace:*",
@@ -626,7 +626,7 @@
     },
     "packages/workflow": {
       "name": "@niwa-labs/workflow",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@niwa-labs/cockpit-sdk": "workspace:*",
         "@niwa-labs/core": "workspace:*",
